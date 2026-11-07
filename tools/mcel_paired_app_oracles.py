@@ -110,7 +110,14 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
         elif not (nav['x']+nav['w']<=work['x']+2):
             errors.append('navigation-not-left-of-workspace')
     if tools and work:
-        if rung=='wide':
+        if app=='task-manager':
+            # A multi-field governed workflow cannot be assigned to a skinny
+            # inspection dock. It belongs below the primary monitoring workspace.
+            if tools['y'] < work['y']+work['h']-2:
+                errors.append('governed-tools-before-workspace-end')
+            if tools['w'] < work['w']*.85:
+                errors.append('governed-tools-width-deficit')
+        elif rung=='wide':
             if not (work['x']+work['w']<=tools['x']+2 and abs(work['y']-tools['y'])<10):
                 errors.append('tools-not-adjacent-right')
         elif tools['y'] < work['y']+work['h']-2:
@@ -137,6 +144,131 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
             'interactions':interactions}
 
 
+# Executed on both the composed candidate and the actual hosted (unplanned)
+# presentation. This is independent of source plans and CSS selectors for layout
+# authority; it measures populated records against their containing workspace.
+def populated_monitor_collection_oracle(browser_page, width: int) -> dict:
+    failures=[]
+    try:
+        browser_page.locator('select[data-intent="intent:switch-view"]').select_option('connections',timeout=5000)
+        browser_page.locator('form[data-intent="intent:refresh-connections"] button[type="submit"]').click(timeout=5000)
+        browser_page.wait_for_function("""() => Array.isArray(window.__mcelWorkbench?.app?.readState('state:connections')) &&
+          window.__mcelWorkbench.app.readState('state:connections').length >= 2 &&
+          document.querySelectorAll('[data-mcel-region$=".connections"] [data-record-key]').length >= 2""",timeout=7000)
+        observed=browser_page.evaluate("""() => {
+          const region=document.querySelector('[data-mcel-region$=".connections"]');
+          const root=document.querySelector('[data-mcel-presentation="expert"]');
+          const collection=region?.querySelector('[data-collection]');
+          const rows=[...(collection?.querySelectorAll(':scope > [data-record-key]')||[])];
+          const rect=el=>{if(!el)return null;const r=el.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};};
+          const inside=(a,b)=>a&&b&&a.x>=b.x-2&&a.x+a.w<=b.x+b.w+2;
+          return {root:rect(root),region:rect(region),collection:rect(collection),
+            count:rows.length,fields:rows.slice(0,2).map(row=>[...row.querySelectorAll('[data-record-field]')].map(field=>({
+              key:field.dataset.recordField,text:field.textContent,rect:rect(field),
+              label:field.getAttribute('data-field-label')}))),
+            rowRects:rows.slice(0,2).map(rect),visible:!!region?.getClientRects().length && !region?.hidden,
+            collectionWithinRegion:inside(rect(collection),rect(region)),
+            overflow:document.documentElement.scrollWidth>innerWidth+1};
+        }""")
+        root,region,collection=observed['root'],observed['region'],observed['collection']
+        if not observed['visible'] or not root or not region or not collection:
+            failures.append('connections-not-visible')
+        else:
+            # A primary collection must not be rendered as a sidebar merely
+            # because its authored region omitted a priority attribute.
+            min_ratio=.50 if width>=680 else .82
+            if region['w']<root['w']*min_ratio:
+                failures.append('connections-primary-width-deficit')
+            if collection['w']<region['w']*.86 or not observed['collectionWithinRegion']:
+                failures.append('connections-collection-does-not-fill-region')
+        if observed['count']<2:failures.append('connections-no-populated-rows')
+        expected={'pid','name','status','local','remote'}
+        for fields in observed['fields']:
+            got={field['key'] for field in fields}
+            if got!=expected:failures.append('connections-required-fields-not-visible');continue
+            if any(not field['text'] or field['rect']['w']<43 for field in fields):
+                failures.append('connections-unreadable-field-width')
+            if any(field['rect']['w']<=0 or field['rect']['h']<=0 for field in fields):
+                failures.append('connections-collapsed-field')
+        if observed['overflow']:failures.append('connections-horizontal-overflow')
+        return {'status':'PASS' if not failures else 'FAIL', 'failures':sorted(set(failures)),
+                'observed':observed, 'scenario':'populated-connections-readable'}
+    except Exception as exc:
+        return {'status':'FAIL','failures':['connections-observation-error'],
+                'error':f'{type(exc).__name__}: {exc}'[:350],
+                'scenario':'populated-connections-readable'}
+
+
+
+def governed_multifield_workflow_oracle(browser_page, width: int) -> dict:
+    # Rendered schedule authoring must be a real usable tool workarea.
+    # Human-authored Task Manager reference: browser evidence, not source plan.
+    # No consequential forms are ever submitted.
+    failures=[]
+    try:
+        region=browser_page.locator('[data-mcel-region$=".schedules"]')
+        tabs=browser_page.locator('[data-mcel-tool-tabs] [role="tab"]')
+        if tabs.count()!=4:
+            failures.append('governed-workflow-missing-tool-tabs')
+        else:
+            panel_id=region.locator('xpath=..').get_attribute('id')
+            for i in range(tabs.count()):
+                tab=tabs.nth(i)
+                if tab.get_attribute('aria-controls')==panel_id:
+                    tab.click(timeout=5000)
+                    break
+            else:
+                failures.append('governed-workflow-unreachable-tab')
+        observed=browser_page.evaluate('''() => {
+          const find=s=>document.querySelector(s);
+          const region=find('[data-mcel-region$=".schedules"]');
+          const form=region?.querySelector('form[data-intent="intent:create-schedule"]');
+          const list=region?.querySelector('[data-collection]');
+          const zone=region?.closest('[data-mcel-zone="tools"]');
+          const panel=region?.closest('[data-mcel-tool-panel]');
+          const root=find('[data-mcel-presentation="expert"]');
+          const rect=el=>{if(!el)return null;const r=el.getBoundingClientRect();
+            return {x:r.x,y:r.y,w:r.width,h:r.height};};
+          const visible=el=>!!el&&!!el.getClientRects().length&&!el.closest('[hidden]');
+          const fields=[...(form?.querySelectorAll('label')||[])].map(label=>({
+            text:label.textContent,rect:rect(label),input:!!label.querySelector('input')}));
+          return {region:rect(region),form:rect(form),list:rect(list),zone:rect(zone),
+            panel:rect(panel),root:rect(root),fields,
+            visible:visible(region),panelVisible:visible(panel),
+            selectedTabs:document.querySelectorAll('[data-mcel-tool-tabs] [role="tab"][aria-selected="true"]').length,
+            visiblePanels:[...document.querySelectorAll('[data-mcel-tool-panel]')].filter(visible).length,
+            create:!!form?.querySelector('button[type="submit"]'),
+            deleteButton:!!region?.querySelector('button[data-intent="intent:delete-schedule"]'),
+            runButton:!!region?.querySelector('button[data-intent="intent:run-schedule"]'),
+            overflow:document.documentElement.scrollWidth>innerWidth+1};
+        }''')
+        region,form,zone=observed['region'],observed['form'],observed['zone']
+        if not (observed['visible'] and observed['panelVisible'] and zone and region and form):
+            failures.append('governed-workflow-not-visible-in-tool-zone')
+        else:
+            if region['x'] < zone['x']-2 or region['x']+region['w'] > zone['x']+zone['w']+2:
+                failures.append('governed-workflow-outside-zone')
+            if form['w'] < region['w']*.80:
+                failures.append('governed-form-width-deficit')
+            if width>=980 and (region['w']<observed['root']['w']*.55 or form['w']<450):
+                failures.append('governed-workflow-confined-to-sidebar')
+            if observed['list'] and form['y']-observed['list']['y']-observed['list']['h']>24:
+                failures.append('governed-form-disconnected-from-selection')
+        if len(observed['fields'])!=3 or not all(f['input'] and f['rect']['w']>=115 for f in observed['fields']):
+            failures.append('governed-form-inputs-not-readable')
+        if not all(observed[k] for k in ('create','deleteButton','runButton')):
+            failures.append('governed-form-missing-operations')
+        if observed['selectedTabs']!=1 or observed['visiblePanels']!=1:
+            failures.append('governed-tool-panels-not-exclusive')
+        if observed['overflow']:failures.append('governed-workflow-horizontal-overflow')
+        return {'status':'PASS' if not failures else 'FAIL','failures':sorted(set(failures)),
+                'observed':observed,'scenario':'governed-multifield-workflow-readable'}
+    except Exception as exc:
+        return {'status':'FAIL','failures':['governed-workflow-observation-error'],
+                'error':f'{type(exc).__name__}: {exc}'[:350],
+                'scenario':'governed-multifield-workflow-readable'}
+
+
 def browser_oracle(browser_page, app: str, width: int) -> dict:
     """Read the real rendered DOM and exercise only nonconsequential mode/tab UI."""
     observed=browser_page.evaluate(DOM_OBSERVATION)
@@ -155,6 +287,12 @@ def browser_oracle(browser_page, app: str, width: int) -> dict:
                 readings[mode]=names
                 if names!=[region]:failures.append('incorrect-active-task-view:'+mode)
             interaction['taskViews']=readings
+            populated=populated_monitor_collection_oracle(browser_page,width)
+            interaction['populatedConnections']=populated
+            if populated['status']!='PASS':failures.extend(populated['failures'])
+            governed=governed_multifield_workflow_oracle(browser_page,width)
+            interaction['governedSchedule']=governed
+            if governed['status']!='PASS':failures.extend(governed['failures'])
         if app=='code-editor':
             # Preserve the original editor DOM node through every tool switch.
             browser_page.evaluate('window.__oracleEditor=document.querySelector("[data-mcel-document-surface]")')

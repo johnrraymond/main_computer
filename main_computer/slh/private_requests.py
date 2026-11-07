@@ -124,7 +124,7 @@ class PrivateRequests:
     def _public(row):
         return {'schema':'main-computer.slh-private-work.v1',
                 'request_id':row['request_id'], 'model':row['model'],
-                'status':row['status'], 'worker_device_id':row['worker_device_id'],
+                'status':row['status'],
                 'run_id':row['run_id'], 'attempt':row['attempt'],
                 'admitted_at_ns':row['admitted_at_ns'],
                 'updated_at_ns':row['updated_at_ns'],

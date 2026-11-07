@@ -55,15 +55,15 @@ def _paid():
     gates = {key: True for key in (
         'market_isolation_capability_verified', 'worker_result_matches_private_marker',
         'buyer_and_worker_distinct', 'buyer_debit_equals_charge',
-        'idempotent_request_not_double_charged', 'worker_wallet_credit_equals_earning',
-        'wallet_authorized_settlement', 'slh_public_connection_selected',
+        'idempotent_request_not_double_charged', 'worker_earning_not_prematurely_spendable',
+        'wallet_authorized_pending_batch', 'slh_public_connection_selected',
         'stable_hub_terminal_succeeded', 'stable_hub_charge_exactly_once',
         'worker_earning_exactly_once')}
     return {'pass': True, 'gates': gates, 'request_id': 'req-1',
             'worker_connection_id': 'conn-expected', 'terminal_status': 'succeeded',
             'charge_count': 1, 'earning_count': 1, 'charged_credit_wei': '1000000000000000000',
             'earned_credit_wei': '1000000000000000000',
-            'settlement': 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED'}
+            'settlement': 'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'}
 
 
 def _run_acceptance(tmp_path, monkeypatch, mode, *, change=None):

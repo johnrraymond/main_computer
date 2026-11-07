@@ -429,54 +429,11 @@ def _submit_results_and_verify_multi(
 
 
 def _verify_surprise_payout_rejected_cross_hub(
-    configs: dict[str, HubNodeMarketSmokeConfig],
-    *,
-    worker: Any,
-    progress: _ProgressReporter,
+    configs: dict[str, HubNodeMarketSmokeConfig], *, worker: Any, progress: _ProgressReporter,
 ) -> dict[str, Any]:
-    request_cfg = configs["hub_a"]
-    wallet_address = _worker_wallet_address_for_config(request_cfg, worker)
-    error = _post_json_expect_http_error(
-        request_cfg.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "credits": max(1, int(request_cfg.max_price_credits or 1)),
-            "idempotency_key": f"{request_cfg.run_id}-{worker.node_id}-cross-hub-surprise-payout-while-active",
-            "memo": "multi-Hub surprise payout while worker has an active lease should be rejected",
-            "metadata": {
-                "run_id": request_cfg.run_id,
-                "smoke": "temporal_fdb_hub_multi_hub",
-                "expected_rejection": "active_worker_lease",
-                "request_hub": "hub_a",
-            },
-        },
-        timeout=request_cfg.http_timeout_seconds,
-        expected_status=409,
+    raise NodeMarketSmokeError(
+        "legacy_public_bridge_payout_http_removed; no public route may request a payout"
     )
-    if error.get("error_type") != "wallet_active_worker_leases":
-        raise NodeMarketSmokeError(
-            f"Cross-Hub surprise payout for active worker {worker.node_id} was rejected for wrong reason: {error}"
-        )
-    active_ids = {str(item) for item in error.get("active_worker_node_ids", [])}
-    if worker.node_id not in active_ids:
-        raise NodeMarketSmokeError(
-            f"Cross-Hub surprise payout rejection did not name active worker {worker.node_id}: {error}"
-        )
-    progress.emit(
-        "multi_hub_payout_rejected_active_work",
-        payout_hub="hub_a",
-        active_work_hub="hub_b",
-        wallet_address=wallet_address,
-        worker_node_id=worker.node_id,
-        error_type=error.get("error_type"),
-    )
-    return {
-        "wallet_address": wallet_address,
-        "worker_node_id": worker.node_id,
-        "error": error,
-        "rejected": True,
-    }
 
 
 async def _execute_and_settle_multi_hub(
@@ -614,110 +571,21 @@ async def _execute_and_settle_multi_hub(
 
 
 def _exercise_cross_hub_payout_lock(
-    configs: dict[str, HubNodeMarketSmokeConfig],
-    *,
-    nodes_by_id: dict[str, Any],
-    selected_worker_ids: list[str],
-    progress: _ProgressReporter,
-    before_confirm_callback: Any | None = None,
+    configs: dict[str, HubNodeMarketSmokeConfig], *,
+    nodes_by_id: dict[str, Any], selected_worker_ids: list[str],
+    progress: _ProgressReporter, before_confirm_callback: Any | None = None,
 ) -> dict[str, Any]:
-    if not selected_worker_ids:
-        raise NodeMarketSmokeError("Cannot exercise cross-Hub payout journal without a selected worker.")
-    config_a = configs["hub_a"]
-    config_b = configs["hub_b"]
-    payout_worker_id = selected_worker_ids[0]
-    worker = nodes_by_id[payout_worker_id]
-    wallet_address = _worker_wallet_address_for_config(config_a, worker)
-    payout_credits = max(1, int(config_a.max_price_credits or 1))
-
-    payout = _post_json(
-        config_a.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "worker_node_id": payout_worker_id,
-            "credits": payout_credits,
-            "idempotency_key": f"{config_a.run_id}-{payout_worker_id}-cross-hub-payout",
-            "memo": "temporal fdb multi-Hub worker payout",
-            "metadata": {"run_id": config_a.run_id, "smoke": "temporal_fdb_hub_multi_hub", "request_hub": "hub_a"},
-        },
-        timeout=config_a.http_timeout_seconds,
+    raise NodeMarketSmokeError(
+        "legacy_public_bridge_payout_http_removed; settlement requires verified internal authority"
     )
-    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
-    payout_id = str(payout_payload.get("payout_id", ""))
-    if not payout_id:
-        raise NodeMarketSmokeError(f"Cross-Hub worker payout did not return payout_id: {payout}")
-
-    confirm_metadata: dict[str, Any] = {
-        "run_id": config_a.run_id,
-        "smoke": "temporal_fdb_hub_multi_hub",
-        "confirm_hub": "hub_b",
-    }
-    dev_chain_confirmation = None
-    if before_confirm_callback is not None:
-        dev_chain_confirmation = before_confirm_callback(
-            {
-                "payout_id": payout_id,
-                "wallet_address": wallet_address,
-                "worker_node_id": payout_worker_id,
-                "credits": payout_credits,
-                "payout": payout_payload,
-            }
-        )
-        if dev_chain_confirmation is not None:
-            confirm_metadata["dev_chain"] = dev_chain_confirmation
-
-    confirmed = _post_json(
-        config_b.hub_url,
-        "/api/hub/v1/bridge/payouts/confirm",
-        {
-            "payout_id": payout_id,
-            "metadata": confirm_metadata,
-        },
-        timeout=config_b.http_timeout_seconds,
-    )
-    final_lock_a = _get_json(
-        config_a.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config_a.http_timeout_seconds,
-    )
-    if final_lock_a.get("locked") is True:
-        raise NodeMarketSmokeError(f"Hub A still sees wallet locked after Hub B confirmed payout: {final_lock_a}")
-    chain_available = _mock_chain_wallet_available_wei(config_b, wallet_address)
-    if chain_available <= 0:
-        raise NodeMarketSmokeError(f"Cross-Hub payout confirmation did not credit mock-chain wallet: {chain_available}")
-
-    events = _bridge_audit_events(config_b, worker_node_id=payout_worker_id, limit=100)
-    audit_types = _verify_expected_audit_types(
-        label=f"cross-Hub worker payout {payout_worker_id}",
-        events=events,
-        expected_types={
-            "hub.worker.earning.recorded",
-            "bridge.payout.requested",
-            "bridge.payout.confirmed",
-        },
-    )
-    progress.emit(
-        "multi_hub_payout_journal_confirmed",
-        request_hub="hub_a",
-        confirm_hub="hub_b",
-        wallet_address=wallet_address,
-        worker_node_id=payout_worker_id,
-        payout_id=payout_id,
-    )
-    return {
-        "wallet_address": wallet_address,
-        "worker_node_id": payout_worker_id,
-        "payout": payout_payload,
-        "confirmed": confirmed,
-        "dev_chain_confirmation": dev_chain_confirmation,
-        "payout_journal_visible_cross_hub": True,
-        "no_long_lived_wallet_lock": True,
-        "audit_event_types": sorted(audit_types),
-    }
 
 
 async def run_temporal_fdb_hub_multi_hub_smoke(config: HubMultiHubSmokeConfig) -> dict[str, Any]:
+    # Fail closed before spawning Hubs, writing files or touching bridge state.
+    raise NodeMarketSmokeError(
+        "Retired: this multi-Hub smoke requires deleted mock-chain HTTP "
+        "funding and payout routes."
+    )
     progress = _ProgressReporter(
         enabled=config.emit_progress,
         interval_seconds=config.progress_interval_seconds,

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
@@ -187,65 +188,83 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertEqual(spend["account"]["spent_credit_wei"], "2000000000000000000")
 
 
-    def test_hub_credit_api_exposes_balances_transactions_deposits_and_bootstrap(self) -> None:
+    def test_http_admin_issue_endpoint_removed_and_cannot_mutate_ledger(self) -> None:
+        """A known legacy mint path is not a route or a credit authority."""
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub = HubHttpServer(("127.0.0.1", 0), MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_bridge_backend="mock-chain",
+            ), verbose=False)
+            thread = self._start_server(hub)
+            try:
+                base = f"http://127.0.0.1:{hub.server_port}"
+                before = hub.credit_ledger.status()
+                request = Request(
+                    f"{base}/api/hub/v1/credits/admin/issue",
+                    data=json.dumps({"account_id": "attacker", "credits": 1000000000,
+                                     "owner_address": "0xABCDEF0000000000000000000000000000"}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as exc:
+                    urlopen(request, timeout=5)
+                self.assertEqual(exc.exception.code, 404)
+                self.assertEqual(hub.credit_ledger.status(), before)
+                self.assertEqual(hub.credit_ledger.get_account("attacker").available_credits, 0)
+
+                # Neither the admin bootstrap nor credit records are public.
+                with self.assertRaises(HTTPError) as exc:
+                    urlopen(f"{base}/api/hub/v1/admin/bootstrap", timeout=5)
+                self.assertEqual(exc.exception.code, 403)
+                from main_computer.hub_admin_site import build_admin_bootstrap_payload
+                admin = build_admin_bootstrap_payload(
+                    config=hub.config,
+                    registry=hub.registry,
+                    dispatcher=hub.dispatcher,
+                    energy_ledger=hub.energy_ledger,
+                    credit_ledger=hub.credit_ledger,
+                    credit_indexer=hub.credit_indexer,
+                )
+                self.assertNotIn("credit_admin_issue", admin["endpoints"])
+            finally:
+                hub.shutdown()
+                thread.join(timeout=5)
+                hub.server_close()
+
+    def test_legacy_credit_read_endpoints_are_not_public(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
             hub_config = MainComputerConfig(
                 workspace=Path(hub_tmp),
                 model="fake-model",
                 hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_bridge_backend="mock-chain",
             )
             hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
             thread = self._start_server(hub)
             try:
-                hub_base = f"http://127.0.0.1:{hub.server_port}"
-
-                with urlopen(f"{hub_base}/api/hub/v1/credits", timeout=5) as response:
-                    empty_status = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(empty_status["unit"]["key"], "compute_credit")
-                self.assertEqual(empty_status["account_count"], 0)
-
-                issue_request = Request(
-                    f"{hub_base}/api/hub/v1/credits/admin/issue",
-                    data=json.dumps(
-                        {
-                            "account_id": "User One",
-                            "credits": 42,
-                            "memo": "manual test issue",
-                            "owner_address": "0xABCDEF0000000000000000000000000000000000",
-                        }
-                    ).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
+                base = f"http://127.0.0.1:{hub.server_port}"
+                issued = hub.credit_ledger.issue(
+                    account_id="User One", credits=42, memo="fixture issue",
+                    owner_address="0xABCDEF0000000000000000000000000000",
                 )
-                with urlopen(issue_request, timeout=5) as response:
-                    issued = json.loads(response.read().decode("utf-8"))
                 self.assertTrue(issued["ok"])
-                self.assertEqual(issued["account"]["available_credits"], 42)
-
-                with urlopen(f"{hub_base}/api/hub/v1/credits/balance?account_id=user-one", timeout=5) as response:
-                    balance = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(balance["account"]["account_id"], "user-one")
-                self.assertEqual(balance["account"]["owner_address"], "0xabcdef0000000000000000000000000000000000")
-                self.assertEqual(balance["account"]["available_credits"], 42)
-
-                with urlopen(f"{hub_base}/api/hub/v1/credits/accounts", timeout=5) as response:
-                    accounts = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(accounts["account_count"], 1)
-
-                with urlopen(f"{hub_base}/api/hub/v1/credits/transactions?account_id=user-one", timeout=5) as response:
-                    transactions = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(transactions["transaction_count"], 1)
-                self.assertEqual(transactions["transactions"][0]["transaction_type"], "admin_adjustment")
-
-                with urlopen(f"{hub_base}/api/hub/v1/credits/deposits", timeout=5) as response:
-                    deposits = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(deposits["deposit_count"], 0)
-
-                with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
-                    bootstrap = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(bootstrap["credits"]["account_count"], 1)
-                self.assertEqual(bootstrap["credits"]["totals"]["available_credits"], 42)
-                self.assertEqual(bootstrap["endpoints"]["credit_balance"], "/api/hub/v1/credits/balance")
+                self.assertEqual(hub.credit_ledger.get_account("user-one").available_credits, 42)
+                self.assertEqual(len(hub.credit_ledger.list_transactions(account_id="user-one")), 1)
+                for path in (
+                    "/api/hub/v1/credits",
+                    "/api/hub/v1/credits/balance?account_id=user-one",
+                    "/api/hub/v1/credits/accounts",
+                    "/api/hub/v1/credits/transactions?account_id=user-one",
+                    "/api/hub/v1/credits/deposits",
+                    "/api/hub/v1/admin/bootstrap",
+                ):
+                    with self.subTest(path=path):
+                        with self.assertRaises(HTTPError) as exc:
+                            urlopen(base + path, timeout=5)
+                        self.assertEqual(exc.exception.code, 403)
+                self.assertEqual(hub.credit_ledger.get_account("user-one").available_credits, 42)
             finally:
                 hub.shutdown()
                 thread.join(timeout=5)

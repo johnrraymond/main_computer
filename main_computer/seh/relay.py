@@ -22,7 +22,7 @@ from typing import Any
 
 from main_computer.slh.authenticator import verify_object, load_public_key
 from websockets.exceptions import ConnectionClosed
-from .stream_writer import StreamWriter
+from .stream_writer import StreamWriter, SharedWriteBudget
 
 MAX_FRAME = 1024 * 1024
 MAX_CLIENTS = 64
@@ -30,6 +30,9 @@ MAX_PENDING_CLIENTS = 16
 PREAUTH_DEADLINE_SECONDS = 30
 LAB_ID = re.compile(r"[a-f0-9]{32}\Z")
 MAX_LAB_TUNNELS = 2
+# Hard shared cap, not 64 * the independent 2 MiB per-stream allowance.
+MAX_AGGREGATE_PENDING_BYTES = 8 * 1024 * 1024
+MAX_WS_BUFFERED_MESSAGES = 4
 
 
 def _frame(obj: dict) -> str:
@@ -71,6 +74,7 @@ class SEHRelay:
         # FIFO writes are isolated per Worker; one blocked send cannot stall
         # the shared authenticated SLH tunnel reader.
         self._client_writers: dict[tuple[str | None, str], StreamWriter] = {}
+        self._client_write_budget = SharedWriteBudget(MAX_AGGREGATE_PENDING_BYTES)
         # Secret-free per-stream causal events. Stream IDs are hashed, never logged.
         self._stream_events = deque(maxlen=2048)
 
@@ -103,7 +107,7 @@ class SEHRelay:
             if isinstance(getattr(exc, 'errno', None), int):
                 row['errno'] = exc.errno
         if cause in {'local_eof', 'local_read_error', 'write_error', 'write_queue_full',
-                     'write_byte_budget', 'unspecified'}:
+                     'write_byte_budget', 'write_aggregate_budget', 'unspecified'}:
             row['cause'] = cause
         with self._lock:
             self._stream_events.append(row)
@@ -244,17 +248,24 @@ class SEHRelay:
                         pass
                     else:
                         self._stream_event('relay_initiated_backpressure_close', sid, ws=client)
-                        self._schedule_client_close(client, code=1011, reason='STREAM_BACKPRESSURE')
+                        # A queue-budget refusal is backpressure, not a
+                        # generic internal failure. Report it as 1013 and
+                        # disconnect only that stream.
+                        cause = writer.failure_reason if writer is not None else None
+                        code = 1013 if cause in {
+                            'write_aggregate_budget', 'write_byte_budget', 'write_queue_full'
+                        } else 1011
+                        self._schedule_client_close(client, code=code, reason='STREAM_BACKPRESSURE')
                 elif op == 'close':
                     cause = msg.get('cause')
                     if cause not in ('local_eof', 'local_read_error', 'write_error',
-                                     'write_queue_full', 'write_byte_budget'):
+                                     'write_queue_full', 'write_byte_budget', 'write_aggregate_budget'):
                         cause = 'unspecified'
                     with self._lock:
                         self.slh_close_causes[cause] = self.slh_close_causes.get(cause, 0) + 1
                     # Do not report a local stream failure as an ordinary
                     # WebSocket closure. Preserve stream-scoped semantics.
-                    code = 1013 if cause in ('write_queue_full', 'write_byte_budget') else (
+                    code = 1013 if cause in ('write_queue_full', 'write_byte_budget', 'write_aggregate_budget') else (
                         1011 if cause in ('write_error', 'local_read_error') else 1000)
                     self._stream_event('relay_slh_requested_close', sid, ws=client, cause=cause)
                     self._schedule_client_close(client, code=code)
@@ -300,10 +311,15 @@ class SEHRelay:
                 ws.send(data)
                 with self._lock:
                     self.bytes_forwarded += len(data)
+            def failed_client_writer():
+                writer = self._client_writers.get((lab_id, sid))
+                cause = writer.failure_reason if writer is not None else None
+                pressure = cause in {'write_aggregate_budget', 'write_byte_budget', 'write_queue_full'}
+                self._schedule_client_close(ws, code=1013 if pressure else 1011,
+                                            reason='STREAM_BACKPRESSURE' if pressure else 'STREAM_WRITE_FAILED')
             self._client_writers[(lab_id, sid)] = StreamWriter(
-                send_client,
-                lambda: self._schedule_client_close(ws, code=1011, reason='STREAM_WRITE_FAILED'),
-                name='seh-client-stream-writer')
+                send_client, failed_client_writer,
+                name='seh-client-stream-writer', shared_budget=self._client_write_budget)
         deadline.start()
         try:
             self._send_slh({'op':'open', 'id':sid}, lab_id=lab_id)
@@ -369,6 +385,7 @@ class SEHRelay:
         from websockets.sync.server import serve
         with serve(self.handler, self.host, self.port, process_request=self.process_request,
                    compression=None, max_size=MAX_FRAME * 2 + 8192,
+                   max_queue=MAX_WS_BUFFERED_MESSAGES,
                    open_timeout=8, ping_interval=20, close_timeout=2) as server:
             self._server = server
             self.port = server.socket.getsockname()[1]
@@ -421,7 +438,8 @@ def main(argv=None):
         print(_frame({'event':'seh_listening_unbound', 'port':args.port,
                       'ready':False}), flush=True)
         with serve(reject, args.host, args.port, process_request=health,
-                   compression=None, max_size=8192) as server:
+                   compression=None, max_size=8192,
+                   max_queue=MAX_WS_BUFFERED_MESSAGES) as server:
             server.serve_forever()
         return
     try:

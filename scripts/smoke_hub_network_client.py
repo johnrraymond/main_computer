@@ -267,147 +267,10 @@ def run_level4_paid_credit_flow(
     funding_credits: int = DEFAULT_CREDIT_FUNDING,
     worker_price: int = DEFAULT_WORKER_PRICE,
 ) -> dict[str, Any]:
-    account_id = wallet_account_id(smoke_wallet_address)
-    worker_node_id = f"hub-client-smoke-worker-{network}-{scope}"
-    model = f"hub-client-smoke-model-{network}"
-    price = int(worker_price)
-    require(price > 0, "worker price must be positive")
-
-    issued = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/credits/admin/issue"),
-        body={
-            "account_id": account_id,
-            "credits": int(max(funding_credits, price * 4)),
-            "memo": f"{PHASE} funding for {network}/{scope}",
-            "owner_address": smoke_wallet_address,
-            "metadata": {"phase": PHASE, "network": network, "scope": scope},
-        },
-        timeout=timeout,
+    raise SmokeFailure(
+        "Retired: legacy Hub funding and Worker claim HTTP mutations were deleted. "
+        "No credits issued and no Worker claim submitted."
     )
-
-    register_worker(hub_url, worker_node_id=worker_node_id, model=model, price=price, timeout=timeout)
-    heartbeat = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/workers/heartbeat"),
-        body={"worker_node_id": worker_node_id, "status": "available", "queue_depth": 1, "models": [model]},
-        timeout=timeout,
-    )
-
-    quote = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/requests/quote"),
-        body={
-            "account_id": account_id,
-            "model": model,
-            "messages": [{"role": "user", "content": f"Quote {PHASE} {network}/{scope}."}],
-            "max_credits": price,
-            "execution_mode": "worker_pull_v0",
-            "pricing_mode": "market_offer_fixed_per_call_v0",
-            "idempotency_key": f"{PHASE}-{network}-{scope}-quote",
-        },
-        timeout=timeout,
-    )["quote"]
-
-    submitted = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/requests"),
-        body={
-            "account_id": account_id,
-            "client_node_id": account_id,
-            "quote_id": quote["quote_id"],
-            "model": model,
-            "messages": [{"role": "user", "content": f"Run {PHASE} {network}/{scope}."}],
-            "max_credits": price,
-            "execution_mode": "worker_pull_v0",
-            "pricing_mode": "market_offer_fixed_per_call_v0",
-            "metadata": {"worker_pull_v0": True, "phase": PHASE, "network": network, "scope": scope},
-            "idempotency_key": f"{PHASE}-{network}-{scope}-request",
-        },
-        timeout=timeout,
-    )["request"]
-
-    polled = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/workers/poll"),
-        body={"worker_node_id": worker_node_id},
-        timeout=timeout,
-    )
-    lease = polled.get("lease")
-    require(isinstance(lease, dict), "worker did not receive a lease for the smoke request")
-    require(lease.get("request_id") == submitted["request_id"], "worker lease request_id does not match submitted request")
-
-    completed = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/workers/results"),
-        body={
-            "worker_node_id": worker_node_id,
-            "request_id": lease["request_id"],
-            "lease_id": lease["lease_id"],
-            "result": {
-                "status": "success",
-                "response": {
-                    "content": f"{PHASE} completed for {network}/{scope}.",
-                    "provider": "mock-network-client-worker",
-                    "model": model,
-                    "metadata": {"phase": PHASE, "network": network, "scope": scope},
-                },
-            },
-        },
-        timeout=timeout,
-    )["request"]
-
-    charges = http_json(
-        "GET",
-        join_url(hub_url, f"/api/hub/v1/requests/{lease['request_id']}/charges"),
-        timeout=timeout,
-    )
-    earnings = http_json(
-        "GET",
-        join_url(
-            hub_url,
-            "/api/hub/v1/credits/worker-earnings?"
-            + urlencode({"worker_node_id": worker_node_id, "request_id": lease["request_id"]}),
-        ),
-        timeout=timeout,
-    )
-    claim = http_json(
-        "POST",
-        join_url(hub_url, "/api/hub/v1/workers/claims"),
-        body={
-            "worker_node_id": worker_node_id,
-            "claim_credits": price,
-            "idempotency_key": f"{PHASE}-{network}-{scope}-claim",
-            "memo": f"{PHASE} claim for {network}/{scope}",
-            "metadata": {"phase": PHASE, "network": network, "scope": scope},
-        },
-        timeout=timeout,
-    )
-    balance = http_json(
-        "GET",
-        join_url(hub_url, "/api/hub/v1/credits/balance?" + urlencode({"wallet_address": smoke_wallet_address})),
-        timeout=timeout,
-    )
-
-    require(completed.get("state") == "completed", "paid request did not complete")
-    require(int(completed.get("charged_credits", 0) or 0) == price, "completed request charged unexpected credits")
-    require(int(charges.get("charge_count", 0) or 0) == 1, "paid request did not produce exactly one charge")
-    require(int(earnings.get("worker_earning_count", 0) or 0) >= 1, "worker earning was not recorded")
-    require(bool(claim.get("ok", True)), "worker claim did not return ok=true")
-
-    return {
-        "account_id": account_id,
-        "worker_node_id": worker_node_id,
-        "model": model,
-        "request_id": completed["request_id"],
-        "charged_credits": completed["charged_credits"],
-        "charge_count": charges.get("charge_count"),
-        "worker_earning_count": earnings.get("worker_earning_count"),
-        "claim": claim,
-        "balance": balance,
-        "issued": issued,
-        "heartbeat_ok": bool(heartbeat.get("ok")),
-    }
 
 
 def run_smoke(
@@ -421,6 +284,11 @@ def run_smoke(
     skip_level4: bool = False,
     repo_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
+    if not skip_level4:
+        raise SmokeFailure(
+            'Retired: legacy Hub funding and Worker claim HTTP mutation APIs were deleted. '
+            'Use --skip-level4 for read-only network verification.'
+        )
     registry = load_hub_network_registry(network_config)
     profile = registry.get(network)
     hub_url = (hub_url_override or profile.hub_url).rstrip("/")

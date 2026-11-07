@@ -1812,6 +1812,39 @@ def _handle_main_computer_authenticator(self, method: str, route_path: str) -> N
     self._send_json(result, HTTPStatus(code))
 
 
+# Canonical application routes now use the four visually accepted, source-verified
+# semantic implementations. Incumbent application source is retained for rollback.
+# Resolve all three existing application route prefixes so aliases cannot silently
+# continue serving the former shell.
+_SEMANTIC_CANONICAL_APPLICATIONS = {
+    "calculator": "calculator",
+    "file-explorer": "file-manager",
+    "task-manager": "task-manager",
+    "code-editor": "code-editor",
+    "chat-console": "chat-console",
+}
+_SEMANTIC_TASK_TABS = {
+    "server-processes": "server-processes",
+    "all-processes": "all-processes",
+    "connections": "connections",
+    "hardware": "cpu-gpu",
+}
+
+
+def _semantic_canonical_route(path: str) -> tuple[str, str | None] | None:
+    parts = [part for part in urlsplit(path).path.rstrip("/").split("/") if part]
+    if len(parts) < 2 or parts[0] not in {"applications", "apps", "app"}:
+        return None
+    semantic = _SEMANTIC_CANONICAL_APPLICATIONS.get(parts[1])
+    if semantic is None:
+        return None
+    if len(parts) == 2:
+        return semantic, None
+    if semantic == "task-manager" and len(parts) == 3 and parts[2] in _SEMANTIC_TASK_TABS:
+        return semantic, _SEMANTIC_TASK_TABS[parts[2]]
+    return None
+
+
 def dispatch_get(self) -> None:
     route_path = urlsplit(self.path).path
     if route_path != "/api/activity/snapshot":
@@ -1839,6 +1872,27 @@ def dispatch_get(self) -> None:
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
         return
+    # Promotion is a route replacement, not a second embedded panel in the
+    # incumbent SPA. Keep the local-only authority boundary of the accepted
+    # semantic routes and leave their opt-in URLs available for diagnosis.
+    promoted = _semantic_canonical_route(route_path)
+    if promoted is not None:
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic applications are local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        name, initial_view = promoted
+        if name == "calculator":
+            from main_computer.mcel_calculator_expanded_host import render_expanded_page
+            page = render_expanded_page(promoted=True)
+        elif name == "chat-console":
+            from main_computer.mcel_chat_console_host import render_chat_console_page
+            page = render_chat_console_page(promoted=True)
+        else:
+            from main_computer.mcel_semantic_other_apps_host import render_semantic_page
+            page = render_semantic_page(name, promoted=True, initial_view=initial_view)
+        self.server.signal("route-mcel-canonical", path=route_path, app=name)
+        self._send_text(page, "text/html; charset=utf-8")
+        return
     if route_path in (
         "/applications/mcel-semantic-file-manager",
         "/applications/mcel-semantic-task-manager",
@@ -1851,6 +1905,13 @@ def dispatch_get(self) -> None:
         from main_computer.mcel_semantic_other_apps_host import render_semantic_page
         name = route_path.removeprefix("/applications/mcel-semantic-")
         self._send_text(render_semantic_page(name), "text/html; charset=utf-8")
+        return
+    if route_path == "/applications/mcel-semantic-chat-console":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic Chat Console is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_chat_console_host import render_chat_console_page
+        self._send_text(render_chat_console_page(), "text/html; charset=utf-8")
         return
     if route_path == "/api/applications/task/authority/session":
         from main_computer.task_http_authority import issue
@@ -2389,9 +2450,6 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/worker/wallet-funding/complete":
         self._handle_worker_wallet_funding_complete()
-        return
-    if self.path == "/api/applications/worker/wallet-funding/import":
-        self._handle_worker_wallet_funding_import()
         return
     if self.path == "/api/applications/git/status":
         self._handle_git_status()

@@ -137,7 +137,10 @@ def test_four_monitoring_views_in_real_chromium(browser,width):
         assert page.locator('[data-mcel-purpose="results"]').is_visible()
         page.locator('form[data-intent="intent:refresh-hardware"] button[type=submit]').click()
         assert page.locator('[data-mcel-record-summary]').inner_text()=='CPU and GPU telemetry'
-        assert page.locator('[data-mcel-measurements] dt').get_by_text('Cpu Percent',exact=True).count()==1
+        # A typed hardware record must be visibly readable: not only correct
+        # in renderer state or present as an opaque JSON object.
+        assert page.locator('[data-mcel-metric="cpuPercent"] [data-mcel-metric-value]').inner_text()=='21%'
+        assert page.locator('[data-mcel-metric="gpuPercent"] [data-mcel-metric-value]').inner_text()=='45%'
         assert page.locator('[data-mcel-measurement-detail="gpuDevices"]').count()==1
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         assert page.locator('[data-mcel-auto-refresh]').count()==0

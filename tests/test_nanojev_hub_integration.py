@@ -125,17 +125,17 @@ def test_requester_uses_native_market_envelope_and_credit_cap():
 
 def test_requester_reads_typed_solution_from_existing_accepted_session(monkeypatch):
     calls = []
-    accepted = {"session_id": "sess-test", "continuation_url":
+    accepted = {"session_id": "sess-test", "continuation_token": "private-token", "continuation_url":
                 "https://example.org/api/hub/v1/work/sessions/sess-test/stream"}
-    def fake_json(url, *, timeout_s):
-        calls.append(url)
+    def fake_json(url, *, timeout_s, continuation_token):
+        calls.append((url,continuation_token))
         return {"ok": True, "accepted_session": {"status": "succeeded", "session_id": "sess-test",
                 "worker_result": {"result": {"solution": _solution(CLEF_EVALUATE)}}, "payout": {"charged_credits": "1"}}}
     monkeypatch.setattr(requester, "_hub_json", fake_json)
     result = requester.retrieve_solution(accepted, hub_url="https://example.org", timeout_s=10)
     assert result["solution"]["schema"] == "main-computer.nanojev-solution.v1"
     assert result["payout"]["charged_credits"] == "1"
-    assert len(calls) == 1
+    assert len(calls) == 1 and calls[0][1] == "private-token"
 
 
 def test_requester_preview_never_calls_hub(tmp_path, monkeypatch, capsys):

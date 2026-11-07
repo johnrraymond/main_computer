@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import random
-import hashlib
 import threading
 import time
 from typing import Any, Iterator, Sequence
@@ -137,45 +136,6 @@ class HubClient:
 
     def request_multisession_key(self, signed_request: dict[str, Any]) -> HubHttpResponse:
         return self.post_json("/api/hub/v1/credits/multisession-keys/request", {"signed_request": signed_request})
-
-    def import_wallet_funding(
-        self,
-        *,
-        wallet_address: str,
-        chain_id: int | str,
-        credits: int,
-        idempotency_key: str,
-        memo: str = "",
-        metadata: dict[str, Any] | None = None,
-    ) -> HubHttpResponse:
-        wallet = str(wallet_address).strip().lower()
-        seed = json.dumps(
-            {
-                "wallet_address": wallet,
-                "chain_id": str(chain_id),
-                "credits": int(credits),
-                "idempotency_key": str(idempotency_key),
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-        digest = hashlib.sha256(seed).hexdigest()
-        return self.post_json(
-            "/api/hub/v1/credits/wallet-funding/import",
-            {
-                "wallet_address": wallet,
-                "chain_id": int(str(chain_id), 0),
-                "contract_address": "0x" + "0" * 39 + "1",
-                "tx_hash": "0x" + digest,
-                "log_index": 0,
-                "block_number": 1,
-                "payment_asset": "native",
-                "payment_amount_base_units": max(1, int(credits)),
-                "credits_granted_wei": max(1, int(credits)) * 10**18,
-                "idempotency_key": str(idempotency_key),
-                "memo": memo or f"scheduler lab wallet funding for {wallet}",
-                "metadata": dict(metadata or {}),
-            },
-        )
 
     def register_worker(self, node: dict[str, Any]) -> HubHttpResponse:
         models = _json_list(node.get("models_json")) or [str(node.get("model") or "mock-ai-model-phase9")]

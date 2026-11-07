@@ -52,6 +52,7 @@ class WorkerSettlementClaimTests(unittest.TestCase):
             model="mock-fast-chat",
             hub_root=Path(tmp.name) / "hub-runtime",
             hub_credits_per_request=credits_per_request,
+            hub_bridge_backend="mock-chain",
         )
         hub = HubHttpServer(("127.0.0.1", 0), config, verbose=False)
         thread = self._start_server(hub)
@@ -418,153 +419,6 @@ class WorkerSettlementClaimTests(unittest.TestCase):
                     idempotency_key="different-tx",
                 )
 
-    def test_phase7b_chain_payout_execution_api(self) -> None:
-        hub, hub_base = self._start_hub()
-        worker = "chain-api-worker"
-        earning = hub.credit_ledger.record_worker_earning(worker_node_id=worker, request_id="chain-api-req", credits=5_500_123)
-        claim = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {
-                "worker_node_id": worker,
-                "earning_ids": [earning["worker_earning"]["earning_id"]],
-                "idempotency_key": "chain-api-claim",
-            },
-        )
-        batch = post_json(
-            f"{hub_base}/api/hub/v1/workers/settlements/batches",
-            {
-                "worker_node_id": worker,
-                "claim_ids": [claim["claim"]["claim_id"]],
-                "idempotency_key": "chain-api-batch",
-            },
-        )
-
-        bad = post_json(
-            f"{hub_base}/api/hub/v1/workers/settlements/chain-executions",
-            {
-                "batch_id": batch["batch"]["batch_id"],
-                "chain_id": 42424242,
-                "contract_address": "0x1111111111111111111111111111111111111111",
-                "recipient_address": "0x2222222222222222222222222222222222222222",
-                "payout_units_executed": 5_500_123,
-                "settlement_tx_hash": "0x" + "c" * 64,
-            },
-            allow_error=True,
-        )
-        self.assertEqual(bad["_http_status"], 400)
-        self.assertIn("rounded published settlement amount", bad["error"])
-
-        receipt = post_json(
-            f"{hub_base}/api/hub/v1/workers/settlements/chain-executions",
-            {
-                "batch_id": batch["batch"]["batch_id"],
-                "chain_id": 42424242,
-                "contract_address": "0x1111111111111111111111111111111111111111",
-                "recipient_address": "0x2222222222222222222222222222222222222222",
-                "payout_units_executed": 5_500_000,
-                "settlement_tx_hash": "0x" + "c" * 64,
-                "proposal_id": "42",
-                "block_number": 777,
-                "payout_rail": "xlag-bridge-reserve",
-                "operator_id": "api-chain-operator",
-                "idempotency_key": "chain-api-execution",
-            },
-        )
-        self.assertTrue(receipt["ok"])
-        self.assertEqual(receipt["settled_credits"], 5_500_000)
-        self.assertEqual(receipt["chain_payout_execution"]["contract_address"], "0x1111111111111111111111111111111111111111")
-        self.assertEqual(receipt["chain_payout_execution"]["recipient_address"], "0x2222222222222222222222222222222222222222")
-        self.assertEqual(receipt["chain_payout_execution"]["payout_units_executed"], 5_500_000)
-        self.assertEqual(receipt["chain_payout_execution"]["bridge_retained_credits"], 123)
-        self.assertEqual(receipt["batch"]["settlement_tx_hash"], "0x" + "c" * 64)
-        self.assertEqual(receipt["batch"]["payout_rail"], "xlag-bridge-reserve")
-
-        public_after = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
-        public_after_json = json.dumps(public_after, sort_keys=True)
-        self.assertNotIn("5500123", public_after_json)
-        self.assertEqual(public_after["settled_units_published"], 5_500_000)
-        self.assertIn("settlement_proof_id", public_after["batches"][0])
-
-
-    def test_worker_settlement_api_uses_worker_precision_default(self) -> None:
-        hub, hub_base = self._start_hub()
-        worker = "precision-default-worker"
-        registered = post_json(
-            f"{hub_base}/api/hub/v1/workers/register",
-            {
-                "node_id": worker,
-                "endpoint": "http://127.0.0.1:1",
-                "model": "mock-fast-chat",
-                "models": ["mock-fast-chat"],
-                "credits_per_request": 5_555_555,
-                "settlement_precision_places": 2,
-                "capabilities": {"provider": "mock", "worker_pull_v0": True},
-            },
-        )
-        self.assertEqual(registered["worker"]["settlement_precision_places"], 2)
-        earning = hub.credit_ledger.record_worker_earning(worker_node_id=worker, request_id="precision-api-req", credits=5_555_555)
-        claimed = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {
-                "worker_node_id": worker,
-                "earning_ids": [earning["worker_earning"]["earning_id"]],
-                "idempotency_key": "precision-api-claim",
-            },
-        )
-        claim_id = claimed["claim"]["claim_id"]
-
-        public_totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
-        self.assertEqual(public_totals["precision_places"], 2)
-        self.assertEqual(public_totals["rounding_bucket_credits"], 10_000)
-        self.assertNotIn("settleable_units_exact", public_totals)
-        self.assertNotIn("settleable_dust_units", public_totals)
-        self.assertEqual(public_totals["settleable_units_published"], 5_550_000)
-        self.assertTrue(public_totals["privacy"]["exact_amounts_hidden"])
-
-        totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker, 'audit': '1'})}")
-        self.assertEqual(totals["precision_places"], 2)
-        self.assertEqual(totals["rounding_bucket_credits"], 10_000)
-        self.assertEqual(totals["settleable_units_exact"], 5_555_555)
-        self.assertEqual(totals["settleable_units_published"], 5_550_000)
-        self.assertEqual(totals["settleable_dust_units"], 5_555)
-
-        batch = post_json(
-            f"{hub_base}/api/hub/v1/workers/settlements/batches",
-            {
-                "worker_node_id": worker,
-                "idempotency_key": "precision-api-batch",
-            },
-        )
-        self.assertEqual(batch["batch"]["claim_ids"], [claim_id])
-        self.assertEqual(batch["total_credits_exact"], 5_555_555)
-        self.assertEqual(batch["total_credits_published"], 5_550_000)
-        self.assertEqual(batch["dust_credits"], 5_555)
-        self.assertEqual(batch["bridge_retained_credits"], 5_555)
-        self.assertEqual(batch["batch"]["precision_places"], 2)
-
-        proof = post_json(
-            f"{hub_base}/api/hub/v1/workers/settlements/proofs",
-            {
-                "batch_id": batch["batch"]["batch_id"],
-                "settlement_reference": "operator-proof-api-reference",
-                "payout_rail": "operator-manual",
-                "operator_id": "api-operator",
-                "settlement_proof": {"executed_credits": 5_550_000, "bridge_retained_credits": 5_555},
-                "idempotency_key": "precision-api-proof",
-            },
-        )
-        self.assertTrue(proof["ok"])
-        self.assertEqual(proof["settled_credits"], 5_550_000)
-        self.assertEqual(proof["batch"]["payout_rail"], "operator-manual")
-        self.assertEqual(proof["batch"]["operator_id"], "api-operator")
-        self.assertTrue(proof["batch"]["settlement_proof_id"].startswith("proof_"))
-
-        public_after = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
-        self.assertEqual(public_after["settled_units_published"], 5_550_000)
-        self.assertIn("settlement_proof_id", public_after["batches"][0])
-        self.assertNotIn("total_credits_exact", public_after["batches"][0])
-
-
     def test_phase6_public_payout_surfaces_hide_high_precision_worker_amounts(self) -> None:
         hub, hub_base = self._start_hub(credits_per_request=5_500_123)
         requester = "phase6-privacy-requester"
@@ -712,47 +566,7 @@ class WorkerSettlementClaimTests(unittest.TestCase):
         self.assertTrue(payout_queue["privacy"]["exact_amounts_hidden"])
 
 
-    def test_worker_claim_api_records_idempotent_claim(self) -> None:
-        hub, hub_base = self._start_hub()
-        earning = hub.credit_ledger.record_worker_earning(worker_node_id="API Worker", request_id="api-req-1", credits=21)
-        earning_id = earning["worker_earning"]["earning_id"]
-
-        query = urlencode({"worker_node_id": "api-worker"})
-        before = get_json(f"{hub_base}/api/hub/v1/workers/claims?{query}")
-        self.assertEqual(before["claimable_units"], 21)
-        self.assertEqual(before["claimable_earning_ids"], [earning_id])
-
-        claimed = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {
-                "worker_node_id": "api-worker",
-                "earning_ids": [earning_id],
-                "claim_credits": 21,
-                "idempotency_key": "api-claim-1",
-                "memo": "api test claim",
-                "metadata": {"test": True},
-            },
-        )
-        self.assertTrue(claimed["ok"])
-        self.assertEqual(claimed["claimed_credits"], 21)
-        self.assertEqual(claimed["worker_claim_totals"]["claimable_units"], 0)
-
-        duplicate = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {"worker_node_id": "api-worker", "idempotency_key": "api-claim-1"},
-        )
-        self.assertTrue(duplicate["idempotent"])
-        self.assertEqual(duplicate["claimed_credits"], 21)
-
-        missing_worker = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {"idempotency_key": "missing-worker"},
-            allow_error=True,
-        )
-        self.assertEqual(missing_worker["_http_status"], 400)
-        self.assertIn("worker_node_id is required", missing_worker["error"])
-
-    def test_worker_pull_completion_can_be_claimed_once(self) -> None:
+    def test_worker_pull_completion_produces_internal_claimable_earning(self) -> None:
         hub, hub_base = self._start_hub(credits_per_request=5)
         requester = "phase4-worker-settlement-requester-0-test"
         worker = "paid-mock-worker-phase4-0-test"
@@ -804,28 +618,18 @@ class WorkerSettlementClaimTests(unittest.TestCase):
         self.assertEqual(completed["charged_credits"], 5_500_000)
         self.assertTrue(completed["worker_earning_id"])
 
-        before = get_json(f"{hub_base}/api/hub/v1/workers/claims?{urlencode({'worker_node_id': worker})}")
-        self.assertEqual(before["claimable_units"], 5_500_000)
-        self.assertEqual(before["claimable_earning_ids"], [completed["worker_earning_id"]])
+        # Claims are an internal ledger operation, not an unauthenticated HTTP API.
+        private = hub.credit_ledger.worker_claim_totals(worker)
+        self.assertEqual(private["claimable_units"], 5_500_000 * 10**18)
+        self.assertEqual(private["claimable_earning_ids"], [completed["worker_earning_id"]])
+        claim = hub.credit_ledger.record_worker_claim(worker_node_id=worker,
+                                                       idempotency_key="private-test-claim")
+        self.assertEqual(claim["claimed_credit_wei"], str(5_500_000 * 10**18))
+        duplicate = hub.credit_ledger.record_worker_claim(worker_node_id=worker,
+                                                           idempotency_key="private-test-claim")
+        self.assertTrue(duplicate["idempotent"])
+        self.assertEqual(hub.credit_ledger.worker_claim_totals(worker)["claimable_units"], 0)
 
-        claimed = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {
-                "worker_node_id": worker,
-                "idempotency_key": "phase4-worker-claim-test",
-                "memo": "phase4 worker claim test",
-                "metadata": {"phase4_worker_settlement": True},
-            },
-        )
-        self.assertEqual(claimed["claimed_credits"], 5_500_000)
-        self.assertEqual(claimed["worker_claim_totals"]["claimable_units"], 0)
-
-        duplicate_new_key = post_json(
-            f"{hub_base}/api/hub/v1/workers/claims",
-            {"worker_node_id": worker, "idempotency_key": "phase4-worker-claim-test-new-key"},
-        )
-        self.assertEqual(duplicate_new_key["claimed_credits"], 0)
-        self.assertEqual(duplicate_new_key["claimed_count"], 0)
 
 
 if __name__ == "__main__":

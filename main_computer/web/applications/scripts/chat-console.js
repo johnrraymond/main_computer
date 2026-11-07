@@ -3819,6 +3819,7 @@
       const threadStore = chatConsoleThreadsApi();
       if (!host || !controllerApi?.mount || !threadStore?.load) return null;
       const config = chatConsoleBuildEmbeddedShell(host, options);
+      window.MainComputerMCELChatConsole?.compose(host);
       const session = {host, config, options};
       chatConsoleEmbeddedSessions.set(host, session);
       threadStore.load();
@@ -4207,6 +4208,7 @@
       chatConsoleNotebookTargets().forEach((target) => {
         if (chatConsoleNotebookRenderSignatures.get(target) === renderSignature && target.querySelector("[data-cell-id]")) {
           renderChatConsoleThinkingActivityPanels(target);
+          window.MainComputerMCELChatConsole?.compose(target);
           return;
         }
         const focusState = captureChatConsoleNotebookFocus(target);
@@ -4214,6 +4216,7 @@
         renderChatConsoleVisibleThread(target);
         chatConsoleNotebookRenderSignatures.set(target, renderSignature);
         restoreChatConsoleNotebookFocus(target, focusState);
+        window.MainComputerMCELChatConsole?.compose(target);
       });
       chatConsoleEnsureThinkingRefresh();
     }
@@ -4253,6 +4256,9 @@
             if (controls) controls.before(nextPanel);
           }
         });
+        // The capacity/activity refresh replaces thinking subtrees in place.
+        // Recompose only their semantic roles; do not remount the notebook.
+        window.MainComputerMCELChatConsole?.compose(notebookTarget);
       });
     }
     function renderChatConsoleCellAndSelectedContinuation(cell, target = activeChatConsoleNotebook()) {
@@ -4398,6 +4404,19 @@
       return variants[getChatConsoleSelectedVariantIndex(cell.source_cell_id)]?.id === cell.id;
     }
     function renderChatConsoleCell(cell) {
+      // MCEL composes the cell frame and assigns its layout semantics. Typed
+      // editors, execution adapters and thread state remain behavioral ports.
+      const semanticRenderer = window.MainComputerMCELChatConsole?.renderCell;
+      if (typeof semanticRenderer === "function") {
+        return semanticRenderer({
+          id: cell.id,
+          type: cell.type,
+          renderTabs: () => renderChatConsoleTabs(cell),
+          renderBody: () => cell.type === "output" ? renderChatConsoleOutputCell(cell) : renderChatConsoleInputCell(cell),
+          onSelect: () => setChatConsoleSelectedCell(cell.id),
+          onFiles: (files) => addChatConsoleAttachments(cell.id, files)
+        });
+      }
       const element = document.createElement("article");
       const roleClass = cell.type === "output" ? "chat-console-cell-output chat-console-output-indent" : "chat-console-cell-input";
       element.className = `chat-cell chat-cell-${cell.type} ${roleClass}`;

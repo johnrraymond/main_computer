@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -28,6 +28,10 @@ from main_computer.credit_units import (
     credit_wei_to_whole_credits_floor,
 )
 from main_computer.energy import EnergyCreditLedger
+from main_computer.hub_resource_limits import (
+    HubHTTPResourceError, DEFAULT_RESOURCE_POLICY, load_hub_resource_policy,
+    validate_http_headers, http_content_length, read_bounded_json, BoundedHubHTTPServer,
+)
 from main_computer.hub_security import (
     HUB_SECURITY_PROFILE,
     decrypt_hub_envelope,
@@ -1517,6 +1521,48 @@ class _JsonHandler(BaseHTTPRequestHandler):
     server_version = "MainComputerHub/0.2"
     protocol_version = "HTTP/1.1"
 
+    def _resource_policy(self):
+        return getattr(self.server, "resource_limits", DEFAULT_RESOURCE_POLICY)
+
+    def handle_one_request(self) -> None:
+        if not self.server.resource_begin_headers(self.connection):
+            self.close_connection = True
+            return
+        return super().handle_one_request()
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        try:
+            validate_http_headers(self.headers, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self.send_error(exc.status, exc.code)
+            return False
+        if not self.server.resource_headers_complete(self.connection):
+            self.close_connection = True
+            return False
+        return True
+
+    def handle_expect_100(self) -> bool:
+        try:
+            validate_http_headers(self.headers, self._resource_policy())
+            http_content_length(self.headers, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self.send_error(exc.status, exc.code)
+            return False
+        return super().handle_expect_100()
+
+    def _preflight_post(self) -> bool:
+        try:
+            self._resource_json_payload = read_bounded_json(self, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self._send_json({"ok": False, "error": exc.code}, status=HTTPStatus(exc.status))
+            return False
+        return True
+
     def log_message(self, format: str, *args: Any) -> None:
         if getattr(self.server, "verbose", False):
             super().log_message(format, *args)
@@ -1671,33 +1717,15 @@ class _JsonHandler(BaseHTTPRequestHandler):
         return payload
 
     def _discard_request_body(self) -> None:
-        transfer_encoding = str(self.headers.get("Transfer-Encoding", "") or "").lower()
-        if "chunked" in transfer_encoding:
-            self.close_connection = True
-            return
-
-        try:
-            remaining = int(self.headers.get("Content-Length", "0") or "0")
-        except ValueError:
-            self.close_connection = True
-            return
-
-        while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 64 * 1024))
-            if not chunk:
-                self.close_connection = True
-                return
-            remaining -= len(chunk)
+        # An overloaded request must not consume an unbounded or stalled body.
+        # Close the socket rather than attempting to drain attacker bytes.
+        self.close_connection = True
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length else b"{}"
-        if not raw:
-            return {}
-        data = json.loads(raw.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Expected a JSON object.")
-        return data
+        cached = getattr(self, "_resource_json_payload", None)
+        if cached is not None:
+            return dict(cached)
+        return read_bounded_json(self, self._resource_policy())
 
     def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> bool:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1894,8 +1922,9 @@ class _JsonHandler(BaseHTTPRequestHandler):
             return
 
 
-class HubHttpServer(ThreadingHTTPServer):
+class HubHttpServer(BoundedHubHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MainComputerConfig, *, verbose: bool = True) -> None:
+        self.resource_limits = load_hub_resource_policy()
         super().__init__(server_address, HubServerHandler)
         self.worker_route_diagnostics = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower() in {"1", "true", "yes", "on"}
         self.worker_route_diag_lock = threading.Lock()
@@ -2259,11 +2288,8 @@ class HubServerHandler(_JsonHandler):
         registration: bool = False,
     ) -> dict[str, Any]:
         authorization = self._multisession_authorization_from_body(body)
-        require_auth = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
         if not authorization:
-            if require_auth:
-                raise HubCreditAuthorizationError("Worker routes require a multi-session key authorization.")
-            return {}
+            raise HubCreditAuthorizationError("Worker routes require a multi-session key authorization.")
 
         verified = self._validate_multisession_authorization(
             authorization,
@@ -2839,7 +2865,25 @@ class HubServerHandler(_JsonHandler):
         key_id = str(body.get("key_id") or body.get("multisession_key_id") or "").strip()
         if not key_id:
             raise ValueError("key_id is required.")
-        wallet_address = normalize_address(body.get("wallet_address"))
+        signed_request = body.get("signed_request")
+        if not isinstance(signed_request, dict):
+            raise HubCreditAuthorizationError("wallet_signed_revocation_required")
+        verification = verify_personal_sign_blob(
+            signed_request,
+            expected_chain_id=HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID,
+            max_age_minutes=HUB_MULTISESSION_KEY_MAX_AGE_MINUTES,
+        )
+        signed_message = verification.get("message") or {}
+        if (
+            not signed_message.get("issued_at")
+            or signed_message.get("action") != "revoke_multisession_key"
+            or signed_message.get("key_id") != key_id
+            or signed_message.get("request_id") != "revoke:" + key_id
+        ):
+            raise HubCreditAuthorizationError("wallet_revocation_intent_mismatch")
+        wallet_address = normalize_address(verification["wallet_address"])
+        if body.get("wallet_address") is not None and normalize_address(body["wallet_address"]) != wallet_address:
+            raise HubCreditAuthorizationError("wallet_revocation_owner_mismatch")
         now = _utc_now()
 
         with self.server.multisession_key_store_lock:
@@ -3496,22 +3540,28 @@ class HubServerHandler(_JsonHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        # The legacy Hub has no authenticated requester/admin read principal.
+        # Never turn a request/session identifier or a guessed wallet into a
+        # bearer capability. Fail closed until dedicated read authorization
+        # exists; the authenticated Stable Hub's paid-session API is separate.
+        private_legacy_read = (
+            path == "/api/hub/v1/admin/bootstrap"
+            or path == "/api/hub/v1/metrics"
+            or path == "/api/hub/v1/ring-control/feedback-summary"
+            or path == "/api/hub/v1/requests"
+            or path.startswith("/api/hub/v1/requests/")
+            or path == "/api/hub/v1/credits"
+            or path.startswith("/api/hub/v1/credits/")
+            or path.startswith("/api/hub/v1/bridge/")
+            or path in {"/api/hub/payouts", "/api/hub/v1/payouts"}
+        )
+        if private_legacy_read:
+            self._send_json({"ok": False, "error": "authenticated_legacy_read_required"},
+                            status=HTTPStatus.FORBIDDEN)
+            return
         if path in HUB_ADMIN_ROUTES:
             html = render_hub_admin_html()
             self._send_bytes(html.encode("utf-8"), content_type="text/html; charset=utf-8")
-            return
-        if path == "/api/hub/v1/admin/bootstrap":
-            self._send_json(
-                build_admin_bootstrap_payload(
-                    config=self.server.config,
-                    registry=self.server.registry,
-                    dispatcher=self.server.dispatcher,
-                    energy_ledger=self.server.energy_ledger,
-                    credit_ledger=self.server.credit_ledger,
-                    credit_indexer=self.server.credit_indexer,
-                    serving_hub=serving_hub_identity_for_server(self.server),
-                )
-            )
             return
         if path == "/api/hub/v1/health":
             self._send_json(
@@ -3529,57 +3579,18 @@ class HubServerHandler(_JsonHandler):
             )
             return
         if path in {"/api/hub/status", "/api/hub/v1/status"}:
-            status_started_at = time.perf_counter()
-            status = self.server.registry.status()
-            status["api_version"] = "v1" if path.startswith("/api/hub/v1/") else "legacy"
-            status["serving_hub"] = serving_hub_identity_for_server(self.server)
-            status["network"] = {
+            # Public health is intentionally aggregate-only. Registry workers,
+            # endpoints, per-worker accounts and finance belong to the Hub.
+            snapshot = self.server.registry.status()
+            self._send_json({
+                "ok": True,
+                "api_version": "v1" if path.startswith("/api/hub/v1/") else "legacy",
                 "network_key": self.server.config.hub_network,
-                "display_name": self.server.config.hub_network_display_name,
-                "kind": self.server.config.hub_network_kind,
                 "chain_id": self.server.config.chain_id,
-                "chain_id_hex": hex(self.server.config.chain_id) if self.server.config.chain_id is not None else None,
-                "chain_rpc_url": self.server.config.chain_rpc_url,
-                "chain_rpc_url_source": self.server.config.chain_rpc_url_source,
-                "chain_id_source": self.server.config.chain_id_source,
-                "hub_url": self.server.config.hub_url,
-                "hub_public_url": self.server.config.hub_url,
-                "hub_bind_host": self.server.config.hub_bind_host,
-                "hub_bind_port": self.server.config.hub_bind_port,
-                "hub_host": self.server.config.hub_bind_host,
-                "hub_port": self.server.config.hub_bind_port,
-                "hub_runtime_dir": str(self.server.hub_root),
-                "network_config_path": str(self.server.config.hub_network_config_path)
-                if self.server.config.hub_network_config_path
-                else None,
-            }
-            bridge_backend_status = getattr(self.server.bridge_backend, "status", lambda: {"backend": self.server.config.hub_bridge_backend})()
-            status["bridge_backend"] = bridge_backend_status
-            status.update(self.server.ring_admission_config.public_status())
-            status["ring_admission_rejection_audit_count"] = self.server.registry.ring_admission_audit_count()
-            ring_audit_diag = self.server.ring_admission_audit_diagnostics()
-            status["ring_admission_rejection_audit_write_failure_count"] = ring_audit_diag["write_failure_count"]
-            status["ring_admission_rejection_audit_write_failure_suppressed_since_last_log"] = ring_audit_diag[
-                "suppressed_write_failure_count"
-            ]
-            status["ring_admission_rejection_audit_last_write_failure"] = ring_audit_diag["last_write_failure"]
-            status["hub_remote_manifest"] = load_allfather_hub_remote_manifest()
-            status["security"] = {
-                "high_security_default": self.server.config.hub_high_security,
-                "hub_blind_envelopes": self.server.config.hub_high_security,
-                "encryption_profile": HUB_SECURITY_PROFILE,
-                "transport": "https-required-except-loopback",
-                "allow_insecure_dev_network": self.server.config.hub_allow_insecure_dev_network,
-            }
-            exact_payouts = self._exact_payouts_requested(query)
-            status["energy"] = self.server.energy_ledger.status(exact=exact_payouts)
-            response_written = self._send_json(status)
-            self._log_hub_status_timing(
-                path=path,
-                started_at=status_started_at,
-                exact_payouts=exact_payouts,
-                response_written=response_written,
-            )
+                "worker_count": snapshot.get("worker_count", 0),
+                "available_worker_count": snapshot.get("available_worker_count", 0),
+                "stale_worker_count": snapshot.get("stale_worker_count", 0),
+            })
             return
         if path == "/api/hub/v1/metrics":
             self._send_json(self.server.dispatcher.metrics())
@@ -3592,70 +3603,16 @@ class HubServerHandler(_JsonHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         if path == "/api/hub/v1/workers":
-            include_endpoint = str(query.get("debug", [""])[0]).lower() in {"1", "true", "yes"}
-            status = self.server.registry.status()
-            workers = [
-                HubWorkerSummary.from_worker_payload(worker, include_endpoint=include_endpoint).as_dict()
-                for worker in status.get("workers", [])
-                if isinstance(worker, dict)
-            ]
-            self._send_json(
-                {
-                    "ok": True,
-                    "workers": workers,
-                    "worker_count": len(workers),
-                    "available_worker_count": status.get("available_worker_count", 0),
-                    "stale_worker_count": status.get("stale_worker_count", 0),
-                }
-            )
-            return
-        if path in {"/api/hub/v1/workers/claims", "/api/hub/v1/credits/worker-claims"}:
-            worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
-            try:
-                self._send_json(self.server.credit_ledger.worker_claim_totals(worker_node_id))
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if path in {"/api/hub/v1/workers/settlements", "/api/hub/v1/credits/worker-settlements"}:
-            worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
-            try:
-                precision = self._worker_settlement_precision_places(worker_node_id, query.get("precision_places", [None])[0])
-                totals = self.server.credit_ledger.worker_settlement_totals(worker_node_id, precision_places=precision)
-                if self._exact_payouts_requested(query):
-                    self._send_json(totals)
-                else:
-                    self._send_json(self._public_worker_settlement_totals(totals))
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-            return
-        if path.startswith("/api/hub/v1/workers/") and path.endswith("/feedback-summary"):
-            worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/feedback-summary").strip("/")
-            if not worker_id or "/" in worker_id:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            try:
-                limit = int(query.get("limit", ["500"])[0] or 500)
-                self._send_json(
-                    self.server.dispatcher.worker_reliability_summary(
-                        worker_node_id=worker_id,
-                        include_private=True,
-                        limit=limit,
-                    )
-                )
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            # Public aggregate only: no Worker IDs, endpoints, private metadata.
+            snapshot = self.server.registry.status()
+            self._send_json({"ok": True,
+                             "worker_count": len(snapshot.get("workers", [])),
+                             "available_worker_count": snapshot.get("available_worker_count", 0),
+                             "stale_worker_count": snapshot.get("stale_worker_count", 0)})
             return
         if path.startswith("/api/hub/v1/workers/"):
-            worker_id = path.removeprefix("/api/hub/v1/workers/").strip("/")
-            if not worker_id or "/" in worker_id:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            include_endpoint = str(query.get("debug", [""])[0]).lower() in {"1", "true", "yes"}
-            worker = self.server.registry.get_worker(worker_id)
-            if worker is None:
-                self._send_json({"error": f"Unknown hub worker: {worker_id}"}, status=HTTPStatus.NOT_FOUND)
-                return
-            self._send_json({"ok": True, "worker": HubWorkerSummary.from_worker_payload(worker.as_dict(), include_endpoint=include_endpoint).as_dict()})
+            self._send_json({"ok": False, "error": "worker_private_record_forbidden"},
+                            status=HTTPStatus.FORBIDDEN)
             return
         if path == "/api/hub/v1/models":
             status = self.server.registry.status()
@@ -3893,6 +3850,8 @@ class HubServerHandler(_JsonHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if not self._preflight_post():
+            return
         try:
             parsed = urlparse(self.path)
             path = parsed.path
@@ -3914,6 +3873,8 @@ class HubServerHandler(_JsonHandler):
             if path == "/api/hub/v1/credits/multisession-keys/revoke":
                 try:
                     self._send_json(self._handle_multisession_key_revoke(self._read_json()))
+                except HubCreditAuthorizationError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except ValueError as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -4544,23 +4505,6 @@ class HubServerHandler(_JsonHandler):
                     raise
                 finally:
                     self._worker_route_exit(diag_id, "worker.results", diag_started_at)
-            if path in {"/api/hub/upstreams/register", "/api/hub/v1/upstreams/register"}:
-                body = self._read_json()
-                upstream = self.server.registry.register_upstream_hub(
-                    node_id=str(body.get("node_id", "")),
-                    endpoint=str(body.get("endpoint", "")),
-                    credits_per_request=_hub_credit_public_value_from_wei(
-                        _hub_credit_wei_from_explicit_or_decimal(
-                            body.get("credits_per_request_wei"),
-                            body.get("credits_per_request", self.server.config.hub_credits_per_request),
-                            "1",
-                            minimum_wei=1,
-                        )
-                    ),
-                )
-                self.server.energy_ledger.register_node(upstream.node_id, "upstream-hub", upstream.endpoint)
-                self._send_json({"ok": True, "upstream_hub": upstream.as_dict(), "hub": self.server.registry.status()})
-                return
             if path == "/api/hub/sessions/start":
                 body = self._read_json()
                 requester_public_key = str(body.get("requester_public_key", ""))
@@ -4588,292 +4532,9 @@ class HubServerHandler(_JsonHandler):
                     )
                 )
                 return
-            if path in {"/api/hub/payouts/claim", "/api/hub/v1/payouts/claim"}:
-                body = self._read_json()
-                node_id = str(body.get("node_id", ""))
-                exact_payouts = self._exact_payouts_requested(body=body)
-                precision = self._worker_settlement_precision_places(node_id, body.get("precision_places"))
-                self._send_json(
-                    self.server.energy_ledger.claim_payouts(
-                        node_id=node_id,
-                        memo=str(body.get("memo", "")),
-                        exact=exact_payouts,
-                        precision_places=precision,
-                    )
-                )
-                return
-            if path in {"/api/hub/v1/workers/claims", "/api/hub/v1/credits/worker-claims/record"}:
-                body = self._read_json()
-                raw_earning_ids = body.get("earning_ids")
-                earning_ids = [str(item) for item in raw_earning_ids] if isinstance(raw_earning_ids, list) else None
-                result = self.server.credit_ledger.record_worker_claim(
-                    worker_node_id=str(body.get("worker_node_id") or body.get("node_id") or ""),
-                    earning_ids=earning_ids,
-                    claim_credits=int(body["claim_credits"]) if body.get("claim_credits") is not None else None,
-                    idempotency_key=str(body.get("idempotency_key", "")),
-                    memo=str(body.get("memo", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
-            if path in {"/api/hub/v1/workers/settlements/batches", "/api/hub/v1/credits/worker-settlements/batches"}:
-                body = self._read_json()
-                worker_node_id = str(body.get("worker_node_id") or body.get("node_id") or "")
-                raw_claim_ids = body.get("claim_ids")
-                claim_ids = [str(item) for item in raw_claim_ids] if isinstance(raw_claim_ids, list) else None
-                precision = self._worker_settlement_precision_places(worker_node_id, body.get("precision_places"))
-                result = self.server.credit_ledger.create_worker_settlement_batch(
-                    worker_node_id=worker_node_id,
-                    claim_ids=claim_ids,
-                    precision_places=precision,
-                    idempotency_key=str(body.get("idempotency_key", "")),
-                    bridge_account_id=str(body.get("bridge_account_id", "bridge-worker-payout-dust")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
-            if path in {
-                "/api/hub/v1/workers/settlements/batches/settle",
-                "/api/hub/v1/workers/settlements/settle",
-                "/api/hub/v1/credits/worker-settlements/batches/settle",
-            }:
-                body = self._read_json()
-                result = self.server.credit_ledger.settle_worker_settlement_batch(
-                    batch_id=str(body.get("batch_id", "")),
-                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
-                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
-                    payout_rail=str(body.get("payout_rail", "")),
-                    operator_id=str(body.get("operator_id", "")),
-                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
-                    idempotency_key=str(body.get("idempotency_key", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
             if path == "/api/hub/v1/credits/wallet-funding/complete":
                 body = self._read_json()
                 self._send_json(self.server.credit_bridge_completion.complete_wallet_funding_deposit(body))
-                return
-            if path == "/api/hub/v1/credits/wallet-funding/import":
-                body = self._read_json()
-                self._send_json(self.server.credit_indexer.import_wallet_funding(body))
-                return
-            if path in {"/api/hub/v1/credits/deposits/import", "/api/hub/v1/credits/purchases/import"}:
-                body = self._read_json()
-                self._send_json(self.server.credit_indexer.import_deposit(body))
-                return
-            if path == "/api/hub/v1/credits/bridge-reconciliation/execute":
-                body = self._read_json()
-                request_id = str(body.get("request_id") or "").strip()
-                if not request_id:
-                    raise ValueError("request_id is required for bridge reconciliation.")
-                request_status = self.server.dispatcher.get_request_status(request_id)
-                request_state = str(request_status.get("state") or "").strip().lower()
-                if request_state not in {"completed", "failed", "cancelled", "expired"}:
-                    self._send_json(
-                        {
-                            "ok": False,
-                            "error": "bridge reconciliation requires a terminal Hub request",
-                            "request_id": request_id,
-                            "request_state": request_state,
-                        },
-                        status=HTTPStatus.CONFLICT,
-                    )
-                    return
-                self._send_json(
-                    self.server.credit_bridge_completion.execute_bridge_reconciliation(
-                        body,
-                        request_status=request_status,
-                    )
-                )
-                return
-            if path == "/api/hub/v1/credits/bridge-reconciliation/record":
-                body = self._read_json()
-                result = self.server.credit_ledger.record_bridge_reconciliation(
-                    account_id=str(body.get("account_id", "")),
-                    rectified_credits=int(body.get("rectified_credits", 0) or 0),
-                    withdrawn_credits=int(body.get("withdrawn_credits", 0) or 0),
-                    rectification_id=str(body.get("rectification_id", "")),
-                    withdrawal_id=str(body.get("withdrawal_id", "")),
-                    recipient_address=str(body.get("recipient_address", "")),
-                    memo=str(body.get("memo", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
-            if path == "/api/hub/v1/credits/admin/issue":
-                body = self._read_json()
-                result = self.server.credit_ledger.issue(
-                    account_id=str(body.get("account_id", self.server.config.hub_client_node_id)),
-                    credits=int(body.get("credits", 0) or 0),
-                    memo=str(body.get("memo", "")),
-                    owner_address=str(body.get("owner_address", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
-            if path == "/api/hub/v1/bridge/mock-chain/mint":
-                if not hasattr(self.server.credit_ledger, "mock_chain_mint"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                self._send_json(
-                    self.server.credit_ledger.mock_chain_mint(
-                        wallet_address=str(body.get("wallet_address", "")),
-                        credits=int(body.get("credits", 0) or 0),
-                        idempotency_key=str(body.get("idempotency_key", "")),
-                        memo=str(body.get("memo", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                    )
-                )
-                return
-            if path == "/api/hub/v1/bridge/deposits":
-                if not hasattr(self.server.credit_ledger, "create_bridge_deposit"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                self._send_json(
-                    self.server.credit_ledger.create_bridge_deposit(
-                        wallet_address=str(body.get("wallet_address", "")),
-                        account_id=str(body.get("account_id", self.server.config.hub_client_node_id)),
-                        credits=int(body.get("credits", 0) or 0),
-                        idempotency_key=str(body.get("idempotency_key", "")),
-                        memo=str(body.get("memo", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                    )
-                )
-                return
-            if path == "/api/hub/v1/bridge/deposits/confirm":
-                if not hasattr(self.server.credit_ledger, "confirm_bridge_deposit"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                deposit_id = str(body.get("deposit_id", ""))
-                metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
-                metadata = self._with_hub_bridge_backend_deposit_metadata(deposit_id=deposit_id, metadata=metadata)
-                self._send_json(
-                    self.server.credit_ledger.confirm_bridge_deposit(
-                        deposit_id=deposit_id,
-                        metadata=metadata,
-                    )
-                )
-                return
-            if path == "/api/hub/v1/bridge/payouts":
-                if not hasattr(self.server.credit_ledger, "request_bridge_payout"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                wallet_address = normalize_address(str(body.get("wallet_address", "")))
-                worker_node_id = str(body.get("worker_node_id") or body.get("node_id") or "")
-                if wallet_address:
-                    status = self.server.registry.status()
-                    workers = [item for item in status.get("workers", []) if isinstance(item, dict)]
-                    wallet_workers = []
-                    for worker in workers:
-                        caps = dict(worker.get("capabilities", {})) if isinstance(worker.get("capabilities"), dict) else {}
-                        worker_wallet = normalize_address(str(worker.get("wallet_address") or caps.get("wallet_address") or ""))
-                        if worker_wallet == wallet_address:
-                            wallet_workers.append(worker)
-                    active_workers = [
-                        worker
-                        for worker in wallet_workers
-                        if int(worker.get("active_requests", 0) or 0) > 0
-                    ]
-                    if active_workers:
-                        self._send_json(
-                            {
-                                "ok": False,
-                                "error": "wallet has active worker leases; payout requires a quiet wallet",
-                                "error_type": "wallet_active_worker_leases",
-                                "wallet_address": wallet_address,
-                                "active_worker_node_ids": [str(worker.get("node_id", "")) for worker in active_workers],
-                                "active_worker_count": len(active_workers),
-                            },
-                            status=HTTPStatus.CONFLICT,
-                        )
-                        return
-                self._send_json(
-                    self.server.credit_ledger.request_bridge_payout(
-                        wallet_address=wallet_address,
-                        account_id=str(body.get("account_id", "")),
-                        worker_node_id=worker_node_id,
-                        credits=int(body.get("credits", 0) or 0),
-                        idempotency_key=str(body.get("idempotency_key", "")),
-                        memo=str(body.get("memo", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                        **({"batch_id": str(body["batch_id"])} if body.get("batch_id") else {}),
-                    )
-                )
-                return
-            if path == "/api/hub/v1/bridge/payouts/confirm":
-                if not hasattr(self.server.credit_ledger, "confirm_bridge_payout"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                payout_id = str(body.get("payout_id", ""))
-                metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
-                metadata = self._with_hub_bridge_backend_payout_metadata(payout_id=payout_id, metadata=metadata)
-                self._send_json(
-                    self.server.credit_ledger.confirm_bridge_payout(
-                        payout_id=payout_id,
-                        metadata=metadata,
-                    )
-                )
-                return
-            if path == "/api/hub/v1/bridge/payouts/fail":
-                if not hasattr(self.server.credit_ledger, "fail_bridge_payout"):
-                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
-                    return
-                body = self._read_json()
-                self._send_json(
-                    self.server.credit_ledger.fail_bridge_payout(
-                        payout_id=str(body.get("payout_id", "")),
-                        reason=str(body.get("reason", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                    )
-                )
-                return
-            if path in {
-                "/api/hub/v1/workers/settlements/chain-executions",
-                "/api/hub/v1/workers/settlements/batches/chain-execution",
-                "/api/hub/v1/credits/worker-settlements/chain-executions",
-            }:
-                body = self._read_json()
-                result = self.server.credit_ledger.record_worker_settlement_chain_execution(
-                    batch_id=str(body.get("batch_id", "")),
-                    chain_id=int(body.get("chain_id", 0) or 0),
-                    contract_address=str(body.get("contract_address", "")),
-                    recipient_address=str(body.get("recipient_address", body.get("worker_payout_address", ""))),
-                    payout_units_executed=int(body.get("payout_units_executed", body.get("executed_credits", 0)) or 0),
-                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
-                    proposal_id=str(body.get("proposal_id", "")),
-                    block_number=int(body.get("block_number", 0) or 0) if body.get("block_number") is not None else None,
-                    payout_rail=str(body.get("payout_rail", "xlag-bridge-reserve")),
-                    operator_id=str(body.get("operator_id", "")),
-                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
-                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
-                    idempotency_key=str(body.get("idempotency_key", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
-                return
-            if path in {
-                "/api/hub/v1/workers/settlements/proofs",
-                "/api/hub/v1/workers/settlements/batches/proof",
-                "/api/hub/v1/credits/worker-settlements/proofs",
-            }:
-                body = self._read_json()
-                result = self.server.credit_ledger.record_worker_settlement_proof(
-                    batch_id=str(body.get("batch_id", "")),
-                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
-                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
-                    payout_rail=str(body.get("payout_rail", "operator-manual")),
-                    operator_id=str(body.get("operator_id", "")),
-                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
-                    idempotency_key=str(body.get("idempotency_key", "")),
-                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
-                )
-                self._send_json(result)
                 return
             if path == "/api/hub/v1/requests/quote":
                 body = self._read_json()
@@ -4896,7 +4557,7 @@ class HubServerHandler(_JsonHandler):
                     body, _authorized_metadata = self._apply_request_multisession_authorization(
                         body=body,
                         metadata=incoming_metadata,
-                        required=bool(self.server.config.hub_require_multisession_auth and is_worker_pull),
+                        required=bool(is_worker_pull),
                     )
                 except HubCreditAuthorizationError as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
@@ -4928,13 +4589,6 @@ class HubServerHandler(_JsonHandler):
                     self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except Exception as exc:
                     self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-                return
-            if path.startswith("/api/hub/v1/requests/") and path.endswith("/cancel"):
-                request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/cancel").strip("/")
-                if not request_id or "/" in request_id:
-                    self.send_error(HTTPStatus.NOT_FOUND)
-                    return
-                self._send_json({"ok": True, "request": self.server.dispatcher.cancel_request(request_id)})
                 return
             if path == "/api/hub/chat":
                 body = self._read_json()
@@ -4969,7 +4623,7 @@ class HubServerHandler(_JsonHandler):
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
 
-class HubWorkerHttpServer(ThreadingHTTPServer):
+class HubWorkerHttpServer(BoundedHubHTTPServer):
     def __init__(
         self,
         server_address: tuple[str, int],
@@ -4978,6 +4632,7 @@ class HubWorkerHttpServer(ThreadingHTTPServer):
         *,
         verbose: bool = True,
     ) -> None:
+        self.resource_limits = load_hub_resource_policy()
         super().__init__(server_address, HubWorkerHandler)
         self.verbose = verbose
         self.config = config
@@ -5008,6 +4663,8 @@ class HubWorkerHandler(_JsonHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if not self._preflight_post():
+            return
         try:
             parsed = urlparse(self.path)
             if parsed.path == HUB_WORKER_SESSION_START_PATH:
@@ -5435,10 +5092,10 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "Hub endpoints: GET /admin, GET /api/hub/v1/admin/bootstrap, GET /api/hub/status, "
         "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
-        "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
-        "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, POST /api/hub/v1/workers/settlements/proofs, POST /api/hub/v1/workers/settlements/chain-executions, "
+        "POST /api/hub/v1/workers/results, "
+        
         "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, "
-        "POST /api/hub/remote-overflow/safe-chat, POST /api/hub/v1/credits/multisession-keys/validate, POST /api/hub/payouts/claim"
+        "POST /api/hub/remote-overflow/safe-chat, POST /api/hub/v1/credits/multisession-keys/validate"
     )
     try:
         server.serve_forever()

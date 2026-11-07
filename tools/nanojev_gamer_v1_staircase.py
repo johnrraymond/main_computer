@@ -336,7 +336,7 @@ def status(run):
 
 def parser():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('phase',choices=('status','head','lora','diagnostic-train','diagnostic-localize','register-oracle','flat-registers','flat-attribution','flat-prompt','representation-diagnostic','head-100','head-100-diagnostic-train','head-100-radius','head-100-radius-recovery'))
+    ap.add_argument('phase',choices=('status','head','lora','diagnostic-train','diagnostic-localize','register-oracle','flat-registers','flat-attribution','flat-prompt','representation-diagnostic','head-100','head-100-diagnostic-train','head-100-radius','head-100-radius-recovery','head-100-radius-double-holdout','head-100-number-distance','head-100-number-distance-analyze','head-100-shared-information','head-100-localize-information','head-100-causal-path','head-100-sufficiency','head-100-generalization','head-100-balanced-repair','head-100-calibration','head-100-separability','head-100-sign-only','head-100-upstream-path','head-100-c0-boundary','head-100-encoder-bypass','head-100-information-preservation'))
     ap.add_argument('--run',type=Path,required=True)
     ap.add_argument('--steps',type=int,help='CUMULATIVE target step for the selected trainer')
     ap.add_argument('--device',default='cuda')
@@ -472,6 +472,23 @@ def parser():
                     help='Rank of TRAIN-game numerical slope/curvature projection')
     ap.add_argument('--radius-recovery-controls',type=int,default=1,
                     help='Number of shuffled train-label controls for nonlinear decoder')
+    ap.add_argument('--radius-double-output',type=Path,default=None,
+                    help='head-100-radius-double-holdout: new sibling report directory')
+    ap.add_argument('--radius-double-folds',type=int,default=4,
+                    help='Grouped whole-game folds (default 4)')
+    ap.add_argument('--radius-double-rank',type=int,default=12,
+                    help='Identical per-layer train-only projection budget')
+    ap.add_argument('--radius-double-controls',type=int,default=1,
+                    help='Retrained shuffled-label controls')
+    ap.add_argument('--radius-double-seed',type=int,default=47)
+    ap.add_argument('--radius-double-stages',default=None,
+                    help='Comma-separated stage names, default Qwen/embedding/C0 comparisons')
+    ap.add_argument('--distance-output',type=Path,default=None,help='NEW numerical-distance report directory')
+    ap.add_argument('--distance-contexts',type=int,default=24,help='Different games for distance experiments')
+    ap.add_argument('--distance-width',type=int,default=8,help='Integer radius, at least 6')
+    ap.add_argument('--distance-checkpoint',choices=('best','latest'),default='best')
+    ap.add_argument('--distance-folds',type=int,default=4,help='Held-out whole-game groups')
+    ap.add_argument('--distance-controls',type=int,default=16,help='Randomized-orientation null controls')
     ap.add_argument('--repr-output',type=Path,default=None,
                     help='Representation-diagnostic-only NEW report folder')
     ap.add_argument('--repr-max-games',type=int,default=0,
@@ -484,6 +501,94 @@ def parser():
                     help='Dev prompt one-register mutation controls per model; 0 disables')
     ap.add_argument('--repr-skip-base',action='store_true',
                     help='Omit matched base-Qwen capture if GPU budget is constrained')
+    ap.add_argument('--shared-output',type=Path,default=None)
+    ap.add_argument('--shared-stages',default=None,help='Comma-delimited activation stages; default all diagnostic stages')
+    ap.add_argument('--shared-folds',type=int,default=4)
+    ap.add_argument('--shared-steps',type=int,default=90,help='Contrastive matching updates, never C0 or LoRA updates')
+    ap.add_argument('--shared-controls',type=int,default=1,help='Number of independently re-fitted shuffled-match controls')
+    ap.add_argument('--shared-seed',type=int,default=47)
+    ap.add_argument('--shared-sketch-dim',type=int,default=256,help='Label-free activation sketch width')
+    ap.add_argument('--info-output',type=Path,default=None)
+    ap.add_argument('--info-stages',default=None,
+                    help='Comma-separated stages; default full100 plus intermediate C0 checks')
+    ap.add_argument('--info-folds',type=int,default=4)
+    ap.add_argument('--info-top',type=int,default=8,
+                    help='Top raw 1024D sampled-token blocks selected on TRAIN games only')
+    ap.add_argument('--info-tile-width',type=int,default=64,
+                    help='Nested contiguous coordinate tile width for localization')
+    ap.add_argument('--info-permutations',type=int,default=99,
+                    help='Heldout per-game distance-label permutation controls')
+    ap.add_argument('--info-seed',type=int,default=47)
+    ap.add_argument('--causal-output',type=Path,default=None)
+    ap.add_argument('--causal-pairs',type=int,default=120,
+                    help='Bounded synthetic feature-transplant comparisons')
+    ap.add_argument('--causal-top',type=int,default=4,
+                    help='Qwen positions chosen using training games only')
+    ap.add_argument('--causal-controls',type=int,default=3,
+                    help='Matched random-position transplant controls per pair')
+    ap.add_argument('--causal-permutations',type=int,default=99)
+    ap.add_argument('--causal-certified-cases',type=int,default=96,
+                    help='Real labeled dev prompts from the immutable feature cache')
+    ap.add_argument('--causal-skip-certified',action='store_true',
+                    help='Skip genuine-label audit (zero gate will remain blocked)')
+    ap.add_argument('--causal-seed',type=int,default=47)
+    ap.add_argument('--sign-output',type=Path,default=None,help='head-100-sign-only: isolated sign-only probe directory')
+    ap.add_argument('--upstream-output',type=Path,default=None,help='head-100-upstream-path: new diagnostic directory')
+    ap.add_argument('--upstream-input-only',action='store_true',help='Only rescore the cached input-sign contrasts; no Qwen run')
+    ap.add_argument('--upstream-skip-base',action='store_true',help='Skip frozen base-Qwen ablation (faster, incomplete)')
+    ap.add_argument('--upstream-train-groups',type=int,default=24)
+    ap.add_argument('--upstream-dev-groups',type=int,default=12)
+    ap.add_argument('--upstream-test-groups',type=int,default=12)
+    ap.add_argument('--upstream-permutations',type=int,default=99)
+    ap.add_argument('--boundary-output',type=Path,default=None,help='head-100-c0-boundary: new read-only diagnostic directory')
+    ap.add_argument('--boundary-batch',type=int,default=8,help='C0-only inference batch (frozen weights)')
+    ap.add_argument('--boundary-controls',type=int,default=3,help='Train-group sign-flip matched null axes per position arm')
+    ap.add_argument('--boundary-seed',type=int,default=47)
+    ap.add_argument('--bypass-output',type=Path,default=None,help='head-100-encoder-bypass: new read-only report directory')
+    ap.add_argument('--bypass-batch',type=int,default=8,help='Frozen C0 inference batch')
+    ap.add_argument('--bypass-seed',type=int,default=47)
+    ap.add_argument('--preservation-output',type=Path,default=None,help='head-100-information-preservation: short, isolated read-only output directory')
+    ap.add_argument('--preservation-batch',type=int,default=8,help='Frozen C0 batch for read-only stage capture')
+    ap.add_argument('--preservation-seed',type=int,default=47)
+    ap.add_argument('--sign-epochs',type=int,default=35)
+    ap.add_argument('--sign-batch',type=int,default=64)
+    ap.add_argument('--sign-hidden',type=int,default=64)
+    ap.add_argument('--sign-lr',type=float,default=.001)
+    ap.add_argument('--sign-patience',type=int,default=8)
+    ap.add_argument('--sign-seed',type=int,default=47)
+    ap.add_argument('--sep-output',type=Path,default=None,
+                    help='head-100-separability: NEW read-only probability-distribution report directory')
+    ap.add_argument('--sep-bootstraps',type=int,default=199,
+                    help='Game-cluster bootstrap replicates for threshold-independent AUC')
+    ap.add_argument('--sep-seed',type=int,default=47)
+    ap.add_argument('--cal-output',type=Path,default=None,
+                    help='head-100-calibration: NEW read-only saved-head calibration directory')
+    ap.add_argument('--cal-batch',type=int,default=64)
+    ap.add_argument('--repair-output',type=Path,default=None,
+                    help='head-100-balanced-repair: NEW disposable model/report directory')
+    ap.add_argument('--repair-epochs',type=int,default=35)
+    ap.add_argument('--repair-batch',type=int,default=64)
+    ap.add_argument('--repair-hidden',type=int,default=64)
+    ap.add_argument('--repair-lr',type=float,default=.001)
+    ap.add_argument('--repair-patience',type=int,default=8)
+    ap.add_argument('--repair-seed',type=int,default=47)
+    ap.add_argument('--repair-no-full100',action='store_true',
+                    help='Skip full100 control arm; localized, neighbor and random remain')
+    ap.add_argument('--gen-output',type=Path,default=None,
+                    help='head-100-generalization: NEW read-only diagnosis of saved sufficiency heads')
+    ap.add_argument('--gen-batch',type=int,default=64)
+    ap.add_argument('--gen-arms',type=str,default='localized,neighbor_control,random_control,full100')
+    ap.add_argument('--gen-seed',type=int,default=47)
+    ap.add_argument('--gen-permutations',type=int,default=999)
+    ap.add_argument('--suff-output',type=Path,default=None,
+                    help='head-100-sufficiency: NEW isolated experimental head report directory')
+    ap.add_argument('--suff-folds',type=int,default=4)
+    ap.add_argument('--suff-epochs',type=int,default=40)
+    ap.add_argument('--suff-batch',type=int,default=64)
+    ap.add_argument('--suff-hidden',type=int,default=64)
+    ap.add_argument('--suff-lr',type=float,default=.001)
+    ap.add_argument('--suff-seed',type=int,default=47)
+    ap.add_argument('--suff-patience',type=int,default=8)
     return ap
 
 
@@ -562,6 +667,192 @@ def main(argv=None):
     if args.phase=='head-100-radius' and not args.radius_recovery and any(
             getattr(args,k)!=v for k,v in recovery_defaults.items() if k!='radius_recovery'):
         raise ValueError('GAMER_RADIUS_RECOVERY_FLAGS_REQUIRE_RADIUS_RECOVERY')
+    double_defaults={'radius_double_output':None,'radius_double_folds':4,
+        'radius_double_rank':12,'radius_double_controls':1,
+        'radius_double_seed':47,'radius_double_stages':None}
+    if args.phase!='head-100-radius-double-holdout' and any(
+            getattr(args,k)!=v for k,v in double_defaults.items()):
+        raise ValueError('GAMER_DOUBLE_HOLDOUT_FLAGS_ONLY_DOUBLE_HOLDOUT')
+    distance_defaults={'distance_output':None,'distance_contexts':24,'distance_width':8,
+        'distance_checkpoint':'best','distance_folds':4,'distance_controls':16}
+    if args.phase not in ('head-100-number-distance','head-100-number-distance-analyze') and any(
+            getattr(args,k)!=v for k,v in distance_defaults.items()):
+        raise ValueError('GAMER_DISTANCE_FLAGS_ONLY_NUMBER_DISTANCE')
+    upstream_defaults={'upstream_output':None,'upstream_input_only':False,'upstream_skip_base':False,
+         'upstream_train_groups':24,'upstream_dev_groups':12,'upstream_test_groups':12,
+         'upstream_permutations':99}
+    if args.phase!='head-100-upstream-path' and any(
+            getattr(args,k)!=v for k,v in upstream_defaults.items()):
+        raise ValueError('GAMER_UPSTREAM_FLAGS_ONLY_UPSTREAM_PATH')
+    boundary_defaults={'boundary_output':None,'boundary_batch':8,'boundary_controls':3,'boundary_seed':47}
+    if args.phase!='head-100-c0-boundary' and any(
+            getattr(args,k)!=v for k,v in boundary_defaults.items()):
+        raise ValueError('GAMER_C0_BOUNDARY_FLAGS_ONLY_BOUNDARY')
+    bypass_defaults={'bypass_output':None,'bypass_batch':8,'bypass_seed':47}
+    if args.phase!='head-100-encoder-bypass' and any(
+            getattr(args,k)!=v for k,v in bypass_defaults.items()):
+        raise ValueError('GAMER_BYPASS_FLAGS_ONLY_ENCODER_BYPASS')
+    preservation_defaults={'preservation_output':None,'preservation_batch':8,'preservation_seed':47}
+    if args.phase!='head-100-information-preservation' and any(
+            getattr(args,k)!=v for k,v in preservation_defaults.items()):
+        raise ValueError('GAMER_PRESERVATION_FLAGS_ONLY_INFORMATION_PRESERVATION')
+    if args.phase=='head-100-information-preservation':
+        if args.steps is not None:
+            raise ValueError('GAMER_PRESERVATION_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_c0_information_preservation import run_information_preservation
+        return run_information_preservation(args.run,output=args.preservation_output,
+            device=args.device,head_batch=args.preservation_batch,seed=args.preservation_seed)
+    if args.phase=='head-100-encoder-bypass':
+        if args.steps is not None:
+            raise ValueError('GAMER_BYPASS_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_encoder_bypass import run_encoder_bypass
+        return run_encoder_bypass(args.run,output=args.bypass_output,device=args.device,
+                                  head_batch=args.bypass_batch,seed=args.bypass_seed)
+    if args.phase=='head-100-c0-boundary':
+        if args.steps is not None:
+            raise ValueError('GAMER_C0_BOUNDARY_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_c0_boundary import run_boundary
+        return run_boundary(args.run,output=args.boundary_output,device=args.device,
+           head_batch=args.boundary_batch,controls=args.boundary_controls,seed=args.boundary_seed)
+    if args.phase=='head-100-upstream-path':
+        if args.steps is not None:
+            raise ValueError('GAMER_UPSTREAM_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_upstream_path import run_upstream_path
+        return run_upstream_path(args.run,output=args.upstream_output,device=args.device,
+           capture_batch=args.capture_batch,train_groups=args.upstream_train_groups,
+           dev_groups=args.upstream_dev_groups,test_groups=args.upstream_test_groups,
+           permutations=args.upstream_permutations,input_only=args.upstream_input_only,
+           skip_base=args.upstream_skip_base)
+    sign_defaults={'sign_output':None,'sign_epochs':35,'sign_batch':64,
+                   'sign_hidden':64,'sign_lr':.001,'sign_patience':8,'sign_seed':47}
+    if args.phase!='head-100-sign-only' and any(
+            getattr(args,k)!=v for k,v in sign_defaults.items()):
+        raise ValueError('GAMER_SIGN_FLAGS_ONLY_SIGN_ONLY_PHASE')
+    if args.phase=='head-100-sign-only':
+        if args.steps is not None:
+            raise ValueError('GAMER_SIGN_EXPERIMENT_NO_STEPS')
+        from tools.nanojev_gamer_v1_sign_only import run_sign_only
+        return run_sign_only(args.run,output=args.sign_output,device=args.device,
+               epochs=args.sign_epochs,batch_size=args.sign_batch,hidden=args.sign_hidden,
+               lr=args.sign_lr,patience=args.sign_patience,seed=args.sign_seed)
+    sep_defaults={'sep_output':None,'sep_bootstraps':199,'sep_seed':47}
+    if args.phase!='head-100-separability' and any(
+            getattr(args,k)!=v for k,v in sep_defaults.items()):
+        raise ValueError('GAMER_SEPARABILITY_FLAGS_ONLY_SEPARABILITY_PHASE')
+    if args.phase=='head-100-separability':
+        if args.steps is not None:
+            raise ValueError('GAMER_SEPARABILITY_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_separability import run_separability
+        return run_separability(args.run,output=args.sep_output,
+                                bootstraps=args.sep_bootstraps,seed=args.sep_seed)
+    cal_defaults={'cal_output':None,'cal_batch':64}
+    if args.phase!='head-100-calibration' and any(
+            getattr(args,k)!=v for k,v in cal_defaults.items()):
+        raise ValueError('GAMER_CALIBRATION_FLAGS_ONLY_CALIBRATION_PHASE')
+    if args.phase=='head-100-calibration':
+        if args.steps is not None:
+            raise ValueError('GAMER_CALIBRATION_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_threshold_calibration import run_calibration
+        return run_calibration(args.run,output=args.cal_output,device=args.device,
+                               batch_size=args.cal_batch)
+    repair_defaults={'repair_output':None,'repair_epochs':35,'repair_batch':64,
+       'repair_hidden':64,'repair_lr':.001,'repair_patience':8,
+       'repair_seed':47,'repair_no_full100':False}
+    if args.phase!='head-100-balanced-repair' and any(
+            getattr(args,k)!=v for k,v in repair_defaults.items()):
+        raise ValueError('GAMER_BALANCED_REPAIR_FLAGS_ONLY_BALANCED_REPAIR_PHASE')
+    if args.phase=='head-100-balanced-repair':
+        if args.steps is not None:
+            raise ValueError('GAMER_BALANCED_REPAIR_EXPERIMENT_NO_STEPS')
+        from tools.nanojev_gamer_v1_balanced_repair import run_balanced_repair
+        return run_balanced_repair(args.run,output=args.repair_output,device=args.device,
+           epochs=args.repair_epochs,batch_size=args.repair_batch,
+           hidden=args.repair_hidden,lr=args.repair_lr,patience=args.repair_patience,
+           seed=args.repair_seed,include_full100=not args.repair_no_full100)
+    gen_defaults={'gen_output':None,'gen_batch':64,
+      'gen_arms':'localized,neighbor_control,random_control,full100',
+      'gen_seed':47,'gen_permutations':999}
+    if args.phase!='head-100-generalization' and any(
+         getattr(args,k)!=v for k,v in gen_defaults.items()):
+        raise ValueError('GAMER_GENERALIZATION_FLAGS_ONLY_GENERALIZATION_PHASE')
+    if args.phase=='head-100-generalization':
+        if args.steps is not None:
+            raise ValueError('GAMER_GENERALIZATION_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_generalization import run_generalization
+        return run_generalization(args.run,output=args.gen_output,device=args.device,
+            batch_size=args.gen_batch,arms=tuple(x.strip() for x in args.gen_arms.split(',')),
+            seed=args.gen_seed,permutations=args.gen_permutations)
+    suff_defaults={'suff_output':None,'suff_folds':4,'suff_epochs':40,
+      'suff_batch':64,'suff_hidden':64,'suff_lr':.001,'suff_seed':47,'suff_patience':8}
+    if args.phase!='head-100-sufficiency' and any(
+          getattr(args,k)!=v for k,v in suff_defaults.items()):
+        raise ValueError('GAMER_SUFFICIENCY_FLAGS_ONLY_SUFFICIENCY_PHASE')
+    if args.phase=='head-100-sufficiency':
+        from tools.nanojev_gamer_v1_sufficiency import run_sufficiency
+        return run_sufficiency(args.run,output=args.suff_output,device=args.device,
+           folds=args.suff_folds,epochs=args.suff_epochs,batch_size=args.suff_batch,
+           hidden=args.suff_hidden,lr=args.suff_lr,seed=args.suff_seed,
+           patience=args.suff_patience)
+    causal_defaults={'causal_output':None,'causal_pairs':120,'causal_top':4,
+        'causal_controls':3,'causal_permutations':99,'causal_certified_cases':96,
+        'causal_skip_certified':False,'causal_seed':47}
+    if args.phase!='head-100-causal-path' and any(
+            getattr(args,k)!=v for k,v in causal_defaults.items()):
+        raise ValueError('GAMER_CAUSAL_FLAGS_ONLY_CAUSAL_PATH')
+    if args.phase=='head-100-causal-path':
+        if args.steps is not None:raise ValueError('GAMER_CAUSAL_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_causal_path import run_causal
+        return run_causal(args.run,output=args.causal_output,device=args.device,
+           max_pairs=args.causal_pairs,top=args.causal_top,controls=args.causal_controls,
+           permutations=args.causal_permutations,certified_cases=args.causal_certified_cases,
+           skip_certified=args.causal_skip_certified,seed=args.causal_seed)
+    info_defaults={'info_output':None,'info_stages':None,'info_folds':4,
+        'info_top':8,'info_tile_width':64,'info_permutations':99,'info_seed':47}
+    if args.phase!='head-100-localize-information' and any(
+            getattr(args,k)!=v for k,v in info_defaults.items()):
+        raise ValueError('GAMER_INFORMATION_FLAGS_ONLY_LOCALIZE_INFORMATION')
+    if args.phase=='head-100-localize-information':
+        if args.steps is not None:raise ValueError('GAMER_INFORMATION_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_information_localization import run_localization
+        stages=tuple(v.strip() for v in args.info_stages.split(',')) if args.info_stages else None
+        return run_localization(args.run,output=args.info_output,stages=stages,
+             folds=args.info_folds,seed=args.info_seed,top=args.info_top,
+             tile_width=args.info_tile_width,permutations=args.info_permutations)
+    shared_defaults={'shared_output':None,'shared_stages':None,'shared_folds':4,
+        'shared_steps':90,'shared_controls':1,'shared_seed':47,'shared_sketch_dim':256}
+    if args.phase!='head-100-shared-information' and any(
+            getattr(args,k)!=v for k,v in shared_defaults.items()):
+        raise ValueError('GAMER_SHARED_FLAGS_ONLY_SHARED_INFORMATION')
+    if args.phase=='head-100-shared-information':
+        if args.steps is not None:raise ValueError('GAMER_SHARED_READ_ONLY_NO_TRAINING_STEPS')
+        from tools.nanojev_gamer_v1_shared_information import run_shared
+        stages=tuple(v.strip() for v in args.shared_stages.split(',')) if args.shared_stages else None
+        return run_shared(args.run,output=args.shared_output,stages=stages,
+            folds=args.shared_folds,steps=args.shared_steps,controls=args.shared_controls,
+            seed=args.shared_seed,sketch_dim=args.shared_sketch_dim)
+    if args.phase in ('head-100-number-distance','head-100-number-distance-analyze'):
+        if args.steps is not None:raise ValueError('GAMER_NUMBER_DISTANCE_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_number_distance import run_distance,analyze_capture
+        if args.phase=='head-100-number-distance-analyze':
+            if any(getattr(args,k)!=v for k,v in distance_defaults.items() if k not in (
+                    'distance_output','distance_folds','distance_controls')):
+                raise ValueError('GAMER_DISTANCE_ANALYZE_UNUSED_CAPTURE_FLAGS')
+            return analyze_capture(args.run,output=args.distance_output,
+                folds=args.distance_folds,controls=args.distance_controls)
+        return run_distance(args.run,output=args.distance_output,device=args.device,
+            contexts=args.distance_contexts,width=args.distance_width,
+            checkpoint=args.distance_checkpoint,folds=args.distance_folds,
+            controls=args.distance_controls)
+    if args.phase=='head-100-radius-double-holdout':
+        if args.steps is not None:
+            raise ValueError('GAMER_DOUBLE_HOLDOUT_READ_ONLY_NO_STEPS')
+        from tools.nanojev_gamer_v1_radius_double_holdout import run_double_holdout
+        stages=(tuple(x.strip() for x in args.radius_double_stages.split(','))
+                if args.radius_double_stages else None)
+        return run_double_holdout(args.run,output=args.radius_double_output,
+            folds=args.radius_double_folds,rank=args.radius_double_rank,
+            controls=args.radius_double_controls,seed=args.radius_double_seed,
+            stages=stages)
     if args.phase=='head-100-radius-recovery':
         if args.steps is not None:
             raise ValueError('GAMER_RADIUS_RECOVERY_READ_ONLY_NO_STEPS')

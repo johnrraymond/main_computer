@@ -23,8 +23,8 @@ def sample(app, width):
                'status':dict(x=x,y=530,w=width-24,h=45)}
         if wide:
             zones['workspace']['w']=width*.60
-            zones['tools'].update(x=x+width*.6+10,y=150,w=width*.25)
-            zones['status']['y']=390
+            zones['tools'].update(x=x,y=320,w=width-24)
+            zones['status']['y']=530
     else:
         zones={'navigator':dict(x=x,y=40,w=width-24,h=100),
                'workspace':dict(x=x,y=150,w=width-24,h=160),
@@ -116,9 +116,93 @@ class OtherAppOracleUnitTests(unittest.TestCase):
             staged=frob._paired_candidate_pages(stage,apps)
             for app in apps:
                 self.assertEqual(baseline[app]['ir'],staged[app]['ir'])
-                self.assertFalse(frob._paired_plan_present(baseline[app]['html']))
+                self.assertEqual(frob._paired_plan_present(baseline[app]['html']),app=='task-manager')
                 self.assertTrue(frob._paired_plan_present(staged[app]['html']))
                 self.assertEqual(frob._paired_plan_contract(staged[app]['html'],staged[app]['ir'])['status'],'PASS')
+
+    def test_hosted_populated_connections_are_readable_and_negative_sensitive(self):
+        # Host-rendered, unplanned markup must pass. A staged grid alone cannot
+        # earn acceptance when the actual hosted Connections view is squeezed.
+        from playwright.sync_api import sync_playwright
+        from tools.mcel_phase2b_browser import launch_semantic_browser
+        html=frob._paired_baseline_pages(('task-manager',))['task-manager']['html']
+        with sync_playwright() as pw:
+            browser,_=launch_semantic_browser(pw)
+            try:
+                for width in (320,390,560,1100,1272):
+                    with self.subTest(width=width):
+                        page=frob._paired_browser_page(browser,html,width)
+                        try:
+                            result=oracle.populated_monitor_collection_oracle(page,width)
+                            self.assertEqual(result['status'],'PASS',result)
+                        finally:page.close()
+                # Force the original 170px-sidebar defect; the exact same
+                # oracle must reject it even though every record still exists.
+                page=frob._paired_browser_page(browser,html,1100)
+                try:
+                    page.add_style_tag(content='''[data-mcel-region$=".connections"]{grid-column:1!important;width:170px!important;max-width:170px!important}''')
+                    result=oracle.populated_monitor_collection_oracle(page,1100)
+                    self.assertEqual(result['status'],'FAIL',result)
+                    self.assertIn('connections-primary-width-deficit',result['failures'])
+                finally:page.close()
+            finally:browser.close()
+
+    def test_hosted_schedule_workflow_is_readable_and_negative_sensitive(self):
+        # This checks the actual hosted page, not the separate staged
+        # composition candidate. No form is submitted or schedule mutated.
+        from playwright.sync_api import sync_playwright
+        from tools.mcel_phase2b_browser import launch_semantic_browser
+        html=frob._paired_baseline_pages(('task-manager',))['task-manager']['html']
+        unplanned=frob._paired_unplanned_html(html)
+        with sync_playwright() as pw:
+            browser,_=launch_semantic_browser(pw)
+            try:
+                for width in (320,390,560,1100,1272):
+                    with self.subTest(width=width):
+                        page=frob._paired_browser_page(browser,html,width)
+                        try:
+                            result=oracle.governed_multifield_workflow_oracle(page,width)
+                            self.assertEqual(result['status'],'PASS',result)
+                            self.assertFalse(any(x['path'].endswith(('/action','/schedule/create','/schedule/run','/schedule/delete')) for x in page.evaluate('window.__pairedCalls')))
+                        finally:page.close()
+                        old=frob._paired_browser_page(browser,unplanned,width)
+                        try:
+                            result=oracle.governed_multifield_workflow_oracle(old,width)
+                            self.assertEqual(result['status'],'FAIL',result)
+                            self.assertIn('governed-workflow-missing-tool-tabs',result['failures'])
+                        finally:old.close()
+                # The documented failure was a 150-185px sidebar even with
+                # correct state and controls. The oracle must detect it.
+                page=frob._paired_browser_page(browser,html,1100)
+                try:
+                    page.add_style_tag(content="""[data-mcel-region$=".schedules"]{width:170px!important;max-width:170px!important}""")
+                    result=oracle.governed_multifield_workflow_oracle(page,1100)
+                    self.assertEqual(result['status'],'FAIL',result)
+                    self.assertIn('governed-workflow-confined-to-sidebar',result['failures'])
+                finally:page.close()
+                page=frob._paired_browser_page(browser,html,1100)
+                try:
+                    page.evaluate("""() => document.querySelector('[data-mcel-region$=".schedules"] form').remove()""")
+                    result=oracle.governed_multifield_workflow_oracle(page,1100)
+                    self.assertEqual(result['status'],'FAIL',result)
+                    self.assertIn('governed-workflow-not-visible-in-tool-zone',result['failures'])
+                finally:page.close()
+            finally:browser.close()
+
+    def test_governed_workflow_width_is_derived_from_semantics(self):
+        from copy import deepcopy
+        from main_computer.mcel_semantic_other_apps_host import compile_semantic_app
+        from main_computer.mcel_knowledge.workspace_plan import plan_workspace
+        ir=compile_semantic_app('task-manager')
+        plan=plan_workspace(ir)
+        tools=next(x for x in plan['zones'] if x['id']=='tools')
+        self.assertEqual(tools['ladder']['wide'],'dock-bottom')
+        self.assertIn('consequential-multifield-workflow-needs-width',tools['reasons'])
+        # Remove the governing intent's consequential risk, not a UI label.
+        alternative=deepcopy(ir)
+        next(x for x in alternative['intents'] if x['id']=='intent:create-schedule')['risk']='external-read'
+        alt_tools=next(x for x in plan_workspace(alternative)['zones'] if x['id']=='tools')
+        self.assertEqual(alt_tools['ladder']['wide'],'dock-end')
 
     def test_real_browser_negative_controls_reject_corrupted_geometry(self):
         executable=shutil.which('chromium') or shutil.which('chromium-browser') or os.environ.get('MCEL_CHROMIUM_EXECUTABLE')

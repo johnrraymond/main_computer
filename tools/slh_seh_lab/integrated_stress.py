@@ -11,11 +11,12 @@ from dataclasses import dataclass
 import random
 import math
 import secrets
+import socket
 import ssl
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from main_computer.hub_cli_live_session import identify_hub_protocol, issue_cli_multisession_authorization
 from main_computer.hub_credit_indexer import wallet_account_id
@@ -458,10 +459,65 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
                     'latency_ms': round((time.monotonic()-began)*1000, 2)}
     if profile.causal_probe or profile.strict_acceptance:
         assert_fleet('immediately_before_paid_requests')
+    # R5: force protocol refusals to compete with real paid-job admission.
+    # Requests carry no credentials and no body; size refusal must precede
+    # authorization, scheduling, ledger holds, and model execution.
+    def malicious_http():
+        address = urlsplit(hub_url)
+        try:
+            with socket.create_connection((address.hostname, address.port), timeout=4) as attacker:
+                attacker.settimeout(5)
+                attacker.sendall((
+                    'POST /api/hub/v1/work/requests HTTP/1.1\r\n'
+                    f'Host: {address.hostname}\r\n'
+                    'Content-Length: 2097153\r\n'
+                    'Connection: close\r\n\r\n').encode('ascii'))
+                line = attacker.recv(256).split(b'\r\n', 1)[0]
+            parts = line.split()
+            return int(parts[1]) if len(parts) >= 2 else None
+        except (OSError, ValueError, IndexError):
+            return None
+
+    def malicious_relay_client():
+        # This stream is not enrolled or authenticated at SLH. Even if it gets
+        # as far as the relay, its 1 MiB+1 byte payload is refused by the
+        # stream frame gate. Do not inject across the primary SLH tunnel.
+        from websockets.sync.client import connect as ws_connect
+        from websockets.exceptions import ConnectionClosed
+        from main_computer.seh.relay import MAX_FRAME
+        try:
+            with ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client/{relay.slh_id}',
+                            open_timeout=5,close_timeout=2) as attacker:
+                attacker.send(b'M'*(MAX_FRAME+1))
+                try:
+                    attacker.recv(timeout=5)
+                except ConnectionClosed:
+                    return True
+            return False
+        except (OSError, ConnectionError, TimeoutError):
+            return False
+
     record('paid_requests_starting', count=profile.requests, concurrency=profile.concurrency)
-    with ThreadPoolExecutor(max_workers=profile.concurrency) as pool:
+    with ThreadPoolExecutor(max_workers=profile.concurrency+2) as pool:
+        refused_http = pool.submit(malicious_http)
+        # A 64-Worker saturation probe has no spare SEH client slot by design;
+        # do not classify its expected capacity refusal as a frame-limit proof.
+        test_ws_limit = profile.workers < 64
+        refused_ws = pool.submit(malicious_relay_client) if test_ws_limit else None
         future_list = [pool.submit(submit, spec) for spec in specs]
         responses = [f.result() for f in as_completed(future_list)]
+        hostile_http_status = refused_http.result()
+        hostile_ws_closed = refused_ws.result() if refused_ws is not None else None
+    record('concurrent_hostile_protocol_probes', http_status=hostile_http_status,
+           websocket_stream_refused=hostile_ws_closed,
+           websocket_probe_scope='tested' if test_ws_limit else 'capacity_probe_excluded')
+    gates['mixed_traffic_http_size_rejection'] = _gate(
+        hostile_http_status == 413, 'malicious HTTP declaration was not rejected 413')
+    if test_ws_limit:
+        gates['mixed_traffic_oversize_relay_stream_refused'] = _gate(
+            hostile_ws_closed is True, 'oversized SEH client stream not closed')
+    # The accounting checks below independently assert zero extra charges,
+    # one earning per accepted paid request, and idempotent replay.
     accepted = [r for r in responses if (r.get('reply') or {}).get('accepted') is True]
     rejected = [r for r in responses if r not in accepted]
     # Transport failures are not legitimate marketplace refusals. Preserve
@@ -532,8 +588,8 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         sum(x.get('session_id') in session_set for x in (after_replay.get('payout_charges') or {}).values()) == len(session_charges)
         and sum(x.get('session_id') in session_set for x in (after_replay.get('worker_earnings') or {}).values()) == len(session_earnings),
         'replayed request changed the ledger')
-    # Real wallet-authorized payout claim and settlement for every successful
-    # stress earning (not just the single-job preflight acceptance lane).
+    # Wallet-authorized claim and pending batch for every successful earning.
+    # NEVER let a Worker self-finalize settlement; independent proof is required.
     payout_ids = [e['earning_id'] for e in session_earnings]
     for sid in session_ids:
         payout = terminals[sid].get('payout') or {}
@@ -551,15 +607,15 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         settlement = _json(hub_url.rstrip('/') + '/api/hub/v1/workers/' +
                            quote(wallet_account_id(private_key_to_address(wallet_key))) + '/payout/settlements',
                            {'multisession_authorization':upstream_auth,
-                            'claim_ids':[claim['claim']['claim_id']], 'settle':True,
-                            'settlement_reference':'stress-' + str(profile.seed) + '-' +
+                            'claim_ids':[claim['claim']['claim_id']],
+                            'idempotency_key':'stress-batch-' + str(profile.seed) + '-' +
                             secrets.token_hex(5)}, timeout=20)
         _gate(settlement.get('ok') is True and
-              (settlement.get('settlement') or {}).get('status') == 'settled',
-              'wallet-authorized payout settlement failed')
-    gates['wallet_authorized_stress_settlement'] = True
+              (settlement.get('settlement') or {}).get('status') == 'batched',
+              'wallet-authorized pending payout batch failed')
+    gates['wallet_authorized_stress_pending_batch'] = True
     record('paid_ledger_verified', succeeded=len(succeeded), failed=failed,
-           replayed=len(sample_replay), settled_earnings=len(payout_ids),
+           replayed=len(sample_replay), batched_earnings=len(payout_ids),
            registered_workers=len(_registered_worker_ids(proxy.status())),
            relay_slh_close_causes=_relay_slh_close_causes(relay))
 
@@ -567,7 +623,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         # ESSENTIAL: the former test only counted Workers after changing reserve.
         # Without this checkpoint it was impossible to tell whether job traffic
         # had already disconnected Workers.
-        assert_fleet('paid_settled_before_reserve_change')
+        assert_fleet('paid_batched_before_reserve_change')
 
     # Enforce a more restrictive private reserve with Workers still attached.
     private_reserve = 50
@@ -578,7 +634,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
     gates['reserve_limits_public_sessions'] = _gate(
         len(slots()) <= limit, 'private reserve exceeded')
     if profile.causal_probe or profile.strict_acceptance:
-        assert_fleet('paid_settled_after_reserve_change')
+        assert_fleet('paid_batched_after_reserve_change')
     record('reserve_changed', max_public=limit, live_sessions=len(slots()),
            registered_workers=len(_registered_worker_ids(proxy.status())),
            relay_slh_close_causes=_relay_slh_close_causes(relay))

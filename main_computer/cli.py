@@ -637,10 +637,8 @@ def _data_god_mode_bridge_prefund(
         _apply_captain_live_defaults,
         _bridge_credit_wei,
         _fetch_hub_credit_balance,
-        _is_missing_bridge_completion_metadata_error,
         _post_hub_json,
         _require_hub_bridge_completion_ready,
-        build_bridge_wallet_funding_import_payload,
         build_captain_options_parser,
         build_captain_runtime,
         normalize_smoke_id,
@@ -747,24 +745,13 @@ def _data_god_mode_bridge_prefund(
         "contract_address": runtime.bridge_escrow_address,
         "chain_id": runtime.chain_id,
     }
-    try:
-        completion = _post_hub_json(
-            runtime.config.hub_url,
-            "/api/hub/v1/credits/wallet-funding/complete",
-            completion_payload,
-            timeout_s=timeout_s,
-        )
-        completion_mode = "complete"
-    except CaptainCliError as exc:
-        if not _is_missing_bridge_completion_metadata_error(exc):
-            raise
-        completion = _post_hub_json(
-            runtime.config.hub_url,
-            "/api/hub/v1/credits/wallet-funding/import",
-            build_bridge_wallet_funding_import_payload(runtime, deposit),
-            timeout_s=timeout_s,
-        )
-        completion_mode = "import"
+    completion = _post_hub_json(
+        runtime.config.hub_url,
+        "/api/hub/v1/credits/wallet-funding/complete",
+        completion_payload,
+        timeout_s=timeout_s,
+    )
+    completion_mode = "complete"
 
     try:
         balance_after_bridge = _fetch_hub_credit_balance(
@@ -1649,16 +1636,46 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 
 
 
+def _compute_hub_url(args: argparse.Namespace) -> str:
+    """Select the SAME mainnet registry as Captain/Data; never default to dev Hub.
+
+    Explicit URL overrides remain possible for an operator's selected Hub, but
+    the implicit URL must come from the network registry, not MainComputerConfig's
+    localhost development default. This Patch 3 command currently uses mainnet
+    Mother's officer wallet, so a testnet endpoint must not silently inherit it.
+    """
+    from urllib.parse import urlparse
+    from main_computer.hub_networks import load_hub_network_registry
+
+    profile = load_hub_network_registry().get('mainnet')
+    if profile is None or not str(profile.hub_url or '').strip():
+        raise RuntimeError('Mainnet Stable Hub profile is unavailable; refusing localhost fallback.')
+    expected = str(profile.hub_url).strip().rstrip('/')
+    explicit = str(getattr(args, 'hub_url', '') or '').strip().rstrip('/')
+    selected = explicit or expected
+    parsed = urlparse(selected)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError('Public mainnet Stable Hub URL must use HTTPS with no embedded credentials')
+    # This direct Worker/Requester path uses Mother MAINNET wallet authority.
+    # Prevent a testnet URL from selecting a different network's Hub with that key.
+    testnet = load_hub_network_registry().get('testnet')
+    if testnet and (selected.rstrip('/') == str(testnet.hub_url).strip().rstrip('/')):
+        raise ValueError('Testnet Hub cannot use mainnet Mother officer wallet')
+    return selected
+
+
 def cmd_worker(args: argparse.Namespace) -> int:
-    """Multiple real Worker sessions, one existing NanoJev service."""
+    """Run real model-bound Workers sharing the existing NanoJev service."""
     from main_computer.operational_compute import run_worker
     from main_computer.config import MainComputerConfig
+
     cfg = MainComputerConfig.from_env()
     try:
+        hub_url = _compute_hub_url(args) if args.via == 'hub' else ''
         return run_worker(
             model=args.model, count=args.count, via=args.via,
             base_url=args.nanojev_base_url or cfg.nanojev_base_url,
-            hub_url=args.hub_url or cfg.hub_url, officer=args.officer,
+            hub_url=hub_url, officer=args.officer,
             price=args.price, ring=args.ring, max_requests=args.max_requests)
     except (RuntimeError, ValueError, OSError) as exc:
         print(f'Worker refused: {exc}', file=__import__('sys').stderr)
@@ -1666,16 +1683,14 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
 
 def cmd_requester(args: argparse.Namespace) -> int:
-    """Choose an exact model and submit through Hub or private SLH."""
+    """Submit real paid work via selected Stable Hub or private SLH."""
     from main_computer.operational_compute import run_requester
     from main_computer.providers.nanojev import CLEF_EVALUATE, CLEF_MODEL
-    from main_computer.config import MainComputerConfig
-    cfg = MainComputerConfig.from_env()
+
     try:
         if args.payload_file:
             payload = json.loads(args.payload_file.read_text(encoding='utf-8-sig'))
         elif args.model == CLEF_MODEL and (not args.operation or args.operation == CLEF_EVALUATE):
-            # A genuine inference smoke input, NOT a canned result.
             payload = {'states':[{'id':'cli-acceptance',
                 'state':'An agent must decide between a safe route and a dangerous route.',
                 'questions':{'route':{'type':'choice',
@@ -1684,9 +1699,10 @@ def cmd_requester(args: argparse.Namespace) -> int:
                                 'dangerous':'Take the dangerous route.'}}}}]}
         else:
             raise ValueError('A JSON --payload-file is required for this operation')
+        hub_url = _compute_hub_url(args) if args.to == 'hub' else ''
         return run_requester(
             model=args.model, operation=args.operation or CLEF_EVALUATE,
-            payload=payload, to=args.to, hub_url=args.hub_url or cfg.hub_url,
+            payload=payload, to=args.to, hub_url=hub_url,
             officer=args.officer, max_price=args.max_price,
             timeout_s=args.timeout_s, submit=args.submit,
             request_id=args.request_id)
@@ -1704,25 +1720,25 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument('--count', type=int, default=1, help='Independent Worker sessions (default 1).')
     worker.add_argument('--via', choices=['slh', 'seh', 'hub'], default='slh',
                         help='SLH managed local sessions (default), verified SEH outbound eligibility, or direct Stable Hub.')
-    worker.add_argument('--nanojev-base-url', default='', help='Override the existing managed NanoJev service URL.')
-    worker.add_argument('--hub-url', default='', help='Stable Hub URL from existing configuration by default.')
-    worker.add_argument('--officer', default='o0', help='Existing Worker seller wallet (default o0; requester defaults to o3).')
+    worker.add_argument('--nanojev-base-url', default='', help='Override managed NanoJev service URL.')
+    worker.add_argument('--hub-url', default='', help='Explicit mainnet Stable Hub override; defaults to selected mainnet registry profile.')
+    worker.add_argument('--officer', default='o0', help='Existing Worker seller wallet (default O0).')
     worker.add_argument('--price', default='1', help='Marketplace credits per request (default 1).')
     worker.add_argument('--ring', type=int, default=3, choices=[1, 2, 3])
     worker.add_argument('--max-requests', type=int, default=0, help='Stop after N accepted Hub terminals (default: until Ctrl+C).')
     worker.set_defaults(func=cmd_worker)
 
-    requester = sub.add_parser('requester', help='Submit a model-bound real request via Stable Hub or SLH.')
+    requester = sub.add_parser('requester', help='Submit model-bound real work via Stable Hub or SLH.')
     requester.add_argument('--model', required=True, help='Exact requested model, no fallback.')
     requester.add_argument('--to', choices=['hub', 'slh'], default='hub', help='Stable Hub or local private SLH.')
-    requester.add_argument('--operation', default='', help='Exact model operation (default: native CLEF evaluation).')
+    requester.add_argument('--operation', default='', help='Exact model operation (default native CLEF evaluation).')
     requester.add_argument('--payload-file', type=Path, help='Native operation JSON. CLEF evaluate has a built-in smoke input.')
-    requester.add_argument('--hub-url', default='', help='Configured Stable Hub URL by default.')
-    requester.add_argument('--officer', default='o3', help='Existing requester wallet selector for Hub.')
+    requester.add_argument('--hub-url', default='', help='Explicit mainnet Stable Hub override; defaults to mainnet registry profile.')
+    requester.add_argument('--officer', default='o3', help='Existing buyer wallet (default O3).')
     requester.add_argument('--max-price', default='1', help='Maximum authorized Hub price in credits.')
     requester.add_argument('--timeout-s', type=float, default=1200)
-    requester.add_argument('--request-id', default='', help='Retain a request ID for idempotent retries.')
-    requester.add_argument('--submit', action='store_true', help='Execute real billable work; omitted means preview only.')
+    requester.add_argument('--request-id', default='', help='Idempotent request ID.')
+    requester.add_argument('--submit', action='store_true', help='Authorize real charged work (omitted: preview only).')
     requester.set_defaults(func=cmd_requester)
 
     chat = sub.add_parser("chat", help="Pass a prompt through the selected provider.")

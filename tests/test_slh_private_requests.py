@@ -90,7 +90,7 @@ class TestPrivateRequests(unittest.TestCase):
         self.assertEqual(status,200,result)
         self.assertEqual(result['status'],'SUCCEEDED')
         self.assertEqual(result['result']['response']['content'],'computed 10')
-        self.assertEqual(result['worker_device_id'],'worker-1')
+        self.assertNotIn('worker_device_id', result)
         self.assertEqual(len(result['result_hash']),64)
         st,reloaded=self.read(requester,'x')
         self.assertEqual(st,200)
@@ -133,7 +133,7 @@ class TestPrivateRequests(unittest.TestCase):
         status, result = self.submit(requester,good)
         self.assertEqual(status,200,result)
         self.assertEqual(result['status'],'SUCCEEDED',result)
-        self.assertEqual(result['worker_device_id'],'clef-worker')
+        self.assertNotIn('worker_device_id', result)
         self.assertEqual(len(calls),1)
         self.assertEqual(result['result']['solution']['model']['family'],CLEF_MODEL)
         invalid = {**good,'request_id':'clef-native-invalid',
@@ -349,7 +349,7 @@ def test_live_hub_single_worker_credit_recovery_reclaims_for_affordable_local_re
         assert witnessed.get('busy_before_release') is True
         assert code == 200, response
         assert response['status'] == 'SUCCEEDED', response
-        assert response['worker_device_id'] == 'worker-1'
+        assert 'worker_device_id' not in response
         assert response['result']['response']['content'] == 'computed 10'
         assert hub.worker_session_directory.get_owner(connection)['status'] == 'closed'
         assert hub.worker_market_directory.get_worker(connection)['status'] == 'closed'
@@ -441,7 +441,7 @@ def test_live_hub_two_workers_reclaim_one_without_disturbing_other_public_slot()
         original = dict(first['upstream_connection_ids'])
         code, outcome = fixture.submit(token, fixture.req('two-worker-local'))
         assert code == 200 and outcome['status'] == 'SUCCEEDED', outcome
-        assert outcome['worker_device_id'] == 'worker-1'
+        assert 'worker_device_id' not in outcome
         assert hub.worker_session_directory.get_owner(original['worker-1'])['status'] == 'closed'
         assert hub.worker_session_directory.get_owner(original['worker-2'])['status'] == 'live'
         assert set(proxy.sessions) == {'worker-2'}

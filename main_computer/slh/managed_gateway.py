@@ -642,7 +642,7 @@ class SLHManagedGateway:
         from websockets.sync.server import serve
         if not self.authority.initialized():raise RuntimeError('SLH administrator bootstrap required before worker listener')
         with serve(self.handler,self.host,self.port,ssl=self.ssl_context,
-                   max_size=2*1024*1024,open_timeout=8) as server:
+                   max_size=2*1024*1024,max_queue=4,open_timeout=8) as server:
             self._server=server
             self.port=server.socket.getsockname()[1]
             from main_computer.slh.seh_autoconnect import read_seh_settings, SEHAutoConnection

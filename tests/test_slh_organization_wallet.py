@@ -25,7 +25,7 @@ class FakeHub:
         self.url = url
         self.pin = pin
 
-    def request(self, method, path, data=None):
+    def request(self, method, path, data=None, *, bearer_token=''):
         if self.state.get('down'):
             raise SLHError('HUB_ACCOUNT_UNAVAILABLE', 503)
         if method == 'POST':
@@ -40,6 +40,7 @@ class FakeHub:
                     'wallet_address':self.state.get('wallet',WALLET),
                     'account_id':self.state.get('account',ACCOUNT)}
         assert method == 'GET' and path.endswith('wallet_address='+WALLET)
+        assert bearer_token in {'secret-msk','new-msk','same-wallet-new-msk','production-format-key'}
         amount = self.state.get('available',str(CREDIT_WEI_PER_CREDIT))
         balance = {'available_credit_wei':amount,'held_credit_wei':self.state.get('held','0'),
                    'spent_credit_wei':'0','bridge_completed_credit_wei':'0',
@@ -249,6 +250,7 @@ def test_actual_http_hub_validation_and_balance_protocol(tmp_path):
                         'multisession_key_id':payload['multisession_authorization']['multisession_key_id']})
         def do_GET(self):
             assert self.path=='/api/hub/v1/credits/balance?wallet_address='+WALLET
+            assert self.headers.get('Authorization') == 'Bearer production-format-key'
             self._json({'ok':True,'wallet_address':WALLET,'account_id':ACCOUNT,'unit':'compute_credit',
                         'account':{'account_id':ACCOUNT,'wallet_address':WALLET,'owner_address':WALLET,
                                    'available_credit_wei':state['available'],'held_credit_wei':'0'}})

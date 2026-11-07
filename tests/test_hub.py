@@ -645,14 +645,9 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(audit_payout_summary["pending_credits"], 3)
                 self.assertEqual(audit_payout_summary["pending_credits_exact"], 3)
 
-                claim_request = Request(
-                    f"{hub_base}/api/hub/payouts/claim",
-                    data=json.dumps({"node_id": "gpu-worker-01", "exact": True}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urlopen(claim_request, timeout=5) as response:
-                    claim = json.loads(response.read().decode("utf-8"))
+                # The former public HTTP payout claim has been deleted.
+                # The ledger method is still available to trusted internal code.
+                claim = hub.energy_ledger.claim_payouts(node_id="gpu-worker-01", exact=True)
                 self.assertEqual(claim["claimed_credits"], 3)
                 self.assertEqual(claim["claimed_count"], 1)
                 self.assertEqual(claim["transaction"]["kind"], "hub_worker_payout_claim")

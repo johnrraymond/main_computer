@@ -1,0 +1,152 @@
+/* MCEL Chat Console semantic composition. The outer host (Calculator, etc.)
+ * owns placement; the Chat Console owns responsive layout INSIDE that slot.
+ * Use element/container geometry, never the outer browser viewport. */
+[data-mcel-semantic-chat] {
+  container-name: mcel-chat-host;
+  container-type: inline-size;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+[data-mcel-chat-role="shell"],
+[data-mcel-chat-role="thread-layout"],
+[data-mcel-chat-role="workspace"],
+[data-mcel-chat-role="notebook"],
+[data-mcel-chat-role="cell"],
+[data-mcel-chat-role="output"],
+[data-mcel-chat-role="thinking"],
+[data-mcel-chat-role="thinking-collection"],
+[data-mcel-chat-role="thinking-card"] {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+[data-mcel-chat-role="thread-layout"] {
+  grid-template-columns: minmax(0, 13.5rem) minmax(0, 1fr);
+}
+[data-mcel-chat-role="workspace"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-mcel-chat-role="notebook"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow-wrap: anywhere;
+}
+[data-mcel-chat-role="cell"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  min-width: 0;
+  padding-top: 12px;
+  border-radius: 8px;
+}
+[data-mcel-chat-role="cell-choices"] {
+  /* Type choices are part of the cell, not absolutely positioned outside it. */
+  position: static;
+  inset: auto;
+  transform: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-mcel-chat-role="cell-choices"] .chat-cell-tab {
+  position: static;
+  transform: none;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 7px;
+}
+[data-mcel-chat-role="cell-choices"] .chat-cell-tab.active {
+  border-color: var(--gold);
+}
+[data-mcel-chat-role="cell-body"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+}
+[data-mcel-chat-role="cell-editor"] {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+[data-mcel-chat-role="cell-actions"] {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-mcel-chat-role="rag-controls"] {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[data-mcel-chat-role="rag-controls"] > *,
+[data-mcel-chat-role="rag-controls"] label {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[data-mcel-chat-role="thinking-collection"] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  min-width: 0;
+}
+[data-mcel-chat-role="thinking-card"] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[data-mcel-chat-role="output"].chat-console-output-indent {
+  margin-left: min(1.25rem, 3%);
+  width: calc(100% - min(1.25rem, 3%));
+}
+[data-mcel-chat-role="output"] pre,
+[data-mcel-chat-role="output"] table,
+[data-mcel-chat-role="output"] img {
+  max-width: 100%;
+}
+[data-mcel-chat-role="output"] pre {
+  overflow-x: auto;
+}
+@container mcel-chat-host (max-width: 780px) {
+  [data-mcel-chat-role="thread-layout"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-mcel-chat-role="threads"] {
+    max-height: 220px;
+    overflow: auto;
+  }
+}
+@container mcel-chat-host (max-width: 560px) {
+  [data-mcel-chat-role="shell"] {
+    padding: 8px;
+    gap: 8px;
+  }
+  [data-mcel-chat-role="workspace"],
+  [data-mcel-chat-role="notebook"] {
+    padding: 8px;
+    gap: 12px;
+  }
+  [data-mcel-chat-role="cell"] {
+    padding: 8px;
+    gap: 8px;
+  }
+  [data-mcel-chat-role="output"].chat-console-output-indent {
+    margin-left: 0;
+    width: 100%;
+  }
+  [data-mcel-chat-role="thinking-collection"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

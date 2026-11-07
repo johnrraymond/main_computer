@@ -18,18 +18,15 @@ from main_computer.captain_cli import (
     _apply_captain_smoke_defaults,
     _extract_ai_response_text,
     _hub_http_headers,
-    _is_missing_bridge_completion_metadata_error,
     _pickup_hub_request_result,
     _print_captain_result,
     _sum_charge_credit_wei,
-    build_bridge_wallet_funding_import_payload,
     build_captain_options_parser,
     build_hub_request_payload,
     normalize_smoke_id,
     parse_captain_invocation,
     resolve_captain_wallet,
     run_captain,
-    send_captain_bridge_refund,
 )
 
 
@@ -395,50 +392,6 @@ def test_print_captain_result_shows_nested_worker_response(capsys) -> None:
 
 
 
-def test_bridge_wallet_funding_import_payload_uses_deposit_receipt() -> None:
-    runtime = CaptainRuntime(
-        config=MainComputerConfig(workspace=Path.cwd(), hub_url="https://hub.example"),
-        deployment_path=Path("runtime/deployments/mainnet/latest.json"),
-        deployment={},
-        wallet=CaptainWallet(
-            selector="captain",
-            office="O0",
-            title="Captain",
-            address="0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-            private_key="0x" + "1" * 64,
-        ),
-        rpc_url="https://rpc.example",
-        chain_id=42424240,
-        xlag_address="0x1111111111111111111111111111111111111111",
-        network="mainnet",
-        bridge_escrow_address="0x2222222222222222222222222222222222222222",
-        bridge_controller_address="0x3333333333333333333333333333333333333333",
-    )
-    payload = build_bridge_wallet_funding_import_payload(
-        runtime,
-        {
-            "deposit_id": "0x" + "a" * 64,
-            "transaction_hash": "0x" + "b" * 64,
-            "amount_credit_wei": "1000000000000000000",
-            "receipt": {
-                "blockNumber": "0x2a",
-                "logs": [
-                    {"address": "0x9999999999999999999999999999999999999999", "logIndex": "0x1"},
-                    {"address": "0x2222222222222222222222222222222222222222", "logIndex": "0x7"},
-                ],
-            },
-        },
-    )
-
-    assert payload["wallet_address"] == "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F"
-    assert payload["chain_id"] == 42424240
-    assert payload["contract_address"] == "0x2222222222222222222222222222222222222222"
-    assert payload["tx_hash"] == "0x" + "b" * 64
-    assert payload["log_index"] == 7
-    assert payload["block_number"] == 42
-    assert payload["payment_amount_base_units"] == "1000000000000000000"
-    assert payload["credits_granted_wei"] == "1000000000000000000"
-    assert payload["metadata"]["completion_fallback"] is True
 
 
 def _write_mainnet_contract_registry(root: Path, escrow: str, *, reserve: str = "0x" + "1" * 40) -> None:
@@ -532,170 +485,30 @@ def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch
     assert submit_payload["account_id"] == MOTHER_O0_ADDRESS.lower()
 
 
-def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge_metadata(tmp_path, monkeypatch) -> None:
-    _stub_verified_mother(monkeypatch)
-    monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
-    escrow = "0x2222222222222222222222222222222222222222"
-    _write_mainnet_contract_registry(tmp_path, escrow)
-    monkeypatch.setattr("main_computer.captain_cli._get_hub_json", lambda *_a, **_k: {
-        "ok": True, "deployment": {"chain_id": 42424240, "contract_address": escrow,
-                                  "bridge_controller_address": "0x" + "3" * 40},
-    })
-    deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
-    deployment_path.parent.mkdir(parents=True)
-    deployment_path.write_text(
-        json.dumps(
-            {
-                "chain": {
-                    "network": "bridge-net",
-                    "chain_id": 42424240,
-                    "rpc_url": "https://rpc.example",
-                },
-                "contracts": {
-                    "xlag-bridge-reserve": {"address": "0x1111111111111111111111111111111111111111"},
-                    "hub_credit_bridge_escrow": {
-                        "address": escrow,
-                        "bridge_controller_address": "0x3333333333333333333333333333333333333333",
-                    },
-                },
-                "offices": [
-                    {
-                        "office": "O0",
-                        "title": "Captain",
-                        "address": "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    calls: list[tuple[str, dict[str, object]]] = []
 
-    def fake_post_hub_json(hub_url: str, path: str, payload: dict[str, object], *, timeout_s: float) -> dict[str, object]:
-        calls.append((path, payload))
-        if path == "/api/hub/v1/requests/quote":
-            return {"ok": True, "quote_id": "quote-1"}
-        if path == "/api/hub/v1/credits/wallet-funding/complete":
-            raise CaptainCliError(
-                "Hub request failed for https://mainnet-hub.greatlibrary.io/api/hub/v1/credits/wallet-funding/complete "
-                "with HTTP 400: {\"error\": \"Could not find a usable runtime/deployments/current.json "
-                "with hub_credit_bridge_escrow metadata.\"}"
-            )
-        if path == "/api/hub/v1/credits/wallet-funding/import":
-            return {"ok": True, "funding_model": "hub_credit_bridge_escrow_wallet_v1"}
-        if path == "/api/hub/v1/requests":
-            return {"ok": True}
-        raise AssertionError(f"unexpected hub path: {path}")
 
-    monkeypatch.setattr("main_computer.captain_cli._post_hub_json", fake_post_hub_json)
-    monkeypatch.setattr(
-        "main_computer.captain_cli._fetch_hub_credit_balance",
-        lambda *args, **kwargs: {"ok": True, "account": {"available_credit_wei": "0"}},
+
+
+def test_captain_bridge_completion_missing_metadata_fails_closed(monkeypatch) -> None:
+    from main_computer.captain_cli import _complete_captain_bridge_deposit
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(hub_url="https://mainnet-hub.greatlibrary.io"),
+        wallet=SimpleNamespace(address="0x" + "1" * 40),
+        bridge_escrow_address="0x" + "2" * 40,
+        chain_id=42424240,
     )
-    monkeypatch.setattr(
-        "main_computer.captain_cli.send_captain_bridge_deposit",
-        lambda *args, **kwargs: {
+    calls = []
+    def denied(url, path, body, *, timeout_s):
+        calls.append(path)
+        raise CaptainCliError("Hub bridge deployment metadata is missing")
+    monkeypatch.setattr("main_computer.captain_cli._post_hub_json", denied)
+    with pytest.raises(CaptainCliError, match="metadata"):
+        _complete_captain_bridge_deposit(runtime, {
             "deposit_id": "0x" + "a" * 64,
             "transaction_hash": "0x" + "b" * 64,
-            "amount_credit_wei": "1000000000000000000",
-            "receipt": {"blockNumber": "0x2a", "logs": [{"address": escrow, "logIndex": "0x0"}]},
-        },
-    )
+        }, timeout_s=5)
+    assert calls == ["/api/hub/v1/credits/wallet-funding/complete"]
 
-    exit_code = run_captain(
-        [
-            "smoke",
-            "john",
-            "luc",
-            "picard",
-            "make",
-            "it",
-            "so",
-            "--state",
-            str(deployment_path),
-            "--hub-url",
-            "https://mainnet-hub.greatlibrary.io",
-            "--poll-seconds",
-            "0",
-            "--no-bridge-refund",
-        ],
-        config=MainComputerConfig(workspace=tmp_path),
-        cwd=tmp_path,
-    )
-
-    assert exit_code == 0
-    paths = [path for path, _payload in calls]
-    assert paths == [
-        "/api/hub/v1/requests/quote",
-        "/api/hub/v1/credits/wallet-funding/complete",
-        "/api/hub/v1/credits/wallet-funding/import",
-        "/api/hub/v1/requests",
-    ]
-    import_payload = calls[2][1]
-    assert import_payload["wallet_address"] == MOTHER_O0_ADDRESS
-    assert import_payload["contract_address"] == escrow
-    assert import_payload["credits_granted_wei"] == "1000000000000000000"
-    assert import_payload["metadata"]["completion_fallback"] is True
-
-
-def test_missing_bridge_completion_metadata_detector_is_narrow() -> None:
-    assert _is_missing_bridge_completion_metadata_error(
-        CaptainCliError(
-            "Hub request failed for /api/hub/v1/credits/wallet-funding/complete with HTTP 400: "
-            "Could not find runtime/deployments/current.json with hub_credit_bridge_escrow metadata."
-        )
-    )
-    assert not _is_missing_bridge_completion_metadata_error(
-        CaptainCliError("Hub request failed for /api/hub/v1/credits/wallet-funding/complete with HTTP 500: database down")
-    )
-    assert not _is_missing_bridge_completion_metadata_error(
-        CaptainCliError("Hub request failed for /api/hub/v1/requests/quote with HTTP 400: hub_credit_bridge_escrow metadata")
-    )
-
-
-def test_captain_bridge_refund_is_signed_by_hub_not_local_controller(monkeypatch) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    def fake_post(hub_url: str, path: str, payload: dict[str, object], *, timeout_s: float) -> dict[str, object]:
-        assert hub_url == "https://mainnet-hub.greatlibrary.io"
-        assert timeout_s == 30.0
-        calls.append((path, payload))
-        return {"ok": True, "signing_mode": "hub-bridge-controller"}
-
-    monkeypatch.setattr("main_computer.captain_cli._post_hub_json", fake_post)
-    runtime = SimpleNamespace(
-        wallet=SimpleNamespace(address="0x1111111111111111111111111111111111111111"),
-        config=SimpleNamespace(hub_url="https://mainnet-hub.greatlibrary.io"),
-    )
-
-    result = send_captain_bridge_refund(
-        runtime,
-        bridge_credit_wei=2 * 10**18,
-        charged_credit_wei=10**18,
-        smoke_id="0x" + "ab" * 32,
-        request_id="request-1",
-        deposit_id="0x" + "cd" * 32,
-        controller_private_key="0x" + "99" * 32,
-        timeout_s=30.0,
-    )
-
-    assert result["ok"] is True
-    assert result["signing_mode"] == "hub-bridge-controller"
-    assert len(calls) == 1
-    path, payload = calls[0]
-    assert path == "/api/hub/v1/credits/bridge-reconciliation/execute"
-    assert payload["request_id"] == "request-1"
-    assert payload["deposit_id"] == "0x" + "cd" * 32
-    assert payload["wallet_address"] == runtime.wallet.address
-    assert payload["expected_bridge_credit_wei"] == str(2 * 10**18)
-    assert payload["expected_charged_credit_wei"] == str(10**18)
-    assert "rectified_credit_wei" not in payload
-    assert "withdrawn_credit_wei" not in payload
-    assert "recipient_address" not in payload
-    assert "rectification_id" not in payload
-    assert "withdrawal_id" not in payload
-    assert "private_key" not in payload
-    assert "99" * 32 not in json.dumps(payload)
 
 
 def test_mainnet_real_verified_mother_private_state(tmp_path) -> None:

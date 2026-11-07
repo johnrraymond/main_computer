@@ -120,56 +120,15 @@ def test_load_deployment_manifest_prefers_selected_network_latest_over_current(t
     assert payload["marker"] == "test-latest"
 
 
-def test_level4_paid_credit_flow_uses_wallet_account_and_worker_claim(monkeypatch) -> None:
+def test_retired_level4_smoke_refuses_before_any_http(monkeypatch):
     smoke = load_smoke_client()
-    calls: list[tuple[str, str, dict | None]] = []
-    price = 1234
-
-    def fake_http_json(method, url, *, body=None, timeout=10.0, allow_error=False):
-        del timeout, allow_error
-        calls.append((method, url, body))
-        if url.endswith("/api/hub/v1/credits/admin/issue"):
-            assert body["account_id"] == "0x2222222222222222222222222222222222222222"
-            assert body["owner_address"] == "0x2222222222222222222222222222222222222222"
-            return {"ok": True, "transaction": {"credits": body["credits"]}}
-        if url.endswith("/api/hub/v1/workers/register"):
-            return {"ok": True, "worker": {"offer": {"offer_id": "offer-1"}}}
-        if url.endswith("/api/hub/v1/workers/heartbeat"):
-            return {"ok": True, "worker": {"queue_depth": 1}}
-        if url.endswith("/api/hub/v1/requests/quote"):
-            return {"ok": True, "quote": {"quote_id": "quote-1", "quoted_credits": price}}
-        if url.endswith("/api/hub/v1/requests"):
-            return {"ok": True, "request": {"request_id": "request-1", "pricing": {"held_credits": price}}}
-        if url.endswith("/api/hub/v1/workers/poll"):
-            return {"ok": True, "lease": {"request_id": "request-1", "lease_id": "lease-1"}}
-        if url.endswith("/api/hub/v1/workers/results"):
-            return {"ok": True, "request": {"request_id": "request-1", "state": "completed", "charged_credits": price}}
-        if url.endswith("/api/hub/v1/requests/request-1/charges"):
-            return {"ok": True, "charge_count": 1, "charges": [{"charged_credits": price}]}
-        if "/api/hub/v1/credits/worker-earnings?" in url:
-            return {"ok": True, "worker_earning_count": 1, "earnings": [{"earned_credits": price}]}
-        if url.endswith("/api/hub/v1/workers/claims"):
-            assert body["claim_credits"] == price
-            return {"ok": True, "claim": {"claim_id": "claim-1", "claim_credits": price}}
-        if "/api/hub/v1/credits/balance?" in url:
-            return {"ok": True, "account": {"balance_credits": "1000"}}
-        raise AssertionError(url)
-
-    monkeypatch.setattr(smoke, "http_json", fake_http_json)
-
-    result = smoke.run_level4_paid_credit_flow(
-        hub_url="http://127.0.0.1:8780",
-        network="test",
-        smoke_wallet_address="0x2222222222222222222222222222222222222222",
-        scope="unit",
-        timeout=1.0,
-        funding_credits=10_000,
-        worker_price=price,
-    )
-
-    assert result["account_id"] == "0x2222222222222222222222222222222222222222"
-    assert result["charged_credits"] == price
-    assert result["charge_count"] == 1
-    assert result["worker_earning_count"] == 1
-    assert result["claim"]["claim"]["claim_id"] == "claim-1"
-    assert any(url.endswith("/api/hub/v1/workers/claims") for _method, url, _body in calls)
+    import pytest
+    def forbidden(*args, **kwargs):
+        pytest.fail('retired credit-and-worker-claim smoke attempted network')
+    monkeypatch.setattr(smoke, 'http_json', forbidden)
+    with pytest.raises(smoke.SmokeFailure, match='Retired'):
+        smoke.run_level4_paid_credit_flow(
+            hub_url='http://127.0.0.1:8780', network='test',
+            smoke_wallet_address='0x' + '2'*40,
+            scope='unit', timeout=1, funding_credits=10_000, worker_price=1234,
+        )

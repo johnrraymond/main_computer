@@ -55,16 +55,17 @@ def test_multisession_and_secure_sessions_can_use_injected_stores() -> None:
     assert "def _load_secure_session" in plex_module
 
 
-def test_bridge_payout_requires_quiet_wallet_before_ledger_mutation() -> None:
+def test_legacy_hub_payout_http_routes_and_smoke_callers_are_absent() -> None:
     hub_module = (_repo() / "main_computer" / "hub.py").read_text(encoding="utf-8")
-    smoke_module = (_repo() / "main_computer" / "temporal_fdb_hub_node_market_smoke.py").read_text(encoding="utf-8")
-
-    assert '"error_type": "wallet_active_worker_leases"' in hub_module
-    assert "wallet has active worker leases; payout requires a quiet wallet" in hub_module
-    assert "if wallet_address:" in hub_module
-    assert "if worker_node_id:" not in hub_module[hub_module.find('if path == "/api/hub/v1/bridge/payouts"'):hub_module.find('if path == "/api/hub/v1/bridge/payouts/confirm"')]
-    assert "hub_bridge_payout_rejected_active_work" in smoke_module
-    assert "surprise_payout_rejected_active_work" in smoke_module
+    node_smoke = (_repo() / "main_computer" / "temporal_fdb_hub_node_market_smoke.py").read_text(encoding="utf-8")
+    for removed in (
+        "/api/hub/v1/bridge/payouts",
+        "/api/hub/v1/bridge/payouts/confirm",
+        "/api/hub/v1/bridge/payouts/fail",
+    ):
+        assert removed not in hub_module
+        assert removed not in node_smoke
+    assert "Retired: legacy Hub payout HTTP routes were deleted" in node_smoke
 
 
 def test_bridge_payout_request_does_not_create_long_lived_wallet_lock() -> None:
@@ -88,7 +89,7 @@ def test_bridge_audit_records_work_and_payout_failure_recovery_events() -> None:
     assert 'event_type="hub.hold.charged"' in ledger_module
     assert 'event_type="hub.worker.earning.recorded"' in ledger_module
     assert 'event_type="bridge.payout.failed"' in ledger_module
-    assert "hub_bridge_payout_failed_recovered" in smoke_module
+    assert "Retired: legacy Hub payout HTTP routes were deleted" in smoke_module
     assert "bridge_audit_readback_ok" in smoke_module
     assert "payout_failure_recovered" in smoke_module
 

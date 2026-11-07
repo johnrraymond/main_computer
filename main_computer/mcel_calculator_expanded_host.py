@@ -22,6 +22,9 @@ ASSETS = [
     'main_computer/web/applications/scripts/chat-thread-controller.js',
     'main_computer/web/applications/scripts/chat-console-state.js',
     'main_computer/web/applications/scripts/chat-console.js',
+    # The calculator embeds the *shared* semantic Chat Console. The promoted
+    # standalone HTML must load the same composition runtime as the main SPA.
+    'main_computer/web/applications/scripts/mcel-semantic-chat-console.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-calculator-expanded-port.js',
 ]
@@ -71,7 +74,7 @@ def compile_expanded(repo: Path = ROOT) -> dict:
             raise CandidateHostError(f'expanded operation authority changed: {name}')
     return ir
 
-def render_expanded_page(repo: Path = ROOT) -> str:
+def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
     ir=compile_expanded(repo)
     payload=json.dumps(ir,ensure_ascii=False,separators=(',',':')).replace('<','\\u003c')
     def asset(path):
@@ -81,9 +84,10 @@ def render_expanded_page(repo: Path = ROOT) -> str:
     scripts='\n'.join(asset(Path(x)) for x in ASSETS)
     expert_css=(repo/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
+    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-chat-console.css').read_text(encoding='utf8')
     if '</style' in expert_css.lower():
         raise CandidateHostError('style termination')
-    return '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    page = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic Calculator · Expanded</title>
 <style>''' + expert_css + '''</style></head><body class="mcel-expert-page"><header><h1>Semantic Calculator</h1><p>Arithmetic and units · Function graphs · Symbolic mathematics · Optional AI assistance</p></header>
 <div id="mcel-expanded-root" aria-label="Generated semantic Calculator"></div><div id="mcel-expanded-diagnostic" role="status" aria-live="polite"></div>
@@ -99,3 +103,4 @@ def render_expanded_page(repo: Path = ROOT) -> str:
  } catch(e){status.dataset.error='true';status.textContent='Calculator refused: '+String(e?.message||e);}
 })();
 </script></body></html>'''
+    return page.replace('MCEL Semantic Calculator · Expanded</title>', 'Main Computer Calculator</title>') if promoted else page

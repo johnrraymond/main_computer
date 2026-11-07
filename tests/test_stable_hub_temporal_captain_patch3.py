@@ -151,7 +151,6 @@ def _run_mock_captain(monkeypatch, tmp_path, *, bridge):
     monkeypatch.setattr(captain, "send_captain_bridge_deposit", lambda *_a, **_k: {
         "deposit_id": "deposit-one", "transaction_hash": "0x" + "4" * 64,
     })
-    monkeypatch.setattr(captain, "send_captain_bridge_refund", lambda *_a, **_k: pytest.fail("unsafe chain refund"))
     args = ["smoke", "captain", "Report", "ready", "--no-stipend", "--no-chain"]
     if not bridge:
         args += ["--no-bridge"]

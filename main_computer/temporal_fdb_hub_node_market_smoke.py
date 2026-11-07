@@ -619,99 +619,12 @@ def _bridge_fund_requester(
     progress: _ProgressReporter,
     before_confirm_callback: Any | None = None,
 ) -> dict[str, Any]:
-    wallet_address = str(config.requester_wallet_address or "").strip()
-    if not wallet_address:
-        wallet_address = _smoke_wallet_address(f"requester:{config.account_id}:{config.run_id}")
-    try:
-        mint = _post_json(
-            config.hub_url,
-            "/api/hub/v1/bridge/mock-chain/mint",
-            {
-                "wallet_address": wallet_address,
-                "credits": config.deposit_credits,
-                "idempotency_key": f"{config.run_id}-requester-mint",
-                "memo": "temporal fdb hub node-market mock-chain requester funding",
-                "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
-            },
-            timeout=config.http_timeout_seconds,
-        )
-    except NodeMarketSmokeError:
-        if config.require_foundationdb_backends:
-            raise
-        issue = _post_json(
-            config.hub_url,
-            "/api/hub/v1/credits/admin/issue",
-            {
-                "account_id": config.account_id,
-                "credits": config.deposit_credits,
-                "memo": "temporal fdb hub node-market JSON-hub fallback funding",
-                "owner_address": wallet_address,
-                "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market", "bridge_fallback": True},
-            },
-            timeout=config.http_timeout_seconds,
-        )
-        if issue.get("ok") is False:
-            raise NodeMarketSmokeError(f"Requester fallback funding failed: {issue}")
-        progress.emit("hub_credit_issue_ok", account_id=config.account_id, credits=config.deposit_credits, bridge_fallback=True)
-        return {"wallet_address": wallet_address, "bridge_available": False, "deposit": {}, "confirmed": issue}
-    deposit = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/deposits",
-        {
-            "wallet_address": wallet_address,
-            "account_id": config.account_id,
-            "credits": config.deposit_credits,
-            "idempotency_key": f"{config.run_id}-requester-bridge-deposit",
-            "memo": "temporal fdb hub node-market bridge deposit",
-            "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
-        },
-        timeout=config.http_timeout_seconds,
+    """Retired: public mock-chain funding operations no longer exist."""
+    raise NodeMarketSmokeError(
+        "Retired: mock-chain HTTP mint/deposit/confirmation funding was deleted. "
+        "Use a disposable ledger directly in isolated tests or chain-verified "
+        "funding through the authorized Stable Hub."
     )
-    deposit_payload = deposit.get("deposit", {}) if isinstance(deposit.get("deposit"), dict) else {}
-    deposit_id = str(deposit_payload.get("deposit_id", ""))
-    if not deposit_id:
-        raise NodeMarketSmokeError(f"Bridge deposit did not return deposit_id: {deposit}")
-    confirm_metadata: dict[str, Any] = {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"}
-    dev_chain_confirmation = None
-    if before_confirm_callback is not None:
-        dev_chain_confirmation = before_confirm_callback(
-            {
-                "deposit_id": deposit_id,
-                "wallet_address": wallet_address,
-                "account_id": config.account_id,
-                "credits": config.deposit_credits,
-                "deposit": deposit_payload,
-            }
-        )
-        if dev_chain_confirmation is not None:
-            confirm_metadata["dev_chain"] = dev_chain_confirmation
-    confirmed = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/deposits/confirm",
-        {
-            "deposit_id": deposit_id,
-            "metadata": confirm_metadata,
-        },
-        timeout=config.http_timeout_seconds,
-    )
-    account = confirmed.get("account", {}) if isinstance(confirmed.get("account"), dict) else {}
-    if int(account.get("available_credits", 0) or 0) < config.deposit_credits:
-        raise NodeMarketSmokeError(f"Bridge deposit did not fund requester account {config.account_id}: {confirmed}")
-    progress.emit(
-        "hub_bridge_deposit_ok",
-        account_id=config.account_id,
-        wallet_address=wallet_address,
-        credits=config.deposit_credits,
-        deposit_id=deposit_id,
-    )
-    return {
-        "wallet_address": wallet_address,
-        "bridge_available": True,
-        "mint": mint,
-        "deposit": deposit_payload,
-        "confirmed": confirmed,
-        "dev_chain_confirmation": dev_chain_confirmation,
-    }
 
 
 def _verify_surprise_payout_rejected_during_active_work(
@@ -720,47 +633,7 @@ def _verify_surprise_payout_rejected_during_active_work(
     worker: Any,
     progress: _ProgressReporter,
 ) -> dict[str, Any]:
-    """A payout may arrive out of the blue; while the wallet has an active lease it must be rejected."""
-
-    wallet_address = _worker_wallet_address_for_config(config, worker)
-    error = _post_json_expect_http_error(
-        config.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "credits": max(1, int(config.max_price_credits or 1)),
-            "idempotency_key": f"{config.run_id}-{worker.node_id}-surprise-payout-while-active",
-            "memo": "surprise payout while worker has an active lease should be rejected",
-            "metadata": {
-                "run_id": config.run_id,
-                "smoke": "temporal_fdb_hub_node_market",
-                "expected_rejection": "active_worker_lease",
-            },
-        },
-        timeout=config.http_timeout_seconds,
-        expected_status=409,
-    )
-    if error.get("error_type") != "wallet_active_worker_leases":
-        raise NodeMarketSmokeError(
-            f"Surprise payout for active worker {worker.node_id} was rejected for the wrong reason: {error}"
-        )
-    active_ids = {str(item) for item in error.get("active_worker_node_ids", [])}
-    if worker.node_id not in active_ids:
-        raise NodeMarketSmokeError(
-            f"Surprise payout rejection did not name the active worker {worker.node_id}: {error}"
-        )
-    progress.emit(
-        "hub_bridge_payout_rejected_active_work",
-        wallet_address=wallet_address,
-        worker_node_id=worker.node_id,
-        error_type=error.get("error_type"),
-    )
-    return {
-        "wallet_address": wallet_address,
-        "worker_node_id": worker.node_id,
-        "error": error,
-        "rejected": True,
-    }
+    raise NodeMarketSmokeError("retired_unauthorized_legacy_payout_http__verify_surprise_payout_rejected_during_active_work")
 
 
 def _mock_chain_wallet_available_wei(config: HubNodeMarketSmokeConfig, wallet_address: str) -> int:
@@ -827,88 +700,7 @@ def _exercise_failed_payout_recovery(
     payout_credits: int,
     progress: _ProgressReporter,
 ) -> dict[str, Any]:
-    before_chain_available_wei = _mock_chain_wallet_available_wei(config, wallet_address)
-    payout = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "worker_node_id": worker_node_id,
-            "credits": payout_credits,
-            "idempotency_key": f"{config.run_id}-{worker_node_id}-mock-chain-payout-failure",
-            "memo": "temporal fdb hub node-market mock-chain payout failure rehearsal",
-            "metadata": {
-                "run_id": config.run_id,
-                "smoke": "temporal_fdb_hub_node_market",
-                "expected_outcome": "mock_chain_failure_recovery",
-            },
-        },
-        timeout=config.http_timeout_seconds,
-    )
-    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
-    payout_id = str(payout_payload.get("payout_id", ""))
-    if not payout_id:
-        raise NodeMarketSmokeError(f"Failed-payout rehearsal did not return payout_id: {payout}")
-
-    lock_status = _get_json(
-        config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config.http_timeout_seconds,
-    )
-    if lock_status.get("locked") is True:
-        raise NodeMarketSmokeError(f"Failed-payout rehearsal created a long-lived wallet lock {wallet_address}: {lock_status}")
-
-    failed = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/payouts/fail",
-        {
-            "payout_id": payout_id,
-            "reason": "mock_chain_rejected_by_smoke",
-            "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
-        },
-        timeout=config.http_timeout_seconds,
-    )
-
-    final_lock = _get_json(
-        config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config.http_timeout_seconds,
-    )
-    if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Failed payout left a long-lived wallet lock for {wallet_address}: {final_lock}")
-
-    after_chain_available_wei = _mock_chain_wallet_available_wei(config, wallet_address)
-    if after_chain_available_wei != before_chain_available_wei:
-        raise NodeMarketSmokeError(
-            "Failed payout changed mock-chain wallet balance: "
-            f"before={before_chain_available_wei} after={after_chain_available_wei}"
-        )
-
-    events = _bridge_audit_events(config, wallet_address=wallet_address, worker_node_id=worker_node_id, limit=50)
-    audit_types = _verify_expected_audit_types(
-        label=f"failed payout {payout_id}",
-        events=events,
-        expected_types={
-            "bridge.payout.requested",
-            "bridge.payout.failed",
-        },
-    )
-    progress.emit(
-        "hub_bridge_payout_failed_recovered",
-        wallet_address=wallet_address,
-        worker_node_id=worker_node_id,
-        payout_id=payout_id,
-        payout_credits=payout_credits,
-    )
-    return {
-        "payout": payout_payload,
-        "failed": failed,
-        "no_long_lived_wallet_lock": final_lock.get("locked") is not True,
-        "chain_balance_unchanged": True,
-        "before_chain_available_wei": str(before_chain_available_wei),
-        "after_chain_available_wei": str(after_chain_available_wei),
-        "audit_event_types": sorted(audit_types),
-    }
+    raise NodeMarketSmokeError("retired_unauthorized_legacy_payout_http__exercise_failed_payout_recovery")
 
 
 def _exercise_worker_payout(
@@ -918,95 +710,7 @@ def _exercise_worker_payout(
     selected_worker_ids: list[str],
     progress: _ProgressReporter,
 ) -> dict[str, Any]:
-    if not selected_worker_ids:
-        raise NodeMarketSmokeError("Cannot exercise mock-chain payout without a selected worker.")
-    payout_worker_id = selected_worker_ids[0]
-    worker = nodes_by_id[payout_worker_id]
-    wallet_address = _worker_wallet_address_for_config(config, worker)
-    payout_credits = max(1, int(config.max_price_credits or 1))
-
-    failed_recovery = _exercise_failed_payout_recovery(
-        config,
-        wallet_address=wallet_address,
-        worker_node_id=payout_worker_id,
-        payout_credits=payout_credits,
-        progress=progress,
-    )
-
-    payout = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "worker_node_id": payout_worker_id,
-            "credits": payout_credits,
-            "idempotency_key": f"{config.run_id}-{payout_worker_id}-mock-chain-payout",
-            "memo": "temporal fdb hub node-market worker payout",
-            "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
-        },
-        timeout=config.http_timeout_seconds,
-    )
-    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
-    payout_id = str(payout_payload.get("payout_id", ""))
-    if not payout_id:
-        raise NodeMarketSmokeError(f"Worker payout did not return payout_id: {payout}")
-    lock_status = _get_json(
-        config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config.http_timeout_seconds,
-    )
-    if lock_status.get("locked") is True:
-        raise NodeMarketSmokeError(f"Payout created a long-lived worker wallet lock {wallet_address}: {lock_status}")
-    confirmed = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/payouts/confirm",
-        {
-            "payout_id": payout_id,
-            "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
-        },
-        timeout=config.http_timeout_seconds,
-    )
-    final_lock = _get_json(
-        config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config.http_timeout_seconds,
-    )
-    if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Payout confirmation left a long-lived wallet lock {wallet_address}: {final_lock}")
-    chain_available = _mock_chain_wallet_available_wei(config, wallet_address)
-    if chain_available <= int(failed_recovery.get("after_chain_available_wei", "0") or 0):
-        raise NodeMarketSmokeError(
-            f"Confirmed payout did not increase mock-chain worker wallet balance: "
-            f"before_confirm={failed_recovery.get('after_chain_available_wei')} after_confirm={chain_available}"
-        )
-    worker_events = _bridge_audit_events(config, worker_node_id=payout_worker_id, limit=100)
-    audit_types = _verify_expected_audit_types(
-        label=f"worker payout recovery+confirm for {payout_worker_id}",
-        events=worker_events,
-        expected_types={
-            "hub.worker.earning.recorded",
-            "bridge.payout.requested",
-            "bridge.payout.failed",
-            "bridge.payout.confirmed",
-        },
-    )
-    progress.emit(
-        "hub_bridge_payout_ok",
-        wallet_address=wallet_address,
-        worker_node_id=payout_worker_id,
-        payout_id=payout_id,
-        payout_credits=payout_credits,
-    )
-    return {
-        "wallet_address": wallet_address,
-        "worker_node_id": payout_worker_id,
-        "payout": payout_payload,
-        "confirmed": confirmed,
-        "failed_recovery": failed_recovery,
-        "no_long_lived_wallet_lock": lock_status.get("locked") is not True,
-        "audit_event_types": sorted(audit_types),
-        "audit_events": worker_events,
-    }
+    raise NodeMarketSmokeError("retired_unauthorized_legacy_payout_http__exercise_worker_payout")
 
 
 
@@ -1405,6 +1109,11 @@ def _submit_results_and_verify(
 
 
 async def run_temporal_fdb_hub_node_market_smoke(config: HubNodeMarketSmokeConfig) -> dict[str, Any]:
+    # Fail before writing files, spawning Hub/Temporal/FDB or contacting a ledger.
+    raise NodeMarketSmokeError(
+        "Retired: this Hub node-market smoke requires deleted mock-chain "
+        "HTTP funding and payout routes."
+    )
     progress = _ProgressReporter(
         enabled=config.emit_progress,
         interval_seconds=config.progress_interval_seconds,

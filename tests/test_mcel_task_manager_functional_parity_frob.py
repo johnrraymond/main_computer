@@ -60,7 +60,8 @@ def test_browser_isolated_boundaries_and_required_witnesses():
                  'generation-bound-terminate','generation-bound-kill','forged-generation-rejected',
                  'consumed-target-refuses-repeat','dismissed-confirmation-has-no-effect',
                  'stale-schedule-revision-refused','stale-schedule-delete-refused',
-                 'recorded-schedule-revision','explicit-advisory-ai','local-csrf-all-mutations'):
+                 'recorded-schedule-revision','explicit-advisory-ai','local-csrf-all-mutations',
+                 'visible-cpu-gpu-measurements','telemetry-uses-primary-workspace','unavailable-gpu-is-not-zero'):
         assert cases[name]['status']=='PASS'
     assert report['httpTransport'].startswith('in-memory-')
 

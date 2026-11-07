@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
@@ -20,6 +20,11 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
+from main_computer.hub_resource_limits import (
+    HubHTTPResourceError, HubWebSocketResourceError, DEFAULT_RESOURCE_POLICY,
+    load_hub_resource_policy, validate_http_headers, http_content_length,
+    read_bounded_json, exact_read_with_deadline, close_ws_for_error, BoundedHubHTTPServer,
+)
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text, credit_wei_to_whole_credits_floor
 from main_computer.hub_credit_bridge_completion import (
     HubCreditBridgeCompletionService,
@@ -610,7 +615,7 @@ class _StableHubBridgeLedgerAdapter:
         }
 
 
-class StableHubHTTPServer(ThreadingHTTPServer):
+class StableHubHTTPServer(BoundedHubHTTPServer):
     daemon_threads = True
 
     def __init__(
@@ -624,6 +629,7 @@ class StableHubHTTPServer(ThreadingHTTPServer):
         work_offer_timeout_seconds: float = 10.0,
         bridge_completion_service: Any | None = None,
     ) -> None:
+        self.resource_limits = load_hub_resource_policy()
         super().__init__(server_address, StableHubRequestHandler)
         self.topology = topology
         self.hub = hub
@@ -742,6 +748,39 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server: StableHubHTTPServer
 
+    def _resource_policy(self):
+        return getattr(self.server, "resource_limits", DEFAULT_RESOURCE_POLICY)
+
+    def handle_one_request(self) -> None:
+        if not self.server.resource_begin_headers(self.connection):
+            self.close_connection = True
+            return
+        return super().handle_one_request()
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        try:
+            validate_http_headers(self.headers, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self.send_error(exc.status, exc.code)
+            return False
+        if not self.server.resource_headers_complete(self.connection):
+            self.close_connection = True
+            return False
+        return True
+
+    def handle_expect_100(self) -> bool:
+        try:
+            validate_http_headers(self.headers, self._resource_policy())
+            http_content_length(self.headers, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self.send_error(exc.status, exc.code)
+            return False
+        return super().handle_expect_100()
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
         sys.stderr.write(
             "stable-hub %s - %s\n"
@@ -757,23 +796,25 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
     def _read_json(self) -> dict[str, Any]:
-        try:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-        except ValueError as exc:
-            raise StableHubMultiSessionKeyError("bad Content-Length") from exc
-        raw = self.rfile.read(length) if length > 0 else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError as exc:
-            raise StableHubMultiSessionKeyError(f"request body is not JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise StableHubMultiSessionKeyError("request JSON body must be an object")
-        return payload
+        cached = getattr(self, "_resource_json_payload", None)
+        if cached is not None:
+            return dict(cached)
+        return read_bounded_json(self, self._resource_policy())
 
+    def _preflight_post(self) -> bool:
+        try:
+            self._resource_json_payload = read_bounded_json(self, self._resource_policy())
+        except HubHTTPResourceError as exc:
+            self.close_connection = True
+            self._send_json(exc.status, {"ok": False, "error": exc.code})
+            return False
+        return True
 
     def _ws_send_frame(self, opcode: int, payload: bytes = b"") -> None:
         length = len(payload)
@@ -790,52 +831,99 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self._ws_send_frame(0x1, json.dumps(payload, sort_keys=True).encode("utf-8"))
 
     def _ws_read_frame(self) -> tuple[int, bytes]:
-        header = self.rfile.read(2)
-        if len(header) < 2:
-            raise ConnectionError("websocket closed")
-        first, second = header[0], header[1]
-        opcode = first & 0x0F
-        length = second & 0x7F
-        masked = bool(second & 0x80)
-        if length == 126:
-            raw = self.rfile.read(2)
-            if len(raw) < 2:
-                raise ConnectionError("websocket closed during frame length")
-            length = int.from_bytes(raw, "big")
-        elif length == 127:
-            raw = self.rfile.read(8)
-            if len(raw) < 8:
-                raise ConnectionError("websocket closed during frame length")
-            length = int.from_bytes(raw, "big")
-        mask = self.rfile.read(4) if masked else b""
-        if masked and len(mask) < 4:
-            raise ConnectionError("websocket closed during frame mask")
-        payload = self.rfile.read(length) if length else b""
-        if len(payload) < length:
-            raise ConnectionError("websocket closed during frame payload")
-        if masked:
-            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        return opcode, payload
+        policy = self._resource_policy()
+        authenticated = getattr(self, "_ws_authenticated", False)
+        deadline = time.monotonic() + (policy.ws_frame_deadline_seconds if authenticated else policy.ws_preauth_deadline_seconds)
+        if not authenticated:
+            # Absolute authentication deadline, not a sliding deadline which
+            # can be indefinitely refreshed by unauthenticated ping frames.
+            deadline = min(deadline, getattr(self, "_ws_auth_deadline_monotonic", deadline))
+        original_timeout = self.connection.gettimeout()
+        try:
+            try:
+                first, second = exact_read_with_deadline(self, 2, deadline)
+            except ConnectionError:
+                raise ConnectionError("websocket closed")
+            fin = bool(first & 0x80)
+            if first & 0x70:
+                raise HubWebSocketResourceError(1002, "unsupported_websocket_rsv")
+            opcode = first & 0x0F
+            if opcode not in (0, 1, 8, 9, 10):
+                raise HubWebSocketResourceError(1002, "invalid_websocket_opcode")
+            if not second & 0x80:
+                raise HubWebSocketResourceError(1002, "unmasked_client_frame")
+            length = second & 0x7F
+            if length == 126:
+                length = int.from_bytes(exact_read_with_deadline(self, 2, deadline), "big")
+                if length < 126:
+                    raise HubWebSocketResourceError(1002, "noncanonical_websocket_length")
+            elif length == 127:
+                length = int.from_bytes(exact_read_with_deadline(self, 8, deadline), "big")
+                if length < 65536 or length >= (1 << 63):
+                    raise HubWebSocketResourceError(1002, "noncanonical_websocket_length")
+            if opcode >= 8 and (not fin or length > 125):
+                raise HubWebSocketResourceError(1002, "invalid_websocket_control_frame")
+            if length > policy.ws_frame_max_bytes or length > policy.ws_message_max_bytes:
+                raise HubWebSocketResourceError(1009, "websocket_frame_too_large")
+            mask = exact_read_with_deadline(self, 4, deadline)
+            payload = exact_read_with_deadline(self, length, deadline)
+            if opcode == 8:
+                if len(payload) == 1:
+                    raise HubWebSocketResourceError(1002, "invalid_websocket_close")
+                if len(payload) >= 2:
+                    status = int.from_bytes(payload[:2], "big")
+                    if status < 1000 or status in (1004, 1005, 1006, 1015) or status >= 5000:
+                        raise HubWebSocketResourceError(1002, "invalid_websocket_close_status")
+                    try:
+                        payload[2:].decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise HubWebSocketResourceError(1007, "invalid_websocket_close_reason") from exc
+            self._ws_frame_fin = fin
+            return opcode, bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+        except TimeoutError as exc:
+            raise HubWebSocketResourceError(1002, "websocket_frame_timeout") from exc
+        except ConnectionError:
+            raise
+        finally:
+            self.connection.settimeout(original_timeout)
 
     def _ws_read_json_message(self) -> dict[str, Any]:
-        while True:
-            opcode, payload = self._ws_read_frame()
-            if opcode == 0x8:
-                raise ConnectionError("websocket close frame received")
-            if opcode == 0x9:
-                self._ws_send_frame(0xA, payload)
-                continue
-            if opcode == 0xA:
-                continue
-            if opcode != 0x1:
-                raise StableHubWorkerSessionError(f"unsupported websocket opcode: {opcode}")
-            try:
-                decoded = json.loads(payload.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise StableHubWorkerSessionError(f"websocket text frame is not JSON: {exc}") from exc
-            if not isinstance(decoded, dict):
-                raise StableHubWorkerSessionError("websocket JSON message must be an object")
-            return decoded
+        fragments = bytearray()
+        in_text_message = False
+        try:
+            while True:
+                opcode, payload = self._ws_read_frame()
+                fin = self._ws_frame_fin
+                if opcode == 0x8:
+                    raise ConnectionError("websocket close frame received")
+                if opcode == 0x9:
+                    self._ws_send_frame(0xA, payload)
+                    continue
+                if opcode == 0xA:
+                    continue
+                if opcode == 0 and not in_text_message:
+                    raise HubWebSocketResourceError(1002, "unexpected_websocket_continuation")
+                if opcode == 1 and in_text_message:
+                    raise HubWebSocketResourceError(1002, "interleaved_websocket_messages")
+                if opcode == 1:
+                    in_text_message = True
+                if len(fragments) + len(payload) > self._resource_policy().ws_message_max_bytes:
+                    raise HubWebSocketResourceError(1009, "websocket_message_too_large")
+                fragments.extend(payload)
+                if not fin:
+                    continue
+                try:
+                    decoded = json.loads(fragments.decode("utf-8"))
+                except UnicodeDecodeError as exc:
+                    raise HubWebSocketResourceError(1007, "invalid_websocket_utf8") from exc
+                except json.JSONDecodeError as exc:
+                    raise StableHubWorkerSessionError(f"websocket text frame is not JSON: {exc}") from exc
+                if not isinstance(decoded, dict):
+                    raise StableHubWorkerSessionError("websocket JSON message must be an object")
+                return decoded
+        except HubWebSocketResourceError as exc:
+            close_ws_for_error(self, exc)
+            raise
 
     def _accept_websocket(self) -> bool:
         if self.headers.get("Upgrade", "").lower() != "websocket":
@@ -859,6 +947,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return False
+        if not self.server.resource_claim_websocket(self.connection):
+            self.close_connection = True
+            self._send_json(503, {"ok": False, "error": "worker_websocket_capacity_exceeded"})
+            return False
         accept = base64.b64encode(
             hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
         ).decode("ascii")
@@ -868,6 +960,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
         self.close_connection = True
+        self._ws_auth_deadline_monotonic = time.monotonic() + self._resource_policy().ws_preauth_deadline_seconds
         return True
 
     def _handle_worker_terminal_message(
@@ -1160,6 +1253,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 }
             )
 
+            self._ws_authenticated = True
+            self.server.resource_websocket_authenticated(self.connection)
             ping_id = "ping_" + secrets.token_urlsafe(12).rstrip("=")
             session.send_json({"type": "hub.ping", "ping_id": ping_id, "connection_id": connection_id})
             while True:
@@ -1592,17 +1687,20 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
             self._validate_worker_payout_authorization(worker_id, body)
+            # The earning wallet may CREATE a batch, but cannot attest that
+            # external settlement occurred. This former settle=True branch
+            # allowed a Worker to finalize its own accounting record using
+            # an arbitrary settlement_reference, without verified payment.
+            if any(field in body for field in (
+                "settle", "settlement_reference", "settlement_tx_hash",
+                "settlement_proof", "settlement_proof_id", "chain_execution",
+            )):
+                raise StableHubWorkerSessionError("worker_http_settlement_finalization_forbidden")
             batch = self.server.payout_ledger_directory.create_worker_settlement_batch(
                 worker_id=worker_id,
                 claim_ids=body.get("claim_ids") if isinstance(body.get("claim_ids"), list) else None,
                 idempotency_key=str(body.get("idempotency_key") or ""),
             )
-            if body.get("settle") is True:
-                batch = self.server.payout_ledger_directory.settle_worker_settlement_batch(
-                    batch_id=str(batch.get("batch_id") or ""),
-                    settlement_reference=str(body.get("settlement_reference") or ""),
-                    idempotency_key=str(body.get("idempotency_key") or ""),
-                )
         except StableHubWorkerSessionError as exc:
             self._send_json(403 if ("msk" in str(exc) or "account_mismatch" in str(exc)) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
             return
@@ -1621,15 +1719,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             self._send_json(403 if ("msk" in str(exc) or "account_mismatch" in str(exc)) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
             return
         self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
-
-    def _handle_bridge_payout_confirm(self, bridge_payout_id: str) -> None:
-        self._read_json()
-        self._send_json(403, {"ok": False, "error": "bridge_controller_authorization_required"})
-
-    def _handle_bridge_payout_fail(self, bridge_payout_id: str) -> None:
-        self._read_json()
-        self._send_json(403, {"ok": False, "error": "bridge_controller_authorization_required"})
-
 
     def _work_diagnostic_stage(self, stage: str, **fields: Any) -> None:
         """Opt-in, request-correlated timing; never emit request content or credentials."""
@@ -2188,6 +2277,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, self._accepted_response(accepted_session, idempotent=False))
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler method
+        if not self._preflight_post():
+            return
         path = urlparse(self.path).path
         self._log_event(f"POST {path} started")
         try:
@@ -2231,22 +2322,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 result = self.server.credit_bridge_completion.complete_wallet_funding_deposit(body)
                 self._send_json(200, result)
                 return
-            if path in {
-                "/api/hub/v1/credits/wallet-funding/import",
-                "/api/hub/v1/credits/bridge-reconciliation/execute",
-                "/api/hub/v1/credits/bridge-reconciliation/record",
-            }:
-                # Consume the request body before replying on an HTTP/1.1
-                # keep-alive connection, otherwise its bytes become the next
-                # (malformed) request and can abort the client's 501 response.
-                self._read_json()
-                self._send_json(501, {
-                    "ok": False,
-                    "error": "stable_hub_unverified_financial_operation_disabled",
-                    "path": path,
-                    "hub_id": self.server.hub.hub_id,
-                })
-                return
             if path == "/api/hub/v1/work/requests":
                 self._handle_work_request()
                 return
@@ -2261,14 +2336,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/hub/v1/workers/") and path.endswith("/payout/bridge"):
                 worker_id = path[len("/api/hub/v1/workers/") : -len("/payout/bridge")]
                 self._handle_worker_bridge_payout(worker_id)
-                return
-            if path.startswith("/api/hub/v1/payout/bridge/") and path.endswith("/confirm"):
-                bridge_payout_id = path[len("/api/hub/v1/payout/bridge/") : -len("/confirm")]
-                self._handle_bridge_payout_confirm(bridge_payout_id)
-                return
-            if path.startswith("/api/hub/v1/payout/bridge/") and path.endswith("/fail"):
-                bridge_payout_id = path[len("/api/hub/v1/payout/bridge/") : -len("/fail")]
-                self._handle_bridge_payout_fail(bridge_payout_id)
                 return
         except StableHubMultiSessionKeyError as exc:
             self._send_json(
@@ -2320,6 +2387,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 "retryable": True, "hub_id": self.server.hub.hub_id,
             })
             return
+        # Unknown POSTs are not parsed; close keep-alive connections so their
+        # unread bodies cannot be interpreted as another HTTP request.
+        self.close_connection = True
         self._send_json(
             404,
             {

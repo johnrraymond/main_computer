@@ -122,8 +122,16 @@
         // best-effort only
       }
     }
+    // The four accepted semantic apps are canonical standalone routes.
+    // A desktop-icon click must navigate there, rather than rendering the
+    // incumbent panel inside the already-loaded legacy application shell.
+    const semanticCanonicalApps = new Set(["calculator", "file-explorer", "task-manager", "code-editor", "chat-console"]);
     function setActiveApp(appName, options = {}) {
       const normalizedApp = routeableApps.has(appName) ? appName : "desktop";
+      if (semanticCanonicalApps.has(normalizedApp)) {
+        window.location.assign(applicationPath(normalizedApp));
+        return;
+      }
       const syncRoute = options.syncRoute !== false;
       const replaceRoute = Boolean(options.replaceRoute);
       const previousApp = currentApp;

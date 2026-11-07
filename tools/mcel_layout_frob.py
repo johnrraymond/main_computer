@@ -598,7 +598,11 @@ _PAIRED_MOCK = r'''() => {
    if(path==='file-explorer/roots') data={ok:true,roots:[{id:'workspace',label:'Workspace'}]};
    else if(path==='file-explorer/list')data={ok:true,entries:[{relative_path:'README.md',name:'README.md',kind:'file'},{relative_path:'src',name:'src',kind:'directory'}]};
    else if(path==='file-explorer/read')data={ok:true,readable:true,content:'Project documentation'};
-   else if(path==='task/overview')data={processes:[{pid:123,name:'server',status:'running',created_at:'2026-10-31T12:00',memory_human:'34 MB'}]};
+   else if(path==='task/overview')data={
+     processes:[{pid:123,name:'server',status:'running',created_at:'2026-10-31T12:00',memory_human:'34 MB'}],
+     connections:[{pid:43121,process_name:'file-service.exe',status:'ESTABLISHED',local:'127.0.0.1:19001',remote:'10.0.0.25:443'},
+       {pid:412,process_name:'controller-monitor.exe',status:'LISTEN',local:'0.0.0.0:445',remote:'—'}]
+   };
    else if(path==='editor/files')data={entries:[{path:'README.md',name:'README.md',kind:'file'}]};
    else if(path==='editor/read')data={ok:true,files:[{path:'README.md',content:'# Sample project'}]};
    else return {ok:false,status:404,json:async()=>({error:'mock-blocked'})};
@@ -655,6 +659,13 @@ def _paired_browser_page(browser, markup, width):
 def _paired_observe(browser, markup, width, output=None):
     page=_paired_browser_page(browser,markup,width)
     try:
+        # Compare controls against the same populated startup state. The
+        # monitoring snapshot is asynchronous; without this read-only wait the
+        # baseline can show a dynamic Select button before the composed page
+        # has received its first response, producing a false missing-control.
+        if page.evaluate('window.__mcelWorkbench?.appId === "semantic-task-manager"'):
+            page.wait_for_function("""() => Array.isArray(window.__mcelWorkbench?.app?.readState("state:processes")) &&
+              window.__mcelWorkbench.app.readState("state:processes").length > 0""",timeout=6000)
         observed=page.evaluate(_PAIRED_MEASURE)
         if output is not None:
             page.screenshot(path=str(output), full_page=True, timeout=12000)
@@ -916,7 +927,16 @@ def _paired_populated_interaction(browser, markup, app, width, screenshot=None):
         else:
             raise ValueError('Unknown paired app')
         calls=page.evaluate('window.__pairedCalls')
-        if [x['path'] for x in calls]!=expected:
+        paths=[x['path'] for x in calls]
+        if app=='task-manager':
+            # Opening the monitor now emits an automatic read-only overview.
+            # A quick manual refresh may either precede its delayed tick or
+            # follow it.  Both shapes are safe; any other operation is not.
+            valid=(1<=len(calls)<=2 and all(x['path']=='task/overview' and
+                   x['method']=='POST' for x in calls))
+        else:
+            valid=paths==expected
+        if not valid:
             return {'status':'FAIL','reason':'Unexpected request sequence','calls':calls}
         if page.evaluate('document.documentElement.scrollWidth > innerWidth+1'):
             return {'status':'FAIL','reason':'Populated view overflows viewport'}
@@ -959,9 +979,9 @@ def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
     # A planned checkout must be compared with its own unplanned fallback, not
     # against the identical composed page (which could conceal lost controls).
-    baseline=_paired_baseline_pages(apps)
+    hosted_pages=_paired_baseline_pages(apps)
     baseline={app:{'ir':page['ir'],'html':_paired_unplanned_html(page['html'])}
-              for app,page in baseline.items()}
+              for app,page in hosted_pages.items()}
     report={'schema':'mcel.layout-frob.paired-workspace.v1',
             'scope':'isolated-candidate-read-only' if patch else 'current-checkout-read-only',
             'candidateSource':('source-tree' if patch.is_dir() else 'zip') if patch else 'checkout',
@@ -1036,6 +1056,23 @@ def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED
                                     page.close()
                                 case['semanticLayoutOracle']=independent_oracle
                                 checks['semanticLayoutOracle']=independent_oracle['status']=='PASS'
+                                if app=='task-manager':
+                                    # Exercise the actual host presentation, not the
+                                    # plan-stripped fallback used for source parity.
+                                    # Monitoring and governed-tool composition both
+                                    # need actual hosted browser evidence.
+                                    from tools.mcel_paired_app_oracles import (populated_monitor_collection_oracle,
+                                                                               governed_multifield_workflow_oracle)
+                                    hosted_page=_paired_browser_page(b,hosted_pages[app]['html'],width)
+                                    try:
+                                        hosted=populated_monitor_collection_oracle(hosted_page,width)
+                                        governed=governed_multifield_workflow_oracle(hosted_page,width)
+                                    finally:
+                                        hosted_page.close()
+                                    case['hostedConnectionsOracle']=hosted
+                                    case['hostedScheduleOracle']=governed
+                                    checks['hostedConnectionsOracle']=hosted['status']=='PASS'
+                                    checks['hostedScheduleOracle']=governed['status']=='PASS'
                                 checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace'))
                             if app=='calculator':
                                 checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace'))

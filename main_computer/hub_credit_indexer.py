@@ -7,16 +7,8 @@ from main_computer.hub_credit_models import ChainEventRef, CreditDeposit, clean_
 
 
 HUB_CREDIT_INDEXER_PHASE = "R2A"
-HUB_CREDIT_INDEXER_MODE = "manual-normalized-escrow-import"
+HUB_CREDIT_INDEXER_MODE = "internal-accounting-test-fixture"
 HUB_CREDIT_INDEXER_EVENT = "HubCreditBridgeEscrow.CreditDeposited"
-LOCAL_DEV_CHAIN_ID = 42424242
-
-
-def _is_local_dev_wallet_funding(payload: dict[str, Any]) -> bool:
-    try:
-        return int(payload.get("chain_id", 0) or 0) == LOCAL_DEV_CHAIN_ID
-    except (TypeError, ValueError):
-        return False
 
 
 def _require_string(payload: dict[str, Any], key: str) -> str:
@@ -90,11 +82,10 @@ def wallet_account_id(wallet_address: Any) -> str:
 
 
 class HubCreditIndexer:
-    """R2A manual escrow deposit importer for the internal Compute Credit ledger.
+    """Internal deterministic deposit fixture for the Compute Credit ledger.
 
-    This intentionally does not perform RPC calls, credit-card checkout, fiat
-    processing, or request charging. It only validates a normalized on-chain
-    escrow deposit receipt and records it through HubCreditLedger idempotently.
+    This does not perform blockchain verification. Do not expose its entry points
+    to public callers; production funding must use verified bridge completion.
     """
 
     def __init__(self, ledger: HubCreditLedger) -> None:
@@ -121,11 +112,8 @@ class HubCreditIndexer:
             },
             "endpoints": {
                 "status": "/api/hub/v1/credits/indexer",
-                "manual_import": "/api/hub/v1/credits/deposits/import",
-                "wallet_funding_import": "/api/hub/v1/credits/wallet-funding/import",
                 "wallet_balance": "/api/hub/v1/credits/balance?wallet_address=0x...",
                 "deposits": "/api/hub/v1/credits/deposits",
-                "legacy_purchase_import": "/api/hub/v1/credits/purchases/import",
                 "legacy_purchases": "/api/hub/v1/credits/purchases",
                 "transactions": "/api/hub/v1/credits/transactions",
             },
@@ -171,54 +159,6 @@ class HubCreditIndexer:
             memo=str(payload.get("memo", "")).strip() or "escrow deposit receipt import",
         )
 
-    def import_wallet_funding(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Import a normalized bridge-escrow deposit as wallet-backed hub credit.
-
-        This is the narrow funding primitive needed before MSK-authenticated
-        remote AI can charge anything.  The caller supplies the wallet address
-        that owns the bridge escrow deposit; the hub derives the ledger account
-        id from that wallet and ignores any arbitrary browser account label.
-        """
-
-        if not isinstance(payload, dict):
-            raise ValueError("wallet funding payload must be a JSON object.")
-        wallet_address = normalize_address(_require_evm_address(payload, "wallet_address"))
-        forced_payload = dict(payload)
-        forced_payload["account_id"] = wallet_account_id(wallet_address)
-        forced_payload["wallet_address"] = wallet_address
-        forced_payload.setdefault("payer_address", wallet_address)
-        forced_payload.setdefault("memo", f"bridge escrow wallet funding for {wallet_address}")
-        account_id = forced_payload["account_id"]
-        result = self.import_deposit(forced_payload)
-
-        # Local smoke clients call this endpoint before each paid request.  After
-        # direct-spend charging replaced holds, the original idempotent bridge
-        # deposit is no longer enough for repeated local test runs: the next run
-        # must ensure the requester still has the requested spendable floor.  Keep
-        # real bridge imports idempotent, but on the local dev chain restore the
-        # wallet's available balance to at least the imported grant amount.
-        if result.get("idempotent") and _is_local_dev_wallet_funding(forced_payload):
-            minimum_wei = _require_positive_int(forced_payload, "credits_granted_wei")
-            account = self.ledger.get_account(account_id)
-            if int(account.available_credit_wei) < minimum_wei:
-                result["dev_reusable_funding_top_up"] = self.ledger.ensure_account_available_credit_wei(
-                    account_id=account_id,
-                    minimum_available_credit_wei=minimum_wei,
-                    owner_address=wallet_address,
-                    memo=f"local dev reusable wallet funding for {wallet_address}",
-                    metadata={
-                        "source": "wallet_funding_import",
-                        "chain_id": str(forced_payload.get("chain_id", "")),
-                        "original_deposit_id": str(result.get("deposit", {}).get("deposit_id", "")),
-                    },
-                )
-
-        result["wallet_address"] = wallet_address
-        result["account_id"] = account_id
-        result["account"] = self.ledger.get_account(account_id).as_dict()
-        result["funding_model"] = "hub_credit_bridge_escrow_wallet_v1"
-        return result
-
     def import_deposit(self, payload: dict[str, Any]) -> dict[str, Any]:
         deposit = self.build_deposit(payload)
         result = dict(self.ledger.record_deposit(deposit))
@@ -234,7 +174,3 @@ class HubCreditIndexer:
             if matching:
                 result["transaction"] = matching[0]
         return result
-
-    def import_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Backward-compatible alias for older R2A smoke helpers."""
-        return self.import_deposit(payload)

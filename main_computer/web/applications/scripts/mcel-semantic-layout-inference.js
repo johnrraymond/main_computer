@@ -1533,12 +1533,175 @@
       unmount:()=>clearSemanticCollectionLayout(host)};
   }
 
+  // Shared workspace layout consumer for paired IR. The Python composer owns
+  // semantic grouping; this module alone resolves capacity and DOM placement.
+  // Once mounted, a region is never reconstructed or detached on a tab/resize.
+  function mountWorkspacePlan(tree, plan, regionElements) {
+    if (!tree || !plan || !(regionElements instanceof Map)) fail("workspace-plan-mount-requires-bound-dom");
+    const doc=tree.ownerDocument;
+    const win=doc.defaultView;
+    const make=(tag,attrs={})=>{
+      const el=doc.createElement(tag);
+      for(const [key, val] of Object.entries(attrs))el.setAttribute(key,String(val));
+      return el;
+    };
+    const surface=make("div",{"data-mcel-workspace-layout":"", "data-mcel-layout-rung":"wide"});
+    const panels=[];
+    const zoneHosts=new Map();
+    let stopped=false, lastRung="", scheduled=false;
+    for (const zone of plan.zones) {
+      const holder=make("section",{"data-mcel-zone":zone.id,"data-mcel-zone-kind":zone.kind});
+      if(zone.id==="navigator") {
+        // Details is a genuine narrow-screen disclosure, not an app-specific menu.
+        const disclosure=make("details",{"data-mcel-navigation-disclosure":""});
+        const summary=make("summary");summary.textContent="Navigation";
+        disclosure.append(summary);
+        for (const id of zone.members) disclosure.append(regionElements.get(id));
+        holder.append(disclosure);
+      } else if(zone.kind==="tab-group") {
+        const tabs=make("div",{role:"tablist","aria-label":"Workspace tools","data-mcel-tool-tabs":""});
+        const buttons=[];
+        const suffix=String(plan.fingerprint).slice(-12);
+        const activate=(index,focus=false)=>{
+          buttons.forEach(({button,panel},i)=>{
+            const selected=i===index;
+            button.setAttribute("aria-selected",String(selected));
+            button.tabIndex=selected?0:-1;
+            panel.hidden=!selected;
+          });
+          if(focus) buttons[index].button.focus();
+        };
+        zone.members.forEach((id,i)=>{
+          const region=regionElements.get(id);
+          const title=region.querySelector("h2,h3,h4")?.textContent?.trim() || id.split(".").pop().replace(/[-_]/g," ");
+          const tabId="mcel-tool-tab-"+suffix+"-"+i;
+          const panelId="mcel-tool-panel-"+suffix+"-"+i;
+          const button=make("button",{type:"button",id:tabId,role:"tab","aria-controls":panelId,"aria-selected":"false"});
+          button.textContent=title;
+          const panel=make("div",{id:panelId,role:"tabpanel","aria-labelledby":tabId,"data-mcel-tool-panel":""});
+          panel.append(region);
+          tabs.append(button);holder.append(panel);
+          buttons.push({button,panel});panels.push(panel);
+          button.addEventListener("click",()=>activate(i));
+          button.addEventListener("keydown",event=>{
+            const step=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:0;
+            const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:step?(i+step+buttons.length)%buttons.length:null;
+            if(next!==null){event.preventDefault();activate(next,true);}
+          });
+        });
+        holder.prepend(tabs);
+        activate(Math.max(0,zone.members.indexOf(zone.default)));
+      } else if(zone.id==="workspace" && Array.isArray(zone.modePairs) && zone.modePairs.length){
+        // Preserve each region node and event handler. The planner derives
+        // pair evidence from semantic result bindings; the layout engine only
+        // consumes and lays out the verified, source-bound relationship.
+        const assigned=new Set();
+        for(const mode of zone.modePairs){
+          const group=make("div",{"data-mcel-mode-group":mode.equals});
+          for(const pair of mode.pairs){
+            if(assigned.has(pair.source)||assigned.has(pair.result) ||
+               !zone.members.includes(pair.source)||!zone.members.includes(pair.result))
+              fail("workspace-mode-pair-coverage");
+            const row=make("div",{"data-mcel-input-result-pair":""});
+            row.append(regionElements.get(pair.source),regionElements.get(pair.result));
+            group.append(row);assigned.add(pair.source);assigned.add(pair.result);
+          }
+          for(const id of mode.unpaired){
+            if(assigned.has(id)||!zone.members.includes(id))fail("workspace-mode-unpaired-coverage");
+            group.append(regionElements.get(id));assigned.add(id);
+          }
+          holder.append(group);
+        }
+        // Non-mode primary regions are allowed and retain their authored order.
+        for(const id of zone.members)if(!assigned.has(id))holder.append(regionElements.get(id));
+      } else {
+        for (const id of zone.members)holder.append(regionElements.get(id));
+      }
+      zoneHosts.set(zone.id,holder);
+      surface.append(holder);
+    }
+    tree.setAttribute("data-mcel-planned-root", "");
+    tree.append(surface);
+    const navigator=surface.querySelector("[data-mcel-navigation-disclosure]");
+    // Interpret the complete authored/derived ladder as a grid instruction.
+    // A zone with no supported placement fails loudly: a verified plan may
+    // never be silently reduced to DOM order or fixed CSS at some viewport.
+    const compose=(rung)=>{
+      const placement=new Map();
+      for(const zone of plan.zones){
+        const p=zone.ladder?.[rung];
+        const supported={controls:["top"],navigator:["dock-start","disclosure-before-anchor"],
+          workspace:["anchor"],tools:["dock-end","dock-bottom","disclosure-after-anchor"],
+          status:["bottom"]};
+        if(!supported[zone.id]?.includes(p))fail("unsupported-workspace-placement:"+zone.id+":"+p);
+        placement.set(zone.id,p);
+      }
+      const has=id=>placement.has(id);
+      if(!has("workspace"))fail("workspace-anchor-unassigned");
+      const navSide=placement.get("navigator")==="dock-start";
+      const toolSide=placement.get("tools")==="dock-end";
+      const before=placement.get("navigator")==="disclosure-before-anchor";
+      const after=placement.get("tools")==="dock-bottom" ||
+        placement.get("tools")==="disclosure-after-anchor";
+      const columns=(navSide?1:0)+1+(toolSide?1:0);
+      const areaRows=[];
+      const row=(name)=>Array(columns).fill(name);
+      if(has("controls"))areaRows.push(row("controls"));
+      if(before)areaRows.push(row("navigator"));
+      const central=[];
+      if(navSide)central.push("navigator");
+      central.push("workspace");
+      if(toolSide)central.push("tools");
+      areaRows.push(central);
+      if(after)areaRows.push(row("tools"));
+      if(has("status"))areaRows.push(row("status"));
+      if(areaRows.some(c=>c.length!==columns))fail("workspace-grid-nonrectangular");
+      // Minimums are semantic scheme constants, never application selectors.
+      // The planner's rung is authoritative; CSS supplies only zone styling.
+      const tracks=[];
+      if(navSide)tracks.push("minmax(165px, .29fr)");
+      tracks.push(columns===1?"minmax(0, 1fr)":"minmax(0, 1fr)");
+      if(toolSide)tracks.push("minmax(220px, .38fr)");
+      surface.style.gridTemplateColumns=tracks.join(" ");
+      surface.style.gridTemplateAreas=areaRows.map(c=>'"'+c.join(" ")+'"').join(" ");
+      for(const [id,p] of placement) zoneHosts.get(id).setAttribute("data-mcel-placement",p);
+    };
+    const resolve=()=>{
+      if(stopped)return;
+      const width=Math.max(1,Math.round(tree.getBoundingClientRect().width || tree.parentElement?.getBoundingClientRect().width || doc.documentElement.clientWidth || 320));
+      const rung=width>=980?"wide":width>=680?"medium":"narrow";
+      if(rung===lastRung)return;
+      compose(rung);
+      surface.setAttribute("data-mcel-layout-rung",rung);
+      if(navigator){
+        if(rung!=="narrow")navigator.open=true;
+        else if(lastRung!=="narrow")navigator.open=true;
+      }
+      lastRung=rung;
+    };
+    const refresh=()=>{if(!stopped)resolve();};
+    const schedule=()=>{
+      if(scheduled||stopped)return;
+      scheduled=true;
+      win.requestAnimationFrame(()=>{scheduled=false;resolve();});
+    };
+    let observer=null;
+    if(typeof win.ResizeObserver==="function"){
+      observer=new win.ResizeObserver(schedule);observer.observe(tree);
+    }else win.addEventListener("resize",schedule);
+    schedule();
+    return Object.freeze({refresh,getRung:()=>lastRung,unmount:()=>{
+      stopped=true;observer?.disconnect();
+      if(!observer)win.removeEventListener("resize",schedule);
+    }});
+  }
+
   global.McelSemanticLayoutInference = Object.freeze({SCHEMA, ADAPTIVE_SCHEMA, TREE_SCHEMA,
     evaluateSemanticCollectionLayout, separateSemanticCollectionLayout, applySemanticCollectionLayout,
     mountSemanticCollectionLayout, clearSemanticCollectionLayout,
     canonicalLayoutTree, evaluateCanonicalLayoutTree, separateCanonicalTreeLayout, applyCanonicalLayoutTree, clearCanonicalLayoutTree,
     mountCanonicalLayoutTree, unmountCanonicalLayoutTree,
-    inferWorkspaceLayout, applyWorkspaceLayout, clearWorkspaceLayout,
+    inferWorkspaceLayout, applyWorkspaceLayout, clearWorkspaceLayout, mountWorkspacePlan,
     adaptiveContract, evaluateAdaptiveControlGrid, applyAdaptiveControlGrid,
     evaluateAdaptiveControlGroup, applyAdaptiveControlGroup,
     reflowAdaptiveControlGrids, clearAdaptiveControlGrids});

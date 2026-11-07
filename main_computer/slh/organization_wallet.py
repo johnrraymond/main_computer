@@ -84,7 +84,8 @@ class HubCreditReader:
         self.trust_mode = ('LAB_ONLY' if self.scheme == 'http' else
                            'TLS_PINNED' if tls_sha256 else 'SYSTEM_TLS')
 
-    def request(self, method: str, path: str, data: dict | None = None):
+    def request(self, method: str, path: str, data: dict | None = None,
+                *, bearer_token: str = ""):
         if method not in ('POST', 'GET') or not path.startswith('/api/hub/v1/'):
             raise SLHError('INVALID_HUB_REQUEST')
         connection = None
@@ -105,9 +106,11 @@ class HubCreditReader:
             else:
                 connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
             raw = json.dumps(data, separators=(',', ':')).encode() if data is not None else None
-            connection.request(method, path, body=raw, headers={
-                'Content-Type': 'application/json', 'Accept': 'application/json', 'Connection': 'close',
-            })
+            headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
+                       'Connection': 'close'}
+            if bearer_token:
+                headers['Authorization'] = 'Bearer ' + bearer_token
+            connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
             if response.status != 200:
                 raise SLHError('HUB_ACCOUNT_UNAVAILABLE', 503)
@@ -206,8 +209,9 @@ class OrganizationWallet:
         return {'hub_id': actual_hub, 'cluster_id': actual_cluster,
                 'chain_id': actual_chain, 'wallet_address': wallet, 'account_id': account}
 
-    def _balance(self, reader, wallet, account):
-        result = reader.request('GET', '/api/hub/v1/credits/balance?wallet_address=' + quote(wallet, safe=''))
+    def _balance(self, reader, wallet, account, key_id):
+        result = reader.request('GET', '/api/hub/v1/credits/balance?wallet_address=' + quote(wallet, safe=''),
+                                bearer_token=key_id)
         if (result.get('ok') is not True or result.get('wallet_address') != wallet or
                 result.get('account_id') != account or result.get('unit') != 'compute_credit'):
             raise SLHError('HUB_BALANCE_IDENTITY_MISMATCH', 409)
@@ -265,7 +269,7 @@ class OrganizationWallet:
                         ('chain_id', expected_chain_id), ('wallet_address', proof['wallet_address']),
                         ('account_id', proof['account_id']))):
                     raise SLHError('WALLET_MIGRATION_REQUIRED', 409)
-            quantities, digest = self._balance(reader, proof['wallet_address'], proof['account_id'])
+            quantities, digest = self._balance(reader, proof['wallet_address'], proof['account_id'], key)
             now = int(self.clock())
             with self._db() as db:
                 current = self._binding(db)
@@ -316,7 +320,7 @@ class OrganizationWallet:
                                        cluster_id=binding['cluster_id'], chain_id=binding['chain_id'])
                 if proof['wallet_address'] != binding['wallet_address'] or proof['account_id'] != binding['account_id']:
                     raise SLHError('HUB_WALLET_MISMATCH', 409)
-                quantities, digest = self._balance(reader, binding['wallet_address'], binding['account_id'])
+                quantities, digest = self._balance(reader, binding['wallet_address'], binding['account_id'], key)
                 now = int(self.clock())
                 with self._db() as db:
                     active = self._binding(db)

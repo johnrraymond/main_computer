@@ -17,8 +17,8 @@ import time
 from urllib.parse import urlsplit
 
 from main_computer.slh.authenticator import sign_object
-from main_computer.seh.relay import MAX_FRAME, LAB_ID
-from main_computer.seh.stream_writer import StreamWriter
+from main_computer.seh.relay import MAX_FRAME, LAB_ID, MAX_AGGREGATE_PENDING_BYTES, MAX_WS_BUFFERED_MESSAGES
+from main_computer.seh.stream_writer import StreamWriter, SharedWriteBudget
 from websockets.exceptions import ConnectionClosed
 
 
@@ -58,6 +58,7 @@ class SLHSEHConnector:
         self._send_lock=threading.RLock()
         self._streams={}
         self._stream_writers={}
+        self._gateway_write_budget = SharedWriteBudget(MAX_AGGREGATE_PENDING_BYTES)
         self._lock=threading.RLock()
         self._running=threading.Event()
         self.last_error=None
@@ -76,7 +77,7 @@ class SLHSEHConnector:
             if isinstance(getattr(exc, 'errno', None), int):
                 row['errno'] = exc.errno
         if cause in {'local_eof','local_read_error','write_error','write_queue_full',
-                     'write_byte_budget', 'seh_close_instruction', 'tunnel_ended',
+                     'write_byte_budget', 'write_aggregate_budget', 'seh_close_instruction', 'tunnel_ended',
                      'connector_stop'}:
             row['cause'] = cause
         with self._lock:
@@ -188,7 +189,7 @@ class SLHSEHConnector:
                 self._stream_writers[sid]=StreamWriter(
                     local.sendall,
                     lambda: self._local_write_failed(sid),
-                    name='slh-local-stream-writer')
+                    name='slh-local-stream-writer', shared_budget=self._gateway_write_budget)
             threading.Thread(target=self._local_reader,args=(sid,local),daemon=True).start()
         elif op=='data':
             raw=payload.get('data')
@@ -223,7 +224,8 @@ class SLHSEHConnector:
         from websockets.sync.client import connect
         path=(f'{self.seh_url}/v1/seh/lab/{self.slh_id}/slh/id/{self.lab_id}'
               if self.lab_id else f'{self.seh_url}/v1/seh/slh/{self.slh_id}')
-        ws=connect(path,open_timeout=8,max_size=MAX_FRAME*2+8192,compression=None)
+        ws=connect(path,open_timeout=8,max_size=MAX_FRAME*2+8192,
+                   max_queue=MAX_WS_BUFFERED_MESSAGES,compression=None)
         try:
             request=json.loads(ws.recv(timeout=8))
             statement=request.get('statement') or {}
@@ -308,7 +310,8 @@ class _LocalAdapterHandler(socketserver.BaseRequestHandler):
                 adapter.first_close_causes[cause] = adapter.first_close_causes.get(cause, 0) + 1
 
         try:
-            with connect(uri,max_size=MAX_FRAME,compression=None,open_timeout=7) as remote:
+            with connect(uri,max_size=MAX_FRAME,max_queue=MAX_WS_BUFFERED_MESSAGES,
+                         compression=None,open_timeout=7) as remote:
                 try:
                     relay_peer_port = int(remote.socket.getsockname()[1])
                 except (OSError, AttributeError, ValueError):

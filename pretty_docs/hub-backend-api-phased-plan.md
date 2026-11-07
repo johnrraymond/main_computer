@@ -98,7 +98,6 @@ POST /api/hub/v1/requests
 GET  /api/hub/v1/requests/{request_id}
 POST /api/hub/v1/requests/{request_id}/cancel
 GET  /api/hub/v1/payouts?node_id=...
-POST /api/hub/v1/payouts/claim
 ```
 
 Phase 0 acceptance criteria:

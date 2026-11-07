@@ -179,8 +179,8 @@ def run_paid_transport_probe(*, mode, cycles, idle_seconds, hub_url, ledger, tls
                         result.get('gates', {}).get('buyer_debit_equals_charge') and
                         result.get('gates', {}).get('idempotent_request_not_double_charged')),
                     'slh_wallet_earned_exactly_once': bool(result.get('earning_count') == 1 and
-                        result.get('gates', {}).get('worker_wallet_credit_equals_earning') and
-                        result.get('gates', {}).get('wallet_authorized_settlement')),
+                        result.get('gates', {}).get('worker_earning_not_prematurely_spendable') and
+                        result.get('gates', {}).get('wallet_authorized_pending_batch')),
                 }
                 if mode == 'direct':
                     route_gates['direct_transport_without_seh'] = adapter is None and relay is None

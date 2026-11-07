@@ -90,7 +90,6 @@ def build_admin_bootstrap_payload(
             "models": "/api/hub/v1/models",
             "requests": "/api/hub/v1/requests",
             "payouts": "/api/hub/v1/payouts",
-            "payout_claim": "/api/hub/v1/payouts/claim",
             "credits": "/api/hub/v1/credits",
             "credit_accounts": "/api/hub/v1/credits/accounts",
             "credit_balance": "/api/hub/v1/credits/balance",
@@ -98,9 +97,6 @@ def build_admin_bootstrap_payload(
             "credit_deposits": "/api/hub/v1/credits/deposits",
             "credit_purchases": "/api/hub/v1/credits/purchases",
             "credit_indexer": "/api/hub/v1/credits/indexer",
-            "credit_deposit_import": "/api/hub/v1/credits/deposits/import",
-            "credit_purchase_import": "/api/hub/v1/credits/purchases/import",
-            "credit_admin_issue": "/api/hub/v1/credits/admin/issue",
         },
     }
 
@@ -313,19 +309,9 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
       <div id=\"creditSummary\">Loading…</div>
     </section>
 
-    <section class=\"two-col\">
-      <article class=\"panel\">
-        <h2>Security and energy</h2>
-        <div id=\"securityEnergy\">Loading…</div>
-      </article>
-      <article class=\"panel\">
-        <h2>Payout controls</h2>
-        <form id=\"payoutForm\" class=\"form-grid\">
-          <div class=\"form-row\"><label for=\"payoutNode\">Worker node id</label><input id=\"payoutNode\" name=\"node_id\" placeholder=\"gpu-worker-01\" required></div>
-          <div class=\"form-row\"><label for=\"memo\">Memo</label><input id=\"memo\" name=\"memo\" placeholder=\"manual admin claim\"></div>
-          <button type=\"submit\">Claim queued payouts</button>
-        </form>
-      </article>
+    <section class=\"panel\">
+      <h2>Security and energy</h2>
+      <div id=\"securityEnergy\">Loading…</div>
     </section>
 
     <section class=\"panel\">
@@ -398,18 +384,6 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
             <td>${{control}}</td>
           </tr>`;
       }}).join('');
-      body.querySelectorAll('[data-cancel]').forEach((button) => {{
-        button.addEventListener('click', async () => {{
-          const id = button.getAttribute('data-cancel');
-          try {{
-            await api(`/api/hub/v1/requests/${{encodeURIComponent(id)}}/cancel`, {{method: 'POST', body: JSON.stringify({{}})}});
-            log(`Cancelled request ${{id}}`);
-            await refresh();
-          }} catch (err) {{
-            log(`Cancel failed: ${{err.message}}`);
-          }}
-        }});
-      }});
     }}
     function renderCredits(data) {{
       const credits = data.credits || {{}};
@@ -495,17 +469,6 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
         await refresh();
       }} catch (err) {{
         log('Request submit failed: ' + err.message);
-      }}
-    }});
-    $('payoutForm').addEventListener('submit', async (event) => {{
-      event.preventDefault();
-      const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
-      try {{
-        const data = await api('/api/hub/v1/payouts/claim', {{method: 'POST', body: JSON.stringify(payload)}});
-        log('Payout claim response: ' + JSON.stringify(data));
-        await refresh();
-      }} catch (err) {{
-        log('Payout claim failed: ' + err.message);
       }}
     }});
     refresh();

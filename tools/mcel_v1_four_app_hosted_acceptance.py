@@ -642,6 +642,20 @@ def observe(mode: str, base_url: str | None = None, report_dir: Path = DEFAULT_R
                             response = page.goto(url, wait_until="domcontentloaded", timeout=15000)
                             item["semantic_http_status"] = response.status if response else None
                         else:
+                            if app == "calculator":
+                                # Offline preview uses an opaque origin. Embedded
+                                # Calculator Chat needs storage on mount; use a
+                                # document-local map, never real profile storage.
+                                # Hosted mode is deliberately untouched.
+                                page.evaluate("""() => {const values=new Map();
+                                    Object.defineProperty(window,'localStorage',{configurable:true,value:{
+                                      getItem:k=>values.get(String(k))??null,
+                                      setItem:(k,v)=>values.set(String(k),String(v)),
+                                      removeItem:k=>values.delete(String(k)),
+                                      clear:()=>values.clear(),key:i=>[...values.keys()][i]??null,
+                                      get length(){return values.size;}
+                                    }});
+                                }""")
                             page.set_content(html, wait_until="domcontentloaded", timeout=15000)
                         page.wait_for_timeout(200)
                         item.update(_survey(page, app, fp))

@@ -43,12 +43,15 @@ def build_work(*, capability: str, payload: dict[str, Any], timeout_s: float,
     }
 
 
-def _hub_json(url: str, *, body: dict[str, Any] | None = None, timeout_s: float = 15.0) -> dict[str, Any]:
+def _hub_json(url: str, *, body: dict[str, Any] | None = None, timeout_s: float = 15.0,
+              continuation_token: str = "") -> dict[str, Any]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json",
+               "User-Agent": "main-computer-nanojev-hub-request/1.0"}
+    if continuation_token:
+        headers["Authorization"] = "Bearer " + continuation_token
     request = Request(
         url, data=json.dumps(body, allow_nan=False).encode("utf-8") if body is not None else None,
-        method="POST" if body is not None else "GET",
-        headers={"Accept": "application/json", "Content-Type": "application/json",
-                 "User-Agent": "main-computer-nanojev-hub-request/1.0"},
+        method="POST" if body is not None else "GET", headers=headers,
     )
     try:
         with urlopen(request, timeout=timeout_s) as response:
@@ -69,6 +72,9 @@ def retrieve_solution(accepted: dict[str, Any], *, hub_url: str,
                       fetch_json=None) -> dict[str, Any]:
     continuation_url = str(accepted.get("continuation_url") or "")
     session_id = str(accepted.get("session_id") or "")
+    token = str(accepted.get("continuation_token") or "")
+    if not token:
+        raise RuntimeError("Hub omitted the authorized requester continuation token")
     if not continuation_url or not session_id:
         raise RuntimeError("Hub accepted response omitted continuation_url or session_id")
     parsed = urlparse(continuation_url)
@@ -78,7 +84,8 @@ def retrieve_solution(accepted: dict[str, Any], *, hub_url: str,
         raise RuntimeError("Hub provided an invalid native solution continuation URL")
     deadline = time.monotonic() + timeout_s
     while True:
-        status = (fetch_json or _hub_json)(continuation_url, timeout_s=15)
+        status = (fetch_json or _hub_json)(continuation_url, timeout_s=15,
+                                           continuation_token=token)
         record = status.get("accepted_session")
         if not isinstance(record, dict) or record.get("session_id") != session_id:
             raise RuntimeError("Hub continuation did not return the accepted session")

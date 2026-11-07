@@ -648,85 +648,10 @@ def _bridge_random_funding_event(
     hub_label: str,
     progress: _StressProgress,
 ) -> dict[str, Any]:
-    """Create and confirm one requester top-up through the Hub-owned bridge backend."""
-
-    wallet_address = str(config.requester_wallet_address or "").strip()
-    if not wallet_address:
-        raise NodeMarketSmokeError("Cannot run bridge funding event without requester wallet address.")
-    event_id = f"funding-{event_index:02d}"
-    metadata = {
-        "run_id": config.run_id,
-        "smoke": "temporal_fdb_hub_stress",
-        "bridge_random_event": True,
-        "bridge_random_event_kind": "requester_funding",
-        "bridge_random_event_id": event_id,
-        "hub_label": hub_label,
-    }
-
-    mint = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/mock-chain/mint",
-        {
-            "wallet_address": wallet_address,
-            "credits": credits,
-            "idempotency_key": f"{config.run_id}-{event_id}-mint",
-            "memo": "temporal fdb hub stress randomized requester funding",
-            "metadata": metadata,
-        },
-        timeout=config.http_timeout_seconds,
-        retry_attempts=config.http_retry_attempts,
+    """Retired: an HTTP caller can no longer mint or confirm mock deposits."""
+    raise NodeMarketSmokeError(
+        "Retired: randomized HTTP mock-chain funding was deleted."
     )
-    deposit = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/deposits",
-        {
-            "wallet_address": wallet_address,
-            "account_id": config.account_id,
-            "credits": credits,
-            "idempotency_key": f"{config.run_id}-{event_id}-deposit",
-            "memo": "temporal fdb hub stress randomized requester bridge deposit",
-            "metadata": metadata,
-        },
-        timeout=config.http_timeout_seconds,
-        retry_attempts=config.http_retry_attempts,
-    )
-    deposit_payload = deposit.get("deposit", {}) if isinstance(deposit.get("deposit"), dict) else {}
-    deposit_id = str(deposit_payload.get("deposit_id") or "")
-    if not deposit_id:
-        raise NodeMarketSmokeError(f"Randomized bridge funding event did not return deposit_id: {deposit}")
-    confirmed = _post_json(
-        config.hub_url,
-        "/api/hub/v1/bridge/deposits/confirm",
-        {
-            "deposit_id": deposit_id,
-            "metadata": metadata,
-        },
-        timeout=config.http_timeout_seconds,
-        retry_attempts=config.http_retry_attempts,
-    )
-    movement = _dev_chain_movement_from_bridge_confirm(confirmed, payload_key="deposit")
-    progress.emit(
-        "stress_bridge_random_funding_confirmed",
-        event_id=event_id,
-        hub_label=hub_label,
-        account_id=config.account_id,
-        wallet_address=wallet_address,
-        credits=credits,
-        deposit_id=deposit_id,
-        dev_chain_tx_count=len(movement.get("transaction_hashes", [])) if movement else 0,
-    )
-    return {
-        "event_id": event_id,
-        "event_kind": "requester_funding",
-        "hub_label": hub_label,
-        "credits": credits,
-        "wallet_address": wallet_address,
-        "deposit_id": deposit_id,
-        "mint": mint,
-        "deposit": deposit_payload,
-        "confirmed": confirmed,
-        "movement": movement,
-    }
 
 
 def _exercise_random_bridge_funding_events(
@@ -736,32 +661,9 @@ def _exercise_random_bridge_funding_events(
     seed: str,
     progress: _StressProgress,
 ) -> dict[str, Any]:
-    """Run seeded requester top-up events while chatter is active."""
-
-    count = max(0, int(event_count or 0))
-    rng = random.Random(f"{seed}:funding")
-    labels = ["hub_a", "hub_b"]
-    events: list[dict[str, Any]] = []
-    for event_index in range(1, count + 1):
-        hub_label = labels[rng.randrange(len(labels))]
-        cfg = configs[hub_label]
-        credits = rng.randint(2, max(2, int(cfg.max_price_credits or 1) * 4))
-        events.append(
-            _bridge_random_funding_event(
-                cfg,
-                event_index=event_index,
-                credits=credits,
-                hub_label=hub_label,
-                progress=progress,
-            )
-        )
-    total_credits = sum(int(event.get("credits", 0) or 0) for event in events)
-    return {
-        "requested_count": count,
-        "confirmed_count": len(events),
-        "total_credits": total_credits,
-        "events": events,
-    }
+    raise NodeMarketSmokeError(
+        "Retired: randomized HTTP mock-chain funding was deleted."
+    )
 
 
 def _bridge_random_confirmed_payout_event(
@@ -776,86 +678,7 @@ def _bridge_random_confirmed_payout_event(
     confirm_hub_label: str,
     progress: _StressProgress,
 ) -> dict[str, Any]:
-    event_id = f"payout-{event_index:02d}"
-    metadata = {
-        "run_id": request_config.run_id,
-        "smoke": "temporal_fdb_hub_stress",
-        "bridge_random_event": True,
-        "bridge_random_event_kind": "worker_payout_confirmed",
-        "bridge_random_event_id": event_id,
-        "request_hub": request_hub_label,
-        "confirm_hub": confirm_hub_label,
-    }
-    payout = _post_json(
-        request_config.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "worker_node_id": worker.node_id,
-            "credits": credits,
-            "idempotency_key": f"{request_config.run_id}-{worker.node_id}-{event_id}",
-            "memo": "temporal fdb hub stress randomized worker payout",
-            "metadata": metadata,
-        },
-        timeout=request_config.http_timeout_seconds,
-        retry_attempts=request_config.http_retry_attempts,
-    )
-    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
-    payout_id = str(payout_payload.get("payout_id") or "")
-    if not payout_id:
-        raise NodeMarketSmokeError(f"Randomized payout event did not return payout_id: {payout}")
-
-    lock_status = _get_json(
-        confirm_config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=confirm_config.http_timeout_seconds,
-    )
-    if lock_status.get("locked") is not True:
-        raise NodeMarketSmokeError(f"Randomized payout did not lock wallet {wallet_address}: {lock_status}")
-
-    confirmed = _post_json(
-        confirm_config.hub_url,
-        "/api/hub/v1/bridge/payouts/confirm",
-        {
-            "payout_id": payout_id,
-            "metadata": metadata,
-        },
-        timeout=confirm_config.http_timeout_seconds,
-        retry_attempts=confirm_config.http_retry_attempts,
-    )
-    final_lock = _get_json(
-        request_config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=request_config.http_timeout_seconds,
-    )
-    if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Randomized payout confirmation did not unlock wallet {wallet_address}: {final_lock}")
-
-    movement = _dev_chain_movement_from_bridge_confirm(confirmed, payload_key="payout")
-    progress.emit(
-        "stress_bridge_random_payout_confirmed",
-        event_id=event_id,
-        worker_node_id=worker.node_id,
-        wallet_address=wallet_address,
-        credits=credits,
-        request_hub=request_hub_label,
-        confirm_hub=confirm_hub_label,
-        payout_id=payout_id,
-        dev_chain_tx_count=len(movement.get("transaction_hashes", [])) if movement else 0,
-    )
-    return {
-        "event_id": event_id,
-        "event_kind": "worker_payout_confirmed",
-        "worker_node_id": worker.node_id,
-        "wallet_address": wallet_address,
-        "credits": credits,
-        "request_hub": request_hub_label,
-        "confirm_hub": confirm_hub_label,
-        "payout_id": payout_id,
-        "payout": payout_payload,
-        "confirmed": confirmed,
-        "movement": movement,
-    }
+    raise NodeMarketSmokeError("retired_unauthorized_legacy_payout_http__bridge_random_confirmed_payout_event")
 
 
 def _bridge_random_failed_payout_event(
@@ -870,85 +693,7 @@ def _bridge_random_failed_payout_event(
     fail_hub_label: str,
     progress: _StressProgress,
 ) -> dict[str, Any]:
-    event_id = f"failed-payout-{event_index:02d}"
-    metadata = {
-        "run_id": request_config.run_id,
-        "smoke": "temporal_fdb_hub_stress",
-        "bridge_random_event": True,
-        "bridge_random_event_kind": "worker_payout_failed",
-        "bridge_random_event_id": event_id,
-        "request_hub": request_hub_label,
-        "fail_hub": fail_hub_label,
-    }
-    payout = _post_json(
-        request_config.hub_url,
-        "/api/hub/v1/bridge/payouts",
-        {
-            "wallet_address": wallet_address,
-            "worker_node_id": worker.node_id,
-            "credits": credits,
-            "idempotency_key": f"{request_config.run_id}-{worker.node_id}-{event_id}",
-            "memo": "temporal fdb hub stress randomized failed payout recovery",
-            "metadata": metadata,
-        },
-        timeout=request_config.http_timeout_seconds,
-        retry_attempts=request_config.http_retry_attempts,
-    )
-    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
-    payout_id = str(payout_payload.get("payout_id") or "")
-    if not payout_id:
-        raise NodeMarketSmokeError(f"Randomized failed-payout event did not return payout_id: {payout}")
-
-    lock_status = _get_json(
-        fail_config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=fail_config.http_timeout_seconds,
-    )
-    if lock_status.get("locked") is not True:
-        raise NodeMarketSmokeError(f"Randomized failed payout did not lock wallet {wallet_address}: {lock_status}")
-
-    failed = _post_json(
-        fail_config.hub_url,
-        "/api/hub/v1/bridge/payouts/fail",
-        {
-            "payout_id": payout_id,
-            "reason": "stress_randomized_failure_recovery",
-            "metadata": metadata,
-        },
-        timeout=fail_config.http_timeout_seconds,
-        retry_attempts=fail_config.http_retry_attempts,
-    )
-    final_lock = _get_json(
-        request_config.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=request_config.http_timeout_seconds,
-    )
-    if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Randomized failed payout did not unlock wallet {wallet_address}: {final_lock}")
-
-    progress.emit(
-        "stress_bridge_random_payout_failed_recovered",
-        event_id=event_id,
-        worker_node_id=worker.node_id,
-        wallet_address=wallet_address,
-        credits=credits,
-        request_hub=request_hub_label,
-        fail_hub=fail_hub_label,
-        payout_id=payout_id,
-    )
-    return {
-        "event_id": event_id,
-        "event_kind": "worker_payout_failed",
-        "worker_node_id": worker.node_id,
-        "wallet_address": wallet_address,
-        "credits": credits,
-        "request_hub": request_hub_label,
-        "fail_hub": fail_hub_label,
-        "payout_id": payout_id,
-        "payout": payout_payload,
-        "failed": failed,
-        "movement": {},
-    }
+    raise NodeMarketSmokeError("retired_unauthorized_legacy_payout_http__bridge_random_failed_payout_event")
 
 
 def _exercise_random_bridge_payout_events(
@@ -1389,6 +1134,11 @@ def _exercise_agent_feedback_review_scenario(
 
 
 async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dict[str, Any]:
+    # Fail before chain setup, network I/O, file creation or ledger mutation.
+    raise NodeMarketSmokeError(
+        "Retired: this Hub stress smoke requires deleted mock-chain HTTP "
+        "funding and payout routes."
+    )
     run_id = config.run_id or f"{time.time_ns():x}"[-10:]
     object.__setattr__(config, "run_id", run_id)
 

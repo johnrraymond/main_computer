@@ -53,7 +53,7 @@ from main_computer.hub import (
     HubHttpServer,
     HubServerHandler,
 )
-from main_computer.stable_hub import LiveWorkerSession, stable_hub_contract
+from main_computer.stable_hub import LiveWorkerSession, StableHubRequestHandler, stable_hub_contract
 from main_computer.stable_hub_temporal import (
     StableHubTemporalRuntime, TemporalLifecycleUnavailable,
 )
@@ -528,52 +528,13 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         self._ws_send_frame(0x1, json.dumps(payload, sort_keys=True).encode("utf-8"))
 
     def _ws_read_frame(self) -> tuple[int, bytes]:
-        header = self.rfile.read(2)
-        if len(header) < 2:
-            raise ConnectionError("websocket closed")
-        first, second = header[0], header[1]
-        opcode = first & 0x0F
-        length = second & 0x7F
-        masked = bool(second & 0x80)
-        if length == 126:
-            raw = self.rfile.read(2)
-            if len(raw) < 2:
-                raise ConnectionError("websocket closed during frame length")
-            length = int.from_bytes(raw, "big")
-        elif length == 127:
-            raw = self.rfile.read(8)
-            if len(raw) < 8:
-                raise ConnectionError("websocket closed during frame length")
-            length = int.from_bytes(raw, "big")
-        mask = self.rfile.read(4) if masked else b""
-        if masked and len(mask) < 4:
-            raise ConnectionError("websocket closed during frame mask")
-        payload = self.rfile.read(length) if length else b""
-        if len(payload) < length:
-            raise ConnectionError("websocket closed during frame payload")
-        if masked:
-            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        return opcode, payload
+        # The experimental Hub exposes the same worker WebSocket wire format.
+        # Reuse the production decoder rather than retaining a second unsafe
+        # length/fragment parser which could silently diverge.
+        return StableHubRequestHandler._ws_read_frame(self)
 
     def _ws_read_json_message(self) -> dict[str, Any]:
-        while True:
-            opcode, payload = self._ws_read_frame()
-            if opcode == 0x8:
-                raise ConnectionError("websocket close frame received")
-            if opcode == 0x9:
-                self._ws_send_frame(0xA, payload)
-                continue
-            if opcode == 0xA:
-                continue
-            if opcode != 0x1:
-                raise StableHubWorkerSessionError(f"unsupported websocket opcode: {opcode}")
-            try:
-                decoded = json.loads(payload.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise StableHubWorkerSessionError(f"websocket text frame is not JSON: {exc}") from exc
-            if not isinstance(decoded, dict):
-                raise StableHubWorkerSessionError("websocket JSON message must be an object")
-            return decoded
+        return StableHubRequestHandler._ws_read_json_message(self)
 
     def _accept_websocket(self) -> bool:
         if self.headers.get("Upgrade", "").lower() != "websocket":
@@ -589,6 +550,11 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return False
+        if not self.server.resource_claim_websocket(self.connection):
+            self.close_connection = True
+            self._send_json({"ok": False, "error": "worker_websocket_capacity_exceeded"},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return False
         accept = base64.b64encode(
             hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
         ).decode("ascii")
@@ -598,6 +564,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
         self.close_connection = True
+        self._ws_auth_deadline_monotonic = time.monotonic() + self._resource_policy().ws_preauth_deadline_seconds
         return True
 
     def _market_profile_from_auth(self, message: dict[str, Any]) -> dict[str, Any]:
@@ -2497,6 +2464,8 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 }
             )
 
+            self._ws_authenticated = True
+            self.server.resource_websocket_authenticated(self.connection)
             ping_id = "ping_" + secrets.token_urlsafe(12).rstrip("=")
             session.send_json({"type": "hub.ping", "ping_id": ping_id})
             while True:

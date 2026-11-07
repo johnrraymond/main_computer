@@ -124,7 +124,8 @@ FIXTURE_JS=r'''() => {
      connections:[{pid,process_name:'disposable-task-process',status:'ESTABLISHED',local:'127.0.0.1:10001',remote:'127.0.0.1:8765'}],
      hardware:{summary:'CPU 12%, GPU 3%',updated_at:'2026-11-05T12:00:00Z',
        cpu:{available:true,overall_percent:12,per_core:[{index:0,label:'CPU0',percent:12}]},
-       gpu:{available:true,overall_percent:3,devices:[{index:0,name:'test-gpu',utilization_percent:3,memory_used_mb:10,memory_total_mb:100,temperature_c:42}]}}});
+       gpu:window.__taskCase.gpuMissing ? {available:false,overall_percent:null,devices:[]} :
+         {available:true,overall_percent:3,devices:[{index:0,name:'test-gpu',utilization_percent:3,memory_used_mb:10,memory_total_mb:100,temperature_c:42}]}}});
    if(uri.endsWith('/schedules'))return result({ok:true,schedules:window.__taskCase.schedules});
    if(uri.endsWith('/ai'))return result({ok:true,content:'Isolated analysis for '+body.instruction});
    const mutating=['/action','/schedule/create','/schedule/delete','/schedule/run'].some(s=>uri.endsWith(s));
@@ -178,8 +179,19 @@ def _requests(page, suffix:str)->list[dict]:
     return page.evaluate('(s)=>window.__taskRequests.filter(r=>r.path.endsWith(s))',suffix)
 
 
+def _show_workflow(page, locator):
+    # The verified workspace composer may place supporting tools in exclusive
+    # tabs.  Navigate to the owner without changing the semantic operation,
+    # target, authorization, or confirmation under test.
+    panel=locator.evaluate('el=>el.closest("[data-mcel-tool-panel]")?.id||null')
+    if panel:
+        page.locator(f'[data-mcel-tool-tabs] [aria-controls="{panel}"]').click()
+
+
 def _click(page, intent:str):
-    page.locator(f'button[data-intent="intent:{intent}"]').click()
+    target=page.locator(f'button[data-intent="intent:{intent}"]')
+    _show_workflow(page,target)
+    target.click()
 
 
 def _await_receipt(page,intent:str,disposition:str='completed'):
@@ -283,6 +295,35 @@ def browser_comparison(repo:Path)->dict:
         _scenario(cases,'hardware','cpu-gpu-telemetry',{'cpuPercent':12,'gpuPercent':3},
                   {'cpuPercent':hw.get('cpuPercent'),'gpuPercent':hw.get('gpuPercent')},
                   hw.get('cpuPercent')==12 and hw.get('gpuPercent')==3)
+        # The data existed in state but was previously an unreadable JSON blob
+        # inside a 170px results column. Require readable gauges and an actual
+        # primary workspace; otherwise functional parity is not sufficient.
+        telemetry=page.evaluate('''() => {
+          const node=document.querySelector('[data-mcel-node="surface-node:semantic-task-manager.hardware-overview"]');
+          const region=node?.closest('[data-mcel-region]');
+          return { values:Object.fromEntries([...document.querySelectorAll('[data-mcel-metric]')]
+            .map(card=>[card.dataset.mcelMetric,card.querySelector('[data-mcel-metric-value]')?.textContent])),
+            meters:document.querySelectorAll('[data-mcel-metric-meter]').length,
+            rawJson:!!node?.querySelector('output')?.textContent?.trim().startsWith('{'),
+            regionPurpose:region?.dataset.mcelPurpose,
+            width:region?.getBoundingClientRect().width||0,
+            gpuDetails:!!node?.querySelector('[data-mcel-measurement-detail="gpuDevices"][open]')};
+        }''')
+        expected_telemetry={'cpuPercent':'12%','gpuPercent':'3%'}
+        _scenario(cases,'hardware','visible-cpu-gpu-measurements',expected_telemetry,telemetry['values'],
+                  telemetry['values']==expected_telemetry and telemetry['meters']==2 and
+                  not telemetry['rawJson'] and telemetry['gpuDetails'])
+        _scenario(cases,'hardware','telemetry-uses-primary-workspace',True,
+                  telemetry['regionPurpose']=='workspace' and telemetry['width']>=400,
+                  telemetry['regionPurpose']=='workspace' and telemetry['width']>=400)
+        # Unavailable readings must not be disguised as zero-percent usage.
+        page.evaluate('window.__taskCase.gpuMissing=true')
+        page.locator('form[data-intent="intent:refresh-hardware"] button[type=submit]').click()
+        page.wait_for_function('window.__mcelWorkbench.app.readState("state:hardware")?.gpuPercentAvailable === false')
+        gpu_missing=page.locator('[data-mcel-metric="gpuPercent"] [data-mcel-metric-value]').inner_text()
+        _scenario(cases,'hardware','unavailable-gpu-is-not-zero','Unavailable',gpu_missing,
+                  gpu_missing=='Unavailable' and page.locator('[data-mcel-metric="gpuPercent"] [data-mcel-metric-meter]').count()==0)
+        page.evaluate('window.__taskCase.gpuMissing=false')
         # Kill a selected process from all-processes view, rather than relying
         # on hidden stale state from the server-processes view.
         page.locator('[data-mcel-mode-tabs] button[data-value="all-processes"]').click()
@@ -311,6 +352,7 @@ def browser_comparison(repo:Path)->dict:
         # Explicit AI is advisory, and not permitted to trigger OS effects.
         effects_before=page.evaluate('window.__taskEffects.length')
         ai=page.locator('form[data-intent="intent:task-ai"]')
+        _show_workflow(page,ai)
         ai.locator('[name=instruction]').fill('Summarize the observed process')
         ai.locator('button[type=submit]').click();_await_receipt(page,'task-ai')
         ai_body=_requests(page,'/ai')[-1]['body']
@@ -347,6 +389,7 @@ def browser_comparison(repo:Path)->dict:
                   page.evaluate('window.__taskCase.schedules.length'),
                   page.evaluate('window.__taskCase.schedules.length')==0)
         form=page.locator('form[data-intent="intent:create-schedule"]')
+        _show_workflow(page,form)
         form.locator('[name=action]').fill('server_start')
         form.locator('[name=runAt]').fill('2026-11-07T12:00:00+00:00')
         form.locator('[name=note]').fill('isolated operator request')

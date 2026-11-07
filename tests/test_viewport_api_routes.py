@@ -126,13 +126,13 @@ class ViewportApiRouteTests(unittest.TestCase):
 
             with urlopen(f"{base}/applications/task-manager", timeout=5) as response:
                 task_manager_page = response.read().decode("utf-8")
-            self.assertIn("Main Computer Applications", task_manager_page)
-            self.assertIn("applicationFromPath", task_manager_page)
+            self.assertIn('id="mcel-workbench-ir"', task_manager_page)
+            self.assertIn('Semantic application · Canonical route', task_manager_page)
 
             with urlopen(f"{base}/applications/task-manager/connections", timeout=5) as response:
                 task_manager_connections_page = response.read().decode("utf-8")
-            self.assertIn("Main Computer Applications", task_manager_connections_page)
-            self.assertIn("taskNotebookTabFromPath", task_manager_connections_page)
+            self.assertIn('id="mcel-workbench-ir"', task_manager_connections_page)
+            self.assertIn('const initialView="connections";', task_manager_connections_page)
 
             with urlopen(f"{base}/apps/git-tools", timeout=5) as response:
                 git_tools_page = response.read().decode("utf-8")

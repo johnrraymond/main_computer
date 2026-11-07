@@ -71,7 +71,8 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
 [data-mcel-presentation="expert"] [data-mcel-mode-tabs]{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
 [data-mcel-presentation="expert"] [data-mcel-mode-tabs] button[aria-pressed="true"]{background:#34637b;border-color:#84bfd3}
 [data-mcel-presentation="expert"] [data-mcel-node][hidden],[data-mcel-presentation="expert"] [data-mcel-region][hidden]{display:none!important}
-[data-mcel-presentation="expert"] [data-mcel-record-row][aria-selected="true"]{background:#254451;border-radius:6px}
+[data-mcel-presentation="expert"] [data-mcel-record-row][aria-selected="true"],
+[data-mcel-presentation="expert"] [data-collection]>[data-record-key][aria-selected="true"]{background:#254451;border-radius:6px}
 [data-mcel-presentation="expert"] [data-mcel-inline-details]{flex:1 1 100%;min-width:0;font-size:.88rem;color:var(--mute);padding:3px 6px}
 [data-mcel-presentation="expert"] [data-mcel-inline-details] summary,
 [data-mcel-presentation="expert"] [data-mcel-measurement-detail] summary{cursor:pointer;min-height:28px;padding:4px}
@@ -148,4 +149,39 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
 
 [data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-navigation-disclosure] > [data-mcel-region]{
   max-height:180px;overflow:auto;scrollbar-gutter:stable;
+}
+
+/* Generic typed percentage measurements: data-driven from any record state. */
+[data-mcel-presentation="expert"] output[data-mcel-structured-record]{white-space:normal;font:inherit;background:transparent;border:0;padding:0;max-height:none;overflow:visible;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-metric-board]{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px;min-width:0;margin:12px 0 16px}
+[data-mcel-presentation="expert"] [data-mcel-metric]{background:#0e202a;border:1px solid #436071;border-radius:9px;padding:14px;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-metric-head]{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:7px}
+[data-mcel-presentation="expert"] [data-mcel-metric-label]{font-size:.9rem;color:#b4cbd6;font-weight:650}
+[data-mcel-presentation="expert"] [data-mcel-metric-value]{font-variant-numeric:tabular-nums;font-size:clamp(1.35rem,2.5vw,2rem);font-weight:750;color:#d6f2ee}
+[data-mcel-presentation="expert"] [data-mcel-metric-available="false"] [data-mcel-metric-value]{font-size:1rem;color:#b5bfc7}
+[data-mcel-presentation="expert"] [data-mcel-metric-meter]{height:10px;background:#253d4b;border-radius:7px;margin-top:13px;overflow:hidden}
+[data-mcel-presentation="expert"] [data-mcel-metric-fill]{height:100%;background:#72bec2;border-radius:7px;min-width:0}
+[data-mcel-presentation="expert"] output[data-mcel-structured-record] [data-mcel-measurements]{font-size:.9rem}
+[data-mcel-presentation="expert"] output[data-mcel-structured-record] [data-mcel-measurement-detail]{font-size:.9rem}
+
+
+/* Structured records belong to the full primary workspace, even if a
+ * source-authored region omits an optional priority attribute. Navigation
+ * collections keep their separate layout and authority. */
+[data-mcel-presentation="expert"] [data-mcel-purpose="workspace"][data-mcel-content-kind="collection"]{grid-column:2;min-width:0}
+/* Generic, IR-derived field counts: wide collections are readable multi-field
+ * records; constrained collections become labeled cards rather than squeezing
+ * every value into a narrow single-line rail. */
+[data-mcel-presentation="expert"] [data-mcel-structured-list]{width:100%;min-width:0;container-type:inline-size}
+[data-mcel-presentation="expert"] [data-mcel-structured-list]>[data-record-key]{display:grid;grid-template-columns:repeat(var(--mcel-list-columns),minmax(0,1fr));align-items:start;column-gap:10px;row-gap:4px;min-width:0;width:100%}
+[data-mcel-presentation="expert"] [data-mcel-structured-list] [data-record-field]{display:block;min-width:0;overflow-wrap:anywhere;font-size:.86rem;font-weight:400;line-height:1.45}
+[data-mcel-presentation="expert"] [data-mcel-structured-list] [data-record-field]::before{content:attr(data-field-label);display:block;font-size:.67rem;letter-spacing:.025em;text-transform:uppercase;color:#9ab5c4;margin-bottom:3px}
+@container (max-width:560px){
+ [data-mcel-presentation="expert"] [data-mcel-structured-list]>[data-record-key]{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container (max-width:340px){
+ [data-mcel-presentation="expert"] [data-mcel-structured-list]>[data-record-key]{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:960px){
+ [data-mcel-presentation="expert"] [data-mcel-purpose="workspace"][data-mcel-content-kind="collection"]{grid-column:1 / -1}
 }

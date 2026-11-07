@@ -31,36 +31,23 @@ GET  /api/hub/v1/credits/accounts
 GET  /api/hub/v1/credits/balance?account_id=...
 GET  /api/hub/v1/credits/transactions?account_id=...
 GET  /api/hub/v1/credits/deposits?account_id=...
-POST /api/hub/v1/credits/admin/issue
 ```
 
 `/api/hub/v1/admin/bootstrap` now includes a `credits` section so the built-in
 admin/control site can show the Compute Credit ledger summary.
 
-## Admin issue endpoint
+## Credit issuance boundary
 
-`POST /api/hub/v1/credits/admin/issue` is a development/admin accounting
-endpoint. It creates an `admin_adjustment` transaction and increases an internal
-account balance.
+The legacy Hub no longer exposes a credit-minting HTTP endpoint. Credit
+balances may still be initialized directly inside isolated test fixtures via
+`HubCreditLedger.issue()`. Production issuance must use separately authorized
+financial flows; no HTTP route can mint credits on behalf of an arbitrary
+caller.
 
-Example payload:
+## Internal deposit event idempotency
 
-```json
-{
-  "account_id": "user-one",
-  "credits": 100,
-  "memo": "manual test issue",
-  "owner_address": "0xabc..."
-}
-```
-
-This is not a public purchase flow. The later purchase indexer will import
-`CreditDeposited` contract events and record `deposit_indexed` transactions.
-
-## Idempotent deposit import
-
-`HubCreditLedger.record_deposit()` already supports idempotent `CreditDeposit`
-imports. The future chain indexer should use:
+`HubCreditLedger.record_deposit()` supports idempotent `CreditDeposit`
+bookkeeping for trusted verified events. Event identity uses:
 
 ```text
 chain_id + contract_address + tx_hash + log_index

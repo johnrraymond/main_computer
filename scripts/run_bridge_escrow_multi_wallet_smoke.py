@@ -374,105 +374,14 @@ def account_balance(hub_url: str, account_id: str, *, timeout: float) -> dict[st
     return account
 
 
-def import_deposit_twice(
-    *,
-    hub_url: str,
-    requester: dict[str, Any],
-    payload: dict[str, Any],
-    timeout: float,
-    allow_existing: bool,
-) -> dict[str, Any]:
-    before_account = account_balance(hub_url, requester["account_id"], timeout=timeout)
-    before_available = clean_int(before_account.get("available_credits"), default=0)
-
-    first = http_json(
-        "POST",
-        f"{hub_url}/api/hub/v1/credits/deposits/import",
-        body=payload,
-        timeout=timeout,
+def import_deposit_twice(*, hub_url: str, requester: dict[str, Any],
+                         payload: dict[str, Any], timeout: float,
+                         allow_existing: bool) -> dict[str, Any]:
+    """Previously synthetic funded; never credit a Hub from an unverified receipt."""
+    raise SmokeFailure(
+        "The synthetic deposit-crediting workflow was removed. "
+        "Use authenticated bridge funding completion with verified on-chain deposits."
     )
-    require(first.get("ok") is True, f"first import did not return ok=true for {requester['account_id']}")
-    first_idempotent = first.get("idempotent") is True
-    if first_idempotent and not allow_existing:
-        raise SmokeFailure(
-            f"deposit for {requester['account_id']} already existed; pass --allow-existing to accept reused receipts"
-        )
-    first_account = first.get("account")
-    first_deposit = first.get("deposit")
-    require(isinstance(first_account, dict), f"first import for {requester['account_id']} missing account")
-    require(isinstance(first_deposit, dict), f"first import for {requester['account_id']} missing deposit")
-    require(
-        clean_int(first_deposit.get("credits_granted")) == requester["deposit_units"],
-        (
-            f"unexpected credits_granted for {requester['account_id']}; "
-            f"expected atom units={requester['deposit_units']}"
-        ),
-    )
-    deposit_id = str(first_deposit.get("deposit_id") or "")
-    require(deposit_id.startswith("dep_"), f"unexpected deposit_id for {requester['account_id']}: {deposit_id!r}")
-
-    second = http_json(
-        "POST",
-        f"{hub_url}/api/hub/v1/credits/deposits/import",
-        body=payload,
-        timeout=timeout,
-    )
-    require(second.get("ok") is True, f"duplicate import did not return ok=true for {requester['account_id']}")
-    require(second.get("idempotent") is True, f"duplicate import was not idempotent for {requester['account_id']}")
-
-    second_account = second.get("account")
-    second_deposit = second.get("deposit")
-    require(isinstance(second_account, dict), f"duplicate import for {requester['account_id']} missing account")
-    require(isinstance(second_deposit, dict), f"duplicate import for {requester['account_id']} missing deposit")
-    require(second_deposit.get("deposit_id") == deposit_id, f"duplicate import changed deposit_id for {requester['account_id']}")
-
-    after_available = clean_int(second_account.get("available_credits"), default=-1)
-    after_held = clean_int(second_account.get("held_credits"), default=0)
-    after_spent = clean_int(second_account.get("spent_credits"), default=0)
-    if first_idempotent:
-        # Existing receipts may already have been partially spent by later
-        # paid-request smokes.  For --allow-existing, validate that the
-        # receipt itself is the atom-unit receipt we expect and that the
-        # account's known credit columns still reconcile to at least the
-        # original deposit amount.
-        require(
-            after_available + after_held + after_spent >= requester["deposit_units"],
-            f"existing imported atom-unit deposit for {requester['account_id']} no longer reconciles",
-        )
-    else:
-        require(
-            after_available >= before_available + requester["deposit_units"],
-            f"fresh import did not increase available atom units for {requester['account_id']}",
-        )
-
-    query = urlencode({"account_id": requester["account_id"]})
-    deposits = http_json(
-        "GET",
-        f"{hub_url}/api/hub/v1/credits/deposits?{query}",
-        timeout=timeout,
-    )
-    rows = deposits.get("deposits")
-    require(isinstance(rows, list), f"deposits endpoint did not return list for {requester['account_id']}")
-    require(
-        any(isinstance(row, dict) and row.get("deposit_id") == deposit_id for row in rows),
-        f"deposits endpoint did not include deposit {deposit_id} for {requester['account_id']}",
-    )
-
-    return {
-        "ok": True,
-        "account_id": requester["account_id"],
-        "address": requester["address"],
-        "deposit_id": deposit_id,
-        "first_import_idempotent": first_idempotent,
-        "duplicate_import_idempotent": True,
-        "before_available_credits": before_available,
-        "after_available_credits": after_available,
-        "before_available_units": before_available,
-        "after_available_units": after_available,
-        "deposit_credits": requester["deposit_credits"],
-        "credits_granted": requester["deposit_units"],
-        "payment_amount_base_units": requester["deposit_units"],
-    }
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, Any]:

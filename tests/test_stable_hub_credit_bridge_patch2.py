@@ -209,9 +209,10 @@ def test_stable_http_wallet_balance_funding_charge_history_and_disabled_refunds(
         status, history = _json_request(base, "/api/hub/v1/credits/charges?request_id=req-1")
         assert status == 200 and history["charges"][0]["charge_id"] == charge["charge"]["charge_id"]
         assert history["charges"][0]["charged_credit_wei"] == str(UNIT // 4)
-        for path in ("/api/hub/v1/credits/wallet-funding/import", "/api/hub/v1/credits/bridge-reconciliation/execute", "/api/hub/v1/credits/bridge-reconciliation/record"):
-            status, result = _json_request(base, path, {})
-            assert status == 501 and result["error"] == "stable_hub_unverified_financial_operation_disabled"
+        status, _result = _json_request(base, "/api/hub/v1/credits/wallet-funding/import", {})
+        assert status == 404
+        # HTTP reconciliation execution was deleted; the standalone security
+        # oracle verifies the 404 and absence of any bridge side effects.
         status, replay = _json_request(base, "/api/hub/v1/credits/wallet-funding/complete", {"deposit_id": DEPOSIT, "wallet_address": WALLET, "tx_hash": FUNDING_TX})
         assert status == 200 and replay["delta_credit_wei"] == "0"
         status, after_replay = _json_request(base, balance_path)
@@ -222,8 +223,9 @@ def test_stable_http_wallet_balance_funding_charge_history_and_disabled_refunds(
         thread.join(timeout=3)
 
 
-def test_disabled_financial_posts_preserve_http11_connection() -> None:
-    """A rejected POST must not leave its JSON body to become a phantom request."""
+
+def test_deleted_reconciliation_execution_post_is_404_and_does_not_poison_http11():
+    """Unknown POSTs close so their unread bodies cannot become a new request."""
     topology = load_stable_hub_topology(Path("deploy/hub-topology/dev-topology.json"))
     server = create_stable_hub_server(
         topology=topology, hub_id="dev-hub1", bind_host="127.0.0.1", bind_port=0,
@@ -232,16 +234,16 @@ def test_disabled_financial_posts_preserve_http11_connection() -> None:
     thread.start()
     conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
     try:
-        for path in (
-            "/api/hub/v1/credits/wallet-funding/import",
-            "/api/hub/v1/credits/bridge-reconciliation/execute",
-            "/api/hub/v1/credits/bridge-reconciliation/record",
-        ):
-            conn.request("POST", path, body="{}", headers={"Content-Type": "application/json"})
-            response = conn.getresponse()
-            assert response.version == 11
-            assert response.status == 501
-            assert json.loads(response.read())["error"] == "stable_hub_unverified_financial_operation_disabled"
+        conn.request("POST", "/api/hub/v1/credits/bridge-reconciliation/execute",
+                     body='{"request_id":"untrusted"}',
+                     headers={"Content-Type": "application/json"})
+        response = conn.getresponse()
+        assert response.status == 404
+        assert response.will_close
+        assert json.loads(response.read())["error"] == "not_found"
+        # An independent request must still reach the healthy Hub.
+        conn.close()
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
         conn.request("GET", "/health")
         response = conn.getresponse()
         assert response.status == 200

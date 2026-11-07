@@ -132,7 +132,7 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
         prog="main-computer captain",
         description=(
             "Connect as the Captain/officer backend wallet. Captain prompts default to "
-            "mainnet bridge funding, a ring-3 hub request, and bridge refund cleanup."
+            "mainnet bridge funding and a ring-3 hub request."
         ),
     )
     parser.add_argument("--prompt", default="", help="Prompt/memo override. Otherwise free text before the first --option is used.")
@@ -220,7 +220,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
         balance_target_plan = plan_captain_bounded_bridge_top_up(
             _fetch_hub_credit_balance(runtime.config.hub_url,
                                       wallet_address=runtime.wallet.address,
-                                      timeout_s=options.timeout_s),
+                                      timeout_s=options.timeout_s, wallet=runtime.wallet),
             wallet_address=runtime.wallet.address, target_wei=target_wei,
         )
         # This mode cannot issue a legacy administrative stipend. A balance
@@ -315,7 +315,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             result["hub"]["balance_start"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
                 wallet_address=runtime.wallet.address,
-                timeout_s=options.timeout_s,
+                timeout_s=options.timeout_s, wallet=runtime.wallet,
             )
         quote_payload = build_hub_request_payload(
             prompt=prompt,
@@ -398,7 +398,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                     current_plan = plan_captain_bounded_bridge_top_up(
                         _fetch_hub_credit_balance(
                             runtime.config.hub_url, wallet_address=runtime.wallet.address,
-                            timeout_s=options.timeout_s,
+                            timeout_s=options.timeout_s, wallet=runtime.wallet,
                         ),
                         wallet_address=runtime.wallet.address,
                         target_wei=2 * 10**18,
@@ -431,7 +431,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             result["hub"]["balance_after_bridge"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
                 wallet_address=runtime.wallet.address,
-                timeout_s=options.timeout_s,
+                timeout_s=options.timeout_s, wallet=runtime.wallet,
             )
             pending_path.unlink(missing_ok=True)
         elif not options.no_stipend:
@@ -506,7 +506,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             result["hub"]["balance_after_request"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
                 wallet_address=runtime.wallet.address,
-                timeout_s=options.timeout_s,
+                timeout_s=options.timeout_s, wallet=runtime.wallet,
             )
             if options.bridge_refund:
                 bridge = result["hub"]["bridge"]
@@ -527,34 +527,15 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                         "request_state": _hub_request_state(result.get("hub", {}).get("poll")),
                     }
                 else:
-                    charges = _fetch_hub_request_charges(
-                        runtime.config.hub_url,
-                        request_id,
-                        timeout_s=options.timeout_s,
-                    )
-                    bridge["charges"] = charges
-                    bridge["refund"] = send_captain_bridge_refund(
-                        runtime,
-                        bridge_credit_wei=bridge_credit_wei,
-                        charged_credit_wei=_sum_charge_credit_wei(charges),
-                        smoke_id=smoke_id,
-                        request_id=request_id,
-                        deposit_id=str(bridge.get("deposit", {}).get("deposit_id") or ""),
-                        controller_private_key=str(options.bridge_controller_private_key or ""),
-                        timeout_s=options.timeout_s,
-                    )
-                    if bridge["refund"].get("hub_record_payload"):
-                        bridge["refund"]["hub_record"] = _post_hub_json(
-                            runtime.config.hub_url,
-                            "/api/hub/v1/credits/bridge-reconciliation/record",
-                            bridge["refund"]["hub_record_payload"],
-                            timeout_s=options.timeout_s,
-                        )
-                    result["hub"]["balance_after_refund"] = _fetch_hub_credit_balance(
-                        runtime.config.hub_url,
-                        wallet_address=runtime.wallet.address,
-                        timeout_s=options.timeout_s,
-                    )
+                    # The legacy refund formerly relied on an unauthenticated
+                    # HTTP reconciliation write. Do not issue a chain refund
+                    # that cannot also be settled in the authoritative ledger.
+                    bridge["refund"] = {
+                        "ok": False,
+                        "skipped": True,
+                        "reason": "legacy_bridge_refund_requires_verified_reconciliation",
+                    }
+
 
     if not options.no_chain:
         if not runtime.wallet.private_key:
@@ -976,123 +957,23 @@ def send_captain_smoke_transaction(
 
 
 
-def _receipt_block_number(receipt: dict[str, Any] | None) -> int:
-    if not isinstance(receipt, dict):
-        return 0
-    return _hex_int(receipt.get("blockNumber"))
-
-
-def _receipt_log_index_for_contract(receipt: dict[str, Any] | None, contract_address: str) -> int:
-    if not isinstance(receipt, dict):
-        return 0
-    logs = receipt.get("logs")
-    if not isinstance(logs, list):
-        return 0
-    normalized_contract = ""
-    try:
-        normalized_contract = normalize_address(contract_address)
-    except Exception:
-        normalized_contract = str(contract_address or "").strip().lower()
-    first_log_index = 0
-    for raw in logs:
-        if not isinstance(raw, dict):
-            continue
-        log_index = _hex_int(raw.get("logIndex"))
-        if not first_log_index:
-            first_log_index = log_index
-        try:
-            log_address = normalize_address(str(raw.get("address") or ""))
-        except Exception:
-            log_address = str(raw.get("address") or "").strip().lower()
-        if normalized_contract and log_address == normalized_contract:
-            return log_index
-    return first_log_index
-
-
-def build_bridge_wallet_funding_import_payload(runtime: CaptainRuntime, deposit: dict[str, Any]) -> dict[str, Any]:
-    """Build the manual wallet-funding import payload from the local deposit receipt.
-
-    The live hub completion route can fail when the hub lacks its private bridge
-    deployment/admin manifest.  The wallet-funding import route is the public
-    ledger primitive that accepts the normalized deposit receipt data the captain
-    CLI already has after broadcasting the deposit transaction.
-    """
-
-    receipt = deposit.get("receipt") if isinstance(deposit.get("receipt"), dict) else {}
-    amount_wei = str(deposit.get("amount_credit_wei") or deposit.get("amount_units") or "").strip()
-    tx_hash = str(deposit.get("transaction_hash") or deposit.get("tx_hash") or "").strip()
-    if not _TX_HASH_RE.fullmatch(tx_hash):
-        raise CaptainCliError("Bridge funding import cannot continue because the deposit transaction hash is missing or invalid.")
-    if not amount_wei:
-        raise CaptainCliError("Bridge funding import cannot continue because the deposit amount is missing.")
-    return {
-        "wallet_address": runtime.wallet.address,
-        "payer_address": runtime.wallet.address,
-        "chain_id": runtime.chain_id,
-        "contract_address": runtime.bridge_escrow_address,
-        "tx_hash": tx_hash,
-        "log_index": _receipt_log_index_for_contract(receipt, runtime.bridge_escrow_address),
-        "block_number": _receipt_block_number(receipt),
-        "payment_asset": "native",
-        "payment_amount_base_units": amount_wei,
-        "credits_granted_wei": amount_wei,
-        "memo": f"captain smoke bridge wallet funding import {deposit.get('deposit_id', '')}",
-        "metadata": {
-            "mode": "captain-smoke-bridge-import-fallback-v1",
-            "deposit_id": str(deposit.get("deposit_id") or ""),
-            "completion_fallback": True,
-        },
-    }
-
-
-def _is_missing_bridge_completion_metadata_error(exc: BaseException) -> bool:
-    text = str(exc or "").lower()
-    if "/wallet-funding/complete" not in text and "wallet-funding/complete" not in text:
-        return False
-    return (
-        "hub_credit_bridge_escrow" in text
-        and (
-            "current.json" in text
-            or "deployment" in text
-            or "manifest" in text
-            or "metadata" in text
-        )
-    )
-
 def _complete_captain_bridge_deposit(
     runtime: CaptainRuntime, deposit: dict[str, Any], *, timeout_s: float,
     bridge_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = {
-        "deposit_id": deposit["deposit_id"],
-        "wallet_address": runtime.wallet.address,
-        "tx_hash": deposit["transaction_hash"],
-        "contract_address": runtime.bridge_escrow_address,
-        "chain_id": runtime.chain_id,
-    }
-    try:
-        return _post_hub_json(
-            runtime.config.hub_url, "/api/hub/v1/credits/wallet-funding/complete",
-            payload, timeout_s=timeout_s,
-        )
-    except CaptainCliError as exc:
-        if not _is_missing_bridge_completion_metadata_error(exc):
-            raise
-        if bridge_metadata is not None:
-            bridge_metadata["completion_fallback"] = {
-                "ok": True,
-                "reason": "hub completion endpoint is missing bridge deployment metadata",
-                "failed_endpoint": "/api/hub/v1/credits/wallet-funding/complete",
-                "fallback_endpoint": "/api/hub/v1/credits/wallet-funding/import",
-                "error": str(exc),
-            }
-        # Preserve the existing legacy Hub fallback without relaxing the
-        # current-chain funding proof required by Stable Hub.
-        return _post_hub_json(
-            runtime.config.hub_url, "/api/hub/v1/credits/wallet-funding/import",
-            build_bridge_wallet_funding_import_payload(runtime, deposit),
-            timeout_s=timeout_s,
-        )
+    """Complete a verified on-chain bridge deposit. Never credit from client receipts."""
+    return _post_hub_json(
+        runtime.config.hub_url,
+        "/api/hub/v1/credits/wallet-funding/complete",
+        {
+            "deposit_id": deposit["deposit_id"],
+            "wallet_address": runtime.wallet.address,
+            "tx_hash": deposit["transaction_hash"],
+            "contract_address": runtime.bridge_escrow_address,
+            "chain_id": runtime.chain_id,
+        },
+        timeout_s=timeout_s,
+    )
 
 
 def _is_unknown_bridge_deposit_error(exc: BaseException, deposit_id: str) -> bool:
@@ -1331,48 +1212,6 @@ def send_captain_bridge_deposit(
         "memo": memo,
     }
 
-
-def send_captain_bridge_refund(
-    runtime: CaptainRuntime,
-    *,
-    bridge_credit_wei: int,
-    charged_credit_wei: int,
-    smoke_id: str,
-    request_id: str,
-    deposit_id: str,
-    controller_private_key: str,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Ask the Hub to perform controller-only bridge reconciliation.
-
-    The requester wallet signs only its own deposit.  The Hub owns the bridge
-    controller key and independently derives the authorized spend/refund from
-    the terminal request, its ledger charges, and the bound on-chain deposit.
-    Client-supplied amounts are assertions only; they are never signing
-    authority. ``controller_private_key`` remains accepted for CLI compatibility
-    but is intentionally ignored.
-    """
-
-    del controller_private_key
-    payload = {
-        "request_id": str(request_id or "").strip(),
-        "deposit_id": str(deposit_id or "").strip(),
-        "wallet_address": runtime.wallet.address,
-        "expected_bridge_credit_wei": str(max(0, int(bridge_credit_wei or 0))),
-        "expected_charged_credit_wei": str(max(0, int(charged_credit_wei or 0))),
-        "metadata": {
-            "mode": "captain-hub-signed-bridge-refund-v2",
-            "smoke_id": smoke_id,
-        },
-    }
-    result = _post_hub_json(
-        runtime.config.hub_url,
-        "/api/hub/v1/credits/bridge-reconciliation/execute",
-        payload,
-        timeout_s=timeout_s,
-    )
-    result.setdefault("request_id", str(request_id or "").strip())
-    return result
 
 def send_captain_contract_transaction(
     runtime: CaptainRuntime,
@@ -1902,6 +1741,9 @@ def _poll_stable_work_session(
     expected_hub = accepted.get("execution_hub")
     owner_url = str(expected_hub.get("hub_url") or "") if isinstance(expected_hub, dict) else ""
     session_id = str(accepted.get("session_id") or "")
+    token = str(accepted.get("continuation_token") or "")
+    if not token:
+        raise CaptainCliError("Stable Hub did not issue a private session continuation credential")
     if not url or not owner_url or not session_id:
         raise CaptainCliError("Stable Hub did not return a complete session continuation authority.")
     parsed = urlparse(url)
@@ -1913,7 +1755,8 @@ def _poll_stable_work_session(
         raise CaptainCliError("Stable Hub continuation URL does not match its execution Hub and session.")
     deadline = time.monotonic() + max(0.0, float(poll_seconds))
     while True:
-        current = _get_hub_json(owner_url, parsed.path, timeout_s=timeout_s)
+        current = _get_hub_json(owner_url, parsed.path, timeout_s=timeout_s,
+                                bearer_token=token)
         if str(current.get("session_id") or "") != session_id:
             raise CaptainCliError("Stable Hub continuation returned a different session ID.")
         if _hub_request_state(current) in {"completed", "failed", "cancelled"}:
@@ -1936,9 +1779,13 @@ def _poll_hub_request(hub_url: str, request_id: str, *, timeout_s: float, poll_s
     return last or {"ok": False, "error": "poll timeout", "request_id": request_id}
 
 
-def _get_hub_json(hub_url: str, path: str, *, timeout_s: float) -> dict[str, Any]:
+def _get_hub_json(hub_url: str, path: str, *, timeout_s: float,
+                  bearer_token: str = "") -> dict[str, Any]:
     url = hub_url.rstrip("/") + path
-    request = Request(url, headers=_hub_http_headers(), method="GET")
+    headers = _hub_http_headers()
+    if bearer_token:
+        headers["Authorization"] = "Bearer " + bearer_token
+    request = Request(url, headers=headers, method="GET")
     try:
         with urlopen(request, timeout=max(1.0, float(timeout_s or 30.0))) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -1979,8 +1826,24 @@ def _require_hub_bridge_completion_ready(
         raise CaptainCliError("Hub bridge completion controller differs from the selected bridge controller; refusing deposit.")
 
 
-def _fetch_hub_credit_balance(hub_url: str, *, wallet_address: str, timeout_s: float) -> dict[str, Any]:
+def _fetch_hub_credit_balance(hub_url: str, *, wallet_address: str, timeout_s: float,
+                              wallet=None, authorization: dict | None = None) -> dict[str, Any]:
     query = urlencode({"wallet_address": wallet_address})
+    from main_computer.hub_cli_live_session import identify_hub_protocol, issue_cli_multisession_authorization
+    identity = identify_hub_protocol(hub_url, timeout_s=timeout_s)
+    if identity.get("service") == "main_computer.stable_hub":
+        key = str((authorization or {}).get("multisession_key_id")
+                  or (authorization or {}).get("key_id") or "")
+        if not key:
+            if wallet is None or str(getattr(wallet, "address", "")).lower() != wallet_address.lower():
+                raise CaptainCliError("Stable Hub balance requires the wallet's signed MSK authorization")
+            signed = issue_cli_multisession_authorization(
+                hub_url, wallet=wallet, timeout_s=timeout_s, stable_identity=identity)
+            key = str(signed.get("multisession_key_id") or signed.get("key_id") or "")
+        if not key:
+            raise CaptainCliError("Stable Hub balance authorization was not issued")
+        return _get_hub_json(hub_url, f"/api/hub/v1/credits/balance?{query}",
+                             timeout_s=timeout_s, bearer_token=key)
     return _get_hub_json(hub_url, f"/api/hub/v1/credits/balance?{query}", timeout_s=timeout_s)
 
 

@@ -148,7 +148,16 @@ def issue_cli_multisession_authorization(
 
 
 def cli_request_authorization(hub_url: str, *, officer: str = "o0") -> dict[str, Any]:
-    return issue_cli_multisession_authorization(hub_url, wallet=_officer_wallet(officer))
+    """Sign requester authorization using the verified Hub's signing domain."""
+    identity = identify_hub_protocol(hub_url)
+    service = str(identity.get("service") or "")
+    if service == "main_computer.stable_hub":
+        return issue_cli_multisession_authorization(
+            hub_url, wallet=_officer_wallet(officer), stable_identity=identity,
+        )
+    if service == "main_computer.exp_fdb_hub":
+        return issue_cli_multisession_authorization(hub_url, wallet=_officer_wallet(officer))
+    raise RuntimeError(f"Hub has unsupported request authorization service: {service!r}")
 
 
 def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer: dict[str, Any],

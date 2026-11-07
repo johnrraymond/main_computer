@@ -239,93 +239,25 @@ def test_stress_dev_chain_rollup_prints_compact_balance_summary(capsys: pytest.C
     assert "dev_chain_bridge_lifecycle_note: unit note" in output
 
 
-def test_random_confirmed_payout_requests_full_worker_earning_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("helper", [
+    "_bridge_random_confirmed_payout_event", "_bridge_random_failed_payout_event",
+])
+def test_retired_payout_smoke_helpers_refuse_before_http(monkeypatch, tmp_path, helper):
     config = HubNodeMarketSmokeConfig(repo_root=tmp_path, hub_url="http://hub-a", run_id="unit-run")
-    confirm_config = HubNodeMarketSmokeConfig(repo_root=tmp_path, hub_url="http://hub-b", run_id="unit-run")
     worker = SimpleNamespace(node_id="node-001")
     progress = _StressProgress(delegate=_ProgressReporter(enabled=False, interval_seconds=1.0), tracker=_FreezeTracker(timeout_seconds=1.0))
-    posted: list[tuple[str, dict[str, object]]] = []
-    lock_responses = [{"locked": True}, {"locked": False}]
-
-    def fake_post_json(hub_url: str, path: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
-        posted.append((path, payload))
-        if path == "/api/hub/v1/bridge/payouts":
-            return {"payout": {"payout_id": "bpayout-unit", "credits": 4, "metadata": payload.get("metadata", {})}}
-        if path == "/api/hub/v1/bridge/payouts/confirm":
-            return {
-                "payout": {
-                    "metadata": {
-                        "dev_chain": {
-                            "movement": {
-                                "transaction_hashes": ["0xabc"],
-                            }
-                        }
-                    }
-                }
-            }
-        raise AssertionError(path)
-
-    def fake_get_json(*args: object, **kwargs: object) -> dict[str, object]:
-        return lock_responses.pop(0)
-
-    monkeypatch.setattr(stress_smoke, "_post_json", fake_post_json)
-    monkeypatch.setattr(stress_smoke, "_get_json", fake_get_json)
-
-    result = stress_smoke._bridge_random_confirmed_payout_event(
-        config,
-        confirm_config,
-        event_index=1,
-        worker=worker,
-        wallet_address="0x0000000000000000000000000000000000000001",
-        credits=0,
-        request_hub_label="hub_a",
-        confirm_hub_label="hub_b",
-        progress=progress,
-    )
-
-    payout_requests = [payload for path, payload in posted if path == "/api/hub/v1/bridge/payouts"]
-    assert payout_requests
-    assert payout_requests[0]["credits"] == 0
-    assert result["movement"]["transaction_hashes"] == ["0xabc"]
-
-
-def test_random_failed_payout_requests_full_worker_earning_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config = HubNodeMarketSmokeConfig(repo_root=tmp_path, hub_url="http://hub-a", run_id="unit-run")
-    fail_config = HubNodeMarketSmokeConfig(repo_root=tmp_path, hub_url="http://hub-b", run_id="unit-run")
-    worker = SimpleNamespace(node_id="node-001")
-    progress = _StressProgress(delegate=_ProgressReporter(enabled=False, interval_seconds=1.0), tracker=_FreezeTracker(timeout_seconds=1.0))
-    posted: list[tuple[str, dict[str, object]]] = []
-    lock_responses = [{"locked": True}, {"locked": False}]
-
-    def fake_post_json(hub_url: str, path: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
-        posted.append((path, payload))
-        if path == "/api/hub/v1/bridge/payouts":
-            return {"payout": {"payout_id": "bpayout-unit", "credits": 4, "metadata": payload.get("metadata", {})}}
-        if path == "/api/hub/v1/bridge/payouts/fail":
-            return {"payout": {"payout_id": "bpayout-unit", "status": "failed"}}
-        raise AssertionError(path)
-
-    def fake_get_json(*args: object, **kwargs: object) -> dict[str, object]:
-        return lock_responses.pop(0)
-
-    monkeypatch.setattr(stress_smoke, "_post_json", fake_post_json)
-    monkeypatch.setattr(stress_smoke, "_get_json", fake_get_json)
-
-    stress_smoke._bridge_random_failed_payout_event(
-        config,
-        fail_config,
-        event_index=1,
-        worker=worker,
-        wallet_address="0x0000000000000000000000000000000000000001",
-        credits=0,
-        request_hub_label="hub_a",
-        fail_hub_label="hub_b",
-        progress=progress,
-    )
-
-    payout_requests = [payload for path, payload in posted if path == "/api/hub/v1/bridge/payouts"]
-    assert payout_requests
-    assert payout_requests[0]["credits"] == 0
+    def forbidden(*args, **kwargs):
+        pytest.fail("retired payout test performed HTTP call")
+    monkeypatch.setattr(stress_smoke, "_post_json", forbidden)
+    monkeypatch.setattr(stress_smoke, "_get_json", forbidden)
+    kw = {"event_index":1,"worker":worker,"wallet_address":"0x"+"1"*40,
+          "credits":1,"request_hub_label":"hub_a","progress":progress}
+    if helper.endswith("confirmed_payout_event"):
+        kw["confirm_hub_label"] = "hub_b"
+    else:
+        kw["fail_hub_label"] = "hub_b"
+    with pytest.raises(NodeMarketSmokeError, match="Retired"):
+        getattr(stress_smoke, helper)(config,config,**kw)
 
 
 def test_stress_failure_help_uses_hub_config_signature(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

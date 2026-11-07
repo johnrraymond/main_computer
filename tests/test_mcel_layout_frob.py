@@ -207,9 +207,13 @@ class PairedWorkspacePreintegrationTests(unittest.TestCase):
             self.assertEqual(set(staged),expected)
             for name in staged:
                 self.assertEqual((source/name).read_bytes(),(Path(tmp)/'staged'/name).read_bytes())
-            # The host in the user's working tree must not be switched on.
-            self.assertNotIn('workspacePlan',
-                (frob.ROOT/'main_computer/mcel_semantic_other_apps_host.py').read_text())
+            # The opt-in hosted Task Manager now uses the verified layout,
+            # while File Manager and Code Editor remain unchanged until their
+            # own human design acceptance gates.
+            hosted=frob._paired_baseline_pages(('task-manager','file-manager','code-editor'))
+            self.assertTrue(frob._paired_plan_present(hosted['task-manager']['html']))
+            self.assertFalse(frob._paired_plan_present(hosted['file-manager']['html']))
+            self.assertFalse(frob._paired_plan_present(hosted['code-editor']['html']))
 
     def test_calculator_pair_oracle_rejects_detached_and_misaligned_results(self):
         base={

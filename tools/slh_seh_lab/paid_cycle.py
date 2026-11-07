@@ -95,7 +95,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
                       worker_account_id: str, lab_mode: str,
                       trace_file: Path | None = None,
                       market_isolation_capability: str | None = None) -> dict:
-    """Complete a real paid request via an SLH upstream worker and settle its earning.
+    """Complete a real paid request and create an authorized pending payout batch.
 
     Caller must already have verified all Hub identities/topology and started the
     managed gateway, worker sockets, and SLH public marketplace sessions.
@@ -160,7 +160,9 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         raise RuntimeError('Stable Hub refused paid request: '+str(accepted)[:700])
     session_id=str(accepted.get('session_id') or '')
     if not session_id:raise RuntimeError('No accepted paid session id')
-    result_worker=str(accepted.get('worker_id') or '')
+    # Requester responses intentionally hide internal Worker/connection IDs.
+    # Determine the selected connection only from the lab-owned ledger later.
+    result_worker=''
     connected_slots={str(slot.accepted.get('connection_id')) for slot in proxy.sessions.values()}
     def _terminal():
         state=ledger.store.load()
@@ -184,6 +186,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         market_isolation_capability in (market_matches[0].get('capabilities') or []))
     charge=charges[0] if len(charges)==1 else {}
     earning=earnings[0] if len(earnings)==1 else {}
+    result_worker=str(earning.get('worker_node_id') or terminal.get('worker_id') or '')
     amount=int(charge.get('charged_credit_wei') or 0)
     earning_amount=int(earning.get('earned_credit_wei') or 0)
     # Replaying the same signed request must reuse its accepted session and
@@ -220,15 +223,17 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         with trace.stage('worker_earning_claim'):
             claim=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/claim',
                       {'multisession_authorization':auth,'earning_ids':[earning['earning_id']]},timeout=10)
-        with trace.stage('worker_earning_settle'):
+        with trace.stage('worker_earning_batch'):
             settlement=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/settlements',
                            {'multisession_authorization':auth,
                             'claim_ids':[claim['claim']['claim_id']],
-                            'settle':True,'settlement_reference':'smoke-'+request_id},timeout=10)
+                            'idempotency_key':'smoke-batch-'+request_id},timeout=10)
     gates['worker_result_matches_private_marker']=(earning.get('result') or {}).get('response',{}).get('content')==marker
     gates['wallet_authorized_claim']=claim.get('ok') is True and earning.get('earning_id') in (claim.get('claim') or {}).get('earning_ids',[])
     settlement_record=settlement.get('settlement') or {}
-    gates['wallet_authorized_settlement']=settlement.get('ok') is True and settlement_record.get('status')=='settled'
+    gates['wallet_authorized_pending_batch']=(settlement.get('ok') is True
+        and settlement_record.get('status')=='batched'
+        and claim['claim']['claim_id'] in settlement_record.get('claim_ids',[]))
     worker_after = ledger.get_account(worker_account_id)
     buyer_spent_before = int((before_request or {}).get('spent_credit_wei') or 0)
     buyer_spent_after = int((after_request or {}).get('spent_credit_wei') or 0)
@@ -245,14 +250,17 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         'buyer_spent_delta_wei': str(buyer_spent_after - buyer_spent_before),
         'worker_account_id': worker_account_id,
         'worker_available_before_wei': str(worker_available_before),
-        'worker_available_after_settlement_wei': str(worker_available_after),
-        'worker_earned_after_settlement_wei': str(int((worker_after or {}).get('earned_credit_wei') or 0)),
+        'worker_available_after_batch_wei': str(worker_available_after),
+        'worker_earned_after_batch_wei': str(int((worker_after or {}).get('earned_credit_wei') or 0)),
         'charge_id': str(charge.get('charge_id') or ''),
         'earning_id': str(earning.get('earning_id') or ''),
         'request_id': request_id, 'session_id': session_id,
     }
     gates['buyer_debit_equals_charge'] = buyer_spent_after - buyer_spent_before == amount
-    gates['worker_wallet_credit_equals_earning'] = worker_available_after - worker_available_before == earning_amount
+    # Earnings are an obligation until independently verified settlement;
+    # never treat an unverified Worker claim as spendable credits.
+    gates['worker_earning_not_prematurely_spendable'] = (
+        worker_available_after == worker_available_before and earning_amount > 0)
     gates['buyer_and_worker_distinct'] = requester_account != worker_account_id
     return {'gates':gates,'pass':all(gates.values()),'request_id':request_id,
             'market_isolation_capability': market_isolation_capability,
@@ -262,4 +270,4 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
             'charge_count':len(charges),'earning_count':len(earnings),
             'charged_credit_wei':str(amount), 'earned_credit_wei':str(earning_amount),
             'terminal_status':terminal.get('status'),
-            'funding':'SYNTHETIC_LAB_ONLY', 'settlement':'LOCAL_LEDGER_SETTLED_NOT_BRIDGED'}
+            'funding':'SYNTHETIC_LAB_ONLY', 'settlement':'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'}

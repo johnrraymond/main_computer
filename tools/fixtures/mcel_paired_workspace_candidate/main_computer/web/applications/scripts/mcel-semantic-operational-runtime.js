@@ -344,7 +344,7 @@
     const conditionedNodes=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
     const pendingConsequential=new Set();
     let serial = 0, disposed = false;
-    let refreshTimer = null, refreshBusy = false, refreshEnabled = true;
+    let refreshTimer = null, initialRefreshTimer = null, refreshBusy = false, refreshEnabled = true;
     let inferredLayout=null, generatedResizeObserver=null, generatedResizeListener=null;
     let plannedLayout=null;
     let scheduleGeneratedLayout=()=>{};
@@ -811,7 +811,7 @@
         if(c.states.get(id)?.schema?.kind === "string" &&
           [...c.intents.values()].some(i=>i.collectionSelection && ref(i.collectionSelection.target)===id)) {
           selectedRecordHosts.set(n,el);
-        } else if(c.generated && c.states.get(id)?.schema?.kind === "record") {
+        } else if(c.states.get(id)?.schema?.kind === "record") {
           typedRecordHosts.set(n,el);
         } else {if (!displays.has(id)) displays.set(id,[]); displays.get(id).push(el);}
       } else if (n.nodeKind === "operation-evidence") {
@@ -821,7 +821,16 @@
           details.append(summary,ol);holder.append(details);receiptHosts.push({details,summary,list:ol});
         } else {holder.append(ol);receiptHosts.push(ol);}
       } else if (n.nodeKind === "collection") {
-        const list=elt("div",{"data-collection":n.id});holder.append(list); collectionHosts.set(n,list);
+        const list=elt("div",{"data-collection":n.id});
+        // Structured multi-field monitoring collections are primary records,
+        // not narrow navigation widgets. This presentation hint is derived
+        // from IR purpose/tasks/fields, never from an application or region ID.
+        if(region?.purpose==="workspace" && region.tasks?.includes("monitor") &&
+           Array.isArray(n.fields) && n.fields.length>=4){
+          list.setAttribute("data-mcel-structured-list","");
+          list.style.setProperty("--mcel-list-columns",String(n.fields.length));
+        }
+        holder.append(list); collectionHosts.set(n,list);
         // Any semantic navigation collection backed by a one-path directory
         // read can retain a hierarchy. The rule is based on the region and IR,
         // never on an application ID or a authored layout.
@@ -1334,34 +1343,70 @@
     }
     function updateTypedRecord(n,host) {
       const value=read(ref(n.value.state));
-      const expanded=new Set([...host.querySelectorAll("[data-mcel-measurement-detail]")]
-        .filter(node=>node.open).map(node=>node.getAttribute("data-mcel-measurement-detail")));
+      const hadRecord=host.hasAttribute('data-mcel-structured-record');
+      const expanded=new Set([...host.querySelectorAll('[data-mcel-measurement-detail]')]
+        .filter(node=>node.open).map(node=>node.getAttribute('data-mcel-measurement-detail')));
       host.replaceChildren();
-      if(value===undefined){host.append(elt("p",{"role":"status"},"No measurements loaded."));return;}
-      if(!value || typeof value!=="object" || Array.isArray(value)){
+      if(value===undefined){host.append(elt('p',{'role':'status'},'No measurements loaded.'));return;}
+      if(!value || typeof value!=='object' || Array.isArray(value)){
         host.textContent=plainValue(value);return;
       }
-      const summary=typeof value.summary==="string"?value.summary:"";
-      if(summary)host.append(elt("p",{"data-mcel-record-summary":""},summary));
-      const dl=elt("dl",{"data-mcel-measurements":""});
+      host.setAttribute('data-mcel-structured-record','');
+      const summary=typeof value.summary==='string'?value.summary:'';
+      if(summary)host.append(elt('p',{'data-mcel-record-summary':''},summary));
+      // Numeric percentages are measurements, never opaque JSON strings.
+      // Associated availability flags distinguish a real zero from missing data.
+      const metrics=elt('div',{'data-mcel-metric-board':''});
+      const rendered=new Set();
+      for(const [name,field] of Object.entries(value)){
+        if(!name.endsWith('Percent') || typeof field!=='number')continue;
+        const base=name.slice(0,-'Percent'.length);
+        const hasValue=Number.isFinite(field) && value[name+'Available']!==false && value[base+'Available']!==false;
+        const label=fmt(base).replace(/^Cpu$/,'CPU').replace(/^Gpu$/,'GPU');
+        const card=elt('div',{'data-mcel-metric':name,'data-mcel-metric-available':String(hasValue)});
+        const head=elt('div',{'data-mcel-metric-head':''});
+        head.append(elt('span',{'data-mcel-metric-label':''},label),
+          elt('strong',{'data-mcel-metric-value':''},hasValue?String(Math.round(field*10)/10)+'%':'Unavailable'));
+        card.append(head);
+        if(hasValue){
+          const meter=elt('div',{'data-mcel-metric-meter':'','role':'meter','aria-label':label+' utilization',
+            'aria-valuemin':'0','aria-valuemax':'100','aria-valuenow':String(Math.min(100,Math.max(0,field)))});
+          const fill=elt('div',{'data-mcel-metric-fill':''});
+          fill.style.width=String(Math.min(100,Math.max(0,field)))+'%';
+          meter.append(fill);card.append(meter);
+        }
+        metrics.append(card);rendered.add(name);
+      }
+      if(metrics.childElementCount)host.append(metrics);
+      const dl=elt('dl',{'data-mcel-measurements':''});
+      const detailsList=[];
       for(const [name,field] of Object.entries(value)) {
-        if(name==="summary")continue;
-        if(Array.isArray(field) || (typeof field==="string" && field.length>220) ||
-          (field && typeof field==="object")){
-          const details=elt("details",{"data-mcel-measurement-detail":name});
+        if(name==='summary' || rendered.has(name))continue;
+        // These flags determine whether a metric is available and are reflected
+        // in its visible value; redundant true/false fields are not telemetry.
+        if(name.endsWith('Available') && typeof field==='boolean' &&
+            (rendered.has(name.slice(0,-'Available'.length)) ||
+             rendered.has(name.slice(0,-'Available'.length)+'Percent')))continue;
+        if(Array.isArray(field) || (name.endsWith('Raw') && typeof field==='string') || (typeof field==='string' && field.length>220) ||
+          (field && typeof field==='object')){
+          const details=elt('details',{'data-mcel-measurement-detail':name});
           const label=Array.isArray(field)?`${fmt(name)} (${field.length})`:fmt(name);
-          const detailBody=elt("div",{"data-mcel-measurement-body":""});
-          details.append(elt("summary",{},label),detailBody);
-          // Render only when expanded. Original structured data is retained;
-          // large unobserved arrays are not silently truncated.
+          const detailBody=elt('div',{'data-mcel-measurement-body':''});
+          details.append(elt('summary',{},label),detailBody);
           const paintDetails=()=>{
             if(!details.open)return;
             if(Array.isArray(field)){
-              const entries=elt("ol",{});
-              for(const item of field){const li=elt("li",{});
-                if(item && typeof item==="object"){
-                  const inner=elt("dl",{});
-                  for(const [k,v] of Object.entries(item))inner.append(elt("dt",{},fmt(k)),elt("dd",{},plainValue(v)));
+              if(!field.length){detailBody.textContent='No entries reported.';return;}
+              const entries=elt('ol',{});
+              for(const item of field){const li=elt('li',{});
+                if(item && typeof item==='object'){
+                  const inner=elt('dl',{});
+                  for(const [k,v] of Object.entries(item)){
+                    if(k.endsWith('Available') && typeof v==='boolean' &&
+                      Object.prototype.hasOwnProperty.call(item,k.slice(0,-'Available'.length)))continue;
+                    const available=item[k+'Available']!==false;
+                    inner.append(elt('dt',{},fmt(k)),elt('dd',{},available?plainValue(v):'Unavailable'));
+                  }
                   li.append(inner);
                 }else li.textContent=plainValue(item);
                 entries.append(li);
@@ -1369,12 +1414,17 @@
               detailBody.replaceChildren(entries);
             }else detailBody.textContent=plainValue(field);
           };
-          details.addEventListener("toggle",paintDetails);
-          if(expanded.has(name)){details.open=true;paintDetails();}
-          host.append(details);
-        }else dl.append(elt("dt",{},fmt(name)),elt("dd",{},plainValue(field)));
+          details.addEventListener('toggle',paintDetails);
+          // A small device collection is visible on first observation; long
+          // per-core inventories remain discoverable without dominating the page.
+          if(expanded.has(name) || (!hadRecord && Array.isArray(field) && field.length>0 && field.length<=4)){
+            details.open=true;paintDetails();
+          }
+          detailsList.push(details);
+        }else dl.append(elt('dt',{},fmt(name)),elt('dd',{},plainValue(field)));
       }
-      host.insertBefore(dl,host.querySelector("[data-mcel-measurement-detail]"));
+      if(dl.childElementCount)host.append(dl);
+      host.append(...detailsList);
     }
     function updateSelectedRecord(n,host) {
       const selected=read(ref(n.value.state));
@@ -1423,7 +1473,7 @@
         let row=existing.get(key);
         if(!row) {
           row=elt("div",{"data-record-key":key,"data-mcel-record-row":""});
-          for(const field of n.fields || [])row.append(elt("span",{"data-record-field":field}));
+          for(const field of n.fields || [])row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)}));
           if(selection?.collectionSelection){
             const parameter=selection.input.find(p=>p.id===ref(selection.collectionSelection.input));
             const choose=elt("button",{type:"button","data-select-key":key},"Select");
@@ -1479,7 +1529,7 @@
       const select = n.selectionIntent && c.intents.get(ref(n.selectionIntent));
       for (const item of list) {
         const row=elt("div",{"data-record-key":String(item[n.key])});
-        for (const field of n.fields || []) row.append(elt("span",{"data-record-field":field},String(item[field]??"")));
+        for (const field of n.fields || []) row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)},String(item[field]??"")));
         if (select?.collectionSelection) {
           const parameter=select.input.find(p=>p.id===ref(select.collectionSelection.input));
           const opensDocument=[...documentHosts.keys()].some(doc=>ref(doc.path)===ref(select.collectionSelection.target));
@@ -1514,7 +1564,9 @@
       const r=c.regions.get(id);
       region=r;
       const tag=allowedTags.has(r.nativeTag) ? r.nativeTag : "section";
-      const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":r.content?.kind || ""});
+      const inferredContent=r.content?.kind ||
+        (r.members?.some(member=>c.nodes.get(ref(member))?.nodeKind==="collection") ? "collection" : "");
+      const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":inferredContent});
       regionHosts.set(r,el);
       if(c.generated && r.recipe!=="root") {
         const titles={queries:"Observation query",collection:"Observed records",
@@ -1569,7 +1621,7 @@
         status.textContent=refreshEnabled?"Refresh every 5 seconds when visible":"Automatic refresh paused";
       });
       controls.append(button,status);root.prepend(controls);
-      refreshTimer=global.setInterval?.(async()=>{
+      const pollMonitor=async()=>{
         if(disposed||!refreshEnabled||refreshBusy||document.visibilityState==="hidden")return;
         const intent=selectedMonitorIntent();if(!intent)return;
         refreshBusy=true;
@@ -1585,7 +1637,15 @@
           traceOperation("monitor.auto-refresh","settled",result.disposition);
           status.textContent="Last refresh: "+result.disposition;
         }finally{refreshBusy=false;}
-      },taskRefreshPeriodMs);
+      };
+      refreshTimer=global.setInterval?.(pollMonitor,taskRefreshPeriodMs);
+      // An authored monitoring view should show its initial snapshot
+      // without a manual action or waiting for the next polling period.
+      initialRefreshTimer=global.setTimeout?.(()=>{
+        initialRefreshTimer=null;
+        const intent=selectedMonitorIntent();
+        if(intent && !receipts.some(r=>r.intentId===intent.id))void pollMonitor();
+      },75);
       refreshers.push(controls);
     }
     const tree=renderRegion(c.rootId);
@@ -1671,6 +1731,7 @@
     return Object.freeze({execute,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
       unmount:()=>{disposed=true;if(refreshTimer!==null)global.clearInterval?.(refreshTimer);
+        if(initialRefreshTimer!==null)global.clearTimeout?.(initialRefreshTimer);
         plannedLayout?.unmount();
         generatedResizeObserver?.disconnect();
         if(generatedResizeListener)global.removeEventListener?.("resize",generatedResizeListener);

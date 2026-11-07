@@ -590,6 +590,13 @@ class ViewportEnergyRoutesMixin:
             except (TypeError, ValueError) as exc:
                 raise ValueError("Hub timeout must be a number.") from exc
 
+            # This former legacy HTTP operation had no caller authority. Do
+            # not persist a partial hub configuration before rejecting it.
+            if self._coerce_bool(body.get("connect_upstream"), default=False):
+                self._send_json({"ok": False, "error": "legacy_upstream_http_registration_removed"},
+                                status=HTTPStatus.FORBIDDEN)
+                return
+
             new_config = replace(
                 self.server.config,
                 hub_url=hub_url,
@@ -609,17 +616,7 @@ class ViewportEnergyRoutesMixin:
                 }
             )
 
-            connect_report = None
-            if self._coerce_bool(body.get("connect_upstream"), default=False):
-                upstream_hub_url = saved.get("upstream_hub_url", "")
-                if not upstream_hub_url:
-                    raise ValueError("Upstream hub URL is required to connect an upstream hub.")
-                connect_report = self._register_upstream_hub(
-                    local_hub_url=hub_url,
-                    upstream_hub_url=str(upstream_hub_url),
-                    node_id=str(body.get("upstream_node_id") or "upstream-hub"),
-                    credits_per_request=int(body.get("upstream_credits_per_request", self.server.config.hub_credits_per_request) or 1),
-                )
+            connect_report = None  # Explicit internal topology, never caller-specified HTTP registration.
 
             payload = self._hub_config_payload()
             payload["saved"] = saved
@@ -4200,6 +4197,9 @@ class ViewportEnergyRoutesMixin:
             hub_url = self._clean_hub_url(str(body.get("hub_url") or ""), allow_empty=True)
             key_id = str(body.get("key_id") or body.get("multisession_key_id") or "").strip()
 
+            signed_request = body.get("signed_request")
+            if not isinstance(signed_request, dict) or not hub_url:
+                raise PermissionError("wallet_signed_remote_revocation_required")
             data = self._load_worker_multisession_key_cache()
             record = self._select_worker_multisession_key_record(
                 wallet_address=wallet_address,
@@ -4210,6 +4210,14 @@ class ViewportEnergyRoutesMixin:
             if not record:
                 raise ValueError("No active saved multi-session key was found for this wallet and Hub.")
             resolved_key_id = str(record.get("id") or "").strip()
+            # Perform authoritative remote revocation before changing the local
+            # cache. A local-only state change cannot invalidate a Hub MSK.
+            hub_revoke = self._post_worker_multisession_key_revoke_to_hub(
+                hub_url=hub_url, key_id=resolved_key_id,
+                wallet_address=wallet_address, signed_request=signed_request,
+            )
+            if not hub_revoke.get("ok"):
+                raise PermissionError("hub_revocation_unverified")
             now = datetime.now(timezone.utc).isoformat()
             stored_record = data.get("keys", {}).get(resolved_key_id)
             if not isinstance(stored_record, dict):
@@ -4220,17 +4228,6 @@ class ViewportEnergyRoutesMixin:
             stored_record["hub_url"] = self._clean_hub_url(str(stored_record.get("hub_url") or hub_url), allow_empty=True)
             data["keys"][resolved_key_id] = stored_record
             self._save_worker_multisession_key_cache(data)
-
-            hub_revoke: dict[str, Any] = {"ok": False, "skipped": True}
-            if hub_url:
-                try:
-                    hub_revoke = self._post_worker_multisession_key_revoke_to_hub(
-                        hub_url=hub_url,
-                        key_id=resolved_key_id,
-                        wallet_address=wallet_address,
-                    )
-                except Exception as exc:
-                    hub_revoke = {"ok": False, "error": str(exc)}
 
             keys = self._worker_multisession_keys_for_wallet(wallet_address=wallet_address, hub_url=hub_url)
             self.server.signal(
@@ -4308,50 +4305,6 @@ class ViewportEnergyRoutesMixin:
             self._send_json({"ok": True, "hub_url": hub_url, **result})
         except Exception as exc:
             self.server.signal("api-worker-wallet-funding-complete-error", error=exc)
-            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
-
-    def _handle_worker_wallet_funding_import(self) -> None:
-        try:
-            if not self._worker_ui_client_is_local():
-                self._send_json({"ok": False, "error": "Worker wallet funding imports are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
-                return
-            body = self._read_json()
-            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
-            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
-            receipt = body.get("deposit_receipt")
-            if not isinstance(receipt, dict):
-                receipt = body
-
-            payment_amount_base_units = int(receipt.get("payment_amount_base_units", body.get("payment_amount_base_units", 0)) or 0)
-            forwarded = {
-                "wallet_address": wallet_address,
-                "account_id": wallet_address,
-                "chain_id": int(receipt.get("chain_id", body.get("chain_id", 0)) or 0),
-                "contract_address": str(receipt.get("contract_address", body.get("contract_address", ""))),
-                "tx_hash": str(receipt.get("tx_hash", receipt.get("transaction_hash", body.get("tx_hash", "")))),
-                "log_index": int(receipt.get("log_index", body.get("log_index", 0)) or 0),
-                "block_number": int(receipt.get("block_number", body.get("block_number", 0)) or 0),
-                "payer_address": str(receipt.get("payer_address", body.get("payer_address", wallet_address)) or wallet_address),
-                "payment_asset": str(receipt.get("payment_asset", body.get("payment_asset", "native")) or "native"),
-                "payment_amount_base_units": payment_amount_base_units,
-                "credits_granted_wei": self._worker_wallet_funding_credits_granted_wei(
-                    receipt=receipt,
-                    body=body,
-                    payment_amount_base_units=payment_amount_base_units,
-                ),
-                "memo": str(receipt.get("memo", body.get("memo", "Worker wallet bridge funding import"))),
-            }
-            result = self._post_worker_wallet_funding_import_to_hub(hub_url=hub_url, payload=forwarded)
-            self.server.signal(
-                "api-worker-wallet-funding-import",
-                hub_url=hub_url,
-                wallet_address=wallet_address,
-                tx_hash=forwarded["tx_hash"],
-                idempotent=bool(result.get("idempotent")),
-            )
-            self._send_json({"ok": True, "hub_url": hub_url, **result})
-        except Exception as exc:
-            self.server.signal("api-worker-wallet-funding-import-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _wallet_dns_control_profiles_path(self) -> Path:
@@ -5010,41 +4963,6 @@ class ViewportEnergyRoutesMixin:
         except Exception as exc:
             return {"reachable": False, "error": str(exc)}
 
-    def _register_upstream_hub(
-        self,
-        *,
-        local_hub_url: str,
-        upstream_hub_url: str,
-        node_id: str,
-        credits_per_request: Any,
-    ) -> dict[str, Any]:
-        credit_price_wei = credit_decimal_text_to_wei(credits_per_request, default="1", minimum_wei=1)
-        payload = {
-            "node_id": node_id,
-            "endpoint": self._clean_hub_url(upstream_hub_url),
-            "credits_per_request": credit_wei_to_decimal_text(credit_price_wei),
-            "credits_per_request_wei": str(credit_price_wei),
-        }
-        request = Request(
-            self._clean_hub_url(local_hub_url) + "/api/hub/upstreams/register",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=5.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Local hub returned HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Local hub is unreachable: {exc}") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("Local hub returned a non-object upstream registration response.")
-        if data.get("error"):
-            raise RuntimeError(str(data["error"]))
-        return data
-
     def _post_multisession_key_request_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/credits/multisession-keys/request",
@@ -5066,7 +4984,8 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(str(data["error"]))
         return data
 
-    def _post_worker_multisession_key_revoke_to_hub(self, *, hub_url: str, key_id: str, wallet_address: str) -> dict[str, Any]:
+    def _post_worker_multisession_key_revoke_to_hub(self, *, hub_url: str, key_id: str,
+                                                    wallet_address: str, signed_request: dict[str, Any]) -> dict[str, Any]:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/credits/multisession-keys/revoke",
             data=json.dumps(
@@ -5074,6 +4993,7 @@ class ViewportEnergyRoutesMixin:
                     "key_id": str(key_id or "").strip(),
                     "wallet_address": self._normalize_worker_wallet_address(wallet_address),
                     "reason": "worker-ui-revoke",
+                    "signed_request": signed_request,
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
@@ -5163,69 +5083,6 @@ class ViewportEnergyRoutesMixin:
         data.setdefault("funding_model", "hub_credit_bridge_escrow_wallet_v2")
         data["wallet_funding_completion_endpoint"] = "/api/hub/v1/credits/wallet-funding/complete"
         return data
-
-    def _post_worker_wallet_funding_import_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Forward a confirmed wallet-funding receipt to Hub.
-
-        The on-chain transaction has already happened before this helper runs, so a
-        missing newest Hub route must not force the user to submit another funding
-        transaction.  New Hubs expose the wallet-specific import route; older Hubs
-        still expose the normalized deposit/purchase import aliases that record the
-        same chain receipt idempotently for the wallet address.
-        """
-
-        hub_base = self._clean_hub_url(hub_url)
-        import_paths = [
-            ("/api/hub/v1/credits/wallet-funding/import", "wallet-funding"),
-            ("/api/hub/v1/credits/deposits/import", "legacy-deposit-import"),
-            ("/api/hub/v1/credits/purchases/import", "legacy-purchase-import"),
-        ]
-        route_errors: list[str] = []
-
-        for index, (path, mode) in enumerate(import_paths):
-            route_payload = dict(payload)
-            wallet_address = str(route_payload.get("wallet_address", "")).strip().lower()
-            if wallet_address:
-                route_payload["wallet_address"] = wallet_address
-                route_payload.setdefault("account_id", wallet_address)
-            encoded = json.dumps(route_payload, ensure_ascii=False).encode("utf-8")
-            request = Request(
-                hub_base + path,
-                data=encoded,
-                headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
-                method="POST",
-            )
-            try:
-                with urlopen(request, timeout=10.0) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-            except HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                route_errors.append(f"{path} -> HTTP {exc.code}: {body}")
-                if exc.code in {HTTPStatus.NOT_FOUND, HTTPStatus.METHOD_NOT_ALLOWED} and index + 1 < len(import_paths):
-                    continue
-                raise RuntimeError(f"Hub returned HTTP {exc.code} from {path}: {body}") from exc
-            except URLError as exc:
-                raise RuntimeError(f"Hub is unreachable: {exc}") from exc
-
-            if not isinstance(data, dict):
-                raise RuntimeError(f"Hub returned a non-object wallet funding import response from {path}.")
-            if data.get("error"):
-                raise RuntimeError(str(data["error"]))
-
-            if mode != "wallet-funding":
-                data = dict(data)
-                wallet_address = str(payload.get("wallet_address", ""))
-                if wallet_address:
-                    data.setdefault("wallet_address", wallet_address)
-                    data.setdefault("account_id", wallet_address.lower())
-                data.setdefault("funding_model", "hub_credit_bridge_escrow_wallet_v1")
-                data["wallet_funding_import_endpoint"] = path
-                data["wallet_funding_import_fallback"] = True
-                if route_errors:
-                    data["wallet_funding_import_route_errors"] = route_errors
-            return data
-
-        raise RuntimeError("Hub wallet funding import failed: " + " ; ".join(route_errors))
 
     def _mark_worker_multisession_key_inactive_on_hub(
         self,

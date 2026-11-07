@@ -160,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
             p.error('--failover-first-charge only applies to stable/charge')
         return stable_first_charge_workload(topology_path=args.topology,
                                             output=args.output, timeout=args.timeout)
+    if args.lane == 'exp' and args.fault in ('claim', 'batch'):
+        raise RuntimeError(
+            'Retired: legacy exp Hub Worker settlement HTTP mutations were deleted. '
+            'Refusing before any handoff, credit, or network activity.'
+        )
     topo = json.loads(args.topology.read_text(encoding='utf-8'))
     if args.lane == 'stable':
         from tools.stable_hub_lab.run_lab import build_stable_hub_integrated_market_stress_result
@@ -174,25 +179,6 @@ def main(argv: list[str] | None = None) -> int:
         result = exp_lab.verify_handoff(hub_urls=topo['entry_urls'], stress_requests=3,
                                         failure_indices=(2,), timeout=args.timeout,
                                         require_multisession_auth=True)
-        if result.get('ok') and args.fault in ('claim', 'batch'):
-            worker, earning_ids = exp_lab._resolve_settlement_worker_from_handoff(
-                result, owner_url=topo['entry_urls'][0], timeout=args.timeout)
-            if not earning_ids:
-                raise RuntimeError('No earned credits available for settlement crash test')
-            claim = exp_lab._post_json_url(
-                topo['entry_urls'][0] + '/api/hub/v1/workers/claims',
-                {'worker_node_id': worker, 'earning_ids': earning_ids,
-                 'idempotency_key': 'crash-lab-' + str(result['scenario_id']) + '-claim'},
-                timeout=args.timeout)
-            if args.fault == 'batch':
-                claim_id = str((claim.get('claim') or {}).get('claim_id') or '')
-                if not claim_id:
-                    raise RuntimeError('Unable to seed settlement claim')
-                exp_lab._post_json_url(
-                    topo['entry_urls'][0] + '/api/hub/v1/workers/settlements/batches',
-                    {'worker_node_id': worker, 'claim_ids': [claim_id],
-                     'idempotency_key': 'crash-lab-' + str(result['scenario_id']) + '-batch'},
-                    timeout=args.timeout)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, default=str), encoding='utf-8')
     return 0 if result.get('ok') else 1

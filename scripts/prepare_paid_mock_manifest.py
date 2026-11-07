@@ -383,87 +383,12 @@ def hub_headers(token: str) -> dict[str, str]:
     }
 
 
-def import_credits_to_hub(
-    args: argparse.Namespace,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    hub_url = args.hub_url.rstrip("/")
-    headers = hub_headers(args.hub_token)
-
-    indexer = http_json(
-        "GET",
-        f"{hub_url}/api/hub/v1/credits/indexer",
-        timeout=args.timeout,
-        extra_headers=headers,
+def import_credits_to_hub(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:
+    """Unsafe receipt-based funding is not available on any Hub."""
+    raise SmokeFailure(
+        "Receipt-based Hub credit funding was removed. "
+        "Use the chain-verified bridge deposit completion workflow instead."
     )
-
-    if indexer.get("ok") is not True:
-        raise SmokeFailure(f"Hub credit indexer did not return ok=true: {indexer}")
-
-    first = http_json(
-        "POST",
-        f"{hub_url}/api/hub/v1/credits/deposits/import",
-        body=payload,
-        timeout=args.timeout,
-        extra_headers=headers,
-    )
-
-    if first.get("ok") is not True:
-        raise SmokeFailure(f"First credit import did not return ok=true: {first}")
-
-    second = http_json(
-        "POST",
-        f"{hub_url}/api/hub/v1/credits/deposits/import",
-        body=payload,
-        timeout=args.timeout,
-        extra_headers=headers,
-    )
-
-    if second.get("ok") is not True or second.get("idempotent") is not True:
-        raise SmokeFailure(f"Duplicate credit import was not idempotent: {second}")
-
-    account_id = payload["account_id"]
-    query = urlencode({"account_id": account_id})
-
-    balance = http_json(
-        "GET",
-        f"{hub_url}/api/hub/v1/credits/balance?{query}",
-        timeout=args.timeout,
-        extra_headers=headers,
-    )
-
-    account = balance.get("account") if isinstance(balance.get("account"), dict) else {}
-    available = int(account.get("available_credits", 0) or 0)
-
-    deposits = http_json(
-        "GET",
-        f"{hub_url}/api/hub/v1/credits/deposits?{query}",
-        timeout=args.timeout,
-        extra_headers=headers,
-    )
-
-    transactions = http_json(
-        "GET",
-        f"{hub_url}/api/hub/v1/credits/transactions?{query}",
-        timeout=args.timeout,
-        extra_headers=headers,
-    )
-
-    return {
-        "ok": True,
-        "hub_url": hub_url,
-        "indexer": indexer,
-        "first_import_idempotent": bool(first.get("idempotent")),
-        "duplicate_import_idempotent": True,
-        "account_id": account_id,
-        "deposit_id": str(
-            (second.get("deposit") or first.get("deposit") or {}).get("deposit_id", "")
-        ),
-        "event_uid": str(second.get("event_uid") or first.get("event_uid") or ""),
-        "available_credits": available,
-        "deposit_count": int(deposits.get("deposit_count", deposits.get("purchase_count", 0)) or 0),
-        "transaction_count": int(transactions.get("transaction_count", 0) or 0),
-    }
 
 
 def redact_actor(
@@ -728,7 +653,6 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "hub": {
             "url": args.hub_url.rstrip("/"),
-            "escrow_deposit_import_endpoint": "/api/hub/v1/credits/deposits/import",
         },
         "chain": {
             "rpc_url": rpc_url,

@@ -196,6 +196,9 @@ def test_live_request_and_worker_share_mother_wallet_resolver(monkeypatch, tmp_p
         }).encode())
 
     monkeypatch.setattr(mother_private_state, "read_private_state", fake_read)
+    monkeypatch.setattr(live, "identify_hub_protocol", lambda _url: {
+        "service": "main_computer.stable_hub", "network": {"chain_id": 42424240},
+    })
     monkeypatch.setattr(live, "_hub_post", lambda _url, path, body, *, timeout_s: {
         "ok": True, "key": {"id": "msk-o0", "status": "active", "wallet_address": WALLET}
     })

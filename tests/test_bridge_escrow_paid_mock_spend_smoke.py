@@ -86,25 +86,13 @@ class BridgeEscrowPaidMockSpendSmokeTests(unittest.TestCase):
         path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return manifest
 
-    def _import_atom_deposits(self, *, hub_url: str, manifest: dict) -> None:
+    def _seed_isolated_test_accounts(self, *, hub: HubHttpServer, manifest: dict) -> None:
         for requester in manifest["actors"]["requesters"]:
-            imported = post_json(
-                f"{hub_url}/api/hub/v1/credits/deposits/import",
-                {
-                    "chain_id": manifest["chain"]["chain_id"],
-                    "contract_address": manifest["chain"]["contract_address"],
-                    "tx_hash": requester["normalized_receipt_tx_hash"],
-                    "log_index": requester["log_index"],
-                    "block_number": 1,
-                    "account_id": requester["account_id"],
-                    "payer_address": requester["address"],
-                    "payment_asset": "native",
-                    "payment_amount_base_units": requester["deposit_units"],
-                    "credits_granted": requester["deposit_units"],
-                    "memo": "atom-unit test deposit",
-                },
-            )
-            self.assertEqual(imported["account"]["available_credits"], 100_000_000)
+            account_id = requester["account_id"]
+            result = hub.credit_ledger.issue(
+                account_id=account_id, credits=int(requester["deposit_units"]),
+                memo="disposable in-process spend-test fixture")
+            self.assertEqual(result["account"]["available_credits"], 100_000_000)
 
     def test_paid_mock_spend_script_bootstraps_repo_root_for_path_invocation(self) -> None:
         source = (REPO_ROOT / "scripts/run_bridge_escrow_paid_mock_spend_smoke.py").read_text(encoding="utf-8")
@@ -129,7 +117,7 @@ class BridgeEscrowPaidMockSpendSmokeTests(unittest.TestCase):
                 hub_url = f"http://127.0.0.1:{hub.server_port}"
                 manifest_path = Path(hub_tmp) / "bridge_escrow_dev_manifest.json"
                 manifest = self._manifest(manifest_path, hub_url=hub_url)
-                self._import_atom_deposits(hub_url=hub_url, manifest=manifest)
+                self._seed_isolated_test_accounts(hub=hub, manifest=manifest)
 
                 report = smoke.run_smoke(
                     argparse.Namespace(

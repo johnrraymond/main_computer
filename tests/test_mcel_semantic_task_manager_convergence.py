@@ -60,6 +60,19 @@ def _page(browser, lab, width=1100):
     return page
 
 
+def _show_workflow(page, locator):
+    """Reveal a composed tool tab before testing the same authorized operation."""
+    owner = locator.evaluate('el => el.closest("[data-mcel-tool-panel]")?.id || null')
+    if owner:
+        page.locator(f'[data-mcel-tool-tabs] [aria-controls="{owner}"]').click()
+
+
+def _tool_click(page, intent):
+    target = page.locator(f'button[data-intent="intent:{intent}"]')
+    _show_workflow(page, target)
+    target.click()
+
+
 def _observe_and_select(page, intent='refresh'):
     page.locator(f'form[data-intent="intent:{intent}"] button[type=submit]').click()
     key = f'{_INTEGRATION_PID}:{_INTEGRATION_BIRTH}'
@@ -73,12 +86,12 @@ def test_paired_real_http_process_effects_and_all_process_selection(browser, iso
     page = _page(browser, lab)
     try:
         _observe_and_select(page)
-        page.locator('button[data-intent="intent:terminate-process"]').click()
+        _tool_click(page, 'terminate-process')
         _contract_receipt(page, 'terminate-process', 'command-returned')
         assert ('process', 'terminate', _INTEGRATION_PID) in lab.effects
         page.locator('[data-mcel-mode-tabs] button[data-value="all-processes"]').click()
         _observe_and_select(page, 'refresh-all')
-        page.locator('button[data-intent="intent:kill-process"]').click()
+        _tool_click(page, 'kill-process')
         _contract_receipt(page, 'kill-process', 'command-returned')
         assert ('process', 'kill', _INTEGRATION_PID) in lab.effects
         effects = [body for path, body in lab.requests if path.endswith('/task/action')]
@@ -93,12 +106,12 @@ def test_paired_real_http_server_status_and_lifecycle(browser, isolated_task_htt
     lab = isolated_task_http
     page = _page(browser, lab)
     try:
-        page.locator('button[data-intent="intent:server-status"]').click()
+        _tool_click(page, 'server-status')
         _contract_receipt(page, 'server-status', 'completed')
         assert 'running' in page.locator('body').inner_text()
         assert not lab.effects
         lab.accept_dialog = False
-        page.locator('button[data-intent="intent:shutdown-server"]').click()
+        _tool_click(page, 'shutdown-server')
         page.wait_for_timeout(80)
         assert not lab.effects
         lab.accept_dialog = True
@@ -107,7 +120,7 @@ def test_paired_real_http_server_status_and_lifecycle(browser, isolated_task_htt
             ('restart-server', 'restart', 'accepted-deferred'),
             ('shutdown-server', 'shutdown', 'accepted-deferred'),
         ):
-            page.locator(f'button[data-intent="intent:{intent}"]').click()
+            _tool_click(page, intent)
             _contract_receipt(page, intent, outcome)
             assert ('controller', verb) in lab.effects
         assert [body['action'] for path, body in lab.requests if path.endswith('/task/action')] == [
@@ -130,6 +143,7 @@ def test_paired_real_http_schedule_selected_revision(browser, isolated_task_http
         }''')
         assert before is False
         form = page.locator('form[data-intent="intent:create-schedule"]')
+        _show_workflow(page, form)
         form.locator('[name="action"]').fill('server_restart')
         form.locator('[name="runAt"]').fill('2026-11-04T12:00:00+00:00')
         form.locator('[name="note"]').fill('paired bounded test')
@@ -137,17 +151,17 @@ def test_paired_real_http_schedule_selected_revision(browser, isolated_task_http
         _contract_receipt(page, 'create-schedule', 'recorded')
         entries = lab.service.list_schedules()['schedules']
         assert len(entries) == 1
-        page.locator('button[data-intent="intent:list-schedules"]').click()
+        _tool_click(page, 'list-schedules')
         row = page.locator(f'[data-record-key="{entries[0]["id"]}"]')
         row.locator('button[data-select-key]').click()
         assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-schedule")') == entries[0]['id']
-        page.locator('button[data-intent="intent:run-schedule"]').click()
+        _tool_click(page, 'run-schedule')
         _contract_receipt(page, 'run-schedule', 'accepted-deferred')
         run = next(body for path, body in lab.requests if path.endswith('/schedule/run'))
         assert run['expected_revision'] == entries[0]['revision']
         assert run['expected_action'] == entries[0]['action']
         assert ('controller', 'restart') in lab.effects
-        page.locator('button[data-intent="intent:delete-schedule"]').click()
+        _tool_click(page, 'delete-schedule')
         _contract_receipt(page, 'delete-schedule', 'recorded')
         assert lab.service.list_schedules()['schedules'] == []
     finally:
@@ -160,13 +174,14 @@ def test_paired_stale_schedule_revision_refuses_run_and_delete(browser, isolated
     page = _page(browser, lab)
     try:
         form = page.locator('form[data-intent="intent:create-schedule"]')
+        _show_workflow(page, form)
         form.locator('[name="action"]').fill('server_restart')
         form.locator('[name="runAt"]').fill('2026-11-04T12:00:00+00:00')
         form.locator('[name="note"]').fill('original revision')
         form.locator('button[type=submit]').click()
         _contract_receipt(page, 'create-schedule', 'recorded')
         record = lab.service.list_schedules()['schedules'][0]
-        page.locator('button[data-intent="intent:list-schedules"]').click()
+        _tool_click(page, 'list-schedules')
         page.locator(f'[data-record-key="{record["id"]}"] button[data-select-key]').click()
         # Change the *actual test-owned backend* after the browser has observed
         # the original revision. No production schedule or service is touched.
@@ -175,7 +190,7 @@ def test_paired_stale_schedule_revision_refuses_run_and_delete(browser, isolated
         lab.service._write_schedules(data)
         assert lab.service.list_schedules()['schedules'][0]['revision'] != record['revision']
         for intent in ('run-schedule', 'delete-schedule'):
-            page.locator(f'button[data-intent="intent:{intent}"]').click()
+            _tool_click(page, intent)
             _contract_receipt(page, intent, 'failed')
         assert lab.service.list_schedules()['schedules'][0]['id'] == record['id']
         assert not any(e[0] == 'controller' for e in lab.effects)
@@ -199,6 +214,7 @@ def test_paired_real_http_monitor_options_and_ai(browser, isolated_task_http):
                         if path.endswith('/task/overview') and body.get('query') == 'disposable')
         assert observed['limit'] == 17 and observed['include_connections'] is False
         ai = page.locator('form[data-intent="intent:task-ai"]')
+        _show_workflow(page, ai)
         ai.locator('[name="instruction"]').fill('Summarize the test-owned process')
         ai.locator('[name="query"]').fill('disposable')
         ai.locator('button[type=submit]').click()
@@ -217,7 +233,7 @@ def test_paired_real_http_failures_are_not_success(browser, isolated_task_http):
     try:
         _observe_and_select(page)
         lab.generation['epoch'] += 3600
-        page.locator('button[data-intent="intent:terminate-process"]').click()
+        _tool_click(page, 'terminate-process')
         _contract_receipt(page, 'terminate-process', 'failed')
         assert not lab.effects
         monitor = page.locator('form[data-intent="intent:refresh"]')
@@ -228,6 +244,7 @@ def test_paired_real_http_failures_are_not_success(browser, isolated_task_http):
         assert not any(body.get('limit') == 99999 for path, body in lab.requests if path.endswith('/task/overview'))
         lab.ai_provider.fail = True
         ai = page.locator('form[data-intent="intent:task-ai"]')
+        _show_workflow(page, ai)
         ai.locator('[name="instruction"]').fill('Fail on purpose')
         ai.locator('[name="query"]').fill('disposable')
         ai.locator('button[type=submit]').click()

@@ -347,19 +347,11 @@ Docker container on port `4550`, writes `.foundationdb/docker.cluster`, verifies
 the host Python client can talk to it, and leaves the container running for the
 Hub/FDB smokes.
 
-Then run the desired acceptance smoke:
+The legacy Hub-backed HTTP market smokes have been retired: they relied on
+unauthenticated mock-chain credit mutations or obsolete payout operations.
+Use the protected Temporal/FDB tests below instead. Do not run retired Hub
+smokes against any service; their entry points refuse before side effects.
 
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_node_market.py
-python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
-```
-
-The Hub-backed smokes auto-start `exp-fdb-hub.py` by default. The multi-Hub
-smoke needs fresh Hub ports; if `8870` or `8871` is already occupied by a stale
-Hub from an earlier run, stop that process or pass alternate ports.
-
-When a lab dependency is missing, the smokes now print the relevant bring-up
-commands instead of failing with only a low-level connection error.
 
 ## Protected Temporal + FDB node-market smoke
 
@@ -424,127 +416,17 @@ python .\scripts\smoke_temporal_fdb_node_market.py `
   --token-interval-seconds 0
 ```
 
-## Hub-backed Temporal + FDB node-market smoke
+## Retired Hub-backed smoke workflows
 
-The lower-level smoke above proves the direct Temporal/FDB registry and ledger path. The Hub-backed smoke drives the requester/worker lifecycle through the Hub HTTP API instead:
+The old single-Hub, multi-Hub, and multi-Hub stress/freeze workflows required
+public HTTP operations that created mock-chain credits and confirmed deposits
+without authenticating callers. Those operations have been **deleted**.
 
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_node_market.py
-```
+The workflow entry points remain only to return an explicit retirement error
+before network access, process startup, report creation, or ledger mutation.
+They are not current acceptance tests.
 
-By default the smoke targets the experimental FDB Hub port `http://127.0.0.1:8870` and auto-starts `exp-fdb-hub.py` when nothing is listening there. It passes a run-specific FDB namespace and hub runtime directory so the local acceptance run is isolated. Use `--hub-start-mode never` only when you want to start the Hub manually; the failure message will print the exact `python exp-fdb-hub.py ...` command to run.
-
-It fails early unless `/api/hub/v1/status` and `/api/hub/v1/credits` report FoundationDB backends. The smoke registers workers through the Hub, funds the requester by minting mock chain-lite funds, confirming a bridge deposit into Hub credits, quotes/submits requester jobs through the Hub, polls leases as workers, executes the fake-token Temporal work on worker-specific task queues, posts results back to the Hub, and verifies charges, worker earnings, duplicate result idempotency, request events, worker distribution, and a mock chain-lite payout that locks one worker wallet while value leaves the Hub bridge/escrow.
-
-The bridge/payout portion is deliberately chain-shaped but not a real chain integration yet. It exercises these mock-chain Hub endpoints against the experimental FDB credit ledger:
-
-```text
-POST /api/hub/v1/bridge/mock-chain/mint
-POST /api/hub/v1/bridge/deposits
-POST /api/hub/v1/bridge/deposits/confirm
-POST /api/hub/v1/bridge/payouts
-POST /api/hub/v1/bridge/payouts/confirm
-GET  /api/hub/v1/bridge/mock-chain/wallets
-GET  /api/hub/v1/bridge/wallet-locks
-GET  /api/hub/v1/bridge/audit
-```
-
-The intent is to keep normal request settlement on fast Hub bridged credits while modeling the bridge boundary where deposits enter Hub escrow and payouts move value back to the chain-side wallet. A later dev-chain backend can replace the mock-chain calls without changing the golden-path shape.
-
-
-For a dependency-light Hub contract pass against a local JSON Hub, use direct activity and explicitly allow the non-FDB backend:
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_node_market.py `
-  --hub-url http://127.0.0.1:8000 `
-  --execution-mode direct-activity `
-  --allow-json-hub `
-  --node-count 10 `
-  --request-count 3 `
-  --token-interval-seconds 0
-```
-
-## Multi-Hub shared-state smoke
-
-The multi-Hub smoke starts two `exp-fdb-hub.py` processes against the same run-specific FoundationDB namespace. It is meant to verify the real control-plane model: multiple Hub frontends absorb requester/worker chatter while FoundationDB remains the source of truth for quotes, requests, leases, wallet locks, bridge accounting, audit events, and idempotency.
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
-```
-
-By default Hub A uses `http://127.0.0.1:8870` and Hub B uses `http://127.0.0.1:8871`. In `auto` mode both ports must be free so the smoke can start known-good Hub processes with the same namespace. If either port is already listening, stop the existing Hub or pass different ports:
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_multi_hub.py `
-  --hub-a-url http://127.0.0.1:8872 `
-  --hub-b-url http://127.0.0.1:8873
-```
-
-The smoke verifies these cross-Hub invariants:
-
-```text
-workers register through both Hubs
-quotes and submits cross Hubs
-workers poll leases through both Hubs
-results complete through both Hubs
-duplicate result replay through the opposite Hub does not charge twice
-a payout request through Hub A is rejected while Hub B has active leased work
-a wallet lock created by Hub A is visible to Hub B
-Hub B excludes the locked wallet from a new quote
-Hub B can confirm the payout created by Hub A
-Hub A can be stopped and Hub B can still read final FDB-backed state
-bridge audit readback and reconciliation still pass
-```
-
-This does not make Hub process memory authoritative. The safe production shape remains: all money, locks, leases, request state, and idempotency decisions live in shared durable state, while Hub processes act as stateless HTTP/control-plane frontends.
-
-## Multi-Hub stress/freeze smoke
-
-After the single-Hub and multi-Hub golden paths pass, use the stress smoke before wiring the bridge to a dev chain:
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_stress.py
-```
-
-The stress smoke keeps the same chain-shaped mock bridge and starts two Hub frontends against one FoundationDB namespace. While the market is submitting, leasing, executing, settling, and exercising payout locks, background clients generate frontend chatter:
-
-```text
-health checks
-status checks
-credit status checks
-wallet-lock reads
-bridge audit reads
-quote probes
-worker heartbeats
-```
-
-It is intentionally a safety/degradation check, not just a throughput benchmark. A passing run means:
-
-```text
-quote/submit still crosses Hubs
-leases and result completions still cross Hubs
-duplicate result replay remains idempotent
-surprise payout during active work is still rejected
-payout locks remain visible across Hubs
-locked wallets remain excluded from new work
-Hub A can fail over to Hub B for final readback
-bridge audit readback still works
-bridge reconciliation still passes
-the freeze detector did not see a long no-progress stall
-```
-
-Default scale is larger than the golden path: 80 registered workers, 30 market requests, and 8 chatter clients. Tune it down while debugging or up while soaking:
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_stress.py `
-  --node-count 40 `
-  --request-count 12 `
-  --chatter-clients 4 `
-  --chatter-rounds 10 `
-  --freeze-timeout-seconds 30 `
-  --progress
-```
-
-If the stress smoke fails with a freeze detector message, read the `last_progress_label` in the failure and the JSON report at `runtime/temporal_lab/temporal_fdb_hub_stress_report.json` when available. A freeze failure means the lab stopped making meaningful market/chatter progress for longer than the configured timeout; it should not be treated as a normal test assertion failure.
-
-
+Unit tests can still call mock credit-ledger methods directly against disposable
+isolated state; authenticated real-chain deposit completion remains on the
+Stable Hub. Use the protected Temporal/FDB node-market smoke above for tests
+that do not depend on deleted funding endpoints.

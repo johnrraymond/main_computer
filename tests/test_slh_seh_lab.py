@@ -275,7 +275,7 @@ class TestSLHSEHLab(unittest.TestCase):
         self.assertEqual(paid['charged_credit_wei'],paid['earned_credit_wei'])
         self.assertTrue(paid['managed_worker_proof'])
         self.assertTrue(paid['gates']['idempotent_request_not_double_charged'])
-        self.assertTrue(paid['gates']['wallet_authorized_settlement'])
+        self.assertTrue(paid['gates']['wallet_authorized_pending_batch'])
 
 
 if __name__ == '__main__':

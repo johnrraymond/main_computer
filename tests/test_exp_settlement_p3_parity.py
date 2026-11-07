@@ -221,44 +221,36 @@ def test_stable_and_exp_worker_batch_bridge_economic_invariants():
     assert len(stable.status()["bridge_payouts"]) == len(exp._snapshot()["bridge_payouts"]) == 1
 
 
-def test_inherited_hub_payout_endpoint_accepts_batch_id():
+def test_removed_legacy_bridge_payout_http_cannot_reserve_earnings():
+    import http.client
     import json
     import threading
     from http.server import ThreadingHTTPServer
-    from types import SimpleNamespace
-    from urllib.request import Request, urlopen
-
     from main_computer.hub import HubServerHandler
 
     store = ledger()
     _, _, batch = settled_exp_batch(store)
+    before = store._snapshot()
     server = ThreadingHTTPServer(("127.0.0.1", 0), HubServerHandler)
     server.credit_ledger = store
-    server.registry = SimpleNamespace(status=lambda: {"workers": []})
     server.verbose = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        url = f"http://127.0.0.1:{server.server_port}/api/hub/v1/bridge/payouts"
         body = {"wallet_address": WALLET, "worker_node_id": WORKER,
-                "batch_id": batch["batch_id"], "idempotency_key": "http-idem"}
-        def submit():
-            request = Request(url, data=json.dumps(body).encode(), method="POST",
-                              headers={"Content-Type": "application/json"})
-            with urlopen(request, timeout=3) as response:
-                assert response.status == 200
-                return json.load(response)
-        created = submit()
-        repeated = submit()
-        assert created["ok"]
-        assert created["payout"]["batch_id"] == batch["batch_id"]
-        assert repeated["idempotent"]
-        assert repeated["payout"]["payout_id"] == created["payout"]["payout_id"]
-        assert len(store._snapshot()["bridge_payouts"]) == 1
+                "batch_id": batch["batch_id"], "idempotency_key": "forged-http"}
+        conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+        try:
+            conn.request('POST','/api/hub/v1/bridge/payouts',body=json.dumps(body).encode(),
+                         headers={'Content-Type':'application/json'})
+            response=conn.getresponse()
+            assert response.status==404
+            response.read()
+        finally:
+            conn.close()
+        assert store._snapshot() == before
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
+        server.shutdown();server.server_close();thread.join(timeout=3)
 
 
 def test_added_external_execution_proof_fences_pending_batch_confirmation():

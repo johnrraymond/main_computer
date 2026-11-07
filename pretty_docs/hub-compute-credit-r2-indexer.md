@@ -1,140 +1,26 @@
-# Hub Compute Credit R2A Escrow Deposit Indexer
+# Internal Compute Credit Deposit Indexer
 
-R2A adds the first funding bridge between an on-chain escrow deposit receipt and
-the internal Compute Credit ledger.
+`HubCreditLedger.record_deposit()` retains idempotent bookkeeping for trusted,
+verified deposit events. The internal `HubCreditIndexer` implementation can be
+used by isolated test fixtures to verify ledger accounting, but no public HTTP
+endpoint accepts a caller-supplied receipt as proof of payment.
 
-This phase is intentionally narrow:
+Production credit funding must use the Hub's verified bridge-completion path,
+which checks the authoritative on-chain deposit and deployment metadata before
+crediting any account. A missing bridge deployment or invalid receipt is a
+failure, not a reason to fall back to manual credit creation.
 
-- no credit card processing
-- no fiat checkout
-- no RPC/event polling
-- no paid request charging
-- no worker earnings
-- no settlement batching
-- no worker settlement contract
+The legacy indexer status endpoint, when available to administrators, reports
+only internal ledger status. It does not expose a funding or minting operation.
 
-The hub accepts a normalized receipt-shaped payload, validates it, converts it
-to a `ChainEventRef` plus `CreditDeposit`, and records it through
-`HubCreditLedger.record_deposit(...)`.
+## Deterministic internal ledger testing
 
-## Endpoints
+Tests may create disposable `CreditDeposit` and `ChainEventRef` records directly
+through internal code. The event identity is derived from:
 
-```text
-GET  /api/hub/v1/credits/indexer
-POST /api/hub/v1/credits/deposits/import
 ```
-
-The status endpoint reports the R2A mode, the event family this import is
-shaped for, and the current ledger totals.
-
-The import endpoint is for local-dev/operator use until the R6 auth patch
-protects admin/import routes.
-
-## Normalized import payload
-
-```json
-{
-  "chain_id": 42424242,
-  "contract_address": "0x1111111111111111111111111111111111111111",
-  "tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-  "log_index": 0,
-  "block_number": 123,
-  "account_id": "user-one",
-  "payer_address": "0x3333333333333333333333333333333333333333",
-  "payment_asset": "native",
-  "payment_amount_base_units": 1000000000000000000,
-  "credits_granted": 100,
-  "memo": "dev-chain escrow deposit receipt"
-}
-```
-
-`account_id` is the hub account to credit. `payer_address` is the wallet that
-funded the receipt. The default first asset is `native`.
-
-## Idempotency
-
-The same chain event must not credit an account twice.
-
-R2A uses the existing `ChainEventRef.event_uid` and `CreditDeposit.deposit_id`
-path. The idempotency input is:
-
-```text
 chain_id + contract_address + tx_hash + log_index
 ```
 
-A second import of the same event returns the existing deposit and does not add
-credits or create another transaction.
-
-## Validation
-
-The importer rejects malformed normalized receipts before touching the ledger.
-
-Required checks include:
-
-- positive `chain_id`
-- 20-byte `contract_address`
-- 32-byte `tx_hash`
-- non-negative `log_index`
-- non-negative `block_number`
-- non-empty hub `account_id`
-- 20-byte `payer_address`
-- `payment_asset` of `native` or a 20-byte token address
-- positive `payment_amount_base_units`
-- positive `credits_granted`
-
-
-## Operator smoke test
-
-After starting the local hub, run the scripted R2A smoke check:
-
-```powershell
-python scripts/smoke_r2a_credit_import.py --hub-url http://127.0.0.1:8770
-```
-
-The script uses a unique fake transaction hash by default so it can be run more
-than once against the same local ledger. It verifies:
-
-- the R2A indexer status endpoint is alive
-- the first normalized receipt import succeeds
-- the duplicate import returns `idempotent=true`
-- the duplicate import does not change account balance
-- the duplicate import does not change deposit or transaction counts
-- the deposit appears in `/api/hub/v1/credits/deposits`
-- the `deposit_indexed` transaction appears in `/api/hub/v1/credits/transactions`
-
-This is still a local-dev/operator smoke path only. It does not perform RPC
-sync, credit-card processing, fiat checkout, request charging, or worker
-settlement.
-
-## Verification
-
-```powershell
-python -m py_compile main_computer/hub_credit_indexer.py main_computer/hub_credit_ledger.py main_computer/hub.py
-python -m pytest tests/test_hub_credit_models.py tests/test_hub_credit_ledger.py tests/test_hub_credit_indexer.py tests/test_hub.py -q
-python tools/build_contracts.py --project contracts --test
-```
-
-## Next phase
-
-R2B can later connect this importer to RPC/event sync for
-`HubCreditBridgeEscrow.CreditDeposited`. The R2A endpoint is deliberately useful first
-as a deterministic, testable import seam.
-
-
-## Pre-R2B contract smoke
-
-Before adding RPC sync, run the contract-side smoke harness:
-
-```powershell
-python scripts/smoke_hub_credit_bridge_escrow_container.py
-```
-
-This verifies the `HubCreditBridgeEscrow.CreditDeposited`, `SpendRectified`, and `WithdrawalReleased` event shapes and then delegates
-to the repo's container-aware Foundry wrapper:
-
-```powershell
-python tools/build_contracts.py --project contracts --test
-```
-
-It is a pre-RPC check only. It does not index logs, maintain cursors, charge
-requests, or create a vault contract.
+Repeat events must be idempotent. This is an internal accounting test seam, not
+an authorization mechanism and not a public network service.

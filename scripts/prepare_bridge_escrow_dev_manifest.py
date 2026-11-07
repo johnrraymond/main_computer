@@ -561,7 +561,6 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "hub": {
             "url": args.hub_url.rstrip("/"),
-            "deposit_import_endpoint": "/api/hub/v1/credits/deposits/import",
             "deposits_endpoint": "/api/hub/v1/credits/deposits",
             "balance_endpoint": "/api/hub/v1/credits/balance",
         },

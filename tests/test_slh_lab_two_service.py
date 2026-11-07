@@ -129,7 +129,7 @@ def test_real_process_paid_work_integration():
             payout_ledger=hub.payout_ledger_directory)
         assert result['pass'], result
         assert all(result['gates'].values()), result['gates']
-        assert result['paid_marketplace']['settlement'] == 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED'
+        assert result['paid_marketplace']['settlement'] == 'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'
     finally:
         hub.shutdown()
         hub.server_close()

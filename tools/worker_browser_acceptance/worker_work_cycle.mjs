@@ -235,15 +235,12 @@ export function safeCaptainHubOperation(urlText) {
   const operations = new Map([
     ['/api/hub/v1/credits/wallet-funding/completion', 'bridge-readiness'],
     ['/api/hub/v1/credits/wallet-funding/complete', 'bridge-completion'],
-    ['/api/hub/v1/credits/wallet-funding/import', 'bridge-import'],
     ['/api/hub/v1/credits/balance', 'credit-balance'],
     ['/api/hub/v1/credits/charges', 'credit-charges'],
     ['/api/hub/v1/requests/quote', 'request-quote'],
     ['/api/hub/v1/requests/submit', 'request-submit'],
     ['/api/hub/v1/requests', 'request-submit'],
     ['/api/hub/v1/work/requests', 'live-worker-request-submit'],
-    ['/api/hub/v1/credits/bridge-reconciliation/record', 'bridge-reconciliation-record'],
-    ['/api/hub/v1/credits/bridge-reconciliation/execute', 'bridge-reconciliation-execute'],
     ['/api/hub/v1/credits/bridge-deposit', 'bridge-deposit-lookup'],
   ])
   if (operations.has(path)) return operations.get(path)

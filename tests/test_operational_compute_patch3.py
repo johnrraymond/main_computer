@@ -173,7 +173,7 @@ def test_hub_terminal_receipt_requires_requested_execution_model_and_checkpoint(
             'solution':{'schema':'main-computer.nanojev-solution.v1',
                         'capability':'nanojev.clef.evaluate.v1',
                         'model':{'family':'nanojev-clef','release_manifest_sha256':SHA}}}
-    accepted={'session_id':'sess-1', 'continuation_url':
+    accepted={'session_id':'sess-1', 'continuation_token':'opaque-requester-capability', 'continuation_url':
               'https://example.org/api/hub/v1/work/sessions/sess-1/stream'}
     monkeypatch.setattr(hub_request, '_hub_json',lambda *a, **kw: {
         'accepted_session':{'session_id':'sess-1','status':'succeeded',

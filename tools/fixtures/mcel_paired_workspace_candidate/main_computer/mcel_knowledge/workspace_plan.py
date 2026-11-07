@@ -190,14 +190,26 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
                   "ladder": {"wide": "anchor", "medium": "anchor", "narrow": "anchor"},
                   "reasons": ["authored-primary", *(["authored-mode-alternates"] if mode_state else [])]})
     if tools:
+        # Multi-field consequential workflows are work areas, not compact
+        # inspectors.  A single tight side rail cannot present their inputs,
+        # selection evidence and confirmation controls legibly.  Infer this
+        # from typed form arity and capability risk, never an app name.
+        wide_tool_workflow = any(
+            node.get("nodeKind") == "form" and len(node.get("fields") or {}) >= 3
+            and intents.get(_ref(node.get("intent")), {}).get("risk") == "consequential"
+            for rid in tools for member in by_id[rid]["members"]
+            for node in [nodes[member["ref"]]]
+        )
         selected_states = set().union(*(set(f["selectionTargets"]) for f in facts.values()))
         selection_hints = [rid for rid in tools if by_id[rid].get("purpose") == "inspection"
                            and set(facts[rid]["displays"]) & selected_states]
         zones.append({"id": "tools", "kind": "tab-group" if len(tools) > 1 else "inspector",
                       "members": tools, "default": tools[0],
                       "hintUntilSelected": selection_hints,
-                      "ladder": {"wide": "dock-end", "medium": "dock-bottom", "narrow": "disclosure-after-anchor"},
-                      "reasons": ["supporting-or-unassigned", "fallback-preserves-bound-region"]})
+                      "ladder": {"wide": "dock-bottom" if wide_tool_workflow else "dock-end",
+                                 "medium": "dock-bottom", "narrow": "disclosure-after-anchor"},
+                      "reasons": ["supporting-or-unassigned", "fallback-preserves-bound-region",
+                                  *(["consequential-multifield-workflow-needs-width"] if wide_tool_workflow else [])]})
     if status:
         zones.append({"id": "status", "kind": "pinned-compact", "members": status,
                       "ladder": {"wide": "bottom", "medium": "bottom", "narrow": "bottom"},

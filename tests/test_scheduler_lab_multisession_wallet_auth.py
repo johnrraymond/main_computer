@@ -145,23 +145,10 @@ def test_hub_strict_mode_rejects_unsigned_worker_pull_and_derives_account_from_m
             )
             assert registered_worker["ok"] is True
 
-            funding = _post_json(
-                f"{hub_url}/api/hub/v1/credits/wallet-funding/import",
-                {
-                    "wallet_address": wallet_address,
-                    "chain_id": int(_DEV_CHAIN_ID, 16),
-                    "contract_address": "0x0000000000000000000000000000000000000001",
-                    "tx_hash": "0x" + "ab" * 32,
-                    "log_index": 0,
-                    "block_number": 1,
-                    "payment_asset": "native",
-                    "payment_amount_base_units": 2,
-                    "credits_granted_wei": 2 * 10**18,
-                    "idempotency_key": "wallet-funding-scheduler-lab-unit",
-                    "memo": "pytest wallet funding",
-                },
-            )
-            assert funding["account_id"] == expected_account_id
+            funding = hub.credit_ledger.issue(
+                account_id=expected_account_id, credits=2,
+                owner_address=wallet_address, memo="isolated scheduler lab fixture")
+            assert funding["account"]["account_id"] == expected_account_id
 
             data = _post_json(
                 f"{hub_url}/api/hub/v1/requests",
