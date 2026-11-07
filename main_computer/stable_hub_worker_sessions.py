@@ -9,7 +9,7 @@ import secrets
 import sys
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
@@ -1784,7 +1784,12 @@ class StableHubPayoutLedgerDirectory:
                 "settlement_status": "not_settled",
                 "batch_id": "",
                 "created_at": now,
-                "result": json.loads(json.dumps(result or {})),
+                # A financial earning proves the accounting obligation, not the
+                # semantic output. Retain only a canonical digest in the shared
+                # financial ledger; the accepted session owns delivery/retention.
+                "result_sha256": hashlib.sha256(json.dumps(result or {},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    allow_nan=False).encode("utf-8")).hexdigest(),
                 "metadata": {"stable_hub": True, "direct_spend": not bool(hold_id), **dict(metadata or {})},
             }
             data.setdefault("payout_accounts", {})[account["account_id"]] = updated_account
@@ -2748,6 +2753,51 @@ class StableHubAcceptedWorkSessionDirectory:
     @property
     def cluster_id(self) -> str:
         return str(getattr(self.topology, "cluster_id", "") or "")
+
+    @_atomic_stable_store_mutation
+    def purge_expired_terminal_payloads(self, *, now: datetime | None = None) -> int:
+        """Bound content retention without deleting financial/idempotency facts.
+
+        Only terminal sessions beyond the 24-hour continuation interval can be
+        scrubbed. Request/account IDs, status, charges and economic receipts
+        remain for exactly-once recovery and audits. Not a ledger deletion.
+        """
+        instant = now or datetime.now(timezone.utc)
+        if instant.tzinfo is None:
+            raise ValueError("retention sweep requires timezone-aware UTC")
+        cutoff = instant - timedelta(hours=24)
+        count = 0
+        with self._lock:
+            data = self.store.load()
+            sessions = data.get("accepted_sessions")
+            if not isinstance(sessions, dict):
+                return 0
+            for sid, value in list(sessions.items()):
+                if not isinstance(value, dict) or value.get("status") not in (
+                        "succeeded", "failed", "cancelled"):
+                    continue
+                timestamp = value.get("completed_at")
+                if not isinstance(timestamp, str) or not timestamp:
+                    continue  # Missing terminal clock must be fixed, not guessed.
+                try:
+                    completed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if completed.tzinfo is None or completed > cutoff or value.get("payload_purged_at"):
+                    continue
+                row = dict(value)
+                for name in (
+                    "work", "worker_result", "worker_failure", "worker_acceptance",
+                    "stream_events", "continuation_token", "requester_msk_id",
+                    "requester_wallet_address", "worker_connection_id", "owner_hub_url",
+                ):
+                    row.pop(name, None)
+                row["payload_purged_at"] = instant.isoformat()
+                sessions[sid] = row
+                count += 1
+            if count:
+                self.store.save(data)
+        return count
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         session_id = normalize_session_id(session_id)

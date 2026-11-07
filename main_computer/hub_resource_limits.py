@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
+import queue
 import socket
 import threading
 import time
@@ -200,6 +201,15 @@ class BoundedHubHTTPServer(ThreadingHTTPServer):
         self._resource_peak_connections = 0
         self._resource_watchdog_stop = threading.Event()
         self._resource_watchdog_thread: threading.Thread | None = None
+        # A bounded, separately serviced rejection lane is needed on Windows:
+        # closing a TCP socket with unread request bytes can reset the connection
+        # before the 503 response is delivered. Rejections must never create
+        # unbounded handler threads or block the main accept loop.
+        self._resource_reject_queue: queue.Queue[socket.socket] = queue.Queue(maxsize=32)
+        self._resource_reject_lock = threading.Lock()
+        self._resource_reject_threads: list[threading.Thread] = []
+        self._resource_reject_stop = threading.Event()
+        self._resource_reject_dropped = 0
 
     def resource_admission_snapshot(self) -> dict[str, int]:
         with self._resource_admission_lock:
@@ -211,6 +221,12 @@ class BoundedHubHTTPServer(ThreadingHTTPServer):
                 'rejections': self._resource_rejections,
                 'expired_headers': self._resource_header_timeouts,
                 'peak_connections': self._resource_peak_connections,
+                'active_connections': sum(state.phase == 'active'
+                                          for state in self._resource_connections.values()),
+                'rejection_queue_depth': self._resource_reject_queue.qsize(),
+                'rejection_queue_limit': self._resource_reject_queue.maxsize,
+                'rejection_workers': len(self._resource_reject_threads),
+                'rejection_dropped': self._resource_reject_dropped,
             }
 
     def _resource_watchdog_loop(self) -> None:
@@ -230,15 +246,88 @@ class BoundedHubHTTPServer(ThreadingHTTPServer):
                 except OSError:
                     pass
 
-    def _resource_reject(self, sock: socket.socket) -> None:
-        # The accept loop must not block trying to write to a saturated client.
+    def _resource_send_rejection(self, sock: socket.socket) -> None:
+        """Best-effort 503 without an abortive close on Windows.
+
+        HTTP rejection happens before parsing, so the client may already have
+        transmitted its entire request. A close with those bytes unread can
+        produce TCP RST and erase the response. Drain only a bounded amount,
+        send a short reply, half-close the write side, and allow a short grace
+        for the peer to consume it. Never run this on the accept-loop thread.
+        """
+        max_discard = 64 * 1024
         try:
             sock.setblocking(False)
-            sock.send(b'HTTP/1.1 503 Service Unavailable\r\n'
-                      b'Content-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n')
+            remaining = max_discard
+            while remaining > 0:
+                try:
+                    chunk = sock.recv(min(8192, remaining))
+                except (BlockingIOError, InterruptedError):
+                    break
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
+            sock.settimeout(0.25)
+            sock.sendall(b'HTTP/1.1 503 Service Unavailable\r\n'
+                         b'Content-Length: 0\r\nConnection: close\r\n'
+                         b'Retry-After: 1\r\n\r\n')
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            # Preserve the response across Windows' unread-data/reset rule.
+            # Limit both time and bytes to avoid hostile request-body uploads.
+            sock.settimeout(0.25)
+            remaining = max_discard
+            while remaining > 0:
+                try:
+                    chunk = sock.recv(min(8192, remaining))
+                except (socket.timeout, BlockingIOError, InterruptedError):
+                    break
+                if not chunk:
+                    break
+                remaining -= len(chunk)
         except OSError:
             pass
-        self.shutdown_request(sock)
+        finally:
+            self.shutdown_request(sock)
+
+    def _resource_reject_worker(self) -> None:
+        while True:
+            try:
+                sock = self._resource_reject_queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._resource_reject_stop.is_set():
+                    return
+                continue
+            try:
+                self._resource_send_rejection(sock)
+            finally:
+                self._resource_reject_queue.task_done()
+
+    def _resource_reject(self, sock: socket.socket) -> None:
+        # A fixed worker pool plus bounded queue prevents the rejection path
+        # from becoming a thread/socket exhaustion vector in its own right.
+        if self._resource_reject_stop.is_set():
+            self.shutdown_request(sock)
+            return
+        with self._resource_reject_lock:
+            if not self._resource_reject_threads:
+                for index in range(4):
+                    thread = threading.Thread(
+                        target=self._resource_reject_worker,
+                        name=f'hub-reject-{index}', daemon=True)
+                    self._resource_reject_threads.append(thread)
+                    thread.start()
+        try:
+            self._resource_reject_queue.put_nowait(sock)
+        except queue.Full:
+            # Under extreme overload, fail closed rather than retain sockets.
+            # A readable 503 is not guaranteed once this separate budget fills.
+            with self._resource_admission_lock:
+                self._resource_reject_dropped += 1
+            self.shutdown_request(sock)
 
     def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
         policy = getattr(self, 'resource_limits', DEFAULT_RESOURCE_POLICY)
@@ -360,6 +449,16 @@ class BoundedHubHTTPServer(ThreadingHTTPServer):
                 self._resource_pending_websocket_count -= 1
 
     def server_close(self) -> None:
+        self._resource_reject_stop.set()
+        while True:
+            try:
+                pending = self._resource_reject_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.shutdown_request(pending)
+            self._resource_reject_queue.task_done()
+        for thread in self._resource_reject_threads:
+            thread.join(timeout=0.5)
         self._resource_watchdog_stop.set()
         with self._resource_admission_lock:
             sockets = [state.sock for state in self._resource_connections.values()]

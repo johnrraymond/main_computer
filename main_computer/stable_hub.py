@@ -105,7 +105,9 @@ def _public_worker_result(raw: Any) -> dict[str, Any]:
     if isinstance(solution, dict):
         content["solution"] = {k: solution[k] for k in (
             "schema", "provider", "capability", "model", "result") if k in solution}
-    return {"result": content}
+    # Provenance is a Hub-owned classification, never copied from Worker JSON.
+    return {"result": content,
+            "execution_assurance": "worker_asserted_not_independently_attested"}
 
 
 def _public_work_session(record: dict[str, Any]) -> dict[str, Any]:
@@ -685,6 +687,7 @@ class StableHubHTTPServer(BoundedHubHTTPServer):
         self.live_worker_sessions: dict[str, LiveWorkerSession] = {}
         self._recovery_stop = threading.Event()
         self._recovery_thread: threading.Thread | None = None
+        self._last_retention_sweep = 0.0
         # 90 seconds permits multiple missed 10-second keepalives. The
         # complete FDB identity/heartbeat proof is rechecked at commit time.
         self.recovery_lease_seconds = max(30.0, float(os.getenv(
@@ -710,6 +713,15 @@ class StableHubHTTPServer(BoundedHubHTTPServer):
 
     def _recovery_loop(self) -> None:
         while not self._recovery_stop.wait(self.recovery_interval_seconds):
+            # Retention runs outside request handling; never block a paid job
+            # on a purge of older terminal records.
+            if time.monotonic() - self._last_retention_sweep >= 3600:
+                self._last_retention_sweep = time.monotonic()
+                try:
+                    self.accepted_work_session_directory.purge_expired_terminal_payloads()
+                except Exception as exc:
+                    print(f"stable-hub {self.hub.hub_id} - retention sweep deferred: "
+                          f"{type(exc).__name__}", file=sys.stderr, flush=True)
             try:
                 result = self.recover_expired_workers_once()
                 if result["recovered"]:
@@ -1259,6 +1271,16 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             session.send_json({"type": "hub.ping", "ping_id": ping_id, "connection_id": connection_id})
             while True:
                 message = self._ws_read_json_message()
+                current_key = self.server.multisession_key_service.validate_key({
+                    "multisession_authorization": {
+                        "kind": "multisession_key", "multisession_key_id": key_id,
+                    }
+                })
+                if current_key.get("valid") is not True:
+                    termination_reason = "worker_msk_revoked_or_expired"
+                    session.send_json({"type": "hub.auth.rejected", "ok": False,
+                                       "reason_code": current_key.get("reason_code")})
+                    return
                 message_type = str(message.get("type") or "")
                 last_message_type = message_type or "<missing-type>"
                 if message_type == "worker.pong":
@@ -1885,6 +1907,18 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             ):
                 _reject_candidate("worker_owner_changed", "Selected worker owner record changed before work could be offered.")
                 continue
+            # Even an authenticated open socket must not continue receiving
+            # *new* work after the underlying bearer key expires or is revoked.
+            # Check before reserving Worker capacity or committing credits.
+            owner_key_id = str(owner.get("multisession_key_id") or "")
+            worker_key_valid = (self.server.multisession_key_service.validate_key({
+                "multisession_authorization": {
+                    "kind": "multisession_key", "multisession_key_id": owner_key_id,
+                }
+            }) if owner_key_id else {"valid": False})
+            if worker_key_valid.get("valid") is not True:
+                _reject_candidate("worker_msk_not_active", "Worker authorization is no longer active.")
+                continue
             if str(owner.get("owner_hub_id") or "") != self.server.hub.hub_id:
                 break  # Remote owner validates its own socket and reserves capacity.
 
@@ -2288,6 +2322,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/hub/v1/credits/multisession-keys/validate":
                 self._send_json(200, self.server.multisession_key_service.validate_key(self._read_json()))
                 return
+            if path == "/api/hub/v1/credits/multisession-keys/revoke":
+                self._send_json(200, self.server.multisession_key_service.revoke_key(self._read_json()))
+                return
             if path == "/api/hub/v1/credits/pinky-reserve/sweep":
                 # Only a wallet-signed, recipient-fixed aggregate transfer can
                 # move organizational credits. An MSK alone cannot authorize it.
@@ -2505,19 +2542,34 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/hub/v1/hub-identity":
-            self._send_json(200, dict(self.server.identity))
+            # Public identity is an explicit allowlist; never disclose FDB
+            # cluster-file paths, namespaces, internal peer or RPC topology.
+            identity = self.server.identity
+            self._send_json(200, {
+                **{key: identity[key] for key in (
+                    "ok", "service", "hub_id", "hub_url", "cluster_id", "contract"
+                ) if key in identity},
+                "network": {key: identity.get("network", {}).get(key) for key in
+                            ("chain_id", "network_key", "network_kind")},
+            })
             return
         if path == "/api/hub/v1/topology":
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "service": "main_computer.stable_hub",
-                    "hub_id": self.server.hub.hub_id,
-                    "topology": stable_hub_topology_to_dict(self.server.topology),
-                    "contract": stable_hub_contract(),
+            # The public discovery contract needs logical IDs and advertised
+            # entry URLs, never private storage or network configuration.
+            self._send_json(200, {
+                "ok": True, "service": "main_computer.stable_hub",
+                "hub_id": self.server.hub.hub_id,
+                "topology": {
+                    "kind": self.server.topology.kind,
+                    "cluster_id": self.server.topology.cluster_id,
+                    "entry_urls": list(self.server.topology.entry_urls),
+                    "hubs": [{"hub_id": hub.hub_id,
+                              "hub_url": hub.hub_url,
+                              "public_url": hub.public_url}
+                             for hub in self.server.topology.hubs],
                 },
-            )
+                "contract": stable_hub_contract(),
+            })
             return
         self._send_json(
             404,

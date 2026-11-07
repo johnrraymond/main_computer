@@ -8,7 +8,7 @@ import platform
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -24,6 +24,9 @@ from main_computer.multisession_key_signing import (
 
 STABLE_MSK_STORE_VERSION = "main-computer-stable-hub-multisession-keys-v1"
 STABLE_MSK_SIGNED_REQUEST_MAX_AGE_MINUTES = 15
+# Stable bearer keys have a fixed lifetime distinct from the brief wallet
+# signature used to issue them. Existing keys use created_at for expiry.
+STABLE_MSK_KEY_LIFETIME = timedelta(days=7)
 STABLE_MSK_USER_SLUG_MIN_CHARS = 32
 STABLE_MSK_USER_SLUG_MAX_CHARS = 256
 STABLE_MSK_HUB_SLUG_BYTES = 32
@@ -72,6 +75,17 @@ class InMemoryStableMultiSessionKeyStore:
     def save(self, data: dict[str, Any]) -> None:
         with self._lock:
             self._data = _normalize_store(data)
+
+    def revoke_key_record(self, *, key_id: str, wallet_address: str) -> dict[str, Any] | None:
+        with self._lock:
+            record = self._data["keys"].get(key_id)
+            if not isinstance(record, dict) or record.get("wallet_address") != wallet_address:
+                return None
+            record = dict(record)
+            record["status"] = "revoked"
+            record["revoked_at"] = record.get("revoked_at") or _utc_now()
+            self._data["keys"][key_id] = record
+            return dict(record)
 
 
 class JsonStableMultiSessionKeyStore:
@@ -389,6 +403,22 @@ class FoundationDbStableMultiSessionKeyStore:
                 f"timeout_ms={STABLE_MSK_FDB_TRANSACTION_TIMEOUT_MS} key_id={key_id}"
             ) from exc
 
+    def revoke_key_record(self, *, key_id: str, wallet_address: str) -> dict[str, Any] | None:
+        """Atomic, wallet-bound revocation across every Stable Hub process."""
+        self._open()
+        @self._fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any] | None:
+            _configure_fdb_transaction_safety(tr)
+            record = _json_loads(tr[self._record_key(key_id)].wait())
+            if not isinstance(record, dict) or record.get("wallet_address") != wallet_address:
+                return None
+            if record.get("status") == "active":
+                record["status"] = "revoked"
+                record["revoked_at"] = _utc_now()
+                tr[self._record_key(key_id)] = _json_dumps(record)
+            return dict(record)
+        return _tx(self._db)
+
     def load(self) -> dict[str, Any]:
         self._open()
 
@@ -532,6 +562,7 @@ def _public_key_record(record: dict[str, Any]) -> dict[str, Any]:
         "account_id": str(record.get("account_id") or ""),
         "chain_id": str(record.get("chain_id") or ""),
         "created_at": str(record.get("created_at") or ""),
+        "expires_at": str(record.get("key_expires_at") or ""),
         "revoked_at": str(record.get("revoked_at") or ""),
         "replaced_by": str(record.get("replaced_by") or ""),
         "request_id": str(record.get("request_id") or ""),
@@ -603,6 +634,10 @@ class StableHubMultiSessionKeyService:
         message = verification.get("message")
         if not isinstance(message, dict):
             raise StableHubMultiSessionKeyError("signed_request message is required.")
+        # A wallet-signed revocation message is NOT consent to issue a new
+        # bearer key. Strictly separate the signing domain of these actions.
+        if message.get("action") not in (None, "", "request_multi_session_key"):
+            raise StableHubMultiSessionKeyError("signed_request is not a key-issuance intent")
         user_slug = _normalize_msk_slug(message.get("user_slug"), field_name="user_slug")
 
         wallet_address = normalize_address(verification["wallet_address"])
@@ -611,6 +646,7 @@ class StableHubMultiSessionKeyService:
         account_id = wallet_account_id(wallet_address)
         signed_request_hash = _canonical_hash(signed_request)
         now = _utc_now()
+        key_expires_at = (datetime.now(timezone.utc) + STABLE_MSK_KEY_LIFETIME).isoformat()
 
         create_record = getattr(self.store, "create_key_record_if_absent", None)
         if callable(create_record):
@@ -625,6 +661,7 @@ class StableHubMultiSessionKeyService:
                         "id": key_id,
                         "status": "active",
                         "created_at": now,
+                        "key_expires_at": key_expires_at,
                         "revoked_at": "",
                         "replaced_by": "",
                         "wallet_address": wallet_address,
@@ -687,6 +724,7 @@ class StableHubMultiSessionKeyService:
                         "id": key_id,
                         "status": "active",
                         "created_at": now,
+                        "key_expires_at": key_expires_at,
                         "revoked_at": "",
                         "replaced_by": "",
                         "wallet_address": wallet_address,
@@ -781,6 +819,29 @@ class StableHubMultiSessionKeyService:
             )
 
         try:
+            created = datetime.fromisoformat(str(record.get("created_at") or "").replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                raise ValueError("created_at must have timezone")
+            expires = created + STABLE_MSK_KEY_LIFETIME
+            stored_expiry = record.get("key_expires_at")
+            if stored_expiry:
+                stated = datetime.fromisoformat(str(stored_expiry).replace("Z", "+00:00"))
+                if stated.tzinfo is None:
+                    raise ValueError("expiry must have timezone")
+                expires = min(expires, stated)
+            now = datetime.now(timezone.utc)
+            if created > now + timedelta(minutes=5):
+                raise ValueError("key issuance is in the future")
+        except (TypeError, ValueError, OverflowError):
+            return self._invalid(reason_code="key_lifetime_invalid",
+                                 user_message="The stored multi-session key lifetime is invalid.",
+                                 multisession_key_id=key_id)
+        if datetime.now(timezone.utc) >= expires:
+            return self._invalid(reason_code="key_expired",
+                                 user_message="The multi-session key expired; issue a new wallet-signed key.",
+                                 multisession_key_id=key_id)
+
+        try:
             wallet_address = normalize_address(record.get("wallet_address"))
         except ValueError:
             return self._invalid(
@@ -852,6 +913,49 @@ class StableHubMultiSessionKeyService:
                 "cluster_id": self.cluster_id,
             },
         }
+
+    def revoke_key(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Revoke a single bearer key using a short-lived, wallet-signed intent.
+
+        The signed message includes purpose, action, key_id, wallet_address,
+        cluster_id, chain_id, request_id, issued_at and expires_at. Merely
+        possessing an MSK or knowing another user's key ID cannot revoke it.
+        """
+        signed_request = body.get("signed_request")
+        if not isinstance(signed_request, dict):
+            raise StableHubMultiSessionKeyError("signed_request is required")
+        verified = verify_personal_sign_blob(
+            signed_request, expected_chain_id=self.expected_chain_id,
+            max_age_minutes=STABLE_MSK_SIGNED_REQUEST_MAX_AGE_MINUTES)
+        message = verified.get("message") or {}
+        key_id = str(message.get("key_id") or "").strip()
+        if (message.get("action") != "revoke_multisession_key"
+                or not key_id or len(key_id) > 512
+                or message.get("cluster_id") != self.cluster_id
+                or not message.get("issued_at") or not message.get("expires_at")):
+            raise StableHubMultiSessionKeyError("invalid wallet-signed key revocation intent")
+        wallet = normalize_address(verified["wallet_address"])
+        revoke = getattr(self.store, "revoke_key_record", None)
+        if callable(revoke):
+            with self._lock:
+                record = revoke(key_id=key_id, wallet_address=wallet)
+        else:
+            with self._lock:
+                data = self.store.load()
+                record = data.get("keys", {}).get(key_id)
+                if not isinstance(record, dict) or record.get("wallet_address") != wallet:
+                    record = None
+                elif record.get("status") == "active":
+                    record = dict(record)
+                    record["status"] = "revoked"
+                    record["revoked_at"] = _utc_now()
+                    data["keys"][key_id] = record
+                    self.store.save(data)
+        if not isinstance(record, dict):
+            raise StableHubMultiSessionKeyError("key not found for signing wallet")
+        return {"ok": True, "revoked": record.get("status") == "revoked",
+                "key": _public_key_record(record), "hub_id": self.hub_id,
+                "cluster_id": self.cluster_id}
 
     def _key_for_signed_request_hash(
         self,

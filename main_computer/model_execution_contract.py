@@ -58,6 +58,14 @@ def advertised_operations(market: Any) -> list[str]:
 def request_contract(work: Any) -> tuple[str, str, tuple[str, ...]]:
     if not isinstance(work, dict):
         raise ModelContractError("work object is required")
+    # A public marketplace Worker only self-asserts its execution identity.
+    # Treat an explicit demand for verified/confidential execution as an
+    # admission constraint, not as a label the Worker can declare true.
+    if (work.get("requires_verified_execution") is True
+            or work.get("confidential") is True
+            or work.get("trust_tier") in ("trusted", "verified", "attested")
+            or work.get("execution_assurance") in ("verified", "attested")):
+        raise ModelContractError("independent execution attestation unavailable for public Worker jobs")
     model = model_id(work.get("model"))
     if ("capabilities" in work and "required_capabilities" in work
             and work["capabilities"] != work["required_capabilities"]):
