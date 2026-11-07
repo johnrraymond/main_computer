@@ -47,6 +47,8 @@ from main_computer.stable_hub_topology import (
     load_stable_hub_topology,
     stable_hub_node_to_dict,
     stable_hub_topology_to_dict,
+    RUNTIME_ATTESTATION_ENV, RUNTIME_ATTESTATION_SCHEMA,
+    stable_hub_runtime_attestation,
 )
 from main_computer.stable_hub_recovery import recover_expired_worker_leases
 from main_computer.stable_hub_worker_sessions import (
@@ -2540,6 +2542,30 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+            return
+        if path == "/api/hub/v1/runtime-attestation":
+            # Config proof must be tied to a fresh controller challenge. Never
+            # disclose internal paths, namespaces, peer routes or RPC addresses.
+            query = parse_qs(urlparse(self.path).query)
+            nonce_values = query.get("nonce", [])
+            if len(nonce_values) != 1 or not re.fullmatch(r"[0-9a-f]{32}", nonce_values[0]):
+                self._send_json(400, {"ok": False, "error": "invalid_attestation_nonce"})
+                return
+            try:
+                proof = stable_hub_runtime_attestation(
+                    key_hex=os.environ.get(RUNTIME_ATTESTATION_ENV, ""),
+                    nonce=nonce_values[0], hub_id=self.server.hub.hub_id,
+                    network=self.server.topology.network,
+                    storage=self.server.topology.storage,
+                )
+            except ValueError:
+                self._send_json(503, {"ok": False, "error": "attestation_unavailable"})
+                return
+            self._send_json(200, {
+                "ok": True, "schema": RUNTIME_ATTESTATION_SCHEMA,
+                "hub_id": self.server.hub.hub_id,
+                "nonce": nonce_values[0], "hmac_sha256": proof,
+            })
             return
         if path == "/api/hub/v1/hub-identity":
             # Public identity is an explicit allowlist; never disclose FDB

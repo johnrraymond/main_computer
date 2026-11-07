@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import re
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +12,37 @@ from urllib.parse import urlparse
 
 
 TOPOLOGY_KIND = "main_computer.stable_hub_topology.v1"
+RUNTIME_ATTESTATION_ENV = "MAIN_COMPUTER_HUB_RUNTIME_ATTESTATION_KEY"
+RUNTIME_ATTESTATION_SCHEMA = "main_computer.stable_hub.runtime_attestation.v1"
+
+
+def stable_hub_runtime_attestation(
+    *, key_hex: str, nonce: str, hub_id: str,
+    network: Mapping[str, Any], storage: Mapping[str, Any],
+) -> str:
+    """Challenge-bound HMAC of effective, loaded topology; never publish raw config.
+
+    The secret is restricted to the Coolify management channel and the Hub
+    process. A public chosen-nonce response cannot be used to guess a private
+    FDB namespace or RPC endpoint without the 256-bit secret.
+    """
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", key_hex or ""):
+        raise ValueError("Hub runtime attestation secret is unavailable or invalid")
+    if not re.fullmatch(r"[0-9a-f]{32}", nonce or ""):
+        raise ValueError("Hub runtime attestation nonce is invalid")
+    state = {
+        "schema": RUNTIME_ATTESTATION_SCHEMA,
+        "nonce": nonce,
+        "hub_id": str(hub_id),
+        "storage_backend": str(storage.get("backend") or ""),
+        "fdb_cluster_file": str(storage.get("cluster_file") or ""),
+        "fdb_namespace": str(storage.get("namespace") or ""),
+        "chain_id": str(network.get("chain_id") or ""),
+        "chain_rpc_url": str(network.get("chain_rpc_url") or "").rstrip("/"),
+    }
+    message = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hmac.new(bytes.fromhex(key_hex), message, hashlib.sha256).hexdigest()
+
 
 
 class StableHubTopologyError(ValueError):
