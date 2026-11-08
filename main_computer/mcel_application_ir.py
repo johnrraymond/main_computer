@@ -1786,7 +1786,7 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             errors.append("layoutTree nodes must be records")
             return
         role = node.get("role")
-        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible", "auxiliarySelectors"}
+        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible", "auxiliarySelectors", "keyAttribute"}
         if set(node) - allowed:
             errors.append("layoutTree node has unsupported properties")
         ident, selector = node.get("id"), node.get("selector")
@@ -1796,8 +1796,14 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             ids.add(ident)
         if not isinstance(selector, str) or not selector.strip():
             errors.append("layoutTree node selectors must be nonempty strings")
-        if role not in {"group", "control-grid", "region"}:
-            errors.append("layoutTree roles must be group, control-grid or region")
+        if role not in {"group", "control-grid", "region", "repeat"}:
+            errors.append("layoutTree roles must be group, control-grid, region or repeat")
+        if role == "repeat":
+            key = node.get("keyAttribute")
+            if not isinstance(key, str) or not re.fullmatch(r"data-[a-z][a-z0-9-]*", key):
+                errors.append("layoutTree repeat requires a data-* keyAttribute")
+        elif "keyAttribute" in node:
+            errors.append("layoutTree keyAttribute is only supported on repeat")
         columns = node.get("maxColumns", 3)
         if not isinstance(columns, int) or isinstance(columns, bool) or not 1 <= columns <= 8:
             errors.append("layoutTree maxColumns must be integer 1..8")
@@ -1854,6 +1860,10 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             errors.append("layoutTree group must declare children")
         if role != "group" and children:
             errors.append("only layoutTree group may declare children")
+        if role == "group" and variants and isinstance(children, list) and any(
+            isinstance(child, Mapping) and child.get("role") == "repeat" for child in children
+        ):
+            errors.append("layoutTree variants cannot address repeat instances as one CSS grid area")
         for child in children:
             visit(child, depth + 1)
 

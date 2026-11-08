@@ -53,7 +53,10 @@ def test_failure_is_persisted_without_tokens_or_job_payload(tmp_path, monkeypatc
     trace_text = (tmp_path/'trace.json').read_text()
     assert 'secret-token-and-job-content' not in trace_text
     assert 'SECRET-' not in trace_text
-    assert json.loads(trace_text)['failure']['exception_class'] == 'RuntimeError'
+    failure = json.loads(trace_text)['failure']
+    assert failure['exception_class'] == 'RuntimeError'
+    assert failure['failure_stack'][-1]['function'] == 'fail'
+    assert all(set(frame) == {'file', 'function', 'line'} for frame in failure['failure_stack'])
 
 
 def test_paid_terminal_followed_by_liveness_check(tmp_path, monkeypatch):
@@ -184,3 +187,17 @@ def test_real_paid_driver_passes_signed_admin_renewal_to_soak():
     source = getsource(verify_real_process_paid)
     assert 'admin_session_refresh=' in source
     assert '_login(api_port, local_sign_port=lp, tls=True)' in source
+
+
+def test_permission_error_records_location_without_sensitive_error_message(tmp_path, monkeypatch):
+    def refuse(**kwargs):
+        raise PermissionError('sensitive wallet and bearer contents')
+    monkeypatch.setattr(mod, 'verify_paid_cycle', refuse)
+    report = _execute_probe(tmp_path, cycles=3)
+    assert report['status'] == 'FAIL'
+    assert report['cycles_completed'] == 0
+    assert report['failure']['exception_class'] == 'PermissionError'
+    assert report['failure']['failure_stack'][-1]['function'] == 'refuse'
+    trace_text = (tmp_path/'trace.json').read_text()
+    assert 'sensitive' not in trace_text
+    assert 'SECRET-' not in trace_text

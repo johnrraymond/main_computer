@@ -371,9 +371,21 @@ def _html_failure(source, diagnostic, node, node_version):
 def _attach_semantic_html(ir: Mapping, regions: list[dict], source: str, html: str) -> None:
     """Join JS node ownership and HTML hierarchy before canonical IR validation."""
     surfaces = ir.get("surfaces", [])
-    if len(surfaces) != 1 or ir.get("layouts"):
-        raise ValueError("Paired HTML requires exactly one bound surface and no authored layout tree.")
+    layouts = ir.get("layouts", [])
+    if len(surfaces) != 1 or not isinstance(layouts, list) or len(layouts) > 1:
+        raise ValueError("Paired HTML requires one bound surface and at most one canonical layout tree.")
     surface = surfaces[0]
+    # Paired HTML remains the *only* author of the semantic region hierarchy.
+    # Permit one declarative canonical tree for that same surface, without
+    # accepting operational layout authorities, authored CSS or other layouts.
+    if layouts:
+        layout = layouts[0]
+        if (not isinstance(layout, dict) or layout.get("kind") != "layout"
+            or layout.get("surface") != {"ref": surface.get("id")}
+            or not isinstance(layout.get("layoutTree"), dict)
+            or layout.get("orderedChildren") != []
+            or set(layout) - {"id", "kind", "surface", "orderedChildren", "layoutTree", "source"}):
+            raise ValueError("Paired HTML only accepts one canonical tree for its bound surface.")
     if not isinstance(surface, dict) or set(surface) & {'interfaceIntent', 'semanticSurface'}:
         raise ValueError("Paired HTML cannot coexist with JavaScript-authored hierarchy or host-bound markup.")
     bindings = surface.pop("htmlBindings", None)

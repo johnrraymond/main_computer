@@ -2,6 +2,7 @@
 import base64
 import json
 import threading
+from collections import deque
 from unittest.mock import Mock
 
 from main_computer.slh.seh_transport import SLHSEHConnector
@@ -15,6 +16,7 @@ def _connector():
     obj._lock = threading.RLock()
     obj._streams = {}
     obj._stream_writers = {}
+    obj._stream_events = deque(maxlen=2048)
     obj.gateway_port = 12345
     obj._running = threading.Event()
     obj._running.set()
@@ -49,7 +51,9 @@ def test_connector_one_send_failure_does_not_disrupt_other_streams():
     obj, sent = _connector()
     bad = Mock()
     bad.sendall.side_effect = ConnectionResetError('worker left')
+    bad.getsockname.return_value = ('127.0.0.1', 41001)
     healthy = Mock()
+    healthy.getsockname.return_value = ('127.0.0.1', 41002)
     obj._streams = {'bad': bad, 'healthy': healthy}
     obj._stream_writers = {
         'bad': StreamWriter(bad.sendall, lambda: obj._local_write_failed('bad')),
@@ -79,6 +83,8 @@ def test_relay_single_failed_client_send_keeps_other_clients(monkeypatch):
     relay._lock = threading.RLock()
     relay._send_lock = threading.RLock()
     relay._closing_clients = set()
+    relay._pending_clients = {}
+    relay._stream_events = deque(maxlen=2048)
     relay.slh_close_causes = {}
     relay._slh = None
     relay._lab_slhs = {}
@@ -131,6 +137,8 @@ def test_slow_client_close_cannot_block_following_tunnel_frames(monkeypatch):
     relay._lock = threading.RLock()
     relay._send_lock = threading.RLock()
     relay._closing_clients = set()
+    relay._pending_clients = {}
+    relay._stream_events = deque(maxlen=2048)
     relay.slh_close_causes = {}
     relay._slh = None
     relay._lab_slhs = {}
@@ -178,6 +186,8 @@ def test_relay_marks_slh_buffer_exhaustion_as_1013_without_tunnel_failure(monkey
     relay._lock = threading.RLock()
     relay._send_lock = threading.RLock()
     relay._closing_clients = set()
+    relay._pending_clients = {}
+    relay._stream_events = deque(maxlen=2048)
     relay.slh_close_causes = {}
     relay._slh = None
     relay._lab_slhs = {}

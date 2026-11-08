@@ -86,11 +86,95 @@ def _requester_login(api_port, device_id, key):
     return login['access_token']
 
 
+
+def _settle_verified_smoke_earning(*, ledger, paid: dict, org_wallet_address: str) -> dict:
+    """Lab-controlled settlement of one proven earning, never a Worker HTTP settlement.
+
+    This is *only* called after the real paid job has succeeded in the isolated
+    smoke/FDB namespace, and after the parent verified FDB store, cluster and
+    Hub identity. It is not evidence of an external blockchain settlement.
+    """
+    from main_computer.stable_hub_worker_sessions import FoundationDbStableWorkerSessionStore
+    if (not isinstance(ledger.store, FoundationDbStableWorkerSessionStore)
+            or ledger.topology.storage.get('namespace') != 'main-computer-hub-smoke'
+            or 'smoke' not in ledger.cluster_id):
+        raise ServiceLabFailure('Pinky smoke internal settlement requires real smoke/FDB authority')
+    org_account = wallet_account_id(org_wallet_address)
+    evidence = paid.get('accounting') or {}
+    gates = paid.get('gates') or {}
+    if (not gates or not all(value is True for value in gates.values())
+            or paid.get('pass') is not True or paid.get('terminal_status') != 'succeeded'
+            or paid.get('settlement') != 'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'
+            or paid.get('worker_account_id') != org_account
+            or evidence.get('worker_account_id') != org_account):
+        raise ServiceLabFailure('Pinky smoke settlement requires verified wallet-owned paid job')
+    request_id = paid.get('request_id')
+    session_id = paid.get('session_id')
+    earning_id = evidence.get('earning_id')
+    amount = int(paid.get('earned_credit_wei') or 0)
+    if (not request_id or not session_id or not earning_id
+            or amount != CREDIT_WEI_PER_CREDIT):
+        raise ServiceLabFailure('Pinky smoke settlement requires exactly one credit of earned funds')
+
+    snapshot = ledger.store.load()  # authoritative FDB snapshot; no synthesized account.
+    earnings = [row for row in snapshot.get('worker_earnings', {}).values()
+                if isinstance(row, dict) and row.get('earning_id') == earning_id
+                and row.get('worker_id') == org_account
+                and row.get('request_id') == request_id
+                and row.get('session_id') == session_id]
+    charges = [row for row in snapshot.get('payout_charges', {}).values()
+               if isinstance(row, dict) and row.get('request_id') == request_id
+               and row.get('session_id') == session_id]
+    batches = [row for row in snapshot.get('payout_settlements', {}).values()
+               if isinstance(row, dict) and row.get('worker_id') == org_account
+               and row.get('idempotency_key') == 'smoke-batch-'+request_id]
+    if len(earnings) != 1 or len(charges) != 1 or len(batches) != 1:
+        raise ServiceLabFailure('Pinky smoke earning/charge/batch lineage is incomplete')
+    batch = batches[0]
+    claims = [snapshot.get('worker_claims', {}).get(cid) for cid in batch.get('claim_ids') or []]
+    if (batch.get('status') != 'batched' or len(claims) != 1
+            or not isinstance(claims[0], dict)
+            or claims[0].get('worker_id') != org_account
+            or claims[0].get('earning_ids') != [earning_id]
+            or int(batch.get('total_credit_wei_published') or 0) != amount
+            or int(earnings[0].get('earned_credit_wei') or 0) != amount
+            or int(charges[0].get('charged_credit_wei') or 0) != amount):
+        raise ServiceLabFailure('Pinky smoke paid accounting is not settleable')
+    before = ledger.get_account(org_account)
+    before_available = int((before or {}).get('available_credit_wei') or 0)
+    if before_available != 0:
+        raise ServiceLabFailure('Pinky smoke organization wallet already contains spendable credits')
+
+    # Explicit internal smoke-operator settlement. A worker cannot reach this
+    # operation via the public Hub API, and no external bridge is represented.
+    reference = 'pinky-smoke-'+request_id
+    committed = ledger.settle_worker_settlement_batch(
+        batch_id=batch['batch_id'], settlement_reference=reference,
+        idempotency_key=reference)
+    if (committed.get('status') != 'settled'
+            or committed.get('settlement_reference') != reference):
+        raise ServiceLabFailure('Pinky smoke internal ledger settlement was not confirmed')
+    committed_replay = ledger.settle_worker_settlement_batch(
+        batch_id=batch['batch_id'], settlement_reference=reference,
+        idempotency_key=reference)
+    after = ledger.get_account(org_account)
+    if (committed_replay.get('batch_id') != batch['batch_id']
+            or int((after or {}).get('available_credit_wei') or 0)
+                != before_available + amount):
+        raise ServiceLabFailure('Pinky smoke settlement was not idempotent')
+    # Both fields below are the post-settlement authoritative Hub account,
+    # not values reconstructed from the earlier pending payout receipt.
+    return {'status': 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED',
+            'batch_id': batch['batch_id'], 'earning_id': earning_id,
+            'credit_wei': str(amount), 'worker_account_id': org_account,
+            'verified_available_wei': str(int(after['available_credit_wei'])),
+            'verified_earned_wei': str(int(after['earned_credit_wei']))}
+
 def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                             api_port, worker_port, hub_url, hub_identity,
                             ledger, org_wallet_private, org_wallet_address,
-                            worker, reserve_wallet, market_controller):
-    """Run only after verify_paid_cycle settled a real Hub payout via SEH.
+                            worker, reserve_wallet, market_controller, paid_marketplace=None):
+    """Complete a verified smoke/FDB payout after the real SEH paid job.
 
     The supplied Hub ledger must be the real persistent three-Hub smoke/FDB
     ledger. The routine never seeds the organization account with synthetic
@@ -108,6 +192,10 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
         raise ServiceLabFailure('Reserve destination cannot be organization wallet')
     org_account = wallet_account_id(org_wallet_address)
     reserve_account = wallet_account_id(reserve_wallet)
+    if not isinstance(paid_marketplace, dict):
+        raise ServiceLabFailure('Pinky smoke settlement requires paid-job evidence')
+    lab_settlement = _settle_verified_smoke_earning(
+        ledger=ledger, paid=paid_marketplace, org_wallet_address=org_wallet_address)
     starting = ledger.get_account(org_account)
     if not starting or int(starting['available_credit_wei']) < CREDIT_WEI_PER_CREDIT:
         raise ServiceLabFailure('No settled paid-job credit in the organization wallet')
@@ -256,7 +344,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                     'hub_receipt_id': sweep['receipt_id'],
                 }
                 return {'schema':'main-computer.slh-pinky-shared-hub.v1',
-                        'accounting': accounting,
+                        'accounting': accounting, 'local_lab_settlement': lab_settlement,
                         'status':'PASS' if all(gates.values()) else 'FAIL','pass':all(gates.values()),
                         'gates':gates,'hub_id':hub_identity['hub_id'],
                         'cluster_id':hub_identity['cluster_id'],

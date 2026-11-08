@@ -409,7 +409,8 @@ def test_power_shell_retry_quotes_literal_with_spaces_and_apostrophe():
         '--runtime-state-root', "C:/Main Computer/John's runtime/state",
     ])
     command = _deploy_retry_command(args)
-    assert "--runtime-state-root 'C:/Main Computer/John''s runtime/state'" in command
+    normalized_command = command.replace('\\', '/')
+    assert "--runtime-state-root 'C:/Main Computer/John''s runtime/state'" in normalized_command
 
 
 def test_queued_deploy_returns_nonzero_and_does_not_print_second_command(monkeypatch, capsys):

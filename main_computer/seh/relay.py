@@ -395,9 +395,11 @@ class SEHRelay:
         self._thread = threading.Thread(target=self.serve, daemon=True, name='seh-relay')
         self._thread.start()
         end = time.monotonic() + timeout
-        while self._server is None and time.monotonic() < end:
+        # The server object becomes visible just before the OS-assigned port.
+        # Returning while port=0 makes clients dial the default WS port 80.
+        while (self._server is None or self.port == 0) and time.monotonic() < end:
             time.sleep(.02)
-        if self._server is None:
+        if self._server is None or self.port == 0:
             raise RuntimeError('SEH listener failed to bind')
         return self
 

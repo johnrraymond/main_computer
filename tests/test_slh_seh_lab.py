@@ -278,5 +278,272 @@ class TestSLHSEHLab(unittest.TestCase):
         self.assertTrue(paid['gates']['wallet_authorized_pending_batch'])
 
 
+
+def test_initial_managed_worker_auth_retries_only_transient_handshake_timeout():
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth
+    with mock.patch('tools.slh_seh_lab.service_lifecycle._managed_auth',
+                    side_effect=[TimeoutError('opening handshake not ready'), True]) as auth:
+        assert _await_initial_worker_auth(39001, 'worker', object(), expected_pin='pin', timeout=2) is True
+        assert auth.call_count == 2
+        assert auth.call_args.kwargs['expected_pin'] == 'pin'
+
+
+def test_initial_managed_worker_auth_never_retries_bad_pin_or_rejected_device():
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth, ServiceLabFailure
+    for rejection in ('SLH TLS pin changed', 'Worker login not accepted'):
+        with mock.patch('tools.slh_seh_lab.service_lifecycle._managed_auth',
+                        side_effect=ServiceLabFailure(rejection)) as auth:
+            with unittest.TestCase().assertRaisesRegex(ServiceLabFailure, rejection):
+                _await_initial_worker_auth(39001, 'worker', object(), expected_pin='pin', timeout=2)
+            assert auth.call_count == 1
+
+
+def test_initial_managed_worker_auth_still_fails_when_listener_never_responds():
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth, ServiceLabFailure
+    with mock.patch('tools.slh_seh_lab.service_lifecycle._managed_auth',
+                    side_effect=TimeoutError('handshake timeout')) as auth:
+        with unittest.TestCase().assertRaisesRegex(ServiceLabFailure,
+                                                  'Timed out: initial managed Worker'):
+            _await_initial_worker_auth(39001, 'worker', object(), expected_pin='pin', timeout=0.01)
+        assert auth.call_count >= 1
+
+
+
+def _disposable_recovery_pending_earning():
+    """Real in-memory Hub ledger objects, not a mocked settlement response."""
+    from main_computer.stable_hub_worker_sessions import (
+        InMemoryStableWorkerSessionStore, StableHubPayoutLedgerDirectory)
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    from main_computer.hub_credit_indexer import wallet_account_id
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    from tests.test_stable_hub_worker_live_session import DEV_TOPOLOGY
+    topo = load_stable_hub_topology(DEV_TOPOLOGY)
+    ledger = StableHubPayoutLedgerDirectory(topology=topo, hub_id='dev-hub3',
+                                           store=InMemoryStableWorkerSessionStore())
+    buyer = '0x' + '11'*20
+    org_wallet = '0x' + '22'*20
+    org_account = wallet_account_id(org_wallet)
+    request_id, session_id = 'recovery-proof-request', 'recovery-proof-session'
+    ledger.fund_account(account_id=wallet_account_id(buyer), wallet_address=buyer,
+                        credits='2', replace=True)
+    hold = ledger.create_hold(
+        account_id=wallet_account_id(buyer), wallet_address=buyer,
+        request_id=request_id, session_id=session_id, run_id='recovery-proof-run',
+        worker_id='live-worker', selected_price={'amount':'1','unit':'compute_credit'},
+        requester_max_price={'amount':'2','unit':'compute_credit'}, partition='ring-2')
+    charge = ledger.spend_request_credit(
+        account_id=wallet_account_id(buyer), wallet_address=buyer,
+        request_id=request_id, session_id=session_id, run_id='recovery-proof-run',
+        worker_id='live-worker', worker_account_id=org_account,
+        selected_price={'amount':'1','unit':'compute_credit'},
+        requester_max_price={'amount':'2','unit':'compute_credit'},
+        partition='ring-2', hold_id=hold['hold_id'], result={'ok':True})
+    earning_id = charge['worker_earning']['earning_id']
+    claim = ledger.record_worker_claim(worker_id=org_account,
+            earning_ids=[earning_id], idempotency_key='claim-'+request_id)
+    batch = ledger.create_worker_settlement_batch(worker_id=org_account,
+            claim_ids=[claim['claim_id']], idempotency_key='smoke-batch-'+request_id)
+    paid = {'pass':True, 'terminal_status':'succeeded',
+            'settlement':'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED',
+            'gates':{'paid':True}, 'worker_account_id':org_account,
+            'accounting':{'worker_account_id':org_account,'earning_id':earning_id},
+            'request_id':request_id, 'session_id':session_id,
+            'earned_credit_wei':str(CREDIT_WEI_PER_CREDIT)}
+    return ledger, paid, org_wallet, org_account, batch
+
+
+def test_disposable_recovery_settlement_credits_only_verified_pending_batch_once():
+    from tools.slh_seh_lab.credit_recovery_acceptance import _settle_disposable_recovery_earning
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    ledger, paid, wallet, account, batch = _disposable_recovery_pending_earning()
+    assert ledger.get_account(account) is None
+    result = _settle_disposable_recovery_earning(ledger=ledger, paid=paid,
+                                                  org_wallet_address=wallet)
+    assert result['status'] == 'IN_MEMORY_LAB_LEDGER_SETTLED_NOT_BRIDGED'
+    assert result['batch_id'] == batch['batch_id']
+    assert result['verified_available_wei'] == str(CREDIT_WEI_PER_CREDIT)
+    assert result['verified_earned_wei'] == str(CREDIT_WEI_PER_CREDIT)
+    transactions = [x for x in ledger.store.load()['payout_transactions'].values()
+                    if x['transaction_type'] == 'worker_settlement_wallet_credit']
+    assert len(transactions) == 1
+
+
+def test_disposable_recovery_settlement_refuses_mismatched_earning():
+    from tools.slh_seh_lab.credit_recovery_acceptance import _settle_disposable_recovery_earning
+    ledger, paid, wallet, account, _ = _disposable_recovery_pending_earning()
+    paid['accounting']['earning_id'] = 'forged-earning'
+    with unittest.TestCase().assertRaisesRegex(RuntimeError, 'lineage is incomplete'):
+        _settle_disposable_recovery_earning(ledger=ledger, paid=paid,
+                                            org_wallet_address=wallet)
+    assert ledger.get_account(account) is None
+
+
+def test_disposable_recovery_settlement_refuses_non_dev_hub():
+    from tools.slh_seh_lab.credit_recovery_acceptance import _settle_disposable_recovery_earning
+    ledger, paid, wallet, account, _ = _disposable_recovery_pending_earning()
+    ledger.topology.network['network_kind'] = 'mainnet'
+    with unittest.TestCase().assertRaisesRegex(RuntimeError, 'disposable in-memory dev Hub'):
+        _settle_disposable_recovery_earning(ledger=ledger, paid=paid,
+                                            org_wallet_address=wallet)
+    assert ledger.get_account(account) is None
+
+
+
+def test_disposable_private_worker_assignment_matches_durable_run_and_hash(tmp_path):
+    import sqlite3
+    from tools.slh_seh_lab.credit_recovery_acceptance import _verified_disposable_private_assignment
+    root = tmp_path / 'mc-slh-two-service-lab-paid-test'
+    state = root / 'state'
+    state.mkdir(parents=True)
+    with sqlite3.connect(state / 'private_requests.sqlite3') as conn:
+        conn.execute('''CREATE TABLE private_requests (requester_device_id TEXT,
+                        request_id TEXT,status TEXT,worker_device_id TEXT,
+                        run_id TEXT,result_hash TEXT)''')
+        conn.execute('INSERT INTO private_requests VALUES (?,?,?,?,?,?)',
+                     ('requester', 'req', 'SUCCEEDED', 'real-selected-worker', 'run', 'hash'))
+    public = {'request_id':'req', 'status':'SUCCEEDED', 'run_id':'run', 'result_hash':'hash'}
+    assert 'worker_device_id' not in public
+    assert _verified_disposable_private_assignment(root, requester='requester',
+            request_id='req', public_result=public) == 'real-selected-worker'
+    for corrupt in ({**public,'result_hash':'forged'},
+                    {**public,'run_id':'forged'},
+                    {**public,'status':'FAILED'},
+                    {**public,'request_id':'wrong'}):
+        assert _verified_disposable_private_assignment(root, requester='requester',
+                request_id='req', public_result=corrupt) is None
+    assert _verified_disposable_private_assignment(root, requester='wrong-requester',
+            request_id='req', public_result=public) is None
+    with unittest.TestCase().assertRaisesRegex(RuntimeError,'disposable lab root'):
+        _verified_disposable_private_assignment(tmp_path, requester='requester',
+                request_id='req', public_result=public)
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_initial_worker_auth_retries_wrapped_windows_openssl_handshake_once():
+    """The Windows SSL internal-error traceback is wrapped by websockets 16."""
+    import hashlib
+    import ssl
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth
+
+    attempts = []
+    class FakeSocket:
+        def getpeercert(self, *, binary_form):
+            assert binary_form
+            return b'disposable-lab-cert'
+    class FakeConnection:
+        socket = FakeSocket()
+        def __init__(self):
+            self.receives = iter([
+                json.dumps({'type': 'slh.auth.challenge', 'challenge': {'nonce': 'test'}}),
+                json.dumps({'type': 'hub.auth.accepted', 'device_id': 'lab-worker'}),
+                json.dumps({'type': 'hub.ping', 'ping_id': 'test-ping'}),
+                json.dumps({'type': 'hub.pong.accepted'}),
+            ])
+            self.sent = []
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def recv(self, *, timeout): return next(self.receives)
+        def send(self, frame): self.sent.append(json.loads(frame)['type'])
+
+    def fake_connect(*args, **kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            try:
+                raise ssl.SSLError('[SSL] internal error (_ssl.c:2427)')
+            except ssl.SSLError as root:
+                raise ConnectionClosedError(None, None) from root
+        return FakeConnection()
+
+    with mock.patch('websockets.sync.client.connect', side_effect=fake_connect), \
+         mock.patch('tools.slh_seh_lab.service_lifecycle.sign_object', return_value='proof'):
+        assert _await_initial_worker_auth(
+            42001, 'lab-worker', object(),
+            expected_pin=hashlib.sha256(b'disposable-lab-cert').hexdigest(), timeout=2)
+    assert len(attempts) == 2
+    assert attempts[0]['open_timeout'] == 5
+
+
+def test_initial_worker_auth_does_not_retry_protocol_close_without_socket_cause():
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth
+    with mock.patch('websockets.sync.client.connect',
+                    side_effect=ConnectionClosedError(None, None)) as attempted:
+        with unittest.TestCase().assertRaises(ConnectionClosedError):
+            _await_initial_worker_auth(42001, 'worker', object(),
+                                       expected_pin='pin', timeout=2)
+    assert attempted.call_count == 1
+
+
+def test_initial_worker_auth_never_retries_wrapped_post_handshake_auth_close():
+    """No retry of socket closes raised during Worker authentication itself."""
+    import hashlib
+    import ssl
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth
+
+    class FakeConnection:
+        class Socket:
+            def getpeercert(self, *, binary_form): return b'lab-cert'
+        socket = Socket()
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def send(self, frame): pass
+        def recv(self, *, timeout):
+            try:
+                raise ssl.SSLError('[SSL] internal error')
+            except ssl.SSLError as root:
+                raise ConnectionClosedError(None, None) from root
+
+    with mock.patch('websockets.sync.client.connect', return_value=FakeConnection()) as attempted:
+        with unittest.TestCase().assertRaises(ConnectionClosedError):
+            _await_initial_worker_auth(42001, 'worker', object(),
+                        expected_pin=hashlib.sha256(b'lab-cert').hexdigest(), timeout=2)
+    assert attempted.call_count == 1
+
+
+def test_initial_worker_auth_does_not_retry_permission_failure_wrapped_in_close():
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth
+    def permission_denied(*args, **kwargs):
+        try:
+            raise PermissionError('access denied')
+        except PermissionError as root:
+            raise ConnectionClosedError(None, None) from root
+    with mock.patch('websockets.sync.client.connect', side_effect=permission_denied) as attempted:
+        with unittest.TestCase().assertRaises(ConnectionClosedError):
+            _await_initial_worker_auth(42001, 'worker', object(), expected_pin='pin', timeout=2)
+    assert attempted.call_count == 1
+
+
+def test_seh_relay_positive_worker_auth_uses_bounded_transient_retry():
+    from tools.slh_seh_lab.service_lifecycle import (
+        _await_initial_worker_auth, TransientWorkerHandshakeError)
+    with mock.patch('tools.slh_seh_lab.service_lifecycle._managed_auth',
+                    side_effect=[TransientWorkerHandshakeError('TLS opening transport close'), True]) as auth:
+        assert _await_initial_worker_auth(42002, 'lab-worker', object(),
+                  expected_pin='pin', timeout=2, via_relay=True) is True
+        assert auth.call_count == 2
+        assert auth.call_args.kwargs['via_relay'] is True
+
+
+def test_tls_handshake_retry_still_times_out_fail_closed_if_every_connect_fails():
+    import ssl
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _await_initial_worker_auth, ServiceLabFailure
+
+    def fails(*args, **kwargs):
+        try:
+            raise ssl.SSLError('[SSL] internal error')
+        except ssl.SSLError as err:
+            raise ConnectionClosedError(None, None) from err
+
+    with mock.patch('websockets.sync.client.connect', side_effect=fails) as attempted:
+        with unittest.TestCase().assertRaisesRegex(ServiceLabFailure,
+                                                  'Timed out: initial managed Worker'):
+            _await_initial_worker_auth(42002, 'lab-worker', object(),
+                                       expected_pin='pin', timeout=0.02)
+    assert attempted.call_count >= 1

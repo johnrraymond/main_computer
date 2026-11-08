@@ -318,9 +318,14 @@ def admission_lab_run() -> dict[str, Any]:
                     check('valid_http_recovers_after_header_deadline',
                           lambda: raw_http(port, ['Content-Length: 2'], body=b'{}') is not None, True)
 
+                    # Wait for the previous request handler to release its
+                    # slot before measuring the independent body-pressure phase.
+                    # Windows can defer handler teardown after recv_status().
+                    _wait_until(lambda: snapshot()['connections'] == 0, timeout=4.0)
                     with _body_hold(port) as body_one, _body_hold(port) as body_two:
                         check('partial_body_connections_enter_bounded_pool',
-                              lambda: _wait_until(lambda: snapshot()['connections'] == 2, timeout=3.0), True)
+                              lambda: _wait_until(lambda: snapshot()['connections'] == 2
+                                  and snapshot()['active_connections'] == 2, timeout=3.0), True)
                         with _header_hold(port) as header_one, _header_hold(port) as header_two:
                             check('total_capacity_confirmed_before_overload',
                                   lambda: _wait_until(lambda: snapshot()['connections'] == 4

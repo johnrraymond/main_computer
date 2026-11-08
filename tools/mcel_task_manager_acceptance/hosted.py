@@ -234,7 +234,7 @@ def probe(host_url:str, out:Path, timeout_ms=12000):
     return result
 
 
-LEGACY_ROUTE='/applications/task-manager'
+LEGACY_ROUTE='/applications/task-manager?mcel-shell-child=1'
 
 
 def _mode_selection_evidence(legacy, generated, view: str, legacy_tab: str) -> dict:

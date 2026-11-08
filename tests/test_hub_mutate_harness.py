@@ -1651,7 +1651,10 @@ def test_redeploy_signer_and_vpn_routes_sync_from_mother_before_build(
         ("sync", "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "false"),
         ("sync", "MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", "true"),
         ("sync", "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "encoded-value"),
+        ("sync", "MAIN_COMPUTER_HUB_RUNTIME_ATTESTATION_KEY", captured[-1][2]),
     ]
+    assert len(captured[-1][2]) == 64
+    assert all(char in "0123456789abcdef" for char in captured[-1][2])
     with pytest.raises(redeploy.RedeployError, match="disagrees with Mother"):
         redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), {**target, "hub_admin_address": "0x"+"c"*40})
 

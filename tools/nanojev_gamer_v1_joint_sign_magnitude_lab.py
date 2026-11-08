@@ -93,7 +93,13 @@ def _source(dual_dir,steps):
     requested=sorted(set(int(s) for s in steps))
     if not requested or not set(map(str,requested))<=set(prior['steps']):
         raise ValueError('GAMER_JOINT_UNAUDITED_SNAPSHOT_REQUESTED')
-    origin=dual._source(Path(prior['source_three_class_report']).parent,requested)
+    # The upstream causal selector REQUIRES checkpoint zero as its immutable
+    # lineage anchor. It also consumes CSV checkpoint text rather than ints.
+    # Validate zero and the requested snapshots through the complete chain,
+    # but evaluate ONLY the checkpoints the caller actually requested.
+    lineage_steps=sorted({0, *requested})
+    origin=dual._source(Path(prior['source_three_class_report']).parent,
+                        ','.join(str(step) for step in lineage_steps))
     if (prior['fingerprints']!=dual._fingerprints(origin) or
         prior['original_oracle_dataset_sha256']!=origin['source']['meta']['dataset_sha256'] or
         prior['expanded_training_deck_sha256']!=origin['expanded_deck_sha256'] or

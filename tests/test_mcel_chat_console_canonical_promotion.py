@@ -49,7 +49,9 @@ def _payload(html):
 def test_semantic_source_declares_complete_host_without_new_authority():
     ir = compile_chat_console()
     assert ir["application"]["appId"] == "semantic-chat-console"
-    assert not ir["layouts"]
+    assert len(ir["layouts"]) == 1
+    assert ir["layouts"][0]["layoutTree"]["schema"] == "mcel.layout-tree.v1"
+    assert ir["layouts"][0]["layoutTree"]["root"]["selector"] == ".chat-console-shell"
     assert not ir["capabilities"] and not ir["effects"] and not ir["intents"]
     regions = {r["id"].split(".")[-1] for r in ir["surfaces"][0]["interfaceIntent"]["regions"]}
     assert regions == {"application", "shell", "header", "status", "thread-layout", "threads", "workspace", "notebook"}
@@ -63,7 +65,7 @@ def test_canonical_aliases_are_exact(prefix):
 
 
 def test_canonical_and_diagnostic_source_agree(local_host):
-    canonical = _html(local_host, "/applications/chat-console")
+    canonical = _html(local_host, "/applications/chat-console?mcel-shell-child=1")
     candidate = _html(local_host, "/applications/mcel-semantic-chat-console")
     assert _payload(canonical) == _payload(candidate)
     assert _payload(canonical) == compile_chat_console()
@@ -81,12 +83,12 @@ def test_canonical_and_diagnostic_source_agree(local_host):
 
 
 def test_desktop_and_existing_semantic_apps_unchanged(local_host):
-    desktop = _html(local_host, "/applications")
+    desktop = _html(local_host, "/applications?mcel-shell-child=1")
     assert "Main Computer Applications</title>" in desktop
     assert '"chat-console"]);' in desktop  # desktop-icon navigation now uses canonical URL
     assert 'window.location.assign(applicationPath(normalizedApp))' in desktop
-    assert 'id="mcel-workbench-ir"' in _html(local_host, "/applications/code-editor")
-    assert 'id="mcel-expanded-ir"' in _html(local_host, "/applications/calculator")
+    assert 'id="mcel-workbench-ir"' in _html(local_host, "/applications/code-editor?mcel-shell-child=1")
+    assert 'id="mcel-expanded-ir"' in _html(local_host, "/applications/calculator?mcel-shell-child=1")
 
 
 def test_canonical_and_candidate_retain_local_only_boundary(local_host):

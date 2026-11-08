@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import itertools
 import re
+import traceback
 from urllib.parse import urlsplit
 from pathlib import Path
 import time
@@ -238,7 +239,12 @@ def run_paid_transport_probe(*, mode, cycles, idle_seconds, hub_url, ledger, tls
                 **({'acceptance': acceptance_evidence} if acceptance else {})}
     except Exception as exc:
         last_error = {'stage': stage, 'exception_class': type(exc).__name__,
-                      'classification': 'WORKER_LOST' if not worker.is_alive else 'PAID_OR_CONTROL_FAILURE'}
+                      'classification': 'WORKER_LOST' if not worker.is_alive else 'PAID_OR_CONTROL_FAILURE',
+                      # Filename, function and line only. Exception strings, locals,
+                      # authorizations and private request contents are excluded.
+                      'failure_stack': [
+                          {'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}
+                          for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
         # Keep only the HTTP status (never bearer, challenge, or raw API body).
         status_match = re.search(r'Unexpected API response (\d{3})', str(exc))
         if status_match:

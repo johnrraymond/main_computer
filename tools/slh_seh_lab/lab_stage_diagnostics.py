@@ -50,7 +50,7 @@ def stage(name: str, **fields):
     try:
         yield
     except BaseException as exc:
-        record(name, 'error', elapsed_ms=round((time.perf_counter()-start)*1000, 1),
+        record(name, 'error', **fields, elapsed_ms=round((time.perf_counter()-start)*1000, 1),
                error_type=type(exc).__name__,
                error_classification=('handshake_response_timeout'
                    if 'timed out while waiting for handshake response' in str(exc).lower()

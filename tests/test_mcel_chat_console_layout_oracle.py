@@ -153,4 +153,88 @@ class BrowserChatLayoutOracleTests(unittest.TestCase):
         self.assertIn('missing-editable-input',result['failures'])
 
 
+
+class CausalLayoutAuthorityPureTests(unittest.TestCase):
+    """P1 causal contract, not visual similarity or semantic attributes."""
+
+    def test_perturbation_changes_a_real_authored_group_without_mutating_input(self):
+        source={'schema':'mcel.layout-tree.v1','root':{
+            'id':'shell','role':'group','selector':'#shell',
+            'children':[{'id':'threads','role':'region','selector':'#threads'},
+                        {'id':'notebook','role':'region','selector':'#notebook'}]}}
+        changed,region,before,after=oracle._perturb_tree_gap(source)
+        self.assertEqual((region,before,after),('shell',8,32))
+        self.assertNotIn('gap',source['root'])
+        self.assertEqual(changed['root']['gap'],32)
+        second,_,back,forward=oracle._perturb_tree_gap(changed)
+        self.assertEqual((back,forward),(32,8))
+        self.assertEqual(second['root']['gap'],8)
+
+    def test_cannot_perturb_a_tree_with_no_multichild_group(self):
+        with self.assertRaisesRegex(ValueError,'no group with two declared children'):
+            oracle._perturb_tree_gap({'root':{'id':'single','role':'region','children':[]}})
+
+    def test_ir_change_preserves_the_exact_dom_and_css_source(self):
+        initial={'layouts':[{'layoutTree':{'schema':'mcel.layout-tree.v1','root':{'gap':8}}}]}
+        changed={'layouts':[{'layoutTree':{'schema':'mcel.layout-tree.v1','root':{'gap':32}}}]}
+        html='<html><style>.x{display:block}</style><script id="mcel-chat-canonical-ir" type="application/json">' + \
+            __import__('json').dumps(initial) + '</script><div id="app"><p>Original DOM</p></div></html>'
+        altered=oracle._replace_ir_script(html,'mcel-chat-canonical-ir',changed)
+        self.assertIn('"gap":32',altered)
+        self.assertIn('<style>.x{display:block}</style>',altered)
+        self.assertEqual(html.split('</script>')[1],altered.split('</script>')[1])
+        with self.assertRaisesRegex(ValueError,'absent or ambiguous'):
+            oracle._replace_ir_script('<html></html>','mcel-chat-canonical-ir',changed)
+
+    def test_marker_alone_is_not_canonical_engine_source(self):
+        engine=oracle.CANONICAL_ENGINE.read_text(encoding='utf-8')
+        fake='<div data-mcel-canonical-layout-authority="mcel-layout-tree.v1"></div>'
+        self.assertFalse(oracle._source_layout_witness(fake,engine))
+        with self.assertRaisesRegex(ValueError,'cannot ablate'):
+            oracle._ablate_engine(fake,engine)
+
+
+class CausalLayoutAuthorityBrowserTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise unittest.SkipTest('Playwright not installed') from exc
+        cls.pw=sync_playwright().start()
+        try:cls.browser=oracle._launch(cls.pw)
+        except Exception as exc:
+            cls.pw.stop();raise unittest.SkipTest('Chromium unavailable: '+str(exc)[:160]) from exc
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close();cls.pw.stop()
+
+    def test_real_engine_reference_positive_perturbation_and_negative_ablation(self):
+        for context,width in [('standalone',1040),('embedded',500)]:
+            with self.subTest(context=context):
+                first=oracle._reference_witness(self.browser,context,width,8)
+                altered=oracle._reference_witness(self.browser,context,width,32)
+                ablated=oracle._reference_witness(self.browser,context,width,8,ablate=True)
+                self.assertEqual(oracle._assess_reference(first,altered,ablated),[])
+                self.assertEqual(ablated['status'],'missing')
+                self.assertNotEqual(first['gap'],altered['gap'])
+                self.assertEqual(first['committed'],'mcel-layout-tree.v1')
+                self.assertEqual(altered['committed'],'mcel-layout-tree.v1')
+
+    def test_actual_chat_console_authority_gate_matches_source_and_cannot_false_pass(self):
+        from main_computer.mcel_chat_console_host import compile_chat_console
+        result=oracle.causal_authority(self.browser)
+        self.assertEqual(result['reference_status'],'PASS',result['reference_controls'])
+        self.assertEqual(result['application_status'],
+                         'PASS' if all(c['status']=='PASS' for c in result['application_cases']) else 'FAIL')
+        tree=oracle._canonical_tree(compile_chat_console(oracle.ROOT))
+        if tree is None:
+            # Existing source must fail now; this assertion naturally ceases
+            # to demand red after P3 supplies an authored canonical tree.
+            self.assertEqual(result['application_status'],'FAIL')
+            for case in result['application_cases']:
+                self.assertIn('authored-canonical-layout-tree-missing',case['failures'])
+
+
 if __name__=='__main__':unittest.main()

@@ -116,19 +116,27 @@ def test_source_verifies_strict_sign_artifact_fingerprints(monkeypatch,tmp_path)
            'dev_and_test_unchanged':True,'source_three_class_report':str(src3/'final_report.json'),
            'fingerprints':{'all_protected':'FROZEN'},
            'original_oracle_dataset_sha256':'HASH','expanded_training_deck_sha256':'TRAIN_HASH',
-           'snapshots':{'3000':'SHA'},
+           'snapshots':{'0':'BASE_SHA','3000':'SHA'},
            'steps':{'3000':{'stages':{'lora_final_mean100':{
                'diagnostic_binary_head_artifact':{'type':'DIAGNOSTIC_TWO_BINARY_SIGN_HEADS_NO_MAGNITUDE',
                                                    'path':str(strict),'sha256':three._sha(strict)}}}}}}
     (report/'final_report.json').write_text(json.dumps(prior))
-    origin={'source':{'meta':{'dataset_sha256':'HASH'},'snapshots':{3000:(tmp_path/'snap','SHA')}},
+    origin={'source':{'meta':{'dataset_sha256':'HASH'},'snapshots':{
+                0:(tmp_path/'baseline','BASE_SHA'),3000:(tmp_path/'snap','SHA')}},
             'deck':old_deck(),'rows':[x.public() for x in old_deck()],
             'expanded_deck_sha256':'TRAIN_HASH'}
-    monkeypatch.setattr(dual,'_source',lambda *a:origin)
+    def checked_legacy_source(path, steps):
+        from tools import nanojev_gamer_v1_c0_sign_causality as causal
+        # Use the REAL upstream selector: it rejects the prior buggy '3000'
+        # (or a Python list) because baseline checkpoint 0 must be included.
+        assert causal._select_steps({'steps':{'0':{},'3000':{}}},steps)==[0,3000]
+        return origin
+    monkeypatch.setattr(dual,'_source',checked_legacy_source)
     monkeypatch.setattr(dual,'_fingerprints',lambda *a:{'all_protected':'FROZEN'})
     check=joint._source(report,[3000])
     assert len(check['rows'])==900
     assert len(check['split']['train'])==720
+    assert check['requested']==[3000]  # baseline verified, not re-evaluated
     strict.write_bytes(b'TAMPER')
     with pytest.raises(ValueError,match='STRICT_SIGN_ARTIFACT_CHANGED'):
         joint._source(report,[3000])

@@ -120,16 +120,16 @@ class ViewportApiRouteTests(unittest.TestCase):
                 energy_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Energy Credits", energy_page)
 
-            with urlopen(f"{base}/applications", timeout=5) as response:
+            with urlopen(f"{base}/applications?mcel-shell-child=1", timeout=5) as response:
                 applications_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", applications_page)
 
-            with urlopen(f"{base}/applications/task-manager", timeout=5) as response:
+            with urlopen(f"{base}/applications/task-manager?mcel-shell-child=1", timeout=5) as response:
                 task_manager_page = response.read().decode("utf-8")
             self.assertIn('id="mcel-workbench-ir"', task_manager_page)
             self.assertIn('Semantic application · Canonical route', task_manager_page)
 
-            with urlopen(f"{base}/applications/task-manager/connections", timeout=5) as response:
+            with urlopen(f"{base}/applications/task-manager/connections?mcel-shell-child=1", timeout=5) as response:
                 task_manager_connections_page = response.read().decode("utf-8")
             self.assertIn('id="mcel-workbench-ir"', task_manager_connections_page)
             self.assertIn('const initialView="connections";', task_manager_connections_page)

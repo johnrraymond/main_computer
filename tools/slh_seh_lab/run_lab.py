@@ -1011,7 +1011,9 @@ def main(argv=None) -> int:
             run_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
             path = a.report_dir/run_id
             path.mkdir(parents=True, exist_ok=False)
-            stage_token = enable_stage_trace(path/'lab-stage-diagnostic.jsonl') if a.pinky_integrated else None
+            stage_token = (enable_stage_trace(path/'lab-stage-diagnostic.jsonl')
+                           if a.pinky_integrated or a.command in {'verify-local', 'verify-services'}
+                           else None)
             stage_record('lab', 'begin', mode=a.command)
             # Keep Hub/WS request diagnostics in the run folder, not the operator's console.
             with (path/'lab-runtime.log').open('w', encoding='utf-8') as log:
@@ -1058,7 +1060,7 @@ def main(argv=None) -> int:
     except (LabRefused, RuntimeError, OSError, ValueError, TimeoutError, ImportError) as exc:
         report={'schema':SCHEMA,'status':'FAIL', 'mode':a.command,
                 'error_type':type(exc).__name__, 'error':str(exc)[:1200]}
-        if a.pinky_integrated:
+        if stage_token is not None:
             frames = traceback.extract_tb(exc.__traceback__)[-6:]
             # Location only. Never capture stack locals or HTTP payloads.
             report['failure_stack'] = [
@@ -1074,6 +1076,7 @@ def main(argv=None) -> int:
                     report['pinky_repeatability'] = previous
                 except (OSError, ValueError):
                     report['pinky_reconciliation_read_error'] = True
+    if path and stage_token is not None:
         stage_record('lab', 'error' if report.get('status') == 'FAIL' else 'ok')
         stage_path = path/'lab-stage-diagnostic.jsonl'
         report['lab_stage_trace_path'] = str(stage_path.resolve())
@@ -1085,13 +1088,13 @@ def main(argv=None) -> int:
         report['terminal_failed_lab_stage'] = (status['fatal_failure']
                                                if report.get('status') == 'FAIL' else None)
         report['unfinished_lab_stage'] = status['unfinished_stage']
-        # With --use-existing-hubs no child is launched by design. Distinguish
-        # pre-cluster errors from a failed existing-cluster identity check.
-        events = ([json.loads(line) for line in stage_path.read_text(encoding='utf-8').splitlines()
-                   if line.strip()] if stage_path.exists() else [])
-        report['failure_before_hub_launch'] = not any(
-            row.get('stage') in {'cluster.launch_and_identity', 'cluster.existing_identity_check'}
-            and row.get('state') == 'begin' for row in events)
+        if a.pinky_integrated:
+            # With --use-existing-hubs no child is launched by design.
+            events = ([json.loads(line) for line in stage_path.read_text(encoding='utf-8').splitlines()
+                       if line.strip()] if stage_path.exists() else [])
+            report['failure_before_hub_launch'] = not any(
+                row.get('stage') in {'cluster.launch_and_identity', 'cluster.existing_identity_check'}
+                and row.get('state') == 'begin' for row in events)
 
     if path and a.pinky_integrated and report.get('status') == 'FAIL':
         trace = path/'paid-cycle-diagnostic.jsonl'
@@ -1156,7 +1159,7 @@ def main(argv=None) -> int:
             print('  SEH: deployed Coolify loopback tested; public WSS and external bridge payout NOT TESTED')
         else:
             print('  SEH: real runtime local PASS; live Coolify/public WSS NOT TESTED; external bridge payout NOT TESTED')
-    if path and a.pinky_integrated and stage_token is not None:
+    if stage_token is not None:
         disable_stage_trace(stage_token)
     return 0 if report['status'] in {'PASS','PLANNED_ONLY','ACCEPTED'} else 1
 

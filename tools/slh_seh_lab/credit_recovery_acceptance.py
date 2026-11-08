@@ -7,6 +7,8 @@ Hub socket imitation, production wallet, or injected withdrawal ACK.
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
+from contextlib import closing
 import secrets
 import time
 
@@ -44,6 +46,117 @@ def accepted(report):
             and report.get('obligations_credit_wei') == str(CREDIT_WEI_PER_CREDIT))
 
 
+
+def _settle_disposable_recovery_earning(*, ledger, paid, org_wallet_address):
+    """Settle one verified *in-memory dev-Hub* earning for the recovery lab.
+
+    The public Hub API deliberately leaves a Worker claim in a pending batch;
+    local credit recovery cannot use it until the smoke operator settles it.
+    Never permit a persistent store, remote Hub, or unverified earning here.
+    """
+    from main_computer.hub_credit_indexer import wallet_account_id
+    from main_computer.stable_hub_worker_sessions import InMemoryStableWorkerSessionStore
+
+    if (not isinstance(ledger.store, InMemoryStableWorkerSessionStore)
+            or ledger.topology.network.get('network_kind') != 'dev'
+            or ledger.cluster_id != 'main-computer-dev-stable-hub'
+            or ledger.hub.hub_id != 'dev-hub3'):
+        raise RuntimeError('Credit-recovery operator settlement requires disposable in-memory dev Hub')
+    org_account = wallet_account_id(org_wallet_address)
+    evidence = paid.get('accounting') or {}
+    gates = paid.get('gates') or {}
+    if (paid.get('pass') is not True or not gates
+            or not all(value is True for value in gates.values())
+            or paid.get('terminal_status') != 'succeeded'
+            or paid.get('settlement') != 'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'
+            or paid.get('worker_account_id') != org_account
+            or evidence.get('worker_account_id') != org_account):
+        raise RuntimeError('Recovery settlement requires successful wallet-owned paid job')
+    request_id = paid.get('request_id')
+    session_id = paid.get('session_id')
+    earning_id = evidence.get('earning_id')
+    amount = int(paid.get('earned_credit_wei') or 0)
+    if not request_id or not session_id or not earning_id or amount != CREDIT_WEI_PER_CREDIT:
+        raise RuntimeError('Recovery settlement requires exactly one credit of paid earnings')
+    state = ledger.store.load()
+    earnings = [row for row in state.get('worker_earnings', {}).values()
+                if isinstance(row, dict) and row.get('earning_id') == earning_id
+                and row.get('worker_id') == org_account
+                and row.get('request_id') == request_id
+                and row.get('session_id') == session_id]
+    charges = [row for row in state.get('payout_charges', {}).values()
+               if isinstance(row, dict) and row.get('request_id') == request_id
+               and row.get('session_id') == session_id]
+    batches = [row for row in state.get('payout_settlements', {}).values()
+               if isinstance(row, dict) and row.get('worker_id') == org_account
+               and row.get('idempotency_key') == 'smoke-batch-' + request_id]
+    if len(earnings) != 1 or len(charges) != 1 or len(batches) != 1:
+        raise RuntimeError('Recovery settlement paid charge/earning/batch lineage is incomplete')
+    batch = batches[0]
+    claims = [state.get('worker_claims', {}).get(cid) for cid in batch.get('claim_ids') or []]
+    if (batch.get('status') != 'batched' or len(claims) != 1
+            or not isinstance(claims[0], dict)
+            or claims[0].get('worker_id') != org_account
+            or claims[0].get('earning_ids') != [earning_id]
+            or int(batch.get('total_credit_wei_published') or 0) != amount
+            or int(earnings[0].get('earned_credit_wei') or 0) != amount
+            or int(charges[0].get('charged_credit_wei') or 0) != amount):
+        raise RuntimeError('Recovery settlement pending batch is not settleable')
+    before = ledger.get_account(org_account)
+    if int((before or {}).get('available_credit_wei') or 0) != 0:
+        raise RuntimeError('Recovery organization wallet must start with zero spendable credits')
+    reference = 'recovery-inmemory-' + request_id
+    committed = ledger.settle_worker_settlement_batch(
+        batch_id=batch['batch_id'], settlement_reference=reference,
+        idempotency_key=reference)
+    replay = ledger.settle_worker_settlement_batch(
+        batch_id=batch['batch_id'], settlement_reference=reference,
+        idempotency_key=reference)
+    after = ledger.get_account(org_account)
+    if (committed.get('status') != 'settled'
+            or committed.get('settlement_reference') != reference
+            or replay.get('batch_id') != batch['batch_id']
+            or int((after or {}).get('available_credit_wei') or 0) != amount
+            or int((after or {}).get('earned_credit_wei') or 0) != amount):
+        raise RuntimeError('Recovery in-memory settlement failed balance/idempotency proof')
+    return {'status': 'IN_MEMORY_LAB_LEDGER_SETTLED_NOT_BRIDGED',
+            'earning_id': earning_id, 'batch_id': batch['batch_id'],
+            'worker_account_id': org_account,
+            'verified_available_wei': str(after['available_credit_wei']),
+            'verified_earned_wei': str(after['earned_credit_wei'])}
+
+
+
+def _verified_disposable_private_assignment(root, *, requester, request_id, public_result):
+    # Only the disposable lab may read its private Worker assignment ledger.
+    # The public API intentionally omits Worker device identity.
+    root = Path(root)
+    if not root.name.startswith('mc-slh-two-service-lab-paid-'):
+        raise RuntimeError('Private Worker assignment audit requires disposable lab root')
+    db_path = root / 'state' / 'private_requests.sqlite3'
+    if not db_path.is_file():
+        raise RuntimeError('Disposable private-request ledger is unavailable')
+    with closing(sqlite3.connect(db_path, timeout=5)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('''SELECT requester_device_id,request_id,status,
+                                      worker_device_id,run_id,result_hash
+                               FROM private_requests
+                               WHERE requester_device_id=? AND request_id=?''',
+                            (requester, request_id)).fetchall()
+    if (len(rows) != 1 or public_result.get('request_id') != request_id
+            or public_result.get('status') != 'SUCCEEDED'
+            or not public_result.get('run_id')
+            or not public_result.get('result_hash')):
+        return None
+    row = dict(rows[0])
+    if (row['status'] != 'SUCCEEDED'
+            or row['run_id'] != public_result['run_id']
+            or row['result_hash'] != public_result['result_hash']
+            or not row['worker_device_id']):
+        return None
+    return row['worker_device_id']
+
+
 def verify_credit_recovery(*, root, api_port, worker_port, local, org_token,
                            proxy, wallet, hub_identity, ledger, hub_url,
                            original_worker, pin, workers, paid, hub_session_directory):
@@ -56,9 +169,16 @@ def verify_credit_recovery(*, root, api_port, worker_port, local, org_token,
     unit = CREDIT_WEI_PER_CREDIT
     device = original_worker.device_id
     org_account = paid['accounting']['worker_account_id']
+    # A paid Worker earning is only a pending claim until the disposable lab
+    # operator settles its verified batch. The organization cannot spend it
+    # merely because the public Hub returned a successful paid-job receipt.
+    settlement = _settle_disposable_recovery_earning(
+        ledger=ledger, paid=paid, org_wallet_address=wallet.address)
     account = ledger.get_account(org_account)
     gates['real_market_earning_funds_org_wallet'] = (
-        int(account['available_credit_wei']) == unit and
+        account is not None and int(account['available_credit_wei']) == unit and
+        int(account['earned_credit_wei']) == unit and
+        settlement['verified_available_wei'] == str(unit) and
         paid['earned_credit_wei'] == str(unit) and
         org_account == next(iter({slot.accepted.get('account_id') for slot in proxy.sessions.values()})))
 
@@ -145,9 +265,11 @@ def verify_credit_recovery(*, root, api_port, worker_port, local, org_token,
     # change to max_public=0 and no manual proxy.reconcile shortcut.
     original = recovered[device]
     completed = submit()
+    first_assignment = _verified_disposable_private_assignment(
+        root, requester=requester, request_id=ids[-1], public_result=completed)
     gates['single_worker_affordable_private_executes'] = (
         completed.get('status') == 'SUCCEEDED' and
-        completed.get('worker_device_id') == device and bool(completed.get('result_hash')))
+        first_assignment == device and bool(completed.get('result_hash')))
     gates['single_worker_hub_ack_before_local'] = hub_state(original) == 'closed'
     gates['single_worker_returns_to_market'] = (
         wait_slots({device}, 're-advertise after local request')[device] != original)
@@ -175,7 +297,8 @@ def verify_credit_recovery(*, root, api_port, worker_port, local, org_token,
         two[device] != two[other] and all(hub_state(c)=='live' for c in two.values()))
 
     result = submit()
-    selected = result.get('worker_device_id')
+    selected = _verified_disposable_private_assignment(
+        root, requester=requester, request_id=ids[-1], public_result=result)
     untouched = (set(two) - {selected}).pop() if selected in two else None
     gates['two_worker_private_reclaim_succeeded'] = (
         result.get('status') == 'SUCCEEDED' and selected in two)

@@ -571,7 +571,8 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
     for earning in session_earnings:
         sample = by_session[earning['session_id']]
         _gate(earning.get('request_id') == sample['id'] and
-              (earning.get('result') or {}).get('response',{}).get('content') == sample['marker'],
+              ((terminals[earning['session_id']].get('worker_result') or {})
+                  .get('result',{}).get('response',{}).get('content') == sample['marker']),
               'paid Worker returned wrong marker')
     gates['each_paid_result_corresponds_to_request'] = True
     gates['actual_seh_traffic_during_stress'] = _gate(

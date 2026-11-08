@@ -179,14 +179,17 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     earnings=[x for x in store_state.get('worker_earnings',{}).values()
               if x.get('session_id')==session_id and x.get('request_id')==request_id]
     after_request=ledger.get_account(requester_account)
+    charge=charges[0] if len(charges)==1 else {}
+    earning=earnings[0] if len(earnings)==1 else {}
+    result_worker=str(earning.get('worker_node_id') or terminal.get('worker_id') or '')
+    # The selected Worker is authoritative only after terminal accounting is read.
+    # Checking market isolation before populating this ID made every protected
+    # marketplace request fail its capability gate and skipped payout claims.
     market_matches = [record for record in store_state.get('market_workers', {}).values()
                       if isinstance(record, dict) and str(record.get('connection_id') or '') == result_worker]
     isolation_verified = (market_isolation_capability is None or
         len(market_matches) == 1 and
         market_isolation_capability in (market_matches[0].get('capabilities') or []))
-    charge=charges[0] if len(charges)==1 else {}
-    earning=earnings[0] if len(earnings)==1 else {}
-    result_worker=str(earning.get('worker_node_id') or terminal.get('worker_id') or '')
     amount=int(charge.get('charged_credit_wei') or 0)
     earning_amount=int(earning.get('earned_credit_wei') or 0)
     # Replaying the same signed request must reuse its accepted session and
@@ -228,7 +231,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
                            {'multisession_authorization':auth,
                             'claim_ids':[claim['claim']['claim_id']],
                             'idempotency_key':'smoke-batch-'+request_id},timeout=10)
-    gates['worker_result_matches_private_marker']=(earning.get('result') or {}).get('response',{}).get('content')==marker
+    gates['worker_result_matches_private_marker']=((terminal.get('worker_result') or {}).get('result',{})
+        .get('response',{}).get('content')==marker)
     gates['wallet_authorized_claim']=claim.get('ok') is True and earning.get('earning_id') in (claim.get('claim') or {}).get('earning_ids',[])
     settlement_record=settlement.get('settlement') or {}
     gates['wallet_authorized_pending_batch']=(settlement.get('ok') is True

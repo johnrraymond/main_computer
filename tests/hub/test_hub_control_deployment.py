@@ -1036,8 +1036,14 @@ def test_synced_production_bridge_signer_overwrites_persisted_legacy_bundle(
     assert deployment.BRIDGE_SIGNER_ENV not in __import__("os").environ
 
 
-def test_stable_runtime_observer_checks_stable_identity_not_experimental_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    target = {**_observer_target(), "hub_runtime": "stable"}
+def test_stable_runtime_observer_checks_private_config_without_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import parse_qs, urlsplit
+    from main_computer.stable_hub_topology import (
+        RUNTIME_ATTESTATION_SCHEMA, stable_hub_runtime_attestation,
+    )
+    target = {**_observer_target(), "hub_runtime": "stable", "bridge_signer_required": False}
+    secret = "12" * 32
+    monkeypatch.setattr(deployment, "_read_runtime_attestation_key", lambda _: secret)
     called = []
 
     def get(url: str, *, timeout_s: float) -> dict[str, Any]:
@@ -1046,26 +1052,106 @@ def test_stable_runtime_observer_checks_stable_identity_not_experimental_status(
         if url.endswith("/health"):
             return {"ok": True, "service": "main_computer.stable_hub"}
         if url.endswith("/hub-identity"):
+            # The actual public response has no storage or RPC URL.
             return {
-                "service": "main_computer.stable_hub",
-                "hub_id": target["hub_id"],
-                "network": {"chain_id": "42424240", "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
-                "storage": {"backend": "foundationdb", "cluster_file": target["cluster_file_path"], "namespace": "mainnet"},
+                "service": "main_computer.stable_hub", "hub_id": target["hub_id"],
+                "network": {"chain_id": "42424240", "network_key": "mainnet"},
             }
         if url.endswith("/topology"):
             return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
+        if "/runtime-attestation?" in url:
+            nonce = parse_qs(urlsplit(url).query)["nonce"][0]
+            return {
+                "ok": True, "schema": RUNTIME_ATTESTATION_SCHEMA,
+                "hub_id": target["hub_id"], "nonce": nonce,
+                "hmac_sha256": stable_hub_runtime_attestation(
+                    key_hex=secret, nonce=nonce, hub_id=target["hub_id"],
+                    network={"chain_id": "42424240", "chain_rpc_url": target["chain_contract"]["rpc_url"]},
+                    storage={"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
+                             "namespace": target["fdb_contract"]["namespace"]},
+                ),
+            }
         raise AssertionError(url)
 
     monkeypatch.setattr(deployment, "_get_json", get)
     status = deployment.observe_hub(target, wait_timeout_s=0)
     assert status["verified"] is True
+    assert status["fdb_adoption_verified"] is True
+    assert status["chain_adoption_verified"] is True
     assert status["bridge_signer_verified"] is False
-    assert status["wallet_funding_supported"] is False
     assert not any(url.endswith("/status") for url in called)
+    assert not any("/credits/wallet-funding/completion" in url for url in called)
+
+
+def test_stable_runtime_observer_rejects_private_config_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import parse_qs, urlsplit
+    from main_computer.stable_hub_topology import RUNTIME_ATTESTATION_SCHEMA, stable_hub_runtime_attestation
+    target = {**_observer_target(), "hub_runtime": "stable", "bridge_signer_required": False}
+    secret = "34" * 32
+    monkeypatch.setattr(deployment, "_read_runtime_attestation_key", lambda _: secret)
+
+    def get(url: str, *, timeout_s: float) -> dict[str, Any]:
+        if url.endswith("/health"):
+            return {"ok": True, "service": "main_computer.stable_hub"}
+        if url.endswith("/hub-identity"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"],
+                    "network": {"chain_id": "42424240"}}
+        if url.endswith("/topology"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
+        nonce = parse_qs(urlsplit(url).query)["nonce"][0]
+        return {
+            "ok": True, "schema": RUNTIME_ATTESTATION_SCHEMA, "hub_id": target["hub_id"], "nonce": nonce,
+            "hmac_sha256": stable_hub_runtime_attestation(
+                key_hex=secret, nonce=nonce, hub_id=target["hub_id"],
+                network={"chain_id": "42424240", "chain_rpc_url": target["chain_contract"]["rpc_url"]},
+                storage={"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
+                         "namespace": "WRONG-NAMESPACE"},
+            ),
+        }
+
+    monkeypatch.setattr(deployment, "_get_json", get)
+    result = deployment.observe_hub(target, wait_timeout_s=0)
+    assert result["verified"] is False
+    assert not result["fdb_adoption_verified"]
+    assert not result["chain_adoption_verified"]
+    assert result["checks"]["healthy"] is True
+    assert result["checks"]["stable_identity"] is True
+
+
+def test_stable_runtime_observer_fails_closed_without_coolify_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {**_observer_target(), "hub_runtime": "stable", "bridge_signer_required": False}
+    monkeypatch.setattr(deployment, "_read_runtime_attestation_key", lambda _: (_ for _ in ()).throw(ValueError("secret data")))
+
+    def get(url: str, *, timeout_s: float) -> dict[str, Any]:
+        if url.endswith("/health"):
+            return {"ok": True, "service": "main_computer.stable_hub"}
+        if url.endswith("/hub-identity"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"],
+                    "network": {"chain_id": "42424240"}}
+        return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
+
+    monkeypatch.setattr(deployment, "_get_json", get)
+    result = deployment.observe_hub(target, wait_timeout_s=0)
+    assert result["verified"] is False
+    assert not result["chain_adoption_verified"]
+    assert "secret data" not in str(result)
+    assert "attestation_key" in result["endpoint_errors"]
+
+
+def test_stable_runtime_key_read_only_from_coolify(monkeypatch: pytest.MonkeyPatch) -> None:
+    from main_computer.stable_hub_topology import RUNTIME_ATTESTATION_ENV
+    target = {"application_uuid": "hub-test", "coolify": {}}
+    secret = "ab" * 32
+    response = _response(200, [{"key": RUNTIME_ATTESTATION_ENV, "real_value": secret, "is_preview": False}])
+    client = SequenceClient([response])
+    monkeypatch.setattr(deployment, "_client", lambda _: client)
+    assert deployment._read_runtime_attestation_key(target) == secret
+    assert client.calls == [("GET", "/api/v1/applications/hub-test/envs", None)]
 
 
 def test_stable_runtime_observer_rejects_exp_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    target = {**_observer_target(), "hub_runtime": "stable"}
+    target = {**_observer_target(), "hub_runtime": "stable", "bridge_signer_required": False}
+    monkeypatch.setattr(deployment, "_read_runtime_attestation_key", lambda _: "12" * 32)
 
     def get(url: str, *, timeout_s: float) -> dict[str, Any]:
         del timeout_s
@@ -1292,6 +1378,10 @@ def test_bulk_sync_failure_identifies_mismatch_without_leaking_value(monkeypatch
 
 
 def test_stable_runtime_testnet_requires_matching_bridge_completion_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import parse_qs, urlsplit
+    from main_computer.stable_hub_topology import RUNTIME_ATTESTATION_SCHEMA, stable_hub_runtime_attestation
+    secret = "78" * 32
+    monkeypatch.setattr(deployment, "_read_runtime_attestation_key", lambda _: secret)
     target = {**_observer_target(), "hub_runtime": "stable", "network": "testnet",
               "bridge_signer_required": True, "runtime_dir": "/data/main-computer/hub/testnetb-hub1",
               "hub_admin_address": "0x" + "a" * 40}
@@ -1316,13 +1406,21 @@ def test_stable_runtime_testnet_requires_matching_bridge_completion_status(monke
             return {"ok": True, "service": "main_computer.stable_hub"}
         if url.endswith("/hub-identity"):
             return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"],
-                    "network": {"chain_id": 42424241, "chain_rpc_url": target["chain_contract"]["rpc_url"]},
-                    "storage": {"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
-                                "namespace": "testnet"}}
+                    "network": {"chain_id": 42424241, "network_key": "testnet"}}
         if url.endswith("/topology"):
             return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
         if url.endswith("/credits/wallet-funding/completion"):
             return status
+        if "/runtime-attestation?" in url:
+            nonce = parse_qs(urlsplit(url).query)["nonce"][0]
+            return {"ok": True, "schema": RUNTIME_ATTESTATION_SCHEMA,
+                    "hub_id": target["hub_id"], "nonce": nonce,
+                    "hmac_sha256": stable_hub_runtime_attestation(
+                        key_hex=secret, nonce=nonce, hub_id=target["hub_id"],
+                        network={"chain_id": "42424241", "chain_rpc_url": target["chain_contract"]["rpc_url"]},
+                        storage={"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
+                                 "namespace": "testnet"},
+                    )}
         raise AssertionError(url)
 
     monkeypatch.setattr(deployment, "_get_json", get)

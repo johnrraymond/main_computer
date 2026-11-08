@@ -571,12 +571,18 @@
     const seen = new Set(); let count = 0;
     function validate(node, depth) {
       if (!node || typeof node !== "object" || Array.isArray(node) || depth > 10 || ++count > 64) fail("invalid layout tree depth/size");
-      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible","auxiliarySelectors"].includes(key)))
+      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible","auxiliarySelectors","keyAttribute"].includes(key)))
         fail("unknown canonical layout property");
       if (typeof node.id !== "string" || !node.id || seen.has(node.id)) fail("duplicate or absent layout node id");
       seen.add(node.id);
       if (typeof node.selector !== "string" || !node.selector.trim()) fail("layout node selector required");
-      if (!["group","control-grid","region"].includes(node.role)) fail("unknown layout node role");
+      if (!["group","control-grid","region","repeat"].includes(node.role)) fail("unknown layout node role");
+      // A repeated role names one structural template, not one IR node per
+      // runtime record. Its key must be an explicit stable DOM identity.
+      if (node.role === "repeat") {
+        if (typeof node.keyAttribute !== "string" || !/^data-[a-z][a-z0-9-]*$/.test(node.keyAttribute))
+          fail("repeat layout role requires a data-* keyAttribute");
+      } else if (node.keyAttribute !== undefined) fail("keyAttribute requires repeat layout role");
       if (!Number.isInteger(node.maxColumns ?? 3) || (node.maxColumns ?? 3)<1 || (node.maxColumns ?? 3)>8) fail("invalid layout maxColumns");
       if (!Number.isFinite(node.minTargetWidth ?? 40) || (node.minTargetWidth ?? 40)<24 || (node.minTargetWidth ?? 40)>256) fail("invalid layout minTargetWidth");
       if (!Number.isFinite(node.gap ?? 8) || (node.gap ?? 8)<0 || (node.gap ?? 8)>64) fail("invalid layout gap");
@@ -612,24 +618,46 @@
       }
       const children = node.children || [];
       if (!Array.isArray(children) || (node.role === "group" ? !children.length : !!children.length)) fail("invalid layout children");
+      if (node.role === "group" && node.variants?.length && children.some(child=>child.role === "repeat"))
+        fail("layout variants cannot address repeat instances as one CSS grid area");
       for (const child of children) validate(child, depth + 1);
     }
     validate(tree.root, 0);
     return tree;
   }
+  function canonicalEntryElements(entry) {
+    return entry.els || (entry.el ? [entry.el] : []);
+  }
   function resolveLayoutNodes(host, tree) {
-    const nodes = [];
+    const nodes = [], owned = new Set();
     function walk(definition, parent) {
+      if (definition.role === "repeat") {
+        if (!parent) fail("repeat layout role requires a parent group");
+        let elements;
+        try { elements = [...parent.children].filter(child=>child.matches(definition.selector)); }
+        catch (_) { fail(`invalid layout selector: ${definition.id}`); }
+        const keys = new Set();
+        for (const element of elements) {
+          const key = element.getAttribute(definition.keyAttribute);
+          if (!key || !key.trim() || keys.has(key) || owned.has(element))
+            fail(`repeat layout identity is missing, duplicated or aliased: ${definition.id}`);
+          keys.add(key);
+          owned.add(element);
+        }
+        nodes.push({def:definition,el:null,els:elements,parent});
+        return;
+      }
       let element;
       try { element = host.matches(definition.selector) ? host : host.querySelector(definition.selector); }
       catch (_) { fail(`invalid layout selector: ${definition.id}`); }
       if (!element || (parent && element.parentElement !== parent)) fail(`layout structure does not match declaration: ${definition.id}`);
-      if (nodes.some(entry => entry.el === element)) fail(`layout selector alias: ${definition.id}`);
+      if (owned.has(element)) fail(`layout selector alias: ${definition.id}`);
+      owned.add(element);
       if (definition.role === "control-grid" && (![...element.children].length ||
           ![...element.children].every(eligibleControl))) fail(`control-grid requires direct actionable controls: ${definition.id}`);
       if (definition.auxiliarySelectors) {
-        const declaredChildren = (definition.children || []).map(child => {
-          try { return [...element.children].find(node => node.matches(child.selector)); }
+        const declaredChildren = (definition.children || []).flatMap(child => {
+          try { return [...element.children].filter(node => node.matches(child.selector)); }
           catch (_) { fail(`invalid layout selector: ${child.id}`); }
         });
         const auxiliaries = new Set();
@@ -652,7 +680,11 @@
   function canonicalTreeOptions(entry) {
     const def=entry.def;
     if (def.role === "region") return [{columns:0,template:"",gap:0}];
-    const count = def.role === "group" ? def.children.length : entry.el.children.length;
+    // All instances share ONE decision, even when their direct children differ.
+    // Empty collections are valid; subsequent explicit refresh recomputes this.
+    const count = def.role === "group" ? def.children.length :
+      (def.role === "repeat" ? entry.els.reduce((maximum,el)=>Math.max(maximum,el.children.length),0) : entry.el.children.length);
+    if (def.role === "repeat" && count === 0) return [{columns:0,template:"",gap:0}];
     const options = [];
     if (def.variants?.length) return def.variants.map(variant=>({
       columns:variant.tracks.length,template:variant.tracks.join(" "),gap:def.gap ?? 8,
@@ -672,26 +704,26 @@
     entries.forEach((entry,index) => {
       const choice = choices[index];
       if (!choice.columns) return;
-      const el=entry.el;
-      // Never turn a host-hidden application pane back on with generated !important display.
-      if (!treeElementVisible(el)) return;
-      el.style.setProperty("display","grid","important");
-      el.style.setProperty("grid-template-columns",choice.template,"important");
-      el.style.setProperty("gap",`${choice.gap}px`,"important");
-      if (choice.areas) {
-        el.style.setProperty("grid-template-areas",choice.areas.map(row=>`"${row}"`).join(" "),"important");
-        for (const child of entry.def.children || []) {
-          const target=[...el.children].find(node=>node.matches(child.selector));
-          if (target && choice.names.includes(child.id)) target.style.setProperty("grid-area",child.id,"important");
+      for (const el of canonicalEntryElements(entry)) {
+        // Never turn a host-hidden application pane back on with generated !important display.
+        if (!treeElementVisible(el)) continue;
+        el.style.setProperty("display","grid","important");
+        el.style.setProperty("grid-template-columns",choice.template,"important");
+        el.style.setProperty("gap",`${choice.gap}px`,"important");
+        if (choice.areas) {
+          el.style.setProperty("grid-template-areas",choice.areas.map(row=>`"${row}"`).join(" "),"important");
+          for (const child of entry.def.children || []) {
+            const target=[...el.children].find(node=>node.matches(child.selector));
+            if (target && choice.names.includes(child.id)) target.style.setProperty("grid-area",child.id,"important");
+          }
         }
-      }
-
-      if (entry.def.role === "control-grid" && entry.def.atomicText !== false) {
-        for (const button of el.children) {
-          if (!atomicFitRequired(button)) continue;
-          button.style.setProperty("white-space","nowrap","important");
-          button.style.setProperty("overflow-wrap","normal","important");
-          button.style.setProperty("word-break","normal","important");
+        if (entry.def.role === "control-grid" && entry.def.atomicText !== false) {
+          for (const button of el.children) {
+            if (!atomicFitRequired(button)) continue;
+            button.style.setProperty("white-space","nowrap","important");
+            button.style.setProperty("overflow-wrap","normal","important");
+            button.style.setProperty("word-break","normal","important");
+          }
         }
       }
     });
@@ -711,12 +743,18 @@
       if(Number.isFinite(slack))minControlSlack=minControlSlack===null?slack:Math.min(minControlSlack,slack);
     };
     entries.forEach((entry,index) => {
-      const {el,def}=entry, choice=choices[index];
+      const {def}=entry, choice=choices[index];
+      const instances=canonicalEntryElements(entry);
+      if (def.role === "repeat" && !instances.length) {
+        records.push({id:def.id,role:"repeat",instances:0,columns:0});
+      }
+      for (const el of instances) {
+      const recordId=def.role === "repeat" ? `${def.id}[${el.getAttribute(def.keyAttribute)}]` : def.id;
       const style=el.ownerDocument.defaultView.getComputedStyle(el);
       const rect=el.getBoundingClientRect();
       if (!treeElementVisible(el)) {
-        records.push({id:def.id,role:def.role,visible:false,columns:choice.columns});
-        return;
+        records.push({id:recordId,role:def.role,visible:false,columns:choice.columns});
+        continue;
       }
       if (choice.areas) {
         const listed=new Set(choice.names);
@@ -737,7 +775,7 @@
             failures.push({id:def.id,code:"auxiliary-control-in-layout-flow"});
         }
       }
-      const children=def.role === "control-grid" ? [...el.children] : (def.role === "group" ?
+      const children=["control-grid","repeat"].includes(def.role) ? [...el.children] : (def.role === "group" ?
         [...el.children].filter(child => !(def.auxiliarySelectors || []).some(selector => child.matches(selector))) : []);
       if (choice.columns && gridTrackCount(style.gridTemplateColumns)!==choice.columns)
         failures.push({id:def.id,code:"computed-css-track-conflict"});
@@ -750,7 +788,7 @@
       // Region siblings are part of the same hard-constraint decision. An
       // excellent keypad layout is still invalid if the adjacent toolbar
       // becomes unreadable or unusable.
-      if (def.role === "region" && def.verifyControls !== false) for (const button of el.querySelectorAll('button, [role="button"]')) {
+      if (["region","repeat"].includes(def.role) && def.verifyControls !== false) for (const button of el.querySelectorAll('button, [role="button"]')) {
         // A verified, negotiated collection has its own registered presentation
         // authority. Its dynamic slot must not be reinterpreted as an ordinary
         // region-level control (including a row whose accessible name now
@@ -784,11 +822,34 @@
           if (text.split.length) failures.push({id:def.id,code:"atomic-label-split",label:button.textContent.trim(),split:text.split});
         }
       }
-      records.push({id:def.id,role:def.role,columns:choice.columns,width:rect.width,height:rect.height,
+      records.push({id:recordId,templateId:def.id,role:def.role,columns:choice.columns,width:rect.width,height:rect.height,
         computedColumns:style.gridTemplateColumns});
+      }
     });
     return {failures,records,quality:{height:entries[0].el.getBoundingClientRect().height,
       emptyCells,gridRows,minControlSlackPx:minControlSlack}};
+  }
+  // Snapshot the exact nodes rather than child indices. A notebook can insert,
+  // remove, reorder or replace records between canonical-tree refreshes.
+  function canonicalTreeStyleSnapshot(entries) {
+    const elements=new Set();
+    for (const entry of entries) for (const el of canonicalEntryElements(entry)) {
+      elements.add(el);
+      if (["group","control-grid"].includes(entry.def.role))
+        for (const child of el.children) elements.add(child);
+    }
+    return [...elements].map(el=>({el,hadStyle:el.hasAttribute("style"),css:el.getAttribute("style") || ""}));
+  }
+  function restoreCanonicalTreeStyles(records) {
+    for (const record of records) {
+      if (record.hadStyle) record.el.style.cssText=record.css;
+      else { record.el.setAttribute("style", ""); record.el.removeAttribute("style"); }
+    }
+    // Chromium can reintroduce an empty inline style attribute during a
+    // layout flush. Run one final idempotent cleanup of originally absent attrs.
+    for (const record of records) if (!record.hadStyle) {
+      record.el.setAttribute("style", "");record.el.removeAttribute("style");
+    }
   }
   function prepareCanonicalTreePreview(host, tree) {
     if (!host.parentElement) fail("layout host must be attached");
@@ -833,8 +894,8 @@
       const entries=resolveLayoutNodes(preview,tree);
       // Only candidate-owned styles are reset between measurements; these are
       // the nodes setCanonicalTreeStyles can write (including direct controls).
-      const nodes=new Set(entries.flatMap(entry=>[entry.el,...entry.el.children]));
-      const originalStyles=[...nodes].map(el=>({el,css:el.getAttribute("style")}));
+      const originalStyles=canonicalTreeStyleSnapshot(entries).map(record=>({el:record.el,
+        css:record.hadStyle ? record.css : null}));
       return {preview,entries,originalStyles};
     } catch (error) {
       preview.remove();
@@ -904,12 +965,14 @@
     if (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 512) fail("invalid candidate limit");
     const totalCombinations=optionsByEntry.reduce((total,list)=>
       Math.min(maxCandidates+1,total * list.length),1);
-    const authoredCss=entries.filter(entry=>entry.def.role!=="region").map(entry=>({
-      id:entry.def.id,selector:entry.def.selector,
-      computedGridTracks:entry.el.ownerDocument.defaultView.getComputedStyle(entry.el).gridTemplateColumns,
-      inlineGridDeclaration:entry.el.style.getPropertyValue("grid-template-columns"),
-      inlineGridPriority:entry.el.style.getPropertyPriority("grid-template-columns")
-    }));
+    const authoredCss=entries.filter(entry=>entry.def.role!=="region").map(entry=>{
+      const targets=canonicalEntryElements(entry),el=targets[0];
+      return {id:entry.def.id,selector:entry.def.selector,instanceCount:targets.length,
+        instanceKeys:entry.def.role==="repeat" ? targets.map(item=>item.getAttribute(entry.def.keyAttribute)) : undefined,
+        computedGridTracks:el?.ownerDocument.defaultView.getComputedStyle(el).gridTemplateColumns || null,
+        inlineGridDeclaration:el?.style.getPropertyValue("grid-template-columns") || "",
+        inlineGridPriority:el?.style.getPropertyPriority("grid-template-columns") || ""};
+    });
     const candidates=[];
     const context=prepareCanonicalTreePreview(host,tree);
     try {
@@ -954,6 +1017,8 @@
       metrics:separated?.metrics||null,searchTruncated:totalCombinations>maxCandidates,
       authoredCss, generatedCss:selected?entries.filter(entry=>entry.def.role!=="region").map(entry=>({
         id:entry.def.id,selector:entry.def.selector,
+        instanceCount:canonicalEntryElements(entry).length,
+        instanceKeys:entry.def.role==="repeat" ? entry.els.map(el=>el.getAttribute(entry.def.keyAttribute)) : undefined,
         gridTemplateColumns:selected.choices[entries.indexOf(entry)].template,
         display:"grid",gapPx:selected.choices[entries.indexOf(entry)].gap,
         ownedProperties:["display","grid-template-columns","gap"]
@@ -965,8 +1030,7 @@
     let entries;
     try { entries=resolveLayoutNodes(host,canonicalLayoutTree(evaluation.tree)); }
     catch (error) { return {status:"refused",reason:String(error)}; }
-    const before=entries.map(entry=>({el:entry.el,hadStyle:entry.el.hasAttribute("style"),css:entry.el.getAttribute("style") || "",
-      children:(["control-grid","group"].includes(entry.def.role) ? [...entry.el.children] : []).map(child=>({hadStyle:child.hasAttribute("style"),css:child.getAttribute("style") || ""}))}));
+    const before=canonicalTreeStyleSnapshot(entries);
     const fresh=previewCanonicalTree(host,evaluation.tree,evaluation.selected.choices);
     if (fresh.failures.length) return {status:"refused",reason:"stale-layout-candidate",evidence:fresh};
     setCanonicalTreeStyles(entries,evaluation.selected.choices);
@@ -979,18 +1043,16 @@
       catch (_) { independent="fail"; }
     }
     if (observed.failures.length || independent === "fail") {
-      for (const record of before) {
-        if (record.hadStyle) record.el.style.cssText=record.css;
-        else { record.el.removeAttribute("style"); record.el.removeAttribute("style"); }
-        [...record.el.children].slice(0, record.children.length).forEach((child,i)=>{if (record.children[i]!==undefined) {
-          if (record.children[i].hadStyle) child.style.cssText=record.children[i].css;
-          else { child.removeAttribute("style"); child.removeAttribute("style"); }
-        }});
-      }
+      restoreCanonicalTreeStyles(before);
       return {status:"refused",reason:"live-layout-verification-failed",observed,independent,
         independentFindings: independentFindings.map(f=>({controlId:f.controlId,label:f.label,type:f.type}))};
     }
     if (!treeOriginalStyles.has(host)) treeOriginalStyles.set(host,before);
+    else {
+      const original=treeOriginalStyles.get(host);
+      const seen=new Set(original.map(record=>record.el));
+      for (const record of before) if (!seen.has(record.el)) {original.push(record);seen.add(record.el);}
+    }
     host.dataset.mcelCanonicalLayoutProof=independent==="pass"?"pass":"observed-only";
     host.dataset.mcelCanonicalLayoutAuthority="mcel-layout-tree.v1";
     return {status:"pass",observed,independent,quality:evaluation.selected.evidence.quality,
@@ -999,34 +1061,12 @@
   function clearCanonicalLayoutTree(host) {
     const original=treeOriginalStyles.get(host);
     if (original) {
-      for (const record of original) {
-        if (record.hadStyle) record.el.style.cssText=record.css;
-        else { record.el.removeAttribute("style"); record.el.removeAttribute("style"); }
-        [...record.el.children].slice(0, record.children.length).forEach((child,i)=>{if (record.children[i]!==undefined) {
-          if (record.children[i].hadStyle) child.style.cssText=record.children[i].css;
-          else { child.removeAttribute("style"); child.removeAttribute("style"); }
-        }});
-      }
-      // Chromium may serialize an empty style attribute after a computed-
-      // style flush. Remove it after every structural restoration is done.
-      for (const record of original) {
-        if (!record.hadStyle) { record.el.setAttribute("style", ""); record.el.removeAttribute("style"); }
-        [...record.el.children].slice(0, record.children.length).forEach((child,i) => {
-          if (!record.children[i].hadStyle) { child.setAttribute("style", ""); child.removeAttribute("style"); }
-        });
-      }
+      restoreCanonicalTreeStyles(original);
       treeOriginalStyles.delete(host);
     }
     delete host.dataset.mcelCanonicalLayoutProof;
     delete host.dataset.mcelCanonicalLayoutAuthority;
-    // Final attribute removal occurs after dataset updates, which can flush
-    // Chromium's cached inline-style serialization following measurements.
-    if (original) for (const record of original) {
-      if (!record.hadStyle) { record.el.setAttribute("style", ""); record.el.removeAttribute("style"); }
-      [...record.el.children].slice(0, record.children.length).forEach((child,i) => {
-        if (!record.children[i].hadStyle) { child.setAttribute("style", ""); child.removeAttribute("style"); }
-      });
-    }
+    if (original) restoreCanonicalTreeStyles(original);
   }
 
   function mountCanonicalLayoutTree(host, normalizedIr, options={}) {
@@ -1042,6 +1082,15 @@
     if(active && committed && (committed.schema!==continuity.TREE_STATE_SCHEMA ||
         committed.policy!==continuity.TREE_POLICY))fail("incompatible restored canonical-tree state");
     let last=null,closed=false,pending=false;
+    const refuse=(reason,extra={})=>{
+      // A rejected refresh cannot leave an earlier acceptance token current.
+      // The last committed geometry remains untouched for safe recovery.
+      if (last?.status === "pass") {
+        delete host.dataset.mcelCanonicalLayoutAuthority;
+        host.dataset.mcelCanonicalLayoutProof="fail";
+      }
+      return last={status:"refused",reason,...extra};
+    };
     const run=()=>{
       let evaluation;
       try {
@@ -1051,8 +1100,8 @@
         let planned=null;
         if(active) {
           planned=continuity.planTree({tree,evaluation,previous:committed,policy:options.continuityPolicy||{}});
-          if(planned.status!=="selected")return last={status:"refused",reason:planned.record.reason,
-            continuity:planned.record,evaluation};
+          if(planned.status!=="selected")return refuse(planned.record.reason,
+            {continuity:planned.record,evaluation});
           const selected=planned.candidate;
           const separated=separateCanonicalTreeLayout(tree,selected);
           evaluation={...evaluation,selected,decision:separated.decision,metrics:separated.metrics,
@@ -1062,9 +1111,11 @@
             })};
         }
         const applied=applyCanonicalLayoutTree(host,evaluation);
-        if(active && applied.status==="pass")committed=planned.state;
+        if(applied.status!=="pass")return refuse(applied.reason||"layout-application-refused",
+          {evaluation,continuity:planned?.record||null});
+        if(active)committed=planned.state;
         return last={...applied,evaluation,continuity:planned?.record||null};
-      } catch(error) {return last={status:"refused",reason:String(error),evaluation:evaluation||null};}
+      } catch(error) {return refuse(String(error),{evaluation:evaluation||null});}
     };
     const initial=run();
     if(initial.status!=="pass")return {status:"refused",reason:initial.reason||"unsatisfied",initial};

@@ -7,6 +7,7 @@ from __future__ import annotations
 from http.client import HTTPConnection, HTTPSConnection
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import ssl
@@ -114,6 +115,15 @@ def wait_until(callback, timeout=8):
     raise AssertionError('Timed out waiting for Organization Service')
 
 
+def assert_public_tls_identity_without_organization_id(portnum):
+    code, identity = request(portnum, 'GET', '/v1/org/identity', tls=True)
+    assert code == 200
+    assert identity['schema'] == 'main-computer.slh-org-identity.v1'
+    assert re.fullmatch(r'[0-9a-f]{64}', identity['tls_sha256'])
+    assert 'organization_id' not in identity
+    assert 'organization_name' not in identity
+
+
 def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path, disposable_slh_state):
     state=tmp_path/'slh'
     with create_server(state_dir=state,port=0) as local:
@@ -138,7 +148,7 @@ def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path, dis
             code,starting=request(lport,'POST','/v1/local/organization/enable',{},token=admin)
             assert code==200 and starting['enabled'],starting
             wait_until(lambda: local.organization_controller.status()['listening'])
-            assert request(api_port,'GET','/v1/org/identity',tls=True)[1]['organization_id']=='our-org'
+            assert_public_tls_identity_without_organization_id(api_port)
             assert request(api_port,'GET','/v1/org/status',tls=True)[1]['worker_serving_enabled'] is False
             assert request(api_port,'GET','/v1/local/status',tls=True)[0]==404
             assert request(api_port,'GET','/v1/bootstrap/status',tls=True)[0]==404
@@ -213,7 +223,7 @@ def test_enabled_service_resumes_after_local_service_restart_and_worker_bind(tmp
         thread.start()
         try:
             wait_until(lambda:restarted.organization_controller.status()['listening'])
-            assert request(api_port,'GET','/v1/org/identity',tls=True)[1]['organization_id']=='our-org'
+            assert_public_tls_identity_without_organization_id(api_port)
             fresh_token=login(restarted.server_port,key)
             assert request(restarted.server_port,'POST','/v1/local/organization/disable',
                            {},token=fresh_token)[0]==200

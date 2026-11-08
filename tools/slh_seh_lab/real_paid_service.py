@@ -455,7 +455,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                             hub_identity=identity, ledger=payout_ledger,
                             org_wallet_private=wallet_key, org_wallet_address=wallet.address,
                             worker=worker, reserve_wallet=reserve_wallet,
-                            market_controller=proxy)
+                            market_controller=proxy, paid_marketplace=paid)
                 else:
                     _ok(_http(lp, 'POST', '/v1/local/organization/disable', {}, bearer=token))
                 gates['org_stops_without_stopping_local'] = (

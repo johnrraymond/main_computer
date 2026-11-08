@@ -1015,21 +1015,10 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
             except Exception as exc:
                 append_text_log(log_file, "failed to restore stream callback", run_id=run_id, error=repr(exc))
 
-    if isinstance(early_result_state.get("payload"), dict):
-        append_text_log(
-            log_file,
-            "worker live-session chat completion returning early stream result",
-            run_id=run_id,
-            payload=early_result_state.get("payload"),
-        )
-        return early_result_state["payload"]
-
+    # Chat Console AI returns the completed model response.  The early-stream
+    # completion sentinel belongs exclusively to worker-live-session requests,
+    # and neither early_result_state nor completion_sentinel exists here.
     response_payload = _jsonable_response(response)
-    if completion_sentinel and isinstance(response_payload.get("content"), str):
-        response_payload["content"] = _worker_live_session_strip_completion_sentinel(
-            str(response_payload.get("content") or ""),
-            completion_sentinel,
-        )
     append_text_log(
         log_file,
         "chat console AI response completed",

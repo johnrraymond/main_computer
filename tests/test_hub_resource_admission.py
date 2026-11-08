@@ -212,3 +212,49 @@ def test_peer_cap_applies_before_thread_spawn(monkeypatch, tmp_path):
             assert snapshot['rejections']>=1
     finally:
         srv.shutdown();srv.server_close();thr.join(timeout=3)
+
+
+def test_rejection_lane_is_bounded_and_does_not_create_request_handlers(monkeypatch, tmp_path):
+    """Rejected sockets are capped separately from authenticated workers."""
+    from main_computer.hub import HubHttpServer
+    _tiny_policy(monkeypatch)
+    monkeypatch.setenv('MAIN_COMPUTER_HUB_MAX_CONNECTIONS_PER_PEER', '2')
+    config = MainComputerConfig(workspace=tmp_path, model='fake-model',
+                                hub_root=tmp_path / 'state', hub_bridge_backend='mock-chain')
+    srv = HubHttpServer(('127.0.0.1', 0), config, verbose=False)
+    thr = threading.Thread(target=srv.serve_forever, daemon=True);thr.start()
+    try:
+        with _header_hold(srv.server_port), _header_hold(srv.server_port):
+            assert _wait_until(lambda: srv.resource_admission_snapshot()['header_connections'] == 2)
+            for _ in range(12):
+                assert raw_http(srv.server_port, ['Content-Length: 2'], body=b'{}') == 503
+            snapshot = srv.resource_admission_snapshot()
+            assert snapshot['connections'] == 2
+            assert snapshot['peak_connections'] <= 5
+            assert snapshot['rejection_workers'] == 4
+            assert snapshot['rejection_queue_limit'] == 32
+            assert snapshot['rejection_dropped'] == 0
+    finally:
+        srv.shutdown();srv.server_close();thr.join(timeout=3)
+
+
+def test_rejected_request_body_does_not_eat_financial_admission_slots(monkeypatch, tmp_path):
+    """An unparsed POST must not be dispatched when the admission cap is full."""
+    from main_computer.hub import HubHttpServer
+    _tiny_policy(monkeypatch)
+    monkeypatch.setenv('MAIN_COMPUTER_HUB_MAX_CONNECTIONS_PER_PEER', '2')
+    config = MainComputerConfig(workspace=tmp_path, model='fake-model',
+                                hub_root=tmp_path / 'state', hub_bridge_backend='mock-chain')
+    srv = HubHttpServer(('127.0.0.1', 0), config, verbose=False)
+    thr = threading.Thread(target=srv.serve_forever, daemon=True);thr.start()
+    try:
+        with _header_hold(srv.server_port), _header_hold(srv.server_port):
+            assert _wait_until(lambda: srv.resource_admission_snapshot()['header_connections'] == 2)
+            # Rejection does not parse the payload, even when the client has
+            # already transmitted request bytes when the server accepts it.
+            assert raw_http(srv.server_port, ['Content-Length: 4096'], body=b'X' * 4096) == 503
+            snapshot = srv.resource_admission_snapshot()
+            assert snapshot['connections'] == 2
+            assert snapshot['rejections'] >= 1
+    finally:
+        srv.shutdown();srv.server_close();thr.join(timeout=3)

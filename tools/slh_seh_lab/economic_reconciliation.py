@@ -25,6 +25,7 @@ def reconcile_cycle(paid_process: dict, *, cycle: int) -> dict:
     private = paid_process.get('pinky_integrated') or {}
     buyer = market.get('accounting') or {}
     pinky = private.get('accounting') or {}
+    settlement = private.get('local_lab_settlement') or {}
 
     def number(mapping, name):
         value = mapping.get(name)
@@ -43,7 +44,10 @@ def reconcile_cycle(paid_process: dict, *, cycle: int) -> dict:
     buyer_available_before = number(buyer, 'buyer_available_before_wei')
     buyer_available_after = number(buyer, 'buyer_available_after_wei')
     org_before = number(buyer, 'worker_available_before_wei')
-    org_earned = number(buyer, 'worker_available_after_settlement_wei')
+    # Paid Hub receipts are intentionally pre-settlement: the earning is
+    # non-spendable until the separate smoke-only ledger settlement executes.
+    # Read that post-settlement balance from the actual FDB proof instead.
+    org_earned = number(settlement, 'verified_available_wei')
     org_sweep_before = number(pinky, 'wallet_after_earning_wei')
     org_sweep_after = number(pinky, 'wallet_after_sweep_wei')
     reserve_before = number(pinky, 'reserve_before_wei')
@@ -68,7 +72,17 @@ def reconcile_cycle(paid_process: dict, *, cycle: int) -> dict:
         'buyer_spent_exactly_charge': buyer_delta == charge and charge > 0,
         'buyer_available_exactly_decreased': buyer_available_before == 2 * CREDIT_WEI_PER_CREDIT and buyer_available_after == CREDIT_WEI_PER_CREDIT and buyer_available_before - buyer_available_after == charge and charge > 0,
         'buyer_has_no_unsettled_hold': number(buyer, 'buyer_held_after_wei') == 0,
-        'earned_credit_deposited_to_org': org_before == 0 and org_earned - org_before == earning and earning > 0 and number(buyer,'worker_earned_after_settlement_wei') == earning,
+        'earned_credit_deposited_to_org': (
+            org_before == 0 and earning > 0
+            and number(buyer, 'worker_available_after_batch_wei') == org_before
+            and number(buyer, 'worker_earned_after_batch_wei') == 0
+            and settlement.get('status') == 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED'
+            and bool(settlement.get('batch_id'))
+            and settlement.get('earning_id') == buyer.get('earning_id')
+            and settlement.get('worker_account_id') == org_account == buyer.get('worker_account_id')
+            and number(settlement, 'credit_wei') == earning
+            and number(settlement, 'verified_earned_wei') == earning
+            and org_earned - org_before == earning),
         'same_org_wallet_used_for_pinky': buyer.get('worker_account_id') == org_account == private.get('worker_account_id') and org_account != buyer_id and bool(org_account),
         'two_private_requests_distinct': (len(private_ids) == EXPECTED_PRIVATE_REQUESTS and len(set(private_ids)) == EXPECTED_PRIVATE_REQUESTS and all(isinstance(x,str) and x for x in private_ids)
                                          and number(pinky,'private_succeeded_count') == EXPECTED_PRIVATE_REQUESTS),

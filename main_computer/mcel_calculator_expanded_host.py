@@ -24,6 +24,7 @@ ASSETS = [
     'main_computer/web/applications/scripts/chat-console.js',
     # The calculator embeds the *shared* semantic Chat Console. The promoted
     # standalone HTML must load the same composition runtime as the main SPA.
+    'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',
     'main_computer/web/applications/scripts/mcel-semantic-chat-console.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-calculator-expanded-port.js',
@@ -75,8 +76,10 @@ def compile_expanded(repo: Path = ROOT) -> dict:
     return ir
 
 def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
+    from main_computer.mcel_chat_console_host import compile_chat_console
     ir=compile_expanded(repo)
     payload=json.dumps(ir,ensure_ascii=False,separators=(',',':')).replace('<','\\u003c')
+    chat_layout_payload=json.dumps(compile_chat_console(repo),ensure_ascii=False,separators=(',',':')).replace('<','\\u003c')
     def asset(path):
         script=(repo/path).read_text(encoding='utf8')
         if '</script' in script.lower():raise CandidateHostError('asset script termination')
@@ -91,7 +94,7 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
 <title>MCEL Semantic Calculator · Expanded</title>
 <style>''' + expert_css + '''</style></head><body class="mcel-expert-page"><header><h1>Semantic Calculator</h1><p>Arithmetic and units · Function graphs · Symbolic mathematics · Optional AI assistance</p></header>
 <div id="mcel-expanded-root" aria-label="Generated semantic Calculator"></div><div id="mcel-expanded-diagnostic" role="status" aria-live="polite"></div>
-<script id="mcel-expanded-ir" type="application/json">''' + payload + '</script>\n' + scripts + '''<script>
+<script id="mcel-expanded-ir" type="application/json">''' + payload + '''</script><script id="mcel-chat-embedded-ir" type="application/json">''' + chat_layout_payload + '</script>\n' + scripts + '''<script>
 (function(){"use strict";
  const status=document.getElementById('mcel-expanded-diagnostic');
  try {

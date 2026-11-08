@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .common.chain_contract import load_current_chain_contract
+from .common.canonical import sha256_json
 from .common.deployment import (
     observe_hub, inspect_deployment, _inspect_frozen_application,
     _client, hub_runtime_from_application,
@@ -15,8 +16,17 @@ from .common.privates import load_private, controller_coordinates
 from .common.errors import HubControlError
 
 
-def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any]) -> str:
-    """Inspect an accepted Hub's existing Coolify application, without mutations."""
+def _accepted_hub_runtime_details(ctx: HubContext, network: str, hub: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only, authoritative Coolify identity for accepted Hub verification.
+
+    The Stable Hub attestation verifier needs the *same existing* Coolify
+    application UUID and controller credentials used by redeployment, plus its
+    accepted bridge-admin address. Merely returning a runtime type made every
+    subsequent inspection fail because the attestation key was unreachable.
+
+    This method never creates, changes, or redeploys an application; these
+    private details remain inside the observation target, not public results.
+    """
     hub_id = str(hub.get("hub_id") or "")
     controller_id = str(hub.get("controller_id") or "")
     if not hub_id or not controller_id:
@@ -39,11 +49,51 @@ def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any])
     detail = _inspect_frozen_application(_client(target), target, uuid)
     if not detail.get("present"):
         raise ValueError(f"accepted Hub {hub_id} application disappeared")
-    return hub_runtime_from_application(detail)
+    return {
+        "hub_runtime": hub_runtime_from_application(detail),
+        "application_uuid": uuid,
+        "coolify": coords,
+        "hub_admin_address": str(hub.get("hub_admin_address") or ""),
+    }
+
+
+def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any]) -> str:
+    """Backward-compatible runtime-only resolver for callers requiring a str."""
+    return str(_accepted_hub_runtime_details(ctx, network, hub)["hub_runtime"])
+
+
+def _chain_generation_only_equivalent(chain: Any, adopted: Mapping[str, Any]) -> bool:
+    """Verify that an older accepted Chain hash differs ONLY by Mother generation.
+
+    This is a compatibility determination, not runtime verification. The
+    accepted digest is never rewritten, and a Hub remains unverified unless
+    its live configured chain/FDB and authenticated runtime proof also pass.
+    """
+    generation = adopted.get("generation")
+    current_generation = chain.generation
+    historical_digest = adopted.get("sha256")
+    if (isinstance(generation, bool) or not isinstance(generation, int)
+            or generation < 1 or isinstance(current_generation, bool)
+            or not isinstance(current_generation, int)
+            or generation >= current_generation
+            or not isinstance(historical_digest, str)
+            or len(historical_digest) != 64
+            or any(c not in "0123456789abcdef" for c in historical_digest.lower())):
+        return False
+    payload = chain.payload
+    if not isinstance(payload, Mapping):
+        return False
+    core = {key: value for key, value in payload.items() if key != "sha256"}
+    # Refuse compatibility if the present-day authority's own digest is bad.
+    if (core.get("generation") != current_generation
+            or sha256_json(core) != chain.sha256
+            or payload.get("sha256") != chain.sha256):
+        return False
+    return sha256_json({**core, "generation": generation}) == historical_digest
 
 
 def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub,
-                    runtime_resolver=_accepted_hub_runtime,
+                    runtime_resolver=_accepted_hub_runtime_details,
                     membership_only: bool = False) -> dict[str, Any]:
     if membership_only:
         # Recheck the entire configured Coolify estate, not just the target,
@@ -131,11 +181,71 @@ def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub,
         }
         fdb_ref = hub.get("fdb_contract") if isinstance(hub.get("fdb_contract"), Mapping) else {}
         chain_ref = hub.get("chain_contract") if isinstance(hub.get("chain_contract"), Mapping) else {}
-        dependency_current = fdb_ref.get("sha256") == fdb.sha256 and chain_ref.get("sha256") == chain.sha256
-        if dependency_current:
+        fdb_reference_current = fdb_ref.get("sha256") == fdb.sha256
+        chain_reference_current = chain_ref.get("sha256") == chain.sha256
+        chain_generation_only_compatible = (
+            not chain_reference_current
+            and _chain_generation_only_equivalent(chain, chain_ref)
+        )
+        # An older accepted Chain digest can represent the IDENTICAL runtime
+        # configuration when its only changed field is Mother generation.
+        # Compatibility permits observation, not automatic acceptance.
+        dependency_compatible = fdb_reference_current and (
+            chain_reference_current or chain_generation_only_compatible
+        )
+        if dependency_compatible:
             try:
-                target["hub_runtime"] = runtime_resolver(ctx, network, hub)
+                resolved = runtime_resolver(ctx, network, hub)
+                if isinstance(resolved, Mapping):
+                    # Only the exact authorized observation fields may be
+                    # carried forward; never allow resolution to overwrite
+                    # accepted topology, public routes or contract authority.
+                    for field in ("hub_runtime", "application_uuid", "coolify", "hub_admin_address"):
+                        if field in resolved:
+                            target[field] = resolved[field]
+                    if target.get("hub_runtime") == "stable":
+                        # Do not silently invoke the Stable observer without
+                        # the authenticated Coolify key path and accepted admin.
+                        if (not str(target.get("application_uuid") or "").strip()
+                                or not isinstance(target.get("coolify"), Mapping)
+                                or not str(target.get("hub_admin_address") or "").strip()):
+                            raise ValueError("accepted Stable Hub inspection lacks verified attestation or admin identity")
+                else:
+                    # Preserve custom runtime-only observer injection for
+                    # existing tests, without fabricating verified metadata.
+                    target["hub_runtime"] = resolved
                 verification = observer(target, wait_timeout_s=0.0)
+                if chain_generation_only_compatible:
+                    # A generation-only exception needs full Stable Hub proof,
+                    # not a mockable "verified" bit or unauthenticated legacy
+                    # observations. The Stable verifier derives these checks
+                    # from the challenge-bound runtime HMAC and live endpoints.
+                    checks = verification.get("checks") if isinstance(verification, Mapping) else None
+                    stable_proof_complete = (
+                        target.get("hub_runtime") == "stable"
+                        and verification.get("verified") is True
+                        and verification.get("hub_running") is True
+                        and verification.get("fdb_adoption_verified") is True
+                        and verification.get("chain_adoption_verified") is True
+                        and isinstance(checks, Mapping)
+                        and all(checks.get(field) is True for field in (
+                            "healthy", "stable_identity", "stable_topology",
+                            "fdb_backend", "fdb_cluster_file", "fdb_namespace",
+                            "chain_id", "chain_rpc",
+                        ))
+                    )
+                    if verification.get("verified") is True and not stable_proof_complete:
+                        verification = {**verification, "verified": False,
+                                        "reason": "generation-only-runtime-proof-incomplete"}
+                    # The present contract reference remains different.
+                    # Record both generations without changing either digest.
+                    verification = {
+                        **verification,
+                        "chain_reference_current": False,
+                        "chain_generation_only_compatible": True,
+                        "accepted_chain_generation": chain_ref["generation"],
+                        "current_chain_generation": chain.generation,
+                    }
             except Exception as exc:
                 verification = {
                     "verified": False,
@@ -146,8 +256,9 @@ def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub,
             verification = {
                 "verified": False,
                 "reason": "hub-dependency-contract-stale",
-                "fdb_adoption_verified": fdb_ref.get("sha256") == fdb.sha256,
-                "chain_adoption_verified": chain_ref.get("sha256") == chain.sha256,
+                "fdb_adoption_verified": fdb_reference_current,
+                "chain_adoption_verified": chain_reference_current,
+                "chain_generation_only_compatible": chain_generation_only_compatible,
             }
         all_verified = all_verified and verification.get("verified") is True
         observed.append(

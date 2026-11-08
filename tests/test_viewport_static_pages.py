@@ -344,26 +344,26 @@ class ViewportStaticPageTests(unittest.TestCase):
         thread.start()
         try:
             base = f"http://127.0.0.1:{server.server_port}"
-            with urlopen(f"{base}/applications", timeout=5) as response:
+            with urlopen(f"{base}/applications?mcel-shell-child=1", timeout=5) as response:
                 applications_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", applications_page)
 
-            with urlopen(f"{base}/applications/task-manager", timeout=5) as response:
+            with urlopen(f"{base}/applications/task-manager?mcel-shell-child=1", timeout=5) as response:
                 task_manager_page = response.read().decode("utf-8")
             self.assertIn('id="mcel-workbench-ir"', task_manager_page)
             self.assertIn('Semantic application · Canonical route', task_manager_page)
 
-            with urlopen(f"{base}/applications/task-manager/connections", timeout=5) as response:
+            with urlopen(f"{base}/applications/task-manager/connections?mcel-shell-child=1", timeout=5) as response:
                 task_manager_connections_page = response.read().decode("utf-8")
             self.assertIn('id="mcel-workbench-ir"', task_manager_connections_page)
             self.assertIn('const initialView="connections";', task_manager_connections_page)
 
-            with urlopen(f"{base}/applications/website-builder", timeout=5) as response:
+            with urlopen(f"{base}/applications/website-builder?mcel-shell-child=1", timeout=5) as response:
                 website_builder_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", website_builder_page)
             self.assertIn("websiteBuilderSiteIdFromPath", website_builder_page)
 
-            with urlopen(f"{base}/applications/website-builder/hub-site", timeout=5) as response:
+            with urlopen(f"{base}/applications/website-builder/hub-site?mcel-shell-child=1", timeout=5) as response:
                 website_builder_project_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", website_builder_project_page)
             self.assertIn("syncWebsiteBuilderRoute", website_builder_project_page)
@@ -372,7 +372,7 @@ class ViewportStaticPageTests(unittest.TestCase):
                 git_tools_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", git_tools_page)
 
-            with urlopen(f"{base}/applications/worker", timeout=5) as response:
+            with urlopen(f"{base}/applications/worker?mcel-shell-child=1", timeout=5) as response:
                 worker_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", worker_page)
             self.assertIn("Only when totally idle", worker_page)
@@ -380,7 +380,7 @@ class ViewportStaticPageTests(unittest.TestCase):
             self.assertNotIn("Advanced seller availability ideas", worker_page)
             self.assertNotIn("Lock AI model when working", worker_page)
 
-            with urlopen(f"{base}/applications/wallet", timeout=5) as response:
+            with urlopen(f"{base}/applications/wallet?mcel-shell-child=1", timeout=5) as response:
                 wallet_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", wallet_page)
             self.assertIn("Standalone wallet connect/disconnect workbench is ready.", wallet_page)

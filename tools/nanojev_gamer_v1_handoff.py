@@ -1578,9 +1578,20 @@ def probe_blind_lora(args,cases,manifest):
 
 def parser():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('stage',choices=('prepare','validate','lora','switch','to-numerical','probe','blind-probe','experiment'))
+    ap.add_argument('stage',choices=('prepare','validate','lora','switch','to-numerical','probe','blind-probe','experiment','shadow','route-accept','route-activate','route-rollback','route'))
     ap.add_argument('--dataset',help='Optional explicit path; by default OUTPUT/certified_pairs.jsonl')
-    ap.add_argument('--output',required=True,help='Fresh, isolated Gamer experiment directory')
+    ap.add_argument('--output',required=True,help='GAMER run directory; read-only for shadow/route stages')
+    ap.add_argument('--shadow-closure',help='shadow only: completed frozen S-closure report directory')
+    ap.add_argument('--shadow-evidence',help='route: completed 160-case production shadow directory')
+    ap.add_argument('--route-report',help='route: isolated serving-route acceptance report directory')
+    ap.add_argument('--authority-file',help='route: reversible authority state (outside frozen production run)')
+    ap.add_argument('--route-demo',action='store_true',help='route: serve representative canonical GAMER requests')
+    ap.add_argument('--route-request-file',help='route: JSONL file of {id,prompt} requests')
+    ap.add_argument('--route-response-file',help='route: isolated JSONL output file')
+    ap.add_argument('--shadow-wide',help='shadow only: explicit Wide checkpoint, otherwise latest completed staircase head cycle')
+    ap.add_argument('--shadow-separate-adapters',action='store_true',help='shadow only: compare original Wide and candidate with separately attested frozen adapters')
+    ap.add_argument('--shadow-report',help='shadow only: fresh, separate output directory (never within production run)')
+    ap.add_argument('--shadow-plan-only',action='store_true',help='shadow only: validate lineage and report planned actions; no GPU')
     ap.add_argument('--model',default='Qwen/Qwen3-0.6B')
     ap.add_argument('--device',default='cuda')
     ap.add_argument('--seed',type=int,default=47)
@@ -1638,6 +1649,18 @@ def validate_flags(args):
     focus=getattr(args,'zero_line_focus',None)
     radius=getattr(args,'zero_line_radius',None)
     resolve_policy(focus=focus,radius=radius)
+    if getattr(args,'stage',None) in ('route','route-accept','route-activate','route-rollback'):
+        if any((getattr(args,'shadow_wide',None),getattr(args,'shadow_report',None),
+                getattr(args,'shadow_plan_only',False),getattr(args,'shadow_separate_adapters',False))):
+            raise ValueError('GAMER_ROUTE_CANNOT_USE_SHADOW_MUTATION_FLAGS')
+        return
+    if any(getattr(args,f,None) for f in ('shadow_evidence','route_report','authority_file',
+                                         'route_demo','route_request_file','route_response_file')):
+        raise ValueError('GAMER_ROUTE_FLAGS_ONLY_ROUTE_STAGE')
+    if getattr(args,'stage',None) != 'shadow' and any((getattr(args,'shadow_closure',None),getattr(args,'shadow_wide',None),getattr(args,'shadow_report',None),getattr(args,'shadow_plan_only',False),getattr(args,'shadow_separate_adapters',False))):
+        raise ValueError('GAMER_SHADOW_FLAGS_ONLY_SHADOW_STAGE')
+    if getattr(args,'stage',None)=='shadow' and not (getattr(args,'shadow_closure',None) and getattr(args,'shadow_report',None)):
+        raise ValueError('GAMER_SHADOW_REQUIRES_CLOSURE_AND_SEPARATE_REPORT')
     if getattr(args,'stage',None) not in (None,'to-numerical') and (focus is not None or radius is not None):
         raise ValueError('GAMER_ZERO_LINE_FOCUS_ONLY_TO_NUMERICAL')
     if bool(getattr(args,'snapshot_lora_from',None)) != (getattr(args,'snapshot_step',None) is not None):
@@ -1673,6 +1696,22 @@ def validate_flags(args):
 def main(argv=None):
     args = parser().parse_args(argv)
     validate_flags(args)
+    if args.stage in ('route','route-accept','route-activate','route-rollback'):
+        from tools import nanojev_gamer_v1_to_numerical_serve as route
+        return route.main([args.stage, '--output', str(args.output)] +
+            sum(([flag,str(getattr(args,name))] for name,flag in (
+                ('shadow_closure','--shadow-closure'),('shadow_evidence','--shadow-evidence'),
+                ('route_report','--route-report'),('authority_file','--authority-file'),
+                ('route_request_file','--route-request-file'),
+                ('route_response_file','--route-response-file')) if getattr(args,name,None)),[]) +
+            (['--route-demo'] if args.route_demo else []) +
+            ['--capture-batch',str(args.capture_batch),'--eval-batch',str(args.eval_batch),
+             '--device',str(args.device)])
+    if args.stage == 'shadow':
+        # Integrate the shadow with the real to_numerical CLI; do not create a
+        # manifest, train, or overwrite existing handoff/production artifacts.
+        from tools import nanojev_gamer_v1_to_numerical_shadow as shadow
+        return shadow.run(args)
     if getattr(args,'snapshot_lora_from',None):
         snapshot_active_lora(args)
     if args.dataset is None:

@@ -32,6 +32,7 @@ from main_computer.model_execution_contract import (
 from .authority import SLHAuthority, SLHError
 from .ports import DEFAULT_SLH_MANAGED_PORT
 from .scheduler_policy import SchedulerPolicyStore, compute_plan
+from .storage import secure_private_state_file
 
 MANAGED_PATH = '/v1/managed/workers/live-session'
 DEFAULT_MANAGED_PORT = DEFAULT_SLH_MANAGED_PORT
@@ -45,7 +46,8 @@ def transport_identity(directory: Path) -> tuple[ssl.SSLContext, str]:
     cert_path = directory / 'managed-tls-cert.pem'
     if key_path.exists() != cert_path.exists():
         raise RuntimeError('Incomplete SLH TLS identity; restore the matching key/certificate pair')
-    if not key_path.exists():
+    created = not key_path.exists()
+    if created:
         key = ec.generate_private_key(ec.SECP256R1())
         subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'Main Computer SLH Managed LAN')])
         now = datetime.now(timezone.utc)
@@ -62,6 +64,15 @@ def transport_identity(directory: Path) -> tuple[ssl.SSLContext, str]:
                                       serialization.NoEncryption()))
         fd = os.open(cert_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         with os.fdopen(fd,'wb') as f:f.write(cert.public_bytes(serialization.Encoding.PEM))
+    # The private TLS leaf must be restricted even on Windows, where 0o600
+    # alone does not secure an NTFS ACL. Never start the gateway on failure.
+    try:
+        secure_private_state_file(key_path)
+    except BaseException:
+        if created:
+            key_path.unlink(missing_ok=True)
+            cert_path.unlink(missing_ok=True)
+        raise
     cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
     if cert.not_valid_after_utc <= datetime.now(timezone.utc):
         raise RuntimeError('SLH TLS leaf expired; rotate explicitly and redistribute its fingerprint')

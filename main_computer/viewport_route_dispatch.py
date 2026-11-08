@@ -1845,6 +1845,34 @@ def _semantic_canonical_route(path: str) -> tuple[str, str | None] | None:
     return None
 
 
+def _is_mcel_native_shell_child(self) -> bool:
+    """Native app content inside our same-origin shell, even after JS rewrites its URL.
+
+    Explicit child query supports direct inspection and non-browser acceptance.
+    Browsers also mark same-origin iframe navigations; this protects children
+    whose original routers intentionally replace URL query strings or move
+    between app routes without retaining the query parameter.
+    """
+    query = parse_qs(urlsplit(self.path).query)
+    if query.get("mcel-shell-child") == ["1"]:
+        return True
+    headers = getattr(self, "headers", {})
+    return (headers.get("Sec-Fetch-Dest", "").lower() == "iframe" and
+            headers.get("Sec-Fetch-Site", "").lower() == "same-origin")
+
+
+def _legacy_app_child_html() -> str:
+    """Keep legacy app behavior, but don't duplicate the host-owned launcher."""
+    child_css = ('<style id="mcel-native-child-chrome">'
+                 '.viewport>header,.launcher{display:none!important;}'
+                 '.viewport{grid-template-rows:0 minmax(0,1fr)!important;}'
+                 'body[data-has-app-taskbar="true"] main{padding-left:16px!important;}'
+                 '</style>')
+    if '</head>' not in APPLICATIONS_INDEX_HTML:
+        raise RuntimeError('Legacy application child HTML is missing its head')
+    return APPLICATIONS_INDEX_HTML.replace('</head>', child_css + '</head>', 1)
+
+
 def dispatch_get(self) -> None:
     route_path = urlsplit(self.path).path
     if route_path != "/api/activity/snapshot":
@@ -1872,6 +1900,42 @@ def dispatch_get(self) -> None:
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
         return
+    if route_path == "/applications/mcel-semantic-shell":
+        # Isolated, local-only MCEL parent-shell candidate. No route promotion.
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic shell preview is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_applications_shell_host import render_applications_shell_candidate
+        self._send_text(render_applications_shell_candidate(), "text/html; charset=utf-8")
+        return
+    # Explicit opt-in, route-faithful shell continuity preview.  Canonical
+    # applications without this flag retain their accepted standalone hosts.
+    # Children mount the plain canonical route, so preview rendering cannot
+    # recurse into itself.  Never expose this diagnostic preview remotely.
+    if parse_qs(urlsplit(self.path).query).get("mcel-shell-preview") == ["1"]:
+        target = _application_route_target(route_path)
+        if target is not None:
+            if not _hard_halt_client_is_local(self):
+                self._send_json({"ok": False, "error": "Shell route preview is local-only."}, HTTPStatus.FORBIDDEN)
+                return
+            from main_computer.mcel_applications_shell_host import render_applications_shell_candidate
+            self._send_text(render_applications_shell_candidate(route_preview=True), "text/html; charset=utf-8")
+            return
+    # Canonical parent-shell promotion: application URLs retain the host-owned
+    # launcher. An explicit child flag renders the already-accepted native
+    # implementation inside the iframe, preventing recursive shell mounting.
+    # Candidate and explicit opt-in preview routes above remain independent.
+    if route_path == "/applications" or (
+        route_path.startswith("/applications/") and
+        _application_route_target(route_path) is not None
+    ):
+        if not _is_mcel_native_shell_child(self):
+            if not _hard_halt_client_is_local(self):
+                self._send_json({"ok": False, "error": "MCEL application shell is local-only."}, HTTPStatus.FORBIDDEN)
+                return
+            from main_computer.mcel_applications_shell_host import render_applications_shell_candidate
+            self._send_text(render_applications_shell_candidate(canonical_promoted=True), "text/html; charset=utf-8")
+            return
     # Promotion is a route replacement, not a second embedded panel in the
     # incumbent SPA. Keep the local-only authority boundary of the accepted
     # semantic routes and leave their opt-in URLs available for diagnosis.
@@ -2002,12 +2066,16 @@ def dispatch_get(self) -> None:
             app="website-builder",
             site_id=_website_builder_route_site_id(self.path) or "",
         )
-        self._send_text(APPLICATIONS_INDEX_HTML, "text/html; charset=utf-8")
+        native_child = _is_mcel_native_shell_child(self)
+        self._send_text(_legacy_app_child_html() if native_child else APPLICATIONS_INDEX_HTML,
+                        "text/html; charset=utf-8")
         return
     application_target = _application_route_target(self.path)
     if application_target is not None:
         self.server.signal("route-applications", path=self.path, app=application_target)
-        self._send_text(APPLICATIONS_INDEX_HTML, "text/html; charset=utf-8")
+        native_child = _is_mcel_native_shell_child(self)
+        self._send_text(_legacy_app_child_html() if native_child else APPLICATIONS_INDEX_HTML,
+                        "text/html; charset=utf-8")
         return
     if self.path in {"/revisions", "/revision", "/revision-control"}:
         self.server.signal("route-revision-control", path=self.path)
@@ -2221,9 +2289,34 @@ def dispatch_get(self) -> None:
     self.server.signal("route-not-found", method="GET", path=self.path)
     self.send_error(HTTPStatus.NOT_FOUND)
 
+def _chat_console_native_execution_allowed(self) -> bool:
+    """Do not expose notebook native execution outside the local semantic host.
+
+    The canonical Chat Console page is local-only; its native execution API
+    must maintain the same boundary, including same-origin browser requests.
+    This is a transport boundary, not a general-purpose user permission token.
+    """
+    if not _hard_halt_client_is_local(self):
+        self._send_json({"ok": False, "error": "Chat Console execution is local-only."}, HTTPStatus.FORBIDDEN)
+        return False
+    origin = (self.headers.get("Origin") or "").strip()
+    if origin:
+        parsed = urlsplit(origin)
+        host = (self.headers.get("Host") or "").strip().lower()
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host or parsed.username or parsed.password:
+            self._send_json({"ok": False, "error": "Chat Console cross-origin execution denied."}, HTTPStatus.FORBIDDEN)
+            return False
+    return True
+
+
 def dispatch_post(self) -> None:
     self.server.signal("http-request", method="POST", path=self.path)
     route_path = urlsplit(self.path).path
+    if route_path in {
+        "/api/applications/chat-console/cell/evaluate",
+        "/api/applications/chat-console/rag-assisted-thinking/evaluate",
+    } and not _chat_console_native_execution_allowed(self):
+        return
     if route_path.startswith("/api/local/authenticator/"):
         _handle_main_computer_authenticator(self, "POST", route_path)
         return

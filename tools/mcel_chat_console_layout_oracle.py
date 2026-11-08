@@ -398,9 +398,303 @@ def observe_hosted(browser, url: str, context: str, *, screenshot: Path | None =
     finally:page.close()
 
 
+# P1: causal layout authority, independent of containment and semantic markers.
+# Kept separate from the existing oracle modes so their historical gates do not
+# change when the new (currently red) authority acceptance is introduced.
+CANONICAL_ENGINE = ROOT / 'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js'
+CAUSAL_SCHEMA = 'mcel.chat-console-causal-layout-authority.v1'
+
+
+def _canonical_tree(ir: dict) -> dict | None:
+    return next((layout['layoutTree'] for layout in ir.get('layouts', [])
+                 if isinstance(layout, dict) and isinstance(layout.get('layoutTree'), dict)), None)
+
+
+def _perturb_tree_gap(tree: dict) -> tuple[dict, str, int, int]:
+    """Change a feasible authored group gap; never alter the DOM or its CSS."""
+    import copy
+    altered = copy.deepcopy(tree)
+    def visit(node):
+        if node.get('role') == 'group' and len(node.get('children', [])) >= 2:
+            before = node.get('gap', 8)
+            if not isinstance(before, (int, float)) or not 0 <= before <= 64:
+                raise ValueError('invalid source layout gap')
+            after = 32 if before != 32 else 8
+            node['gap'] = after
+            return node['id'], before, after
+        for child in node.get('children', []):
+            found = visit(child)
+            if found:
+                return found
+        return None
+    found = visit(altered['root'])
+    if not found:
+        raise ValueError('no group with two declared children for causal intervention')
+    return altered, *found
+
+
+def _replace_ir_script(page_html: str, script_id: str, payload: dict) -> str:
+    import re
+    pattern = re.compile(r'(<script\s+id="' + re.escape(script_id) +
+                         r'"\s+type="application/json">)(.*?)(</script>)', re.S)
+    if len(pattern.findall(page_html)) != 1:
+        raise ValueError('canonical IR payload is absent or ambiguous')
+    encoded = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).replace('<', '\\u003c')
+    return pattern.sub(lambda match: match.group(1) + encoded + match.group(3), page_html, count=1)
+
+
+def _source_layout_witness(html: str, engine_source: str, *, engine_required: bool = True) -> bool:
+    # This is a source existence check, not the acceptance witness.
+    # The actual witness comes from a wrapped call into the canonical engine.
+    tagged = '<script>\n' + engine_source + '\n</script>'
+    return html.count(tagged) == 1 if engine_required else html.count(tagged) == 0
+
+
+# Installed immediately before the page's final bootstrap. No production code
+# is changed. The wrapper records real canonical-tree calls and their returned
+# selection/evidence, not an attribute an application can simply set.
+CAUSAL_HOOK = r'''<script>
+(function () {
+  const engine=window.McelSemanticLayoutInference;
+  window.__chatCausalCalls=[];
+  if(!engine || typeof engine.mountCanonicalLayoutTree!=='function')return;
+  const original=engine.mountCanonicalLayoutTree;
+  window.McelSemanticLayoutInference=Object.freeze({...engine,
+    mountCanonicalLayoutTree:function(host, source, options){
+      const result=original(host,source,options);
+      const evaluation=result?.initial?.evaluation||null;
+      const tree=engine.canonicalLayoutTree(source);
+      const root=tree.root;
+      const target=host?.matches(root.selector)?host:host?.querySelector(root.selector);
+      const snapshot=()=>({
+        targetGap:target?getComputedStyle(target).columnGap:null,
+        targetDisplay:target?getComputedStyle(target).display:null,
+        hostWidth:host?.getBoundingClientRect().width||null,
+        rows:evaluation?.generatedCss||[],
+        decision:evaluation?.decision||null,
+        selected:evaluation?.selected?.choices||null
+      });
+      const call={status:result?.status||'missing',reason:result?.reason||null,
+        rootId:root.id,sourceTree:tree,snapshot:snapshot()};
+      window.__chatCausalCalls.push(call);
+      return result;
+    }
+  });
+})();
+</script>
+'''
+
+
+def _inject_causal_hook(html: str, context: str) -> str:
+    if context == 'standalone':
+        marker = '<script>(function(){"use strict";\n const status=document.getElementById("mcel-chat-canonical-status");'
+    else:
+        marker = '<script>\n(function(){"use strict";\n const status=document.getElementById(\'mcel-expanded-diagnostic\');'
+    if html.count(marker) != 1:
+        raise ValueError('canonical app bootstrap is absent or ambiguous')
+    return html.replace(marker, CAUSAL_HOOK + marker, 1)
+
+
+def _ablate_engine(html: str, engine_source: str) -> str:
+    tagged = '<script>\n' + engine_source + '\n</script>'
+    if html.count(tagged) != 1:
+        raise ValueError('cannot ablate missing or duplicated canonical engine')
+    return html.replace(tagged, '', 1)
+
+
+def _run_causal_page(browser, html: str, context: str, width: int) -> dict:
+    viewport = {'width':1272 if context == 'embedded' else max(width + 24, 1040), 'height':900}
+    page = browser.new_page(viewport=viewport, device_scale_factor=1)
+    errors=[]
+    page.on('pageerror', lambda error: errors.append(str(error)[:250]))
+    try:
+        # No provider/host traffic is permitted in the causal oracle.
+        page.route('**/*', lambda route: route.abort())
+        # about:blank has no storage permission. Provide isolated memory storage
+        # so causal acceptance tests the layout, not origin-based denial.
+        page.evaluate('''() => {
+          const data=new Map();
+          const storage={getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,String(v)),
+            removeItem:k=>data.delete(k),clear:()=>data.clear(),
+            key:i=>[...data.keys()][i]||null,get length(){return data.size}};
+          Object.defineProperty(window,'localStorage',{configurable:true,value:storage});
+          Object.defineProperty(window,'sessionStorage',{configurable:true,value:storage});
+        }''')
+        page.set_content(html, wait_until='load', timeout=25000)
+        if context == 'embedded':
+            help_tab=page.locator('[data-mcel-mode-tabs] button[data-value="help"]')
+            if help_tab.count():help_tab.first.click(timeout=5000)
+            # The true mounted child width is governed by Calculator, not window.
+            page.evaluate('''width => {
+              const host=document.querySelector('[data-chat-console-embed="calculator"]');
+              if (host) host.style.setProperty('width',width+'px','important');
+            }''', width)
+        page.wait_for_timeout(140)
+        return page.evaluate('''() => ({
+          calls:window.__chatCausalCalls||[],
+          ready:document.body.dataset.mcelChatReady||null,
+          standaloneRefusal:document.querySelector('#mcel-chat-canonical-status:not([hidden])')?.textContent||null,
+          calculatorRefusal:document.querySelector('#mcel-expanded-diagnostic[data-error]')?.textContent||null,
+          embeddedRefusal:(() => {
+            const el=document.querySelector('[data-chat-console-embed="calculator"] [data-mcel-layout-refusal], [data-chat-console-embed="calculator"] [data-chat-console-layout-refusal]');
+            return el && !el.hidden && getComputedStyle(el).display!=='none' ? el.textContent : null;
+          })(),
+          embeddedShell:!!document.querySelector('[data-chat-console-embed="calculator"] .chat-console-shell'),
+          standaloneShell:!!document.querySelector('#chat-console-app .chat-console-shell'),
+          bodyOverflow:document.documentElement.scrollWidth>innerWidth+2
+        })''') | {'errors': errors}
+    finally:
+        page.close()
+
+
+def _causal_engine_reference_html(width: int, gap: int) -> str:
+    """Actual canonical engine, not a mock or a cosmetic CSS reference."""
+    root={'id':'reference','selector':'#causal-root','role':'group','gap':gap,'maxColumns':2,
+          'children':[{'id':'nav','selector':'#causal-nav','role':'region','verifyControls':False},
+                      {'id':'work','selector':'#causal-work','role':'region','verifyControls':False}]}
+    tree={'schema':'mcel.layout-tree.v1','root':root}
+    source=CANONICAL_ENGINE.read_text(encoding='utf-8')
+    # Keep DOM/CSS byte-identical between baseline and perturbation; only IR changes.
+    return '''<!doctype html><html><head><meta charset="utf-8"><style>
+       *{box-sizing:border-box}body{margin:0;background:#101820;color:white}
+       #causal-root{width:100%;min-height:200px}#causal-nav,#causal-work{min-height:100px;min-width:0}
+       </style></head><body><div style="width:''' + str(width) + '''px">
+       <main id="causal-root"><section id="causal-nav">Threads</section><section id="causal-work">Notebook</section></main>
+       </div><script>\n''' + source + '''\n</script><script>
+       window.__referenceMount=window.McelSemanticLayoutInference.mountCanonicalLayoutTree(
+         document.querySelector('#causal-root'),''' + json.dumps(tree) + ''',{observeResize:false});
+       </script></body></html>'''
+
+
+def _reference_witness(browser, context: str, width: int, gap: int, *, ablate: bool = False) -> dict:
+    html=_causal_engine_reference_html(width,gap)
+    if ablate:
+        html=_ablate_engine(html,CANONICAL_ENGINE.read_text(encoding='utf-8'))
+    page=browser.new_page(viewport={'width':1272 if context=='embedded' else max(1040,width+24),'height':900})
+    try:
+        page.route('**/*',lambda route:route.abort())
+        page.set_content(html)
+        return page.evaluate('''() => {
+          const root=document.getElementById('causal-root');
+          const a=document.getElementById('causal-nav').getBoundingClientRect();
+          const b=document.getElementById('causal-work').getBoundingClientRect();
+          const result=window.__referenceMount;
+          return {status:result?.status||'missing',gap:getComputedStyle(root).gap,
+            display:getComputedStyle(root).display,navX:a.x,workX:b.x,
+            workY:b.y,workWidth:b.width,sourceGap:result?.initial?.evaluation?.tree?.root?.gap||null,
+            generatedCss:result?.initial?.evaluation?.generatedCss||[],
+            committed:root.dataset.mcelCanonicalLayoutAuthority||null};
+        }''')
+    finally:page.close()
+
+
+def _assess_reference(first: dict, changed: dict, ablated: dict) -> list[str]:
+    errors=[]
+    if first.get('status')!='pass' or changed.get('status')!='pass':
+        errors.append('reference-engine-did-not-accept-both-layouts')
+    if first.get('sourceGap') != 8 or changed.get('sourceGap') != 32:
+        errors.append('reference-IR-intervention-not-consumed')
+    if first.get('gap') != '8px' or changed.get('gap') != '32px':
+        errors.append('reference-generated-gap-not-applied')
+    if first.get('workX') == changed.get('workX') and first.get('workY') == changed.get('workY'):
+        errors.append('reference-geometry-did-not-change')
+    if not first.get('generatedCss') or not changed.get('generatedCss'):
+        errors.append('reference-planner-evidence-missing')
+    if ablated.get('status') != 'missing' or ablated.get('committed'):
+        errors.append('reference-engine-ablation-not-detected')
+    return errors
+
+
+def causal_authority(browser, *, repo: Path = ROOT) -> dict:
+    """Causal witness: distinguish Chat Console CSS from canonical authority.
+
+    Reference control MUST pass. The actual Chat route intentionally FAILS
+    until later patches connect its authored tree and the canonical engine.
+    """
+    from main_computer.mcel_chat_console_host import compile_chat_console, render_chat_console_page
+    from main_computer.mcel_calculator_expanded_host import render_expanded_page
+    ir=compile_chat_console(repo)
+    standalone_html=render_chat_console_page(repo,promoted=True)
+    embedded_html=render_expanded_page(repo,promoted=True)
+    engine_source=(repo/'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js').read_text(encoding='utf-8')
+    tree=_canonical_tree(ir)
+    controls=[]
+    for context,width in [('standalone',1040),('embedded',500)]:
+        before=_reference_witness(browser,context,width,8)
+        changed=_reference_witness(browser,context,width,32)
+        absent=_reference_witness(browser,context,width,8,ablate=True)
+        controls.append({'context':context,'width':width,'status':'PASS' if not _assess_reference(before,changed,absent) else 'FAIL',
+                         'failures':_assess_reference(before,changed,absent),
+                         'baseline':before,'perturbed':changed,'ablated':absent})
+    cases=[]
+    for context,width,html in [('standalone',1040,standalone_html),('embedded',500,embedded_html)]:
+        failures=[]
+        if tree is None:failures.append('authored-canonical-layout-tree-missing')
+        if not _source_layout_witness(html,engine_source):
+            failures.append('canonical-layout-engine-not-loaded')
+        observed=None
+        if tree and not failures:
+            try:
+                baseline=_run_causal_page(browser,_inject_causal_hook(html,context),context,width)
+                calls=[c for c in baseline['calls'] if c.get('rootId') == tree['root']['id']]
+                if not calls or not any(c['status']=='pass' for c in calls):
+                    failures.append('no-passing-canonical-tree-mount')
+                else:
+                    picked=calls[-1]
+                    if picked['sourceTree']!=tree:failures.append('mounted-tree-differs-from-authored-IR')
+                    if not picked['snapshot']['rows'] or not picked['snapshot']['decision']:
+                        failures.append('layout-decision-or-generated-css-witness-missing')
+                observed={'baseline':baseline}
+                if context=='standalone':
+                    altered,region,before,after=_perturb_tree_gap(tree)
+                    mutated=json.loads(json.dumps(ir))
+                    next(l for l in mutated['layouts'] if l.get('layoutTree'))['layoutTree']=altered
+                    mutated_html=_replace_ir_script(html,'mcel-chat-canonical-ir',mutated)
+                    changed=_run_causal_page(browser,_inject_causal_hook(mutated_html,context),context,width)
+                    modified_calls=[c for c in changed['calls'] if c.get('rootId')==tree['root']['id']]
+                    if not modified_calls or modified_calls[-1]['status']!='pass':
+                        failures.append('perturbed-IR-layout-not-accepted')
+                    elif calls:
+                        a=calls[-1]['snapshot'];b=modified_calls[-1]['snapshot']
+                        if a['targetGap']==b['targetGap']:
+                            failures.append('IR-perturbation-did-not-change-computed-layout')
+                        if a['decision']==b['decision']:
+                            failures.append('IR-perturbation-did-not-change-planner-decision')
+                    observed['intervention']={'region':region,'gap_before':before,'gap_after':after,'run':changed}
+                # Engine ablation is tested on BOTH real hosted surfaces. If
+                # it silently falls back to legacy DOM/CSS the authority gate fails.
+                ablated_html=_ablate_engine(html,engine_source)
+                ablated=_run_causal_page(browser,ablated_html,context,width)
+                if context=='standalone':
+                    if not ablated['standaloneRefusal'] or ablated['ready']:
+                        failures.append('engine-ablation-did-not-produce-visible-refusal')
+                else:
+                    if not (ablated['calculatorRefusal'] or ablated['embeddedRefusal']):
+                        failures.append('embedded-engine-ablation-did-not-produce-visible-refusal')
+                observed['ablated']=ablated
+            except (ValueError,KeyError) as exc:
+                failures.append('causal-oracle-fixture-error: '+str(exc))
+        cases.append({'context':context,'width':width,'status':'PASS' if not failures else 'FAIL',
+                      'failures':failures,'observed':observed})
+    control_ok=all(c['status']=='PASS' for c in controls)
+    app_ok=all(c['status']=='PASS' for c in cases)
+    return {'schema':CAUSAL_SCHEMA,'status':'PASS' if control_ok and app_ok else 'FAIL',
+            'reference_status':'PASS' if control_ok else 'FAIL',
+            'application_status':'PASS' if app_ok else 'FAIL',
+            'reference_controls':controls,'application_cases':cases,
+            'fingerprints':{str(path.relative_to(repo)):hashlib.sha256(path.read_bytes()).hexdigest()
+                            for path in [repo/'main_computer/mcel_chat_console_host.py',
+                                         repo/'tools/fixtures/mcel_semantic_chat_console/application.js',
+                                         repo/'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js']},
+            'notes':['The original layout/functional Frobs are separate and unchanged',
+                     'The reference is an engine-driven positive control, not an accepted Chat Console design',
+                     'Only standalone uses literal embedded-IR payload perturbation; the embedded route requires a later shared-IR bridge',
+                     'The browser fixture blocks external providers and host effects']}
+
+
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=('baseline','candidate','hosted'),default='baseline')
+    parser.add_argument('--mode',choices=('baseline','candidate','hosted','causal'),default='baseline')
     parser.add_argument('--host-url',default='http://127.0.0.1:8765')
     parser.add_argument('--report',type=Path,default=DEFAULT_REPORT)
     parser.add_argument('--screenshots',action='store_true')
@@ -422,6 +716,17 @@ def main(argv=None) -> int:
     with sync_playwright() as pw:
         browser=_launch(pw)
         try:
+            if args.mode == 'causal':
+                result=causal_authority(browser)
+                args.report.parent.mkdir(parents=True,exist_ok=True)
+                args.report.write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+                for control in result['reference_controls']:
+                    print(f'CHAT_CAUSAL_REFERENCE {control["context"]} {control["width"]}px {control["status"]} '+','.join(control['failures']))
+                for case in result['application_cases']:
+                    print(f'CHAT_CAUSAL_APPLICATION {case["context"]} {case["width"]}px {case["status"]} '+','.join(case['failures']))
+                print(f'MCEL_CHAT_CONSOLE_CAUSAL_AUTHORITY {result["status"]}')
+                print('  report:',args.report)
+                return 0 if result['status']=='PASS' else 1
             if args.mode in ('baseline','candidate'):
                 for context,widths in [('standalone',VIEWPORTS),('embedded',EMBED_WIDTHS)]:
                     for width in widths:
@@ -430,8 +735,8 @@ def main(argv=None) -> int:
                         results.append({'context':context,'width':width,**value})
                 results.append(fixture_resize_sequence(browser,'embedded',(680,500,390,680),semantic=args.mode=='candidate'))
             else:
-                for context,route in [('standalone','/applications/chat-console'),
-                                      ('embedded','/applications/calculator')]:
+                for context,route in [('standalone','/applications/chat-console?mcel-shell-child=1'),
+                                      ('embedded','/applications/calculator?mcel-shell-child=1')]:
                     shot=args.report.parent/'screenshots'/f'hosted-{context}.png' if args.screenshots else None
                     value=observe_hosted(browser,args.host_url.rstrip('/')+route,context,screenshot=shot,
                                          require_semantic=args.require_semantic,structure_only=args.structure_only)

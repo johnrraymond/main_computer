@@ -161,3 +161,36 @@ def test_partial_seh_binding_is_rejected_at_startup(monkeypatch):
     monkeypatch.setenv('SEH_SLH_ID', 'slh')
     with pytest.raises(SystemExit, match='2'):
         module.main(['--port', '8080'])
+
+
+def test_ephemeral_seh_listener_start_waits_for_assigned_port(monkeypatch):
+    """An exposed server object alone must never return ws://127.0.0.1:0."""
+    import threading
+    from types import SimpleNamespace
+    _, public = generate_identity()
+    relay = SEHRelay(slh_id='slh', slh_public_key=public, port=0)
+    server_visible = threading.Event()
+    port_visible = threading.Event()
+
+    def delayed_serve():
+        relay._server = SimpleNamespace(shutdown=lambda: None)
+        server_visible.set()
+        # The old start() checked only _server and returned here with port 0.
+        if not port_visible.wait(timeout=1):
+            return
+        relay.port = 45678
+
+    monkeypatch.setattr(relay, 'serve', delayed_serve)
+    def assign_port_after_observing_server():
+        assert server_visible.wait(timeout=1)
+        import time
+        time.sleep(0.05)
+        port_visible.set()
+    assigner = threading.Thread(target=assign_port_after_observing_server)
+    assigner.start()
+    try:
+        relay.start(timeout=2)
+        assert relay.port == 45678
+    finally:
+        assigner.join(timeout=1)
+        relay.stop()

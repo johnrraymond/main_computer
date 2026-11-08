@@ -252,7 +252,8 @@ def test_market_mutation_cannot_overwrite_a_separate_hubs_account_update() -> No
         return market.record_worker_live(
             worker_id="worker-market",
             owner={"owner_hub_id": "dev-hub3", "owner_hub_url": "http://127.0.0.1:8873", "connection_id": "conn-1", "lease_epoch": 1},
-            market_profile={"ring": "ring-1", "price": {"amount": "0.1", "unit": "credit"}},
+            market_profile={"ring": "ring-1", "models": ["mock-model"], "capabilities": ["chat.completions"],
+                            "price": {"amount": "0.1", "unit": "credit"}},
             worker_msk_id="msk-worker", worker_wallet_address="0x" + "ef" * 20, worker_account_id="account-worker",
         )
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -442,7 +443,8 @@ def test_worker_capacity_requires_matching_owner_in_same_store_transaction() -> 
     )
     market_dir.record_worker_live(
         worker_id="worker-atomic-reserve", owner=owner,
-        market_profile={"ring": "ring-2"}, worker_msk_id="msk",
+        market_profile={"ring": "ring-2", "models": ["mock-model"],
+                        "capabilities": ["chat.completions"]}, worker_msk_id="msk",
         worker_wallet_address="0x" + "12" * 20, worker_account_id="acct",
     )
     owner_dir.record_closed(worker_id="worker-atomic-reserve", connection_id="conn_reserve")
@@ -469,7 +471,8 @@ def test_worker_owner_and_market_close_rollback_together_on_error() -> None:
     )
     market_dir.record_worker_live(
         worker_id="worker-close-rollback", owner=owner,
-        market_profile={"ring": "ring-2"}, worker_msk_id="msk",
+        market_profile={"ring": "ring-2", "models": ["mock-model"],
+                        "capabilities": ["chat.completions"]}, worker_msk_id="msk",
         worker_wallet_address="0x" + "12" * 20, worker_account_id="acct",
     )
 
@@ -512,7 +515,8 @@ def test_worker_close_and_hold_release_are_one_fdb_commit_with_crash_rollback() 
     )
     market_dir.record_worker_live(
         worker_id=worker_id, owner=owner,
-        market_profile={"ring": "ring-3", "price": {"amount": "1.024", "unit": "credit"}, "max_concurrency": 1},
+        market_profile={"ring": "ring-3", "models": ["mock-model"], "capabilities": ["chat.completions"],
+                        "price": {"amount": "1.024", "unit": "credit"}, "max_concurrency": 1},
         worker_msk_id="msk-worker", worker_wallet_address=wallet, worker_account_id="account-worker",
     )
     ledger.fund_account(account_id="account-one", wallet_address=wallet, credits="2", replace=True)

@@ -16,7 +16,10 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, quote, urlencode
 
@@ -1341,7 +1344,8 @@ def _public_runtime_probe(public_url: str) -> dict:
             return None
 
     request = Request(public_url.rstrip('/') + '/healthz',
-                      headers={'Accept': 'application/json'}, method='GET')
+                      headers={'Accept': 'application/json',
+                               'User-Agent': 'Mozilla/5.0'}, method='GET')
     opener = build_opener(NoRedirect())
     try:
         with opener.open(request, timeout=6) as response:
@@ -1356,7 +1360,7 @@ def _public_runtime_probe(public_url: str) -> dict:
     if code in (404, 502, 503, 504):
         return {'status': 'PUBLIC_RUNTIME_UNAVAILABLE', 'http_status': code}
     if code != 200:
-        raise SEHGitError('Public SEH health returned unexpected HTTP status; '
+        raise SEHGitError(f'Public SEH health returned HTTP {code}; '
                           'refusing speculative redeployment')
     try:
         payload = json.loads(content)
@@ -1490,6 +1494,317 @@ def _verify_seh_build_receipt(client, uuid: str, deployment_uuid: str,
     if not isinstance(commit, str) or not _SHA.fullmatch(commit.lower()) or commit.lower() != revision.lower():
         return {'status': 'CONFLICT', 'reason': 'git_revision_unverified'}
     return {'status': 'VERIFIED', 'deployment_status': str(response.get('status') or 'unknown')}
+
+
+
+
+# A forced redeployment is independent of missing-runtime recovery. Its durable
+# checkpoint belongs to SEH operational state (not SLH identity or Mother).
+_REDEPLOY_CHECKPOINT = 'seh-canonical-redeploy-v1.json'
+_REDEPLOY_SCHEMA = 'seh-canonical-redeploy.v1'
+_REDEPLOY_TERMINAL_OK = frozenset(('finished', 'success', 'succeeded', 'completed', 'complete'))
+_REDEPLOY_TERMINAL_FAILED = frozenset(('failed', 'failure', 'error', 'cancelled', 'canceled'))
+
+
+def _redeploy_checkpoint(root: Path, network: str) -> dict | None:
+    path = ds.directory(root, network) / _REDEPLOY_CHECKPOINT
+    if path.is_symlink():
+        raise SEHGitError('SEH redeployment receipt cannot be a symlink')
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        raise SEHGitError('SEH redeployment receipt unreadable; refusing duplicate submission') from None
+    required = ('schema', 'network', 'application_uuid', 'identity_binding',
+                'git_revision', 'phase')
+    if (type(data) is not dict or any(type(data.get(key)) is not str for key in required)
+            or data['schema'] != _REDEPLOY_SCHEMA or data['network'] != network
+            or not _ID.fullmatch(data['application_uuid'])
+            or not re.fullmatch('[0-9a-f]{64}', data['identity_binding'])
+            or not _SHA.fullmatch(data['git_revision'])
+            or data['phase'] not in ('INTENT', 'ACKNOWLEDGED', 'VERIFIED', 'FAILED')
+            or (data['phase'] in ('ACKNOWLEDGED', 'VERIFIED', 'FAILED') and
+                not isinstance(data.get('deployment_uuid'), str))
+            or ('deployment_uuid' in data and not _ID.fullmatch(data['deployment_uuid']))):
+        raise SEHGitError('SEH redeployment receipt invalid; refusing duplicate submission')
+    return data
+
+
+def _save_redeploy_checkpoint(root: Path, network: str, data: dict) -> None:
+    """Atomic fsynced evidence, never a second application identity authority."""
+    folder = ds.directory(root, network)
+    if folder.is_symlink():
+        raise SEHGitError('SEH redeployment directory cannot be a symlink')
+    from main_computer.slh.storage import secure_machine_state_dir, secure_private_state_file
+    secure_machine_state_dir(folder)
+    target = folder / _REDEPLOY_CHECKPOINT
+    if target.is_symlink():
+        raise SEHGitError('SEH redeployment receipt cannot be a symlink')
+    fd, scratch = tempfile.mkstemp(prefix='.seh-redeploy-', dir=folder)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        secure_private_state_file(Path(scratch))
+        os.replace(scratch, target)
+        if os.name != 'nt':
+            handle = os.open(folder, os.O_RDONLY)
+            try:
+                os.fsync(handle)
+            finally:
+                os.close(handle)
+    finally:
+        if os.path.exists(scratch):
+            os.unlink(scratch)
+
+
+
+def _reconcile_redeploy_intent(client, checkpoint: dict, *, app_id: int | None) -> str | None:
+    """Recover a lost POST acknowledgment without authorizing a second POST.
+
+    Only a uniquely identified, receipt-verified forced API deployment for
+    this exact application and pinned revision, created after the persisted
+    intent, may be adopted. Missing metadata is an unresolved outcome, not
+    permission to retry the mutation.
+    """
+    try:
+        started = datetime.fromisoformat(checkpoint['created_utc'].replace('Z', '+00:00'))
+        if started.tzinfo is None:
+            return None
+        candidates = _items(_api(client, 'GET', '/api/v1/deployments'), 'deployments')
+    except (SEHGitError, ValueError, KeyError, TypeError):
+        return None
+    accepted = []
+    for row in candidates:
+        if row.get('resource_uuid', row.get('application_uuid')) != checkpoint['application_uuid']:
+            continue
+        uuid = row.get('deployment_uuid')
+        created = row.get('created_at')
+        if not isinstance(uuid, str) or not _ID.fullmatch(uuid) or not isinstance(created, str):
+            continue
+        try:
+            timestamp = datetime.fromisoformat(created.replace('Z', '+00:00'))
+            if timestamp.tzinfo is None or timestamp < started:
+                continue
+        except ValueError:
+            continue
+        proof = _verify_seh_build_receipt(client, checkpoint['application_uuid'], uuid,
+                                          checkpoint['git_revision'], app_id=app_id)
+        if proof['status'] == 'VERIFIED':
+            accepted.append(uuid)
+    if len(set(accepted)) > 1:
+        raise SEHGitError('Multiple plausible SEH forced builds after ambiguous POST; refusing adoption')
+    return accepted[0] if accepted else None
+
+
+def redeploy_canonical_runtime(root: Path, network: str, *, execute: bool = False,
+                               client=None, probe=None, timeout_s: float = 900.0,
+                               poll_s: float = 5.0, clock=None, sleep=None) -> dict:
+    """Force-rebuild the ONE verified SEH UUID and certify its replacement.
+
+    Unlike recover-runtime, a healthy live relay does not block this explicitly
+    approved operation. Verification never authorizes changing trust, Git pin,
+    app identity, deployment placement, or Mother state. An ambiguous POST is
+    checkpointed as INTENT and cannot silently be repeated.
+    """
+    from tools.seh_control.dns_probe import domain_hosts
+
+    if not 1 <= timeout_s <= 3600 or not 0 < poll_s <= 60:
+        raise SEHGitError('Invalid SEH deployment wait parameters')
+    now = clock or time.monotonic
+    pause = sleep or time.sleep
+    observe = probe or _public_runtime_probe
+
+    # Plan mode does not take the mutation lock or write durable state.
+    lock = ds.mutation_lock(root, network) if execute else _nullcontext()
+    with lock:
+        record, controller, mother_generation, _ = _canonical_selection(root, network)
+        uuid = record['deployment']['application_uuid']
+        remote = client if client is not None else _client(controller)
+        app = _api(remote, 'GET', f'/api/v1/applications/{uuid}')
+        if not isinstance(app, dict) or app.get('uuid') != uuid:
+            raise SEHGitError('Canonical SEH application missing or UUID changed; refusing redeploy')
+        place = _canonical_placement(remote, record)
+        _verify_application_placement(remote, app, place)
+        _verify_canonical_source(app)
+        if _verify_canonical_metadata(app) != 'CANONICAL':
+            raise SEHGitError('Existing SEH application metadata is not canonical')
+        revision = app.get('git_commit_sha')
+        if not isinstance(revision, str) or not _SHA.fullmatch(revision.lower()):
+            raise SEHGitError('Existing SEH Git revision is not a verified 40-character pin')
+        revision = revision.lower()
+        domain = domain_hosts(app)
+        expected_url = record['deployment'].get('public_url') or DEFAULT_PUBLIC_URL
+        public = urlsplit(expected_url)
+        if (public.scheme != 'https' or not public.hostname or public.username or public.password
+                or public.path not in ('', '/') or public.query or public.fragment
+                or len(domain) != 1 or domain[0].lower() != public.hostname.lower()):
+            raise SEHGitError('Canonical SEH public domain cannot be verified')
+        public_url = 'https://' + domain[0]
+        trust = _trust_snapshot(remote, uuid)
+        keys = {row['key'] for row in trust}
+        if not {'SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64'}.issubset(keys):
+            raise SEHGitError('Canonical SEH signing-key trust is incomplete')
+        binding = ds.identity_binding(record)
+        checkpoint = _redeploy_checkpoint(root, network)
+        result = {'network': network, 'application_uuid': uuid,
+                  'git_revision': revision, 'public_url': public_url,
+                  'mother_generation': mother_generation,
+                  'mother_mutation': 'UNCHANGED', 'signing_key_trust': 'MATCHED',
+                  'remote_mutation': False}
+        if checkpoint and (checkpoint['application_uuid'] != uuid or
+                           checkpoint['identity_binding'] != binding):
+            raise SEHGitError('Previous redeployment receipt belongs to a different canonical SEH')
+        if checkpoint and checkpoint['phase'] != 'VERIFIED' and checkpoint['git_revision'] != revision:
+            raise SEHGitError('SEH Git pin changed while a redeployment was unresolved')
+        if not execute:
+            return {**result, 'status': 'PLAN_ONLY', 'action': 'FORCE_REDEPLOY_EXISTING_UUID',
+                    'prior_redeployment_phase': checkpoint['phase'] if checkpoint else None}
+
+        if checkpoint and checkpoint['phase'] == 'INTENT':
+            accepted_uuid = _reconcile_redeploy_intent(remote, checkpoint, app_id=app.get('id'))
+            if accepted_uuid is None:
+                return {**result, 'status': 'INCOMPLETE', 'remote_mutation': 'UNKNOWN',
+                        'failed_stage': 'unacknowledged_prior_deployment',
+                        'reason': 'POST outcome still ambiguous; no second build authorized'}
+            checkpoint = {**checkpoint, 'phase': 'ACKNOWLEDGED',
+                          'deployment_uuid': accepted_uuid}
+            _save_redeploy_checkpoint(root, network, checkpoint)
+        if checkpoint and checkpoint['phase'] == 'FAILED':
+            return {**result, 'status': 'INCOMPLETE', 'failed_stage': 'prior_deployment_failed',
+                    'deployment_uuid': checkpoint['deployment_uuid']}
+
+        deployment_uuid = None
+        if checkpoint and checkpoint['phase'] == 'ACKNOWLEDGED':
+            deployment_uuid = checkpoint['deployment_uuid']
+        else:
+            # Mutating preflight is repeated under the SEH-owned exclusive lock.
+            later, _, _, _ = _canonical_selection(root, network)
+            if _operational_binding(later) != _operational_binding(record):
+                raise SEHGitError('SEH operational identity changed before deployment')
+            recent_app = _api(remote, 'GET', f'/api/v1/applications/{uuid}')
+            if recent_app != app or _trust_snapshot(remote, uuid) != trust:
+                raise SEHGitError('SEH Coolify application or signing trust changed before deployment')
+            observed = str(app.get('status') or '').lower()
+            if any(word in observed for word in ('building', 'deploying', 'starting', 'restarting')):
+                raise SEHGitError('SEH has an active build or replacement; refusing overlapping deploy')
+            active = _items(_api(remote, 'GET', '/api/v1/deployments'), 'deployments')
+            for dep in active:
+                # Some Coolify releases include historical terminal entries in
+                # the deployments listing; these do not constitute an active
+                # build. Unknown status remains fail-closed.
+                stage = str(dep.get('status') or '').strip().lower()
+                if stage in _REDEPLOY_TERMINAL_OK | _REDEPLOY_TERMINAL_FAILED:
+                    continue
+                matched = (dep.get('resource_uuid') == uuid or dep.get('application_uuid') == uuid
+                           or (app.get('id') is not None and str(dep.get('application_id')) == str(app['id'])))
+                if matched:
+                    raise SEHGitError('SEH already has an active Coolify deployment')
+                if not any(k in dep for k in ('resource_uuid', 'application_uuid', 'application_id')):
+                    raise SEHGitError('Coolify active deployment identity is ambiguous; refusing redeploy')
+            intent = {'schema': _REDEPLOY_SCHEMA, 'network': network,
+                      'application_uuid': uuid, 'identity_binding': binding,
+                      'git_revision': revision, 'phase': 'INTENT',
+                      'created_utc': datetime.now(timezone.utc).isoformat()}
+            _save_redeploy_checkpoint(root, network, intent)
+            try:
+                deployment_uuid = _forced_seh_build(remote, uuid)
+            except SEHGitError as exc:
+                return {**result, 'status': 'INCOMPLETE', 'remote_mutation': 'UNKNOWN',
+                        'failed_stage': 'forced_build_submission', 'reason': str(exc)}
+            checkpoint = {**intent, 'phase': 'ACKNOWLEDGED',
+                          'deployment_uuid': deployment_uuid}
+            try:
+                _save_redeploy_checkpoint(root, network, checkpoint)
+            except (OSError, SEHGitError):
+                return {**result, 'status': 'INCOMPLETE', 'remote_mutation': True,
+                        'deployment_uuid': deployment_uuid,
+                        'failed_stage': 'deployment_receipt_persistence'}
+
+        result.update(remote_mutation=True, deployment_uuid=deployment_uuid)
+        if client is None:
+            print(f'SEH_PROGRESS: forced build {deployment_uuid} on {uuid}; waiting for Coolify',
+                  file=sys.stderr, flush=True)
+        deadline = now() + timeout_s
+        last_log_status = None
+        last_log_time = -float('inf')
+        while True:
+            proof = _verify_seh_build_receipt(remote, uuid, deployment_uuid, revision,
+                                              app_id=app.get('id'))
+            status_label = proof.get('deployment_status', proof['status'])
+            moment = now()
+            if client is None and (status_label != last_log_status or moment - last_log_time >= 30):
+                print(f'SEH_PROGRESS: Coolify deployment status={status_label}',
+                      file=sys.stderr, flush=True)
+                last_log_status, last_log_time = status_label, moment
+            if proof['status'] == 'CONFLICT':
+                return {**result, 'status': 'INCOMPLETE', 'failed_stage': 'deployment_receipt_conflict',
+                        'build_verification_reason': proof.get('reason')}
+            if proof['status'] == 'VERIFIED':
+                state = proof['deployment_status'].strip().lower()
+                if state in _REDEPLOY_TERMINAL_FAILED:
+                    _save_redeploy_checkpoint(root, network, {**checkpoint, 'phase': 'FAILED'})
+                    return {**result, 'status': 'INCOMPLETE', 'failed_stage': 'deployment_build_failed',
+                            'build_status': state}
+                if state in _REDEPLOY_TERMINAL_OK:
+                    break
+            if now() >= deadline:
+                return {**result, 'status': 'INCOMPLETE', 'failed_stage': 'deployment_wait_timeout',
+                        'build_verification': proof['status'],
+                        'build_status': proof.get('deployment_status')}
+            pause(min(poll_s, max(0, deadline - now())))
+
+        # A completed build is NOT proof that the application, signing key, or
+        # actual public endpoint still belongs to this canonical deployment.
+        if client is None:
+            print('SEH_PROGRESS: Coolify build finished; verifying public runtime and signing trust',
+                  file=sys.stderr, flush=True)
+        while True:
+            later, _, _, _ = _canonical_selection(root, network)
+            if _operational_binding(later) != _operational_binding(record):
+                raise SEHGitError('Canonical SEH identity changed during deployment verification')
+            replacement = _api(remote, 'GET', f'/api/v1/applications/{uuid}')
+            if not isinstance(replacement, dict) or replacement.get('uuid') != uuid:
+                raise SEHGitError('SEH application identity changed after deployment')
+            _verify_application_placement(remote, replacement, place)
+            _verify_canonical_source(replacement)
+            if (_verify_canonical_metadata(replacement) != 'CANONICAL'
+                    or replacement.get('git_commit_sha', '').lower() != revision
+                    or _trust_snapshot(remote, uuid) != trust):
+                raise SEHGitError('SEH source, metadata or signing trust changed after deployment')
+            try:
+                runtime = observe(public_url)
+            except (SEHGitError, ValueError) as exc:
+                # Access-control denials at the public edge are not missing
+                # runtimes. Keep the acknowledged build for a later verified
+                # retry; do not spin for 900 seconds or submit again.
+                if isinstance(exc, SEHGitError) and 'HTTP 403' in str(exc):
+                    return {**result, 'status': 'INCOMPLETE',
+                            'failed_stage': 'public_health_edge_denied',
+                            'http_status': 403, 'build_status': 'finished'}
+                runtime = {'status': 'UNVERIFIED', 'reason': type(exc).__name__}
+            if (isinstance(runtime, dict) and runtime.get('status') == 'PUBLIC_RUNTIME_PRESENT'
+                    and runtime.get('http_status') == 200):
+                # Do not certify trust based on an observation taken before the
+                # public health request. A key rotation between the two
+                # observations must invalidate the deployment acceptance.
+                if _trust_snapshot(remote, uuid) != trust:
+                    raise SEHGitError('SEH signing trust changed during post-deployment health verification')
+                final_record, _, _, _ = _canonical_selection(root, network)
+                if _operational_binding(final_record) != _operational_binding(record):
+                    raise SEHGitError('SEH canonical identity changed during public health verification')
+                _save_redeploy_checkpoint(root, network, {**checkpoint, 'phase': 'VERIFIED'})
+                return {**result, 'status': 'SEH_REDEPLOY_HARNESS_COMPLETE',
+                        'build_status': 'finished', 'build_verification': 'VERIFIED',
+                        'public_health': 'VERIFIED', 'http_status': runtime.get('http_status'),
+                        'slh_connected': runtime.get('slh_connected') is True}
+            if now() >= deadline:
+                return {**result, 'status': 'INCOMPLETE', 'failed_stage': 'public_runtime_verification',
+                        'runtime_observation': runtime.get('status') if isinstance(runtime, dict) else 'UNVERIFIED'}
+            pause(min(poll_s, max(0, deadline - now())))
 
 
 def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,

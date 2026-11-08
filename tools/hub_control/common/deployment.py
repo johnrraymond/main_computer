@@ -5,6 +5,8 @@ import ast
 import base64
 import ipaddress
 import json
+import secrets
+import hmac
 import os
 import subprocess
 import sys
@@ -17,6 +19,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.hub_networks import load_hub_network_registry
+from main_computer.stable_hub_topology import (
+    RUNTIME_ATTESTATION_ENV, RUNTIME_ATTESTATION_SCHEMA,
+    stable_hub_runtime_attestation,
+)
 from main_computer.hub_admin_runtime import HUB_ADMIN_BUNDLE_ENV, HUB_ADMIN_BUNDLE_SCHEMA
 from tools import coolify_hub_service as legacy
 
@@ -1573,6 +1579,9 @@ def apply_deployment(
             "MAIN_COMPUTER_HUB_BRIDGE_BACKEND": "dev-chain",
             FDB_CONTRACT_ENV: str(target["fdb_contract"]["sha256"]),
             CHAIN_CONTRACT_ENV: str(target["chain_contract"]["sha256"]),
+            # Private challenge key read back only through authenticated Coolify.
+            # This is not a contract or identity change and never enters receipts.
+            RUNTIME_ATTESTATION_ENV: secrets.token_hex(32),
             "MAIN_COMPUTER_HUB_CONTROL_HUB_ID": str(target["hub_id"]),
             "MAIN_COMPUTER_HUB_CONTROL_PUBLIC_URL": str(target["public_url"]),
             "MAIN_COMPUTER_HUB_CONTROL_RUNTIME_DIR": str(target["runtime_dir"]),
@@ -1664,6 +1673,47 @@ def _get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
     return payload
 
 
+def _read_runtime_attestation_key(target: Mapping[str, Any]) -> str:
+    """Read a private proof key through authenticated Coolify, never a public API."""
+    uuid = str(target.get("application_uuid") or "").strip()
+    if not uuid:
+        raise HubControlError("HUB_ATTESTATION_KEY_UNAVAILABLE", "existing Hub application UUID is missing")
+    response, items = legacy.list_application_envs(
+        _client(target), application_uuid=uuid, tried=[],
+    )
+    if not response.ok:
+        raise HubControlError("HUB_ATTESTATION_KEY_UNAVAILABLE", "Coolify attestation key could not be read")
+    matches = [row for row in items if isinstance(row, Mapping) and row.get("key") == RUNTIME_ATTESTATION_ENV
+               and row.get("is_preview") is not True]
+    if len(matches) != 1:
+        raise HubControlError("HUB_ATTESTATION_KEY_UNAVAILABLE", "Coolify Hub has no unique runtime attestation key")
+    row = matches[0]
+    for field in ("real_value", "value"):
+        secret = str(row.get(field) or "").strip()
+        if len(secret) == 64 and all(c in "0123456789abcdefABCDEF" for c in secret):
+            return secret
+    raise HubControlError("HUB_ATTESTATION_KEY_UNAVAILABLE", "Coolify Hub attestation key is unreadable")
+
+
+def _stable_attestation_matches(
+    response: Mapping[str, Any], *, nonce: str, key_hex: str, target: Mapping[str, Any],
+) -> bool:
+    fdb, chain = target["fdb_contract"], target["chain_contract"]
+    expected = stable_hub_runtime_attestation(
+        key_hex=key_hex, nonce=nonce, hub_id=str(target["hub_id"]),
+        network={"chain_id": chain["chain_id"], "chain_rpc_url": chain["rpc_url"]},
+        storage={"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
+                 "namespace": fdb["namespace"]},
+    )
+    observed = str(response.get("hmac_sha256") or "")
+    return (response.get("ok") is True
+            and response.get("schema") == RUNTIME_ATTESTATION_SCHEMA
+            and response.get("nonce") == nonce
+            and response.get("hub_id") == target["hub_id"]
+            and len(observed) == 64
+            and hmac.compare_digest(observed, expected))
+
+
 def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, request_timeout_s: float) -> dict[str, Any]:
     """Verify Stable Hub topology and, when required, its funding-signing readiness.
 
@@ -1675,6 +1725,14 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
     deadline = time.monotonic() + max(0.0, wait_timeout_s)
     attempt = 0
     signer_required = _bridge_signer_required(target)
+    # Authentication/authority over the key comes from Coolify, while the
+    # signed assertion comes from the live Hub's loaded topology.
+    try:
+        proof_key = _read_runtime_attestation_key(target)
+        proof_key_error = ""
+    except Exception as exc:
+        proof_key = ""
+        proof_key_error = f"{type(exc).__name__}: attestation key unavailable"
     last_checks: dict[str, bool] = {}
     errors: dict[str, str] = {}
     _progress(f"stable runtime verification: begin hub={target.get('hub_id')} url={base}")
@@ -1687,6 +1745,9 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
             ("identity", "/api/hub/v1/hub-identity"),
             ("topology", "/api/hub/v1/topology"),
         ]
+        nonce = secrets.token_hex(16)
+        if proof_key:
+            endpoints.append(("attestation", "/api/hub/v1/runtime-attestation?nonce=" + nonce))
         if signer_required:
             endpoints.append(("completion", "/api/hub/v1/credits/wallet-funding/completion"))
         for label, path in endpoints:
@@ -1700,18 +1761,22 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
         completion = responses.get("completion", {})
         deployment = completion.get("deployment") if isinstance(completion.get("deployment"), Mapping) else {}
         network = identity.get("network") if isinstance(identity.get("network"), Mapping) else {}
-        storage = identity.get("storage") if isinstance(identity.get("storage"), Mapping) else {}
-        fdb = target["fdb_contract"]
         chain = target["chain_contract"]
+        proof = responses.get("attestation", {})
+        verified_config = bool(proof_key) and _stable_attestation_matches(
+            proof, nonce=nonce, key_hex=proof_key, target=target,
+        )
         checks = {
             "healthy": health.get("ok") is True and health.get("service") == "main_computer.stable_hub",
             "stable_identity": identity.get("service") == "main_computer.stable_hub" and identity.get("hub_id") == target["hub_id"],
             "stable_topology": topo.get("service") == "main_computer.stable_hub" and topo.get("hub_id") == target["hub_id"],
-            "fdb_backend": storage.get("backend") == "foundationdb",
-            "fdb_cluster_file": str(storage.get("cluster_file") or "") == str(target["cluster_file_path"]),
-            "fdb_namespace": str(storage.get("namespace") or "") == str(fdb["namespace"]),
+            # Public identity deliberately omits private FDB and RPC fields.
+            # Prove all four via the challenge-bound runtime HMAC instead.
+            "fdb_backend": verified_config,
+            "fdb_cluster_file": verified_config,
+            "fdb_namespace": verified_config,
             "chain_id": str(network.get("chain_id") or "") == str(chain["chain_id"]),
-            "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(chain["rpc_url"]).rstrip("/"),
+            "chain_rpc": verified_config,
         }
         if signer_required:
             expected_escrow = str((chain.get("contracts") or {}).get("hub_credit_bridge_escrow") or "").lower()
@@ -1724,6 +1789,10 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
                 "bridge_private_manifest": str(deployment.get("deployment_manifest_path") or "") == _bridge_signer_remote_path(target),
             })
         last_checks = checks
+        if proof_key_error:
+            errors["attestation_key"] = proof_key_error
+        elif proof_key and not verified_config and "attestation" not in errors:
+            errors["attestation"] = "runtime configuration proof does not match expected configuration"
         if all(checks.values()):
             if signer_required:
                 _progress(f"stable runtime verification: verified attempt={attempt}; bridge deployment loaded")
@@ -1744,10 +1813,11 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
                 "identity": identity,
                 "topology": topo,
             }
-        if time.monotonic() >= deadline:
+        if proof_key_error or time.monotonic() >= deadline:
             return {
                 "verified": False,
-                "reason": "stable-runtime-verification-timeout",
+                "reason": ("stable-runtime-attestation-key-unavailable" if proof_key_error
+                           else "stable-runtime-verification-timeout"),
                 "hub_running": bool(checks["healthy"]),
                 "fdb_adoption_verified": all(checks[k] for k in ("stable_identity", "fdb_backend", "fdb_cluster_file", "fdb_namespace")),
                 "chain_adoption_verified": all(checks[k] for k in ("stable_identity", "chain_id", "chain_rpc")),

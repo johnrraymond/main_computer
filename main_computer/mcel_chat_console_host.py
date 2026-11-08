@@ -29,6 +29,7 @@ SCRIPTS = (
     "main_computer/web/applications/scripts/chat-thread-controller.js",
     "main_computer/web/applications/scripts/chat-console-state.js",
     "main_computer/web/applications/scripts/chat-console-code-runtime.js",
+    "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
     "main_computer/web/applications/scripts/mcel-semantic-chat-console.js",
     "main_computer/web/applications/scripts/chat-console.js",
 )
@@ -58,8 +59,15 @@ def compile_chat_console(repo: Path = ROOT) -> dict:
     if not result.valid or result.normalized_ir is None:
         raise CandidateHostError(f"Chat Console semantic source invalid: {result.diagnostics}")
     ir = result.normalized_ir
-    if ir.get("application", {}).get("appId") != "semantic-chat-console" or ir.get("layouts"):
-        raise CandidateHostError("Chat Console identity or layout authority changed")
+    if ir.get("application", {}).get("appId") != "semantic-chat-console":
+        raise CandidateHostError("Chat Console identity changed")
+    # P3 authors the layout; P4 will mount it. Reject unrelated layouts and
+    # any attempt to grant new notebook execution authority from the source.
+    layouts = ir.get("layouts") or []
+    if (len(layouts) != 1 or layouts[0].get("surface") != {"ref": ir["surfaces"][0]["id"]}
+        or layouts[0].get("layoutTree", {}).get("schema") != "mcel.layout-tree.v1"
+        or layouts[0]["layoutTree"].get("root", {}).get("selector") != ".chat-console-shell"):
+        raise CandidateHostError("Chat Console canonical layout tree is missing or unrelated")
     if any(ir.get(key) for key in ("capabilities", "intents", "effects")):
         raise CandidateHostError("Chat Console layout must not grant execution authority")
     surfaces = ir.get("surfaces") or []
@@ -133,9 +141,13 @@ body.mcel-chat-page #chat-console-app .chat-console-shell {{min-height:0;}}
    const ir=JSON.parse(document.getElementById("mcel-chat-canonical-ir").textContent);
    if(ir.application.appId!=="semantic-chat-console")throw Error("semantic-app-identity-mismatch");
    initChatConsoleApp();
-   const result=window.MainComputerMCELChatConsole?.compose(document.getElementById("chat-console-app"));
+   const host=document.getElementById("chat-console-app");
+   const result=window.MainComputerMCELChatConsole?.compose(host);
    if(!result || result.contract!=="mcel.chat-console.composition.v1")throw Error("semantic-chat-composition-incomplete");
+   const layout=window.MainComputerMCELChatConsole.mountCanonical(host,ir);
+   if(layout?.status!=="pass")throw Error("canonical-chat-layout-refused: "+String(layout?.reason||"unknown"));
    document.body.dataset.mcelChatReady="true";
-   window.__mcelChatConsole=Object.freeze({{appId:ir.application.appId,contract:result.contract,semanticRegions:ir.surfaces[0].interfaceIntent.regions.length}});
+   window.__mcelChatConsole=Object.freeze({{appId:ir.application.appId,contract:result.contract,
+     layoutAuthority:"mcel-layout-tree.v1",semanticRegions:ir.surfaces[0].interfaceIntent.regions.length}});
  }}catch(error){{status.hidden=false;status.dataset.error="true";status.textContent="Chat Console refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''

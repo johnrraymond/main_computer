@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import json
+import secrets
 import os
 from contextlib import contextmanager
 import urllib.parse
@@ -347,6 +348,7 @@ def synchronize_bridge_signer(ctx: HubContext, target: Mapping[str, Any]) -> Non
     from .common.admin_identity import _paths
     from .common.privates import network_doc
     from .common.deployment import legacy
+    from main_computer.stable_hub_topology import RUNTIME_ATTESTATION_ENV
 
     network = str(target["network"])
     hub_id = str(target["hub_id"])
@@ -414,6 +416,7 @@ def synchronize_bridge_signer(ctx: HubContext, target: Mapping[str, Any]) -> Non
             ("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "false"),
             ("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", "true"),
             (BRIDGE_SIGNER_ENV, str(signer["bundle_b64"])),
+            (RUNTIME_ATTESTATION_ENV, secrets.token_hex(32)),
         ):
             legacy.sync_application_env_var(
                 client, application_uuid=uuid, key=key, value=value, tried=[],

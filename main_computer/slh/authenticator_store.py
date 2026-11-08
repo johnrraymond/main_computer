@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from .authenticator import generate_identity, public_key_fingerprint, sign_object
-from .storage import legacy_authenticator_dir, user_identity_dir
+from .storage import legacy_authenticator_dir, user_identity_dir, secure_private_state_file
 
 _DEVICE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
 
@@ -138,6 +138,13 @@ class LocalIdentityStore:
             raw = key.private_bytes(serialization.Encoding.PEM,
                 serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
             _write_exclusive(path, raw)
+            # Windows ignores POSIX create modes; enforce a token-SID-only ACL
+            # using the same fail-closed policy as machine-owned service keys.
+            try:
+                secure_private_state_file(path)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
         except FileExistsError:
             raise IdentityStoreError('IDENTITY_ALREADY_EXISTS', 409) from None
         except OSError:

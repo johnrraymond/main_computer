@@ -5310,13 +5310,27 @@
         }
       }
     }
+    // The semantic Chat Console does not load terminal.js, whose Markdown
+    // helper is scoped to the terminal adapter. Keep output rendering local
+    // to this shared notebook runtime (standalone and embedded mounts).
+    function chatConsoleRenderInlineMarkdown(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    }
     function renderChatConsoleMarkdown(markdown) {
       const withoutFences = String(markdown || "").replace(/```[\w-]*\n?[\s\S]*?```/g, "\n\n");
       const blocks = [];
       let listItems = [];
       function flushList() {
         if (!listItems.length) return;
-        blocks.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+        blocks.push(`<ul>${listItems.map((item) => `<li>${chatConsoleRenderInlineMarkdown(item)}</li>`).join("")}</ul>`);
         listItems = [];
       }
       withoutFences.split(/\r?\n/).forEach((line) => {
@@ -5325,12 +5339,12 @@
         if (heading) {
           flushList();
           const level = Math.min(4, heading[1].length + 2);
-          blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+          blocks.push(`<h${level}>${chatConsoleRenderInlineMarkdown(heading[2])}</h${level}>`);
         } else if (bullet) {
           listItems.push(bullet[1]);
         } else if (line.trim()) {
           flushList();
-          blocks.push(`<p>${renderInlineMarkdown(line.trim())}</p>`);
+          blocks.push(`<p>${chatConsoleRenderInlineMarkdown(line.trim())}</p>`);
         } else {
           flushList();
         }

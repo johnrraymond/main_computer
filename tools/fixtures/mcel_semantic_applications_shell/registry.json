@@ -1,0 +1,26 @@
+{
+  "schema": "mcel.applications-shell.registry.v1",
+  "apps": [
+    {"id": "desktop", "title": "Desktop", "description": "Applications overview", "route": "/applications", "mount": "overview"},
+    {"id": "chat-console", "title": "Chat Console", "description": "AI, code and terminal notebook", "route": "/applications/chat-console", "mount": "semantic"},
+    {"id": "calculator", "title": "Calculator", "description": "Arithmetic and graphing", "route": "/applications/calculator", "mount": "semantic"},
+    {"id": "file-explorer", "title": "File Explorer", "description": "Files and assets", "route": "/applications/file-explorer", "mount": "semantic"},
+    {"id": "task-manager", "title": "Task Manager", "description": "Processes and services", "route": "/applications/task-manager", "mount": "semantic"},
+    {"id": "code-editor", "title": "Code Editor", "description": "Source and projects", "route": "/applications/code-editor", "mount": "semantic"},
+    {"id": "webgl", "title": "Game Surface", "description": "Arcstorm showcase", "route": "/applications/webgl", "mount": "legacy"},
+    {"id": "astrometric", "title": "Astrometric 3D", "description": "Black-hole ray renderer", "route": "/applications/astrometric", "mount": "legacy"},
+    {"id": "document", "title": "Document Editor", "description": "Writing workspace", "route": "/applications/document", "mount": "legacy"},
+    {"id": "spreadsheet", "title": "Spreadsheet", "description": "Sheet workspace", "route": "/applications/spreadsheet", "mount": "legacy"},
+    {"id": "onlyoffice", "title": "ONLYOFFICE", "description": "XLSX editing", "route": "/applications/onlyoffice", "mount": "legacy"},
+    {"id": "conductor", "title": "Conductor", "description": "Scheduled actions", "route": "/applications/conductor", "mount": "legacy"},
+    {"id": "terminal", "title": "Terminal", "description": "Local command runner", "route": "/applications/terminal", "mount": "legacy"},
+    {"id": "ai-control", "title": "AI Control", "description": "Provider calls and prompts", "route": "/applications/ai-control", "mount": "legacy"},
+    {"id": "email", "title": "Email", "description": "Mail accounts and drafts", "route": "/applications/email", "mount": "legacy"},
+    {"id": "git-tools", "title": "Git Tools", "description": "Repository operations", "route": "/applications/git-tools", "mount": "legacy"},
+    {"id": "game-editor", "title": "Game Editor", "description": "Game development tools", "route": "/applications/game-editor", "mount": "legacy"},
+    {"id": "website-builder", "title": "Website Builder", "description": "Site authoring and publishing", "route": "/applications/website-builder", "mount": "legacy"},
+    {"id": "mcel-lab", "title": "MCEL Lab", "description": "Semantics and diagnostics", "route": "/applications/mcel-lab", "mount": "legacy"},
+    {"id": "worker", "title": "Worker", "description": "Remote compute and rentals", "route": "/applications/worker", "mount": "legacy"},
+    {"id": "wallet", "title": "Wallet", "description": "Wallet workbench", "route": "/applications/wallet", "mount": "legacy"}
+  ]
+}

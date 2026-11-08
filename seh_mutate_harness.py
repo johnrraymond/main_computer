@@ -43,7 +43,7 @@ class HarnessError(ValueError):
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime'))
+    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime', 'redeploy-runtime'))
     p.add_argument('--approve-generation', type=int, help='Exact Mother generation, optional for activation')
     p.add_argument('--admin-device', help='Existing local administrator device (required if more than one local identity)')
     p.add_argument('--local-port', type=int, default=8897, help='Resident SLH loopback port')
@@ -305,6 +305,16 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     network = args.network
     if args.operation == 'list':
         return control.list(network)
+    if args.operation == 'redeploy-runtime':
+        if any((args.seh, args.host, args.slh_id, args.public_url,
+                args.replace_existing_trust, args.slh_state_dir,
+                args.admin_device, args.approve_generation)):
+            raise HarnessError('Canonical SEH redeployment accepts no identity, controller or signing overrides')
+        if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+            raise HarnessError('Both mutation approvals are required together')
+        from tools.seh_control.git_deployment import redeploy_canonical_runtime
+        return redeploy_canonical_runtime(control.root, network,
+                execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh))
     if args.operation == 'recover-runtime':
         # A missing Docker container is NOT an unregistered SEH. Recover only
         # the already-registered Coolify application, never a name or alias.
@@ -637,6 +647,14 @@ def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None
             print('\nSEH_GIT_COMMIT_PUSH_COMMAND: (PowerShell; copy and paste)',
                   file=sys.stderr)
             print(git_command.strip(), file=sys.stderr, flush=True)
+        return
+    if args.operation == 'redeploy-runtime':
+        if result.get('status') == 'PLAN_ONLY':
+            print('\nCanonical SEH redeployment plan verified. To force an in-place rebuild:',
+                  file=sys.stderr)
+            print(r'python .\seh_mutate_harness.py redeploy-runtime '
+                  '--network mainnet --execute-mutations --yes-i-know-this-mutates-seh',
+                  file=sys.stderr, flush=True)
         return
     if args.operation == 'recover-runtime':
         if result.get('status') == 'PLAN_ONLY':

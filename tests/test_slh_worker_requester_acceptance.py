@@ -207,3 +207,29 @@ def test_cli_requires_explicit_worker_connection(tmp_path):
     with pytest.raises(SystemExit) as exc:
         run_lab.main(['verify-local', '--worker-connection', 'slh', '--report-dir', str(tmp_path)])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize('transport', ['slh', 'seh'])
+def test_real_disposable_paid_request_proves_isolated_worker_and_authorized_claim(transport):
+    """End-to-end regression for the empty selected-worker marketplace lookup.
+
+    This executes actual loopback SLH/SEH connections, an in-memory Stable Hub,
+    and an authorized payout claim; no production endpoints or funding are used.
+    Mocks of verify_paid_cycle cannot catch an inverted result-worker assignment.
+    """
+    result = run_lab.verify_worker_requester(worker_connection=transport)
+    assert result['status'] == 'PASS', {
+        'last_stage': result.get('last_stage'),
+        'failure': result.get('failure'),
+        'failed_gates': [name for name, passed in (result.get('gates') or {}).items()
+                         if passed is not True],
+    }
+    assert result['pass'] is True
+    assert len(result['gates']) == 27
+    assert all(result['gates'].values())
+    assert result['gates']['market_isolation_capability_verified'] is True
+    assert result['gates']['wallet_authorized_claim'] is True
+    assert result['gates']['wallet_authorized_pending_batch'] is True
+    assert result['payment']['charge_count'] == 1
+    assert result['payment']['earning_count'] == 1
+    assert result['payment']['settlement'] == 'CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'

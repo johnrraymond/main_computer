@@ -7,6 +7,7 @@ the Organization Service: local API controls the real spawned TLS process.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 from http.client import HTTPConnection, HTTPSConnection
 import inspect
 import hashlib
@@ -29,6 +30,27 @@ from .lab_stage_diagnostics import stage as lab_stage, record as lab_record
 
 class ServiceLabFailure(RuntimeError):
     pass
+
+
+class TransientWorkerHandshakeError(OSError):
+    """A transport failure before Worker authentication, eligible for bounded retry."""
+
+
+def _retryable_handshake_close(exc):
+    """Recognize transport closes wrapped by websockets during opening handshake.
+
+    A protocol rejection, invalid device proof, or TLS pin mismatch must not be
+    interpreted as a listener-startup race. Only failures *caused* by TLS or a
+    recognized socket disconnect are transient.
+    """
+    cause = exc.__cause__
+    if isinstance(cause, (ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+                          BrokenPipeError, TimeoutError)):
+        return True
+    return isinstance(cause, OSError) and getattr(cause, 'errno', None) in {
+        errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, errno.ETIMEDOUT,
+        10053, 10054, 10058,  # Windows Winsock aborted, reset, not connected.
+    }
 
 
 def _free_port():
@@ -152,11 +174,26 @@ def _fingerprint(port):
 def _managed_auth(port, device, key, *, expected_pin, via_relay=False):
     from main_computer.slh.managed_gateway import MANAGED_PATH
     from websockets.sync.client import connect
+    from websockets.exceptions import ConnectionClosedError
     transport = 'seh_relay' if via_relay else 'direct'
     with lab_stage('preflight.worker_websocket', transport=transport, endpoint_port=port):
         with lab_stage('preflight.worker_websocket.handshake', transport=transport, endpoint_port=port):
-            websocket = connect(f'wss://127.0.0.1:{port}{MANAGED_PATH}',
-                     ssl=ssl._create_unverified_context(), open_timeout=5, close_timeout=2)
+            try:
+                websocket = connect(f'wss://127.0.0.1:{port}{MANAGED_PATH}',
+                         ssl=ssl._create_unverified_context(), open_timeout=5, close_timeout=2)
+            except ConnectionClosedError as exc:
+                if not _retryable_handshake_close(exc):
+                    raise
+                # websockets.sync wraps SSLError from socket.sendall() in a
+                # ConnectionClosedError which the existing _await() does not
+                # catch. Only the opening handshake is eligible for retry.
+                # Never retry authentication, TLS-pin, or protocol failures.
+                lab_record('preflight.worker_websocket.handshake', 'transient_transport_close',
+                           transport=transport, endpoint_port=port,
+                           error_type=type(exc).__name__,
+                           cause_type=type(exc.__cause__).__name__)
+                raise TransientWorkerHandshakeError(
+                    'Worker TLS WebSocket transport closed during opening handshake') from exc
         with websocket:
             with lab_stage('preflight.worker_websocket.tls_pin', transport=transport):
                 peer = websocket.socket.getpeercert(binary_form=True)
@@ -184,6 +221,22 @@ def _managed_auth(port, device, key, *, expected_pin, via_relay=False):
                     raise ServiceLabFailure('Worker did not receive pong acceptance')
             websocket.send(json.dumps({'type': 'worker.close'}))
     return True
+
+
+
+def _await_initial_worker_auth(port, device, key, *, expected_pin, timeout=18, via_relay=False):
+    """Wait for the freshly spawned child WebSocket accept loop, not a mock.
+
+    Retry only errors already classified as transient by _await, including a
+    ConnectionClosedError caused by an OpenSSL/socket error *during connect*.
+    A TLS pin mismatch, device rejection, or post-connect protocol failure
+    must not be retried or converted to a pass.
+    """
+    kwargs = {'expected_pin': expected_pin}
+    if via_relay:
+        kwargs['via_relay'] = True
+    return _await(lambda: _managed_auth(port, device, key, **kwargs),
+                  'initial managed Worker TLS WebSocket handshake', timeout=timeout)
 
 
 def _pending_restart_and_cancel(root):
@@ -341,8 +394,10 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                                       {'request_id': pending['request_id']},
                                       bearer=org_token, tls=True), 201)
                 gates['worker_approval_via_org_api'] = approvals.get('status') in ('APPROVED','active','ACTIVE')
-                gates['real_worker_tls_websocket'] = _managed_auth(worker_port, 'lab-worker', worker_key,
-                                                                    expected_pin=pin)
+                # The API listener may be ready before the independent
+                # WebSocket accept loop. Do not retry authentication failures.
+                gates['real_worker_tls_websocket'] = _await_initial_worker_auth(
+                    worker_port, 'lab-worker', worker_key, expected_pin=pin)
                 # Kill only the disposable child process, never the host's SLH.
                 # Its localhost parent must remain healthy and perform bounded recovery.
                 child = local.organization_controller._process
@@ -398,7 +453,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                         _http(api_port, 'GET', '/v1/accounting/sweeps', tls=True)[0] == 401)
                     adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', slh_id,
                                                     allow_lab=True)
-                    gates['worker_tls_via_real_seh_relay'] = _managed_auth(
+                    gates['worker_tls_via_real_seh_relay'] = _await_initial_worker_auth(
                         adapter.server_address[1], 'lab-worker', worker_key,
                         expected_pin=pin, via_relay=True)
                     try:

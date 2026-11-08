@@ -47,6 +47,7 @@ LEGACY_POST_POLICIES = {
 }
 STABLE_POST_POLICIES = {
     "path == '/api/hub/v1/credits/multisession-keys/request'": 'wallet-personal-sign',
+    "path == '/api/hub/v1/credits/multisession-keys/revoke'": 'wallet-signed-exact-key-revocation-intent',
     "path == '/api/hub/v1/credits/multisession-keys/validate'": 'readiness-only',
     "path == '/api/hub/v1/credits/pinky-reserve/sweep'": 'wallet-signature-recipient-fixed',
     "path == '/api/hub/v1/credits/wallet-funding/complete'": 'chain-deposit-receipt-verified',

@@ -110,3 +110,60 @@ local FoundationDB cluster file (`.foundationdb/docker.cluster`) and never
 initializes or resets FoundationDB itself. Absence of that cluster means
 `R6=INCOMPLETE`, not PASS. The full R0–R7 promotion gate therefore remains
 incomplete pending the FDB crash/failover campaign and deployed-service review.
+
+
+## Patch 2F — cumulative certification
+
+`tools.hub_resource_lab.certify` is the release-gating orchestrator, not an
+additional mock. It pins exact Hub, relay, and lab source digests; runs the
+independent disposable loopback boundary, admission, relay, and paid-work
+campaigns; runs the supporting security tests; and records evidence for each.
+
+```powershell
+python -m tools.hub_resource_lab.certify --mode preflight
+python -m tools.hub_resource_lab.certify --mode local
+python -m tools.hub_resource_lab.certify --mode full
+```
+
+A local test run never claims deployment or durable FoundationDB failover.
+`--mode full` invokes the existing failover lab *only if the required local
+FDB cluster file already exists*. That child independently enforces its
+local Docker and disposable-namespace restrictions. No cluster is bootstrapped
+or modified merely because certification was requested. Missing cluster or
+absent deployed revision attestation yields `INCOMPLETE`, never `PASS`.
+The resulting `runtime/reports/hub-resource-lab/certification/certification.json`
+contains the code/policy fingerprints, per-gate dispositions and promotion
+status. `PLANNED_ONLY` and `INCOMPLETE` exit nonzero to fail closed in CI.
+
+## Consolidated credential, privacy, and Worker-trust boundary
+
+The unified November 6 security patch also adds these release-gated controls:
+
+- Production Stable Hub MSKs expire no later than seven days after issuance,
+  including legacy records whose expiry must be calculated from `created_at`.
+  An existing credential older than seven days must be reissued. The
+  wallet-signed `multisession-keys/revoke` operation binds action, key ID,
+  wallet and cluster. A revocation signature cannot issue a new key.
+- A connected Worker is revalidated before receiving additional work. This
+  prevents new dispatch to a Worker with an expired or revoked MSK, but does
+  not revoke work that is already executing.
+- Financial earning records retain a canonical result SHA-256 digest, not
+  the Worker result payload. Terminal session payloads are purged after a
+  24-hour retention window by the Stable Hub recovery cycle, without deleting
+  charges, immutable accounting or idempotency indices.
+- Public Stable Hub identity/topology projections omit storage internals.
+  Minimum chain/network identity fields needed for legitimate clients remain.
+- Public Worker results say `worker_asserted_not_independently_attested`.
+  Requests requiring independently verified or confidential execution are
+  rejected until an actual attestation or trusted execution service exists.
+  A Worker-reported model/checkpoint name is NOT independent attestation.
+- New SLH user identity keys and TLS keys use the existing OS-specific private
+  file protection helper. On Windows it uses owner-SID ACL hardening and
+  refuses success if the ACL cannot be enforced. These keys remain plaintext
+  on disk to their authorized operator; this is not DPAPI or hardware storage.
+
+The certification runner checks these boundaries plus the financial POST
+route inventory. `HUB_RESOURCE_LOCAL_ACCEPTANCE_PASS` can coexist with
+`HUB_RESOURCE_CERTIFICATION_INCOMPLETE`: the former proves the local lab,
+while the latter intentionally blocks full promotion until disposable
+FoundationDB failover and independently checked deployed revisions are done.

@@ -205,8 +205,8 @@ def _fake_integrated_paid(topo, *, cycle=1, pinky_pass=True, corrupt_pinky_evide
                   'buyer_spent_delta_wei':str(wei),
                   'buyer_held_after_wei':'0',
                   'worker_available_before_wei':'0',
-                  'worker_available_after_settlement_wei':str(wei),
-                  'worker_earned_after_settlement_wei':str(wei),
+                  'worker_available_after_batch_wei':'0',
+                  'worker_earned_after_batch_wei':'0',
                   'worker_account_id':wallet,'charge_id':f'charge-{cycle}',
                   'earning_id':f'earning-{cycle}',}}
     pinky = {'pass': pinky_pass,'status':'PASS' if pinky_pass else 'FAIL',
@@ -216,6 +216,14 @@ def _fake_integrated_paid(topo, *, cycle=1, pinky_pass=True, corrupt_pinky_evide
              'earned_credit_wei':str(wei if not corrupt_pinky_evidence else wei-1),
              'assessed_credit_wei':str(pinky_wei),'swept_credit_wei':str(pinky_wei),
              'worker_account_id':wallet,
+             'local_lab_settlement': {
+                 'status': 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED',
+                 'batch_id':f'batch-{cycle}',
+                 'earning_id':f'earning-{cycle}',
+                 'credit_wei':str(wei),
+                 'worker_account_id':wallet,
+                 'verified_available_wei':str(wei),
+                 'verified_earned_wei':str(wei)},
              'limitations':{'source_funding':'LAB_REQUESTER_SYNTHETIC'},
              'accounting':{
                  'organization_id':org,'organization_account_id':wallet,
@@ -233,6 +241,61 @@ def _fake_integrated_paid(topo, *, cycle=1, pinky_pass=True, corrupt_pinky_evide
                  'sweep_id':f'sweep-{cycle}','hub_receipt_id':f'receipt-{cycle}',}}
     return {'pass':True,'status':'PASS','gates':{'paid':True},
             'paid_marketplace':market,'pinky_integrated':pinky}
+
+
+
+@pytest.mark.parametrize('corrupt', [
+    lambda s: s.pop('verified_available_wei'),
+    lambda s: s.pop('verified_earned_wei'),
+    lambda s: s.pop('batch_id'),
+    lambda s: s.update(status='CLAIM_BATCHED_NOT_SETTLED_OR_BRIDGED'),
+    lambda s: s.update(credit_wei='1'),
+    lambda s: s.update(earning_id='wrong-earning'),
+    lambda s: s.update(worker_account_id='wrong-wallet'),
+    lambda s: s.update(verified_available_wei='2000000000000000000'),
+    lambda s: s.update(verified_earned_wei='2000000000000000000'),
+])
+def test_economic_reconciliation_rejects_missing_or_wrong_real_settlement_proof(corrupt):
+    from tools.slh_seh_lab.economic_reconciliation import reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    paid = _fake_integrated_paid(load_stable_hub_topology(DEFAULT_TOPOLOGY))
+    corrupt(paid['pinky_integrated']['local_lab_settlement'])
+    result = reconcile_cycle(paid, cycle=1)
+    assert result['pass'] is False
+    assert result['gates']['earned_credit_deposited_to_org'] is False
+
+
+def test_economic_reconciliation_uses_post_settlement_fdb_proof_not_prebatch_balance():
+    from tools.slh_seh_lab.economic_reconciliation import reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    paid = _fake_integrated_paid(load_stable_hub_topology(DEFAULT_TOPOLOGY))
+    assert 'worker_available_after_settlement_wei' not in paid['paid_marketplace']['accounting']
+    result = reconcile_cycle(paid, cycle=1)
+    assert result['pass'] is True
+    assert result['gates']['earned_credit_deposited_to_org'] is True
+    assert result['gates']['org_wallet_debited_exactly_once'] is True
+    assert result['org_wallet_after_paid_wei'] == str(10**18)
+
+
+
+def test_economic_reconciliation_rejects_precredited_pending_earnings():
+    from tools.slh_seh_lab.economic_reconciliation import reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    paid = _fake_integrated_paid(load_stable_hub_topology(DEFAULT_TOPOLOGY))
+    paid['paid_marketplace']['accounting']['worker_earned_after_batch_wei'] = str(10**18)
+    result = reconcile_cycle(paid, cycle=1)
+    assert result['pass'] is False
+    assert result['gates']['earned_credit_deposited_to_org'] is False
+
+
+def test_economic_reconciliation_rejects_wrong_sweep_wallet_balance():
+    from tools.slh_seh_lab.economic_reconciliation import reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    paid = _fake_integrated_paid(load_stable_hub_topology(DEFAULT_TOPOLOGY))
+    paid['pinky_integrated']['accounting']['wallet_after_earning_wei'] = '2000000000000000000'
+    result = reconcile_cycle(paid, cycle=1)
+    assert result['pass'] is False
+    assert result['gates']['org_wallet_debited_exactly_once'] is False
 
 
 def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True,
@@ -264,6 +327,7 @@ def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True,
          patch('main_computer.stable_hub_worker_sessions.stable_worker_session_store_from_topology',return_value=object()), \
          patch('main_computer.stable_hub_worker_sessions.StableHubPayoutLedgerDirectory', return_value=SimpleNamespace()), \
          patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': fake_paid_module}), \
+         patch('tools.slh_seh_lab.run_lab._verify_four_issue_hardening',return_value={'pass':True}), \
          patch('tools.slh_seh_lab.run_lab._mock_coolify_gate',return_value={'status':'PASS'}), \
          patch('tools.slh_seh_lab.run_lab._local_demo', return_value=ready) as legacy:
         report = run_smoke(DEFAULT_TOPOLOGY, use_existing=False,
@@ -387,6 +451,7 @@ def test_isolated_marketplace_sale_rejects_stale_cheaper_workers():
                    'owner_hub_url': topology.hubs[2].hub_url,
                    'connection_id': 'conn-' + worker_id, 'lease_epoch': 1},
             market_profile={'rings': ['ring-2'], 'capabilities': capabilities,
+                            'models': ['mock-model'],
                             'price': {'amount': price, 'unit': 'compute_credit'}},
             worker_msk_id='msk-' + worker_id,
             worker_wallet_address='0x' + '12'*20, worker_account_id='acct-' + worker_id)
@@ -395,10 +460,12 @@ def test_isolated_marketplace_sale_rejects_stale_cheaper_workers():
     assert market.select_worker_for_work({
         'ring': 'ring-2', 'capabilities': ['chat.completions'],
         'max_price': {'amount': '2', 'unit': 'compute_credit'},
+        'model': 'mock-model',
     })['worker_id'] == 'old-lab-worker'
     assert market.select_worker_for_work({
         'ring': 'ring-2', 'capabilities': ['chat.completions', 'slh.lab.pinky.current'],
         'max_price': {'amount': '2', 'unit': 'compute_credit'},
+        'model': 'mock-model',
     })['worker_id'] == 'current-lab-worker'
 
 

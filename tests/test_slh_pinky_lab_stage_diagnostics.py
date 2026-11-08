@@ -89,3 +89,51 @@ def test_cli_reports_preflight_failure_with_stage_file_even_without_hub_logs(tmp
     assert Path(report['lab_runtime_log_path']).is_file()
     assert all('file' in item and 'function' in item and 'line' in item for item in report['failure_stack'])
     checked.assert_not_called()
+
+
+def test_verify_local_timeout_preserves_safe_stage_and_failure_stack(tmp_path, capsys):
+    def fail_local():
+        with stage('preflight.worker_websocket.handshake', transport='direct', endpoint_port=4444):
+            raise TimeoutError('timed out while waiting for handshake response: private credential')
+    with patch('tools.slh_seh_lab.run_lab.validate_topology', return_value={'safe': True}), \
+         patch('tools.slh_seh_lab.run_lab.verify_local', side_effect=fail_local):
+        code = run_lab.main(['verify-local', '--json', '--report-dir', str(tmp_path)])
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report['terminal_failed_lab_stage']['stage'] == 'preflight.worker_websocket.handshake'
+    assert report['terminal_failed_lab_stage']['transport'] == 'direct'
+    assert report['failure_stack'][-1]['function'] == 'fail_local'
+    assert Path(report['lab_stage_trace_path']).exists()
+    assert report['lab_stage_events_recorded'] >= 3
+    assert 'private credential' not in json.dumps(report['failure_stack'])
+    assert 'private credential' not in Path(report['lab_stage_trace_path']).read_text()
+
+
+def test_wrapped_openssl_handshake_close_records_safe_retry_evidence(tmp_path):
+    """Windows OpenSSL close is classified without exposing device or private data."""
+    import ssl
+    from websockets.exceptions import ConnectionClosedError
+    from tools.slh_seh_lab.service_lifecycle import _managed_auth, TransientWorkerHandshakeError
+
+    def closed_in_tls(*args, **kwargs):
+        try:
+            raise ssl.SSLError('[SSL] internal error (_ssl.c:2427)')
+        except ssl.SSLError as root:
+            raise ConnectionClosedError(None, None) from root
+
+    path = tmp_path / 'lab-stage-diagnostic.jsonl'
+    token = enable(path)
+    try:
+        with patch('websockets.sync.client.connect', side_effect=closed_in_tls):
+            with pytest.raises(TransientWorkerHandshakeError):
+                _managed_auth(42001, 'confidential-worker-name', object(),
+                              expected_pin='sensitive-pin', via_relay=True)
+    finally:
+        disable(token)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    retry = [row for row in rows if row['state'] == 'transient_transport_close']
+    assert len(retry) == 1
+    assert retry[0]['transport'] == 'seh_relay'
+    assert retry[0]['cause_type'] == 'SSLError'
+    assert 'confidential-worker-name' not in path.read_text()
+    assert 'sensitive-pin' not in path.read_text()

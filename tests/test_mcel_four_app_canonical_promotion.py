@@ -73,7 +73,7 @@ def test_canonical_resolver_does_not_change_unrelated_routes():
 @pytest.mark.parametrize("name", CASES)
 def test_canonical_serves_exactly_the_accepted_candidate_ir(local_viewport, name):
     app_id, element_id = CASES[name]
-    with urlopen(f"{local_viewport}/applications/{name}", timeout=15) as response:
+    with urlopen(f"{local_viewport}/applications/{name}?mcel-shell-child=1", timeout=15) as response:
         page = response.read().decode("utf-8")
         assert response.status == 200
     with urlopen(f"{local_viewport}/applications/{CANDIDATES[name]}", timeout=15) as response:
@@ -90,7 +90,7 @@ def test_canonical_serves_exactly_the_accepted_candidate_ir(local_viewport, name
 
 
 def test_legacy_shell_remains_for_desktop_and_unpromoted_apps(local_viewport):
-    for path in ("/applications", "/applications/document", "/apps/mcel-lab"):
+    for path in ("/applications?mcel-shell-child=1", "/applications/document?mcel-shell-child=1", "/apps/mcel-lab"):
         with urlopen(f"{local_viewport}{path}", timeout=15) as response:
             page = response.read().decode("utf-8")
         assert "Main Computer Applications" in page
@@ -105,7 +105,7 @@ def test_legacy_shell_remains_for_desktop_and_unpromoted_apps(local_viewport):
     ("hardware", "cpu-gpu"),
 ])
 def test_task_manager_existing_bookmarked_views_are_preserved(local_viewport, tab, view):
-    with urlopen(f"{local_viewport}/applications/task-manager/{tab}", timeout=15) as response:
+    with urlopen(f"{local_viewport}/applications/task-manager/{tab}?mcel-shell-child=1", timeout=15) as response:
         page = response.read().decode("utf-8")
     assert f"const initialView={json.dumps(view)};" in page
     assert 'app.execute("intent:switch-view",{choice:initialView})' in page
@@ -115,7 +115,7 @@ def test_canonical_routes_retain_local_only_boundary(local_viewport):
     with patch("main_computer.viewport_route_dispatch._hard_halt_client_is_local", return_value=False):
         for name in CASES:
             with pytest.raises(HTTPError) as exc:
-                urlopen(f"{local_viewport}/applications/{name}", timeout=15)
+                urlopen(f"{local_viewport}/applications/{name}?mcel-shell-child=1", timeout=15)
             assert exc.value.code == 403
 
 
