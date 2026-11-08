@@ -538,11 +538,16 @@ def _diagnose_fdb_store_operation(
         return
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     threshold = 250.0
-    if error is None and elapsed_ms < threshold:
+    # A retried transaction is operationally significant even when fast.
+    if error is None and elapsed_ms < threshold and not (
+        operation == "atomic" and int(details.get("callbacks_started") or 0) > 1
+    ):
         return
     row = {
         "operation": operation, "elapsed_ms": elapsed_ms,
         "status": "error" if error is not None else "slow",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "process_id": os.getpid(),
         "thread_id": threading.get_ident(),
         "namespace": namespace,
         **details,
@@ -639,14 +644,32 @@ class FoundationDbStableWorkerSessionStore:
         if getattr(self._transaction_local, "transaction", None) is not None:
             return action()  # Nested operation joins the outer transaction.
 
+        trace = {"attempts": 0, "callbacks_completed": 0,
+                 "callback_max_ms": 0.0, "last_phase": "transaction_not_started"}
+
         @self._fdb.transactional
         def _tx(tr: Any) -> Any:
+            trace["attempts"] += 1
+            trace["last_phase"] = "callback_running"
+            callback_started = time.monotonic()
             _configure_fdb_transaction_safety(tr)
             self._transaction_local.transaction = tr
             self._transaction_local.document_chunks = None
+            self._transaction_local.fdb_phase = None
+            self._transaction_local.atomic_attempt = trace["attempts"]
             try:
-                return action()
+                result = action()
+                trace["callbacks_completed"] += 1
+                trace["last_phase"] = "callback_completed_commit_not_confirmed"
+                return result
             finally:
+                trace["callback_max_ms"] = max(
+                    trace["callback_max_ms"],
+                    round((time.monotonic() - callback_started) * 1000, 1))
+                if trace["last_phase"] != "callback_completed_commit_not_confirmed":
+                    trace["last_phase"] = getattr(self._transaction_local, "fdb_phase", "callback_failed")
+                self._transaction_local.fdb_phase = None
+                self._transaction_local.atomic_attempt = None
                 self._transaction_local.document_chunks = None
                 self._transaction_local.transaction = None
 
@@ -658,9 +681,17 @@ class FoundationDbStableWorkerSessionStore:
             error = exc
             raise
         finally:
-            _diagnose_fdb_store_operation(self.namespace, "atomic", started, error=error)
+            _diagnose_fdb_store_operation(
+                self.namespace, "atomic", started, error=error,
+                callbacks_started=trace["attempts"],
+                callbacks_completed=trace["callbacks_completed"],
+                callback_max_ms=trace["callback_max_ms"],
+                last_phase=trace["last_phase"],
+                configured_timeout_ms=STABLE_WORKER_SESSION_FDB_TRANSACTION_TIMEOUT_MS,
+                configured_retry_limit=STABLE_WORKER_SESSION_FDB_RETRY_LIMIT)
 
     def _read_document(self, tr: Any, *, legacy_key: bytes, meta_key: bytes) -> dict[str, Any]:
+        self._transaction_local.fdb_phase = "read_meta"
         meta_started = time.monotonic()
         meta_error = None
         try:
@@ -669,10 +700,13 @@ class FoundationDbStableWorkerSessionStore:
             meta_error = exc
             raise
         finally:
-            _diagnose_fdb_store_operation(self.namespace, "read_meta", meta_started, error=meta_error)
+            _diagnose_fdb_store_operation(self.namespace, "read_meta", meta_started,
+                                          error=meta_error,
+                                          atomic_attempt=getattr(self._transaction_local, "atomic_attempt", None))
         chunk_count = int(meta.get("chunk_count") or 0) if isinstance(meta, dict) else 0
         if chunk_count > 0:
             parts: list[bytes] = []
+            self._transaction_local.fdb_phase = "read_chunks"
             chunks_started = time.monotonic()
             chunk_error = None
             try:
@@ -689,7 +723,8 @@ class FoundationDbStableWorkerSessionStore:
                 raise
             finally:
                 _diagnose_fdb_store_operation(self.namespace, "read_chunks", chunks_started,
-                                              error=chunk_error, chunk_count=chunk_count)
+                                              error=chunk_error, chunk_count=chunk_count,
+                                              atomic_attempt=getattr(self._transaction_local, "atomic_attempt", None))
             payload = json.loads(b"".join(parts).decode("utf-8"))
             if getattr(self._transaction_local, "transaction", None) is tr:
                 # Only an active atomic mutation may use this snapshot for
@@ -699,13 +734,18 @@ class FoundationDbStableWorkerSessionStore:
         # Existing one-key snapshots remain readable and migrate on first save.
         if getattr(self._transaction_local, "transaction", None) is tr:
             self._transaction_local.document_chunks = ()
+        self._transaction_local.fdb_phase = "read_legacy_document"
         return _normalize_store(_json_loads(tr[legacy_key].wait()) or {})
 
     def _write_document(self, tr: Any, data: dict[str, Any], *, legacy_key: bytes, meta_key: bytes) -> None:
+        self._transaction_local.fdb_phase = "serialize_document"
         encoded = _json_dumps(_normalize_store(data))
+        self._transaction_local.fdb_phase = "write_prepare"
         chunk_size = max(4096, int(STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES))
         chunks = [encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)] or [b"{}"]
+        self._transaction_local.fdb_phase = "read_meta_before_write"
         previous_meta = _json_loads(tr[meta_key].wait()) or {}
+        self._transaction_local.fdb_phase = "write_chunks"
         previous_count = int(previous_meta.get("chunk_count") or 0) if isinstance(previous_meta, dict) else 0
         # Keep the metadata write on *every* save: it is the single conflict
         # sentinel shared by all Hubs and prevents lost cross-process updates.

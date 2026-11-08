@@ -74,6 +74,24 @@ from main_computer.stable_hub_worker_sessions import (
 
 
 
+def _emit_worker_terminal_fdb_diagnostic(log_event, *, phase: str,
+                                         request_id: str, session_id: str,
+                                         message_type: str, hub_id: str,
+                                         elapsed_ms: float = 0.0,
+                                         error_type: str | None = None,
+                                         fdb_code: int | None = None) -> None:
+    """Disposable-lab-only terminal outcome trace. Never log result or keys."""
+    if os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_DIAGNOSTICS") != "1":
+        return
+    log_event("worker_terminal_fdb_diagnostic " + json.dumps({
+        "phase": phase, "request_id": request_id, "session_id": session_id,
+        "message_type": message_type, "hub_id": hub_id,
+        "duration_ms": elapsed_ms, "error_type": error_type,
+        "fdb_code": fdb_code, "thread_id": threading.get_ident(),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }, sort_keys=True))
+
+
 # Explicit public contracts. These records must never be serialized with
 # dict(internal_record): internal session, account and Worker IDs are secret.
 def _public_payout(raw: Any) -> dict[str, Any]:
@@ -1029,8 +1047,31 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         def _atomic_terminal(action: Any) -> Any:
             # The funds transition and accepted-session state change must
             # commit (or conflict/retry) as one FoundationDB transaction.
-            atomic = getattr(store, "atomic", None)
-            return atomic(action) if callable(atomic) else action()
+            started = time.monotonic()
+            outcome = "error"
+            error_class = None
+            fdb_code = None
+            _emit_worker_terminal_fdb_diagnostic(
+                self._log_event, phase="begin", request_id=request_id,
+                session_id=session_id, message_type=message_type,
+                hub_id=self.server.hub.hub_id)
+            try:
+                atomic = getattr(store, "atomic", None)
+                result = atomic(action) if callable(atomic) else action()
+                outcome = "returned"
+                return result
+            except BaseException as exc:
+                error_class = type(exc).__name__
+                fdb_code = getattr(exc, "code", None)
+                raise
+            finally:
+                _emit_worker_terminal_fdb_diagnostic(
+                    self._log_event, phase=outcome, request_id=request_id,
+                    session_id=session_id, message_type=message_type,
+                    hub_id=self.server.hub.hub_id,
+                    elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                    error_type=error_class, fdb_code=fdb_code)
+
 
         def _assert_active_generation() -> None:
             # Enforce fencing in the SAME transaction as charging or releasing
