@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from main_computer.heartbeat import HeartbeatConfig, ensure_heartbeat_service
+from main_computer.viewport_bind_policy import require_local_viewport_bind
 from main_computer.config import MainComputerConfig
 from main_computer.viewport_server import *  # noqa: F401,F403
 from main_computer.viewport_server import _application_route_target  # noqa: F401
@@ -22,6 +23,7 @@ from main_computer.viewport_state import (
 
 def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765, *, verbose: bool = True) -> None:
     """Compatibility wrapper whose globals remain patchable via main_computer.viewport."""
+    require_local_viewport_bind(host, container_internal=True)
 
     runtime_root = Path.cwd().resolve()
     control_root = _control_root_path(runtime_root)
@@ -30,7 +32,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
     ensure_heartbeat_service(
         HeartbeatConfig(
             workspace=runtime_root,
-            bind_host=host,
+            bind_host="127.0.0.1",
             server_port=port,
             heartbeat_port=heartbeat_port,
             verbose=bool(verbose or config.fallback),

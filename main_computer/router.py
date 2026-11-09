@@ -17,6 +17,7 @@ from main_computer.catalog import ProjectCatalog, WorkspaceContextPack
 from main_computer.chat_console import build_notebook_ai_messages
 from main_computer.ai_control import ai_control_prompt_text
 from main_computer.config import MainComputerConfig
+from main_computer.dev_test_hub import DevTestHubConfigurationError, validate_dev_test_route
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.rag_trust_contract_chat import (
     chat_response_from_trust_result,
@@ -68,6 +69,13 @@ class MainComputer:
                 model=config.model, base_url=config.nanojev_base_url, timeout_s=config.nanojev_timeout_s
             )
         elif config.provider == "hub":
+            # This provider speaks the old Dev-Test protocol, not the public
+            # Stable Hub protocol. Refuse public routing in local dev/test.
+            if config.hub_network not in {"dev", "test"}:
+                raise DevTestHubConfigurationError(
+                    "The old HubProvider is Dev-Test only; public testnet/mainnet uses Stable Hub routing."
+                )
+            validate_dev_test_route(config.hub_url)
             provider = HubProvider(
                 model=config.model,
                 hub_url=config.hub_url,

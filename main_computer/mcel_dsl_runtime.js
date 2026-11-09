@@ -938,17 +938,51 @@ function createDsl(metadata, source) {
   function intentRegionId(name) {
     return semanticId("interface-region", `${metadata.id}.${name}`);
   }
-  // A mode condition is an author-owned semantic state relationship, not a
-  // placement or layout declaration. Never convert it into operational authority.
+  // Visibility is semantic applicability, never capability authorization.
+  // An observation condition may read only a declared typed state (or a single
+  // declared record field); compound conditions have no arbitrary callbacks.
+  function visibilityCondition(when, where, depth=0) {
+    assert(when && typeof when === "object" && !Array.isArray(when) && depth<=4,
+      "MCEL_DSL_VIEW_CONDITION_INVALID", `Invalid condition at ${where}.`);
+    if (Object.hasOwn(when,"all") || Object.hasOwn(when,"any")) {
+      const kind=Object.hasOwn(when,"all")?"all":"any";
+      knownOptions(when,[kind],where);
+      assert(Array.isArray(when[kind]) && when[kind].length>=1 && when[kind].length<=12,
+        "MCEL_DSL_VIEW_CONDITION_INVALID", "Compound condition requires 1-12 clauses.");
+      return {[kind]:when[kind].map((child,i)=>visibilityCondition(child,`${where}.${kind}[${i}]`,depth+1))};
+    }
+    knownOptions(when,["state","path","equals","maxAgeSeconds"],where);
+    const target=when.state;
+    assert(target instanceof StateHandle && stateById.get(target.id)===target &&
+      ["derived","renderer-local"].includes(target.record.authority),
+      "MCEL_DSL_VIEW_CONDITION_INVALID", "Visibility must reference a declared derived or local state.");
+    const schema=target.record.schema;
+    let fieldSchema=schema;
+    if (when.path!==undefined) {
+      assert(typeof when.path==="string" && /^[a-z][A-Za-z0-9_]*$/.test(when.path) &&
+        schema.kind==="record" && Object.hasOwn(schema.fields||{},when.path),
+        "MCEL_DSL_VIEW_CONDITION_INVALID", "Condition path must be a declared record field.");
+      fieldSchema=schema.fields[when.path];
+    }
+    const value=when.equals;
+    assert((fieldSchema.kind==="string" && typeof value==="string" &&
+        (!fieldSchema.enum || fieldSchema.enum.includes(value))) ||
+       (fieldSchema.kind==="boolean" && typeof value==="boolean") ||
+       (fieldSchema.kind==="integer" && Number.isSafeInteger(value)),
+      "MCEL_DSL_VIEW_CONDITION_INVALID", "Condition value must match its declared typed state field.");
+    if(when.maxAgeSeconds!==undefined)assert(target.record.authority==="derived" &&
+      schema.kind==="record" && schema.fields?.observedAt?.kind==="string" &&
+      Number.isSafeInteger(when.maxAgeSeconds) && when.maxAgeSeconds>=1 && when.maxAgeSeconds<=600,
+      "MCEL_DSL_VIEW_CONDITION_INVALID", "Freshness needs a derived timestamped record.");
+    if (target.record.authority==="renderer-local") {
+      assert(schema.kind==="string" && Array.isArray(schema.enum) && when.path===undefined,
+        "MCEL_DSL_VIEW_CONDITION_INVALID", "Local visibility requires an explicit view enum.");
+    }
+    return {state:ref(target),...(when.path!==undefined?{path:when.path}:{}),equals:value,
+      ...(when.maxAgeSeconds!==undefined?{maxAgeSeconds:when.maxAgeSeconds}:{})};
+  }
   function modeCondition(options, where) {
-    if (options.when === undefined) return {};
-    knownOptions(options.when, ["state", "equals"], where + ".when");
-    const mode=options.when.state, value=options.when.equals;
-    assert(mode instanceof StateHandle && stateById.get(mode.id) === mode &&
-      mode.record.authority === "renderer-local" && mode.record.schema.kind === "string" &&
-      Array.isArray(mode.record.schema.enum) && mode.record.schema.enum.includes(value),
-      "MCEL_DSL_VIEW_CONDITION_INVALID", "A view condition must reference a declared renderer-local enum state and one of its values.");
-    return {visibleWhen:{state:ref(mode),equals:value}};
+    return options.when===undefined?{}:{visibleWhen:visibilityCondition(options.when,where+".when")};
   }
   const issuedSurfaceNodes = [];
   function surfaceNode(name, record) {
@@ -1054,7 +1088,7 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent", "resetOutputs"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs", "when"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const resetOutputs=[];
       for(const item of options.resetOutputs||[]){
@@ -1067,7 +1101,7 @@ function createDsl(metadata, source) {
       }
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
-        ...(resetOutputs.length?{resetOutputs}:{}),
+        ...(resetOutputs.length?{resetOutputs}:{}),...modeCondition(options, `surface.action:${name}`),
       };
       return surfaceNode(name, record);
     },

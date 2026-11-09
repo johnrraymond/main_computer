@@ -11,7 +11,7 @@ param(
 
   [string]$Workspace = "",
   [string]$PythonPath = "",
-  [string]$BindHost = "0.0.0.0",
+  [string]$BindHost = "127.0.0.1",
   [int]$LocalPort = 8765,
   [int]$HeartbeatPort = 8766,
   [string]$ControlRoot = "",
@@ -25,6 +25,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Validate before mode detection, port cleanup, Docker operations, or PID changes.
+if ($BindHost -cne "127.0.0.1") {
+  throw "Viewport and heartbeat binding must be 127.0.0.1; rejected -BindHost $BindHost."
+}
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Workspace) {

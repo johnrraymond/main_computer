@@ -40,7 +40,7 @@ class HubProvider(LLMProvider):
     """
 
     model: str = "hub-auto"
-    hub_url: str = "http://127.0.0.1:8770"
+    hub_url: str = "http://127.0.0.1:8871"
     timeout_s: float = 600.0
     client_node_id: str = "main-computer-client"
     high_security: bool = True
@@ -235,11 +235,14 @@ class HubProvider(LLMProvider):
     def _remote_overflow_loopback_fallback_url(self) -> str:
         parsed = urlparse(self.hub_url)
         host = (parsed.hostname or "").strip().lower()
-        if host in {"", "127.0.0.1", "localhost", "::1"}:
+        # Only known development-container hostnames may fall back to loopback.
+        # A failed public Stable Hub DNS lookup must never silently reroute
+        # an authorization-bearing request to an unrelated local listener.
+        if host not in {"hub", "dev-hub", "dev-test-hub", "host.docker.internal"}:
             return ""
-        if parsed.scheme not in {"http", "https"}:
+        if parsed.scheme != "http":
             return ""
-        port = parsed.port or 8770
+        port = parsed.port or 8871
         return f"http://127.0.0.1:{port}"
 
     @staticmethod

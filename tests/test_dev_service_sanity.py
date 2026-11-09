@@ -35,7 +35,7 @@ def test_static_contract_matches_current_dev_ports_and_heartbeat_rules() -> None
 def test_compose_port_parser_honors_main_computer_docker_viewport_env_override() -> None:
     compose_text = (PROJECT_ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
 
-    assert "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose_text
+    assert "127.0.0.1:${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose_text
     assert '"8765:8765"' not in compose_text
 
 

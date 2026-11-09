@@ -107,13 +107,18 @@
   for (const app of catalog.apps) {
     const a = document.createElement("a");
     a.className = "mcel-shell-app-card";
-    a.href = candidateHref(app.id);
+    // The element always exposes its canonical URL.  Only an ordinary
+    // unmodified primary click may be captured by the persistent shell.
+    // Native browser Open Link in New Tab/Window must remain available.
+    a.href = app.route;
+    a.dataset.mcelDestinationId = "applications." + app.id;
     a.dataset.app = app.id;
     const strong = document.createElement("strong"); strong.textContent = app.title;
     const detail = document.createElement("span"); detail.textContent = app.description;
     a.append(strong, detail);
     a.addEventListener("click", event => {
-      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.shiftKey || event.metaKey || event.altKey) return;
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.shiftKey ||
+          event.metaKey || event.altKey || a.target || a.hasAttribute("download")) return;
       event.preventDefault();
       select(app.id, true);
     });
@@ -169,10 +174,15 @@
     return allowed.has(app) ? app : "desktop";
   }
   root.addEventListener("popstate", () => select(currentId(), false));
-  document.querySelectorAll("[data-shell-launch]").forEach(button =>
-    button.addEventListener("click", () => {
-      const app = allowed.get(button.dataset.shellLaunch);
-      if (!app) return;
+  document.querySelectorAll("[data-shell-launch]").forEach(link =>
+    link.addEventListener("click", event => {
+      // An actual href must remain usable through modifier keys and the
+      // browser context menu. Never swallow an explicit new-window choice.
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.shiftKey ||
+          event.metaKey || event.altKey || link.target || link.hasAttribute("download")) return;
+      const app = allowed.get(link.dataset.shellLaunch);
+      if (!app || link.getAttribute("href") !== app.route) return;
+      event.preventDefault();
       select(app.id, true);
     }));
   const trigger = document.getElementById("mcel-shell-open-apps");

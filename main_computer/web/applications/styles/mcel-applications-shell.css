@@ -51,8 +51,9 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 body.mcel-applications-candidate{--ink:#f7f3e8;--muted:#c9c0aa;--gold:#f6c75b}
 .mcel-shell-overview{position:relative;padding:0;display:block;overflow:hidden}
 #mcel-shell-desktop-overlay{inset:0}
-/* Preserve the legacy browser-default button font for desktop icon cards. */
-body.mcel-applications-candidate .desktop-icon{font:revert}
+/* Preserve the legacy browser-default button font for desktop icon cards.
+ * These are real href anchors so native Open Link in New Tab/Window works. */
+body.mcel-applications-candidate .desktop-icon{font:400 13.3333px Arial;cursor:pointer}
 
 /* Source-parity launcher cards: original /applications appearance and spacing. */
 .mcel-shell-launcher-panel h2{font-size:18px;margin:14px 14px 12px;line-height:1.45}

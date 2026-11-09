@@ -794,7 +794,7 @@
     function chatConsoleFundingHubUrlFromReadiness(readiness = null) {
       const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness || {};
       const hub = state.hub && typeof state.hub === "object" ? state.hub : {};
-      return String(state.hub_url || hub.hub_url || "").trim().replace(/\/+$/, "") || "http://127.0.0.1:8770";
+      return String(state.hub_url || hub.hub_url || "").trim().replace(/\/+$/, "") || "http://127.0.0.1:8871";
     }
 
     function chatConsolePaidOverflowFundingBridgeContractAddress(config = chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig) {

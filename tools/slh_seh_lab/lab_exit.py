@@ -213,23 +213,96 @@ def _terminate_tree(proc):
     except subprocess.TimeoutExpired:proc.kill()
 
 
+def _native_exit_classification(returncode: int) -> str | None:
+    """Decode Windows NTSTATUS without confusing it with a Python exception."""
+    if (returncode & 0xffffffff) == 0xC0000005:
+        return 'WINDOWS_ACCESS_VIOLATION'
+    if (returncode & 0xffffffff) == 0xC00000FD:
+        return 'WINDOWS_STACK_OVERFLOW'
+    return None
+
+
+def _child_resource_sample(pid: int) -> dict:
+    """Best-effort process metadata only; never capture arguments or secrets."""
+    try:
+        import psutil
+        child = psutil.Process(pid)
+        with child.oneshot():
+            sample = {'rss_bytes': child.memory_info().rss,
+                      'thread_count': child.num_threads(),
+                      'cpu_seconds': round(sum(child.cpu_times()[:2]), 3)}
+        try:
+            sample['child_process_count'] = len(child.children(recursive=True))
+        except (psutil.Error, OSError):
+            pass
+        return sample
+    except (ImportError, OSError, AttributeError):
+        return {'resource_snapshot': 'unavailable'}
+    except Exception as exc:
+        # psutil may throw AccessDenied / NoSuchProcess on process termination.
+        return {'resource_snapshot': type(exc).__name__}
+
+
+def _local_child_stage_witness(folder: Path) -> dict:
+    """Recover durable breadcrumbs even when a native crash prevents report.json."""
+    if not (folder/'child-reports').is_dir():
+        return {}
+    stage_files = sorted((folder/'child-reports').glob('*/lab-stage-diagnostic.jsonl'),
+                         key=lambda path: path.stat().st_mtime)
+    if not stage_files:
+        return {}
+    from .lab_stage_diagnostics import summarize
+    trace = stage_files[-1]
+    status = summarize(trace)
+    return {'lab_stage_trace_path': str(trace.resolve()),
+            'lab_stage_events_recorded': status['events'],
+            'last_lab_stage_event': status['last_event'],
+            'unfinished_lab_stage': status['unfinished_stage'],
+            'last_failed_lab_stage': status['fatal_failure']}
+
+
 def _execute(spec: ExitSpec, folder: Path, *, root: Path, python: str):
     folder.mkdir(parents=True,exist_ok=True)
-    command = [python, *spec.command]
+    # -X faulthandler records Python thread stacks when an embedded native
+    # dependency crashes. -u flushes these stacks and startup diagnostics.
+    # Neither changes paid-work state, deadlines, or settlement semantics.
+    command = [python, '-u', '-X', 'faulthandler', *spec.command]
     if spec.kind != 'pytest':
         command.extend(['--report-dir', str(folder/'child-reports')])
     began=time.monotonic()
     log=folder/'child-output.log'
+    samples=folder/'child-process-diagnostic.jsonl'
     timed_out=False
-    with log.open('w',encoding='utf-8') as out:
+    with log.open('w', encoding='utf-8') as out, samples.open('w', encoding='utf-8') as monitor:
         proc=subprocess.Popen(command,cwd=root,stdout=out,stderr=subprocess.STDOUT,
              creationflags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0) if os.name=='nt' else 0,
              start_new_session=os.name!='nt')
-        try:rc=proc.wait(timeout=spec.timeout)
-        except subprocess.TimeoutExpired:
-            timed_out=True
-            _terminate_tree(proc)
-            rc=-1
+        def record(state: str):
+            row={'elapsed_seconds': round(time.monotonic()-began, 3),
+                 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+                 'pid': proc.pid, 'state': state,
+                 **_child_resource_sample(proc.pid)}
+            monitor.write(json.dumps(row, sort_keys=True)+'\n')
+            monitor.flush()
+        record('started')
+        deadline=began+spec.timeout
+        while True:
+            remaining=deadline-time.monotonic()
+            if remaining <= 0:
+                if proc.poll() is None:
+                    timed_out=True
+                    record('timeout_before_termination')
+                    _terminate_tree(proc)
+                    rc=-1
+                else:
+                    rc=proc.returncode
+                break
+            try:
+                rc=proc.wait(timeout=min(5.0,remaining))
+                break
+            except subprocess.TimeoutExpired:
+                record('running')
+        record('timed_out' if timed_out else 'finished')
     child_report={}
     if spec.kind != 'pytest':
         found=sorted((folder/'child-reports').glob('*/report.json'))
@@ -256,12 +329,21 @@ def _execute(spec: ExitSpec, folder: Path, *, root: Path, python: str):
                             for mode, path_report in (child_report.get('paths') or {}).items()
                             if (path_report or {}).get('trace_path')},
         }
+    native = None if timed_out or passed else _native_exit_classification(rc)
     result = {'name':spec.name,'status':'PASS' if passed else 'FAIL',
-            'reason':why,'kind':spec.kind,'scope':spec.scope,
+            'reason':native or why,'kind':spec.kind,'scope':spec.scope,
             'duration_seconds':round(time.monotonic()-began,2),
             'exit_code':rc,'timeout_seconds':spec.timeout,
             'child_report_path':child_report.get('report_path'),
-            'console_log':str(log.resolve())}
+            'console_log':str(log.resolve()),
+            'process_diagnostic_path':str(samples.resolve())}
+    if native is not None:
+        result['native_crash'] = {'classification':native,
+                                  'exit_code_hex':f'0x{rc & 0xffffffff:08X}',
+                                  'faulthandler_enabled':True,
+                                  'stack_trace_log':str(log.resolve())}
+    if spec.kind == 'local':
+        result.update(_local_child_stage_witness(folder))
     if child_failure is not None:
         result['child_failure'] = child_failure
     return result

@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from main_computer.config import MainComputerConfig
+from main_computer.dev_test_hub import DevTestHubConfigurationError, validate_dev_test_route
+from main_computer.hub_interface import HubDestination, require_legacy_overflow
 from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, credit_wei_to_display_text, positive_credit_wei
 from main_computer.models import ChatMessage
 from main_computer.providers.hub import HubProvider
@@ -861,13 +863,26 @@ class RemoteHubExecutionGateway:
         *,
         config: MainComputerConfig | None = None,
         provider_factory: Callable[..., HubProvider] | None = None,
+        destination: HubDestination | None = None,
     ) -> None:
         self.config = config or MainComputerConfig.from_env()
         self.provider_factory = provider_factory or HubProvider
+        self.destination = destination
 
     def _provider_for_request(self, request: dict[str, Any]) -> HubProvider:
         hub_payload = request.get("hub") if isinstance(request.get("hub"), dict) else {}
-        hub_url = str(hub_payload.get("url") or request.get("hub_url") or self.config.hub_url).strip() or self.config.hub_url
+        if self.destination is not None:
+            require_legacy_overflow(self.destination)
+            hub_url = self.destination.hub_url  # authoritative; never a request-supplied URL
+        else:
+            # Standalone development gateway callers retain their explicitly
+            # configured endpoint. Viewport callers always inject a destination.
+            hub_url = str(hub_payload.get("url") or request.get("hub_url") or self.config.hub_url).strip() or self.config.hub_url
+        if self.destination is None and self.config.hub_network not in {"dev", "test"}:
+            raise DevTestHubConfigurationError(
+                "The old remote-overflow Hub endpoint is Dev-Test only; public requests require Stable Hub routing."
+            )
+        validate_dev_test_route(hub_url)
         return self.provider_factory(
             model=str(request.get("model") or self.config.model or "remote-hub-ai"),
             hub_url=hub_url.rstrip("/"),
@@ -915,6 +930,8 @@ class RemoteHubExecutionGateway:
         metadata = dict(response.metadata or {})
         metadata.update(
             {
+                "execution_mode": "dev_test_simulation",
+                "selected_network": self.destination.network if self.destination is not None else self.config.hub_network,
                 "remote_overflow": True,
                 "remote_hub_ai": True,
                 "remote_hub_gateway": True,
@@ -928,11 +945,14 @@ class RemoteHubExecutionGateway:
         )
         payment = metadata.get("payment") if isinstance(metadata.get("payment"), dict) else {}
         credit_spent = bool(payment.get("charge_id")) or positive_credit_wei(payment.get("charged_credit_wei"), default=0) > 0
+        metadata["simulated"] = True
         metadata["credit_spent"] = credit_spent
         metadata["direct_spend"] = bool(payment.get("direct_spend", True))
         metadata["no_credit_spent"] = not credit_spent
         result = {
             "source": "remote_hub_ai",
+            "simulated": True,
+            "execution_mode": "dev_test_simulation",
             "safe_remote_hub_path": True,
             "remote_overflow_request_id": remote_overflow_request_id,
             "payment": payment if payment else None,
@@ -971,6 +991,8 @@ class RemoteHubExecutionGateway:
             "status": "completed",
             "remote_overflow": assessment.as_dict(),
             "remote_overflow_result": result,
+            "simulated": True,
+            "routing": self.destination.diagnostics() if self.destination is not None else None,
         }
 
 

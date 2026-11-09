@@ -430,6 +430,105 @@ def _resident_policy_skip(*, local_port: int) -> dict | None:
     return skip
 
 
+
+def _process_resource_snapshot(pid: int) -> dict:
+    """Safe, best-effort metadata only: no process command lines or environment."""
+    try:
+        import psutil  # type: ignore
+        process = psutil.Process(pid)
+        children = process.children(recursive=True)
+        info = {
+            'rss_bytes': process.memory_info().rss,
+            'cpu_user_seconds': round(process.cpu_times().user, 2),
+            'thread_count': process.num_threads(),
+            'child_count': len(children),
+            'children_rss_bytes': sum(c.memory_info().rss for c in children if c.is_running()),
+        }
+        return info
+    except (ImportError, OSError, RuntimeError, AttributeError):
+        return {'resource_metrics': 'unavailable'}
+    except Exception:
+        # psutil can raise when the process exits between the individual reads.
+        return {'resource_metrics': 'process_exited_or_unavailable'}
+
+
+def _host_resource_snapshot() -> dict:
+    """Compare resource pressure between sequential lanes (no process args)."""
+    try:
+        import psutil  # type: ignore
+        memory = psutil.virtual_memory()
+        names = []
+        for proc in psutil.process_iter(['name']):
+            try:
+                names.append(str(proc.info.get('name') or '').lower())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return {'memory_available_bytes': memory.available,
+                'memory_percent_used': memory.percent,
+                'cpu_percent': psutil.cpu_percent(interval=None),
+                'process_count': len(names),
+                'python_process_count': sum(name.startswith(('python', 'pytest')) for name in names),
+                'foundationdb_process_count': sum('fdbserver' in name for name in names)}
+    except (ImportError, OSError, RuntimeError, AttributeError):
+        return {'host_metrics': 'unavailable'}
+
+
+def _run_child_with_evidence(argv: list[str], *, name: str, timeout: int,
+                             kind: str, output: Path) -> tuple[int, str, str, dict]:
+    """Write unbuffered output to disk as it arrives, retaining it on timeout.
+
+    No shell, service-control commands, network probes, or production mutation.
+    The journal reports only timing, test names, and resource counters.
+    """
+    out_path = output / (name + '.stdout.log')
+    err_path = output / (name + '.stderr.log')
+    activity_path = output / (name + '.activity.jsonl')
+    command = list(argv)
+    if kind == 'pytest':
+        command = [x for x in command if x != '-q']
+        if '-vv' not in command and '-m' in command:
+            command.insert(command.index('-m') + 2, '-vv')
+        if len(command) >= 2 and command[1] == '-m':
+            command.insert(1, '-u')
+    begin = time.monotonic()
+    deadline = begin + timeout
+    with out_path.open('wb') as stdout, err_path.open('wb') as stderr, activity_path.open('a', encoding='utf-8') as activity:
+        child = subprocess.Popen(command, cwd=ROOT, stdout=stdout, stderr=stderr)
+        def mark(phase: str):
+            event = {'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+                     'phase': phase, 'elapsed_seconds': round(time.monotonic() - begin, 2),
+                     'pid': child.pid, **_process_resource_snapshot(child.pid)}
+            activity.write(json.dumps(event, sort_keys=True) + '\n')
+            activity.flush()
+        mark('started')
+        timed_out = False
+        while child.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                mark('timeout_before_termination')
+                child.kill()
+                child.wait()
+                break
+            try:
+                child.wait(timeout=min(10.0, remaining))
+            except subprocess.TimeoutExpired:
+                mark('running')
+        mark('timed_out' if timed_out else 'finished')
+    stdout_text = out_path.read_text(encoding='utf-8', errors='replace')
+    stderr_text = err_path.read_text(encoding='utf-8', errors='replace')
+    evidence = {'activity_journal': str(activity_path),
+                'stdout_log': str(out_path), 'stderr_log': str(err_path),
+                'timed_out': timed_out}
+    if kind == 'pytest':
+        # pytest -vv emits the active node before its result. It is preserved
+        # even if the process is killed at the timeout boundary.
+        nodes = re.findall(r'(?m)^(tests[/\\][^\r\n]+?::[^\r\n]+?)(?=\s+(?:PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)|\s*$)', stdout_text)
+        if nodes:
+            evidence['last_pytest_node'] = nodes[-1].strip()
+    return (-1 if timed_out else child.returncode), stdout_text, stderr_text, evidence
+
+
 def _run_step(name: str, argv: list[str] | None, timeout: int, kind: str,
               output: Path, *, admin_device: str | None, local_port: int,
               require_resident_slh: bool = False) -> dict:
@@ -463,17 +562,18 @@ def _run_step(name: str, argv: list[str] | None, timeout: int, kind: str,
             code = 1
     else:
         try:
-            completed = subprocess.run(argv or (), cwd=ROOT, capture_output=True, text=True,
-                                       errors='replace', timeout=timeout, check=False)
-            code = completed.returncode
-            text = completed.stdout + ('\n--- STDERR ---\n' + completed.stderr if completed.stderr else '')
+            code, stdout, stderr, execution = _run_child_with_evidence(
+                list(argv or ()), name=name, timeout=timeout, kind=kind, output=output)
+            text = stdout + ('\n--- STDERR ---\n' + stderr if stderr else '')
             log.write_text(text, encoding='utf-8')
-            passed, detail = _evaluate(kind, _extract_json(completed.stdout), code, completed.stdout)
-            status = 'PASS' if passed else 'FAIL'
-        except subprocess.TimeoutExpired:
-            code = -1
-            detail = {'reason': 'TIMEOUT', 'timeout_seconds': timeout}
-            log.write_text(json.dumps(detail) + '\n', encoding='utf-8')
+            if execution['timed_out']:
+                detail = {'reason': 'TIMEOUT', 'timeout_seconds': timeout, **execution}
+                status = 'FAIL'
+                code = -1
+            else:
+                passed, detail = _evaluate(kind, _extract_json(stdout), code, stdout)
+                detail.update(execution)
+                status = 'PASS' if passed else 'FAIL'
         except OSError as exc:
             code = -1
             detail = {'reason': 'EXECUTION_ERROR', 'error_class': type(exc).__name__}
@@ -552,9 +652,12 @@ def main(argv: list[str] | None = None) -> int:
     _json_file(summary, report)
     for index, (name, command, limit, kind) in enumerate(specs, 1):
         print(f'[{index}/{len(specs)}] {name}: running', flush=True)
+        host_before = _host_resource_snapshot()
         row = _run_step(name, command, limit, kind, output,
                         admin_device=args.admin_device, local_port=args.local_port,
                         require_resident_slh=args.require_resident_slh)
+        row['host_resources_before'] = host_before
+        row['host_resources_after'] = _host_resource_snapshot()
         report['lanes'].append(row)
         _json_file(summary, report)
         print(f'[{index}/{len(specs)}] {name}: {row["status"]} ({row["evidence"]["reason"]})', flush=True)

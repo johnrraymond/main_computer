@@ -32,7 +32,8 @@ def test_start_stop_helper_stops_children_before_supervisor_and_verifies_taskkil
 
     assert 'Add-PidCandidate $candidates $session.launcher.pid "supervisor" "runtime/start_stop/start-session.json launcher.pid" 90' in helper
     assert 'Add-PidCandidate $Candidates $State.service.pid "supervisor" "runtime/service_supervisor/state.json service.pid" 90' in helper
-    assert 'Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") 20' in helper
+    assert 'Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") $order' in helper
+    assert '$order = $(if ($name -eq "main-log") { 80 } else { 20 })' in helper
     assert 'return [pscustomobject]@{ role = "supervisor"; order = 90 }' in helper
     assert 'if ([string]$existing.role -eq "supervisor")' in helper
 
@@ -109,7 +110,7 @@ def test_dev_compose_file_defaults_to_unleashed_project_and_mode_ports() -> None
     compose = (ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
 
     assert "name: main-computer-unleashed" in compose
-    assert "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
+    assert "127.0.0.1:${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
     assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
     assert "\n  hub:\n" not in compose
     assert "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771" in compose
@@ -222,7 +223,7 @@ def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
     assert "function Start-MainComputerDevHubFresh" in helper
     assert 'state = "skipped-disabled"' in helper
     assert "Run start.bat --no-dev-hub to skip it." in helper
-    assert "Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub)" in helper
+    assert "Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub) ([bool]$NoSLHHub)" in helper
     assert "if (-not $NoDevHubRequested) {" in helper
 
 
@@ -255,7 +256,7 @@ def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
     assert "Waiting for dev Hub topology health on ports" in helper
     assert '"MAIN_COMPUTER_HUB_ENTRY_URLS"' in helper
     assert '"-m", "main_computer.cli"' in helper
-    assert '"hub",' in helper
+    assert '"dev-test-hub",' in helper
     assert '"--network", [string]$endpoint.network' in helper
     assert '"--chain-rpc-url", [string]$endpoint.chain_rpc_url' in helper
     assert '"--chain-id", [string]$endpoint.chain_id' in helper

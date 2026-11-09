@@ -45,14 +45,12 @@ from main_computer.exp_fdb_hub_state import (
     ExperimentalFoundationDbRequestStateStore,
     ExperimentalFoundationDbSecureSessionStore,
 )
-from main_computer.hub import (
-    DEFAULT_HUB_PORT,
-    HUB_SECURITY_PROFILE,
-    HubCreditAuthorizationError,
-    HubDispatcher,
-    HubHttpServer,
-    HubServerHandler,
-)
+from main_computer.dev_test_hub_legacy_routes import inherited_legacy_hub_route
+from main_computer.hub_resource_limits import HubHTTPResourceError, exact_read_with_deadline, http_content_length
+from main_computer.hub_http_legacy_support import DEFAULT_HUB_PORT, HubCreditAuthorizationError
+from main_computer.hub_security import HUB_SECURITY_PROFILE
+from main_computer.hub_http_legacy_handler import HubServerHandler
+from main_computer.hub_http_runtime import HubDispatcher, HubHttpServer
 from main_computer.stable_hub import LiveWorkerSession, StableHubRequestHandler, stable_hub_contract
 from main_computer.stable_hub_temporal import (
     StableHubTemporalRuntime, TemporalLifecycleUnavailable,
@@ -2686,7 +2684,38 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 }
             )
             return
+        # P5.3 ownership boundary: never inherit future legacy GET handlers
+        # just because this Dev-Test server subclasses the historical Hub.
+        if not inherited_legacy_hub_route("GET", path):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
         super().do_GET()
+
+    def _reject_undeclared_legacy_post(self) -> None:
+        """Return 404 without resetting small POSTs with unread bytes on Windows.
+
+        An HTTP/1.1 response followed by closing a TCP connection with unread
+        request bytes can turn into a Windows connection abort instead of the
+        declared 404. Drain only *small, bounded* bodies, with a one-second
+        deadline; never parse or process denied request data. Larger/malformed
+        bodies are rejected immediately and the connection is closed.
+        """
+        if hasattr(self, "headers"):
+            try:
+                length = http_content_length(self.headers, self._resource_policy())
+                if length > 4096:
+                    self.close_connection = True
+                elif length:
+                    old_timeout = self.connection.gettimeout()
+                    try:
+                        exact_read_with_deadline(self, length, time.monotonic() + 1.0)
+                    except (OSError, TimeoutError, ConnectionError):
+                        self.close_connection = True
+                    finally:
+                        self.connection.settimeout(old_timeout)
+            except HubHTTPResourceError:
+                self.close_connection = True
+        self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -2713,6 +2742,11 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
+        # Keep exactly the declared Dev-Test compatibility routes, with the
+        # original authentication, body bounds and credit accounting intact.
+        if not inherited_legacy_hub_route("POST", path):
+            self._reject_undeclared_legacy_post()
+            return
         super().do_POST()
 
 
@@ -2729,7 +2763,10 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         stable_hub_id: str = "",
         verbose: bool = True,
     ) -> None:
-        super().__init__(server_address, config, verbose=verbose)
+        super().__init__(
+            server_address, config, verbose=verbose,
+            handler_cls=ExperimentalFoundationDbHubServerHandler,
+        )
         diagnostics_value = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower()
         self.worker_route_diagnostics = verbose and diagnostics_value in {"1", "true", "yes", "on"}
         self.RequestHandlerClass = ExperimentalFoundationDbHubServerHandler

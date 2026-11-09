@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory = $true, Position = 0)]
   [ValidateSet("status", "shutdown", "start", "restart")]
   [string]$Action,
-  [string]$BindHost = "0.0.0.0",
+  [string]$BindHost = "127.0.0.1",
   [int]$Port = 8765,
   [string]$Workspace = "",
   [string]$PythonPath = "",
@@ -141,6 +141,12 @@ if (-not $AutoAllow) {
 
 if ($unexpectedRemainingArgs.Count -gt 0) {
   throw "Unexpected control-main-computer.ps1 argument(s): $($unexpectedRemainingArgs -join ' '). Use dev-control.ps1 for user-facing server control."
+}
+
+# Legacy argument recovery may override the parameter value: check after parsing
+# and before touching the PID files or stopping/replacing any listener.
+if ($BindHost -cne "127.0.0.1") {
+  throw "Viewport and heartbeat binding must be 127.0.0.1; rejected -BindHost $BindHost."
 }
 
 $pidFile = Join-Path $controlRoot ".main_computer_viewport.pid"

@@ -66,22 +66,52 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
            for e in ir.get("effects", []))):
         raise ValueError("P1 cannot synthesize a consequential or source-write capability")
     nodes = surface.get("nodes", [])
-    # A mode binding is a semantic relation between an observable surface node
-    # and an existing local enum state. It never creates a timer or capability.
+    # Operational applicability is a typed relationship to observed state,
+    # not an authored layout, a permission or an inferred backend effect.
     mode_transitions = {t.get("viewTransition", {}).get("target", {}).get("ref")
                         for t in intents.values() if isinstance(t.get("viewTransition"), Mapping)}
-    for node in nodes:
-        when = node.get("visibleWhen")
-        if when is None:
-            continue
-        if not isinstance(when, Mapping) or set(when) != {"state", "equals"}:
-            raise ValueError("P2 mode binding must be a state/equals pair")
+    def check_condition(when, depth=0):
+        if not isinstance(when, Mapping) or depth > 4:
+            raise ValueError("Invalid semantic visibility condition")
+        if set(when) in ({"all"}, {"any"}):
+            clauses = next(iter(when.values()))
+            if not isinstance(clauses, list) or not 1 <= len(clauses) <= 12:
+                raise ValueError("Invalid compound visibility condition")
+            for clause in clauses:
+                check_condition(clause, depth+1)
+            return
+        if not {"state", "equals"} <= set(when) or set(when)-{"state","path","equals","maxAgeSeconds"}:
+            raise ValueError("Unknown visibility condition fields")
         state_id = _ref(when["state"])
         target = states.get(state_id, {})
         schema = target.get("schema", {})
-        if (state_id not in mode_transitions or target.get("authority") != "renderer-local" or
-            schema.get("kind") != "string" or when["equals"] not in schema.get("enum", [])):
-            raise ValueError("P2 mode binding requires a verified local view transition")
+        authority = target.get("authority")
+        if authority not in {"derived", "renderer-local"}:
+            raise ValueError("Visibility requires a declared derived or local state")
+        if "maxAgeSeconds" in when:
+            age=when["maxAgeSeconds"]
+            if (target.get("authority") != "derived" or schema.get("kind") != "record" or
+                schema.get("fields", {}).get("observedAt", {}).get("kind") != "string" or
+                type(age) is not int or not 1 <= age <= 600):
+                raise ValueError("Observation freshness must reference a derived timestamped record")
+        if "path" in when:
+            if schema.get("kind") != "record" or when["path"] not in schema.get("fields", {}):
+                raise ValueError("Visibility requires a declared record field")
+            schema = schema["fields"][when["path"]]
+        value = when["equals"]
+        valid = (schema.get("kind") == "string" and isinstance(value, str) and
+                 ("enum" not in schema or value in schema["enum"])) or (
+                 schema.get("kind") == "boolean" and type(value) is bool) or (
+                 schema.get("kind") == "integer" and type(value) is int)
+        if not valid:
+            raise ValueError("Visibility condition type mismatch")
+        if authority == "renderer-local" and (state_id not in mode_transitions or
+                "path" in when or schema.get("kind") != "string" or
+                value not in schema.get("enum", [])):
+            raise ValueError("Local visibility requires a verified view transition")
+    for node in nodes:
+        if "visibleWhen" in node:
+            check_condition(node["visibleWhen"])
     if not nodes or len({n["id"] for n in nodes}) != len(nodes):
         raise ValueError("P1 requires uniquely identified executable nodes")
     if policy == POLICY and any(i.get("risk") not in {"local-state", "external-read"} or

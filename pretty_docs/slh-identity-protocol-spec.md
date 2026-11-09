@@ -2,13 +2,15 @@
 
 **Status:** design specification only for new network/security paths (October 28, 2026). Phase 1 supplies a connection catalog and guarded SEH Coolify control-plane operations; it does **not** supply the endpoints below. **No organizational CA, client certificates or CSRs** are part of this revised design.
 
+**Identity lifecycle clarification (November 8, 2026):** The **LMS-SLH frontend/local-management service** owns **one cryptographic identity system for every local actor**. The default installation identity and identities used by people or machines have exactly the same structure and key capabilities; only custody, labels, enrollment and roles differ. The backend SLH Organization Service owns organizational enrollment and authorization, not private keys. See [LMS-SLH Identity Ownership](lms-slh-identity-ownership.md). The protocol below is historical design and does not establish automatic default identity creation as an implemented capability.
+
 **Companions:** [SLH Pinky Promise economy (governing financial contract)](slh-pinky-promise-economy.md), [Device Authenticator Architecture](slh-seh-device-authentication-architecture.md), [Administrator Manual](secure-local-hub-administrator-manual.md), [Secure Worker](secure-worker-managed-mode-spec.md), [SEH Harness](seh-secure-external-hub-coolify-harness.md).
 
 ## 1. Non-negotiable invariants
 
 1. Administrator authorizes a device's **first enrollment**. Two UI paths, **Enroll with key** and **Approve from New Device Authorization Queue**, use **one backend approval method**. Selected administrator aliases grant no authority.
 2. Devices generate their own private authentication keys and register public keys. Known Device login proves key possession with one-time, session-bound challenges. Editable names, owners, notes and addresses do not identify a device cryptographically.
-3. Users/admins have their own authenticators when policy requires personal approval; a device key, authenticator signing key, and marketplace wallet key are different authorities.
+3. Every local actor uses the **same LMS-SLH identity model**. Policy may require a second independently controlled identity to approve an action, but **person and machine are not separate credential types**. Marketplace wallet keys remain distinct financial authority.
 4. Local SLH admin and an equally authorized administrator's separate SLH application use **the same backend admin API**, information model and role checks. Only first-admin bootstrap and true hardware recovery must be host-local.
 5. Direct SLH and SEH-connected clients follow **identical** enrollment/auth/session/authorization APIs. The SEH is a public HTTPS/WSS relay, not an authentication server; keep E2E authenticated encryption from client to SLH.
 6. Walletless workers may be represented by many SLH-owned public wallet sessions. Public marketplace job authorization occurs before forwarding work, and physical-worker capacity is never overbooked.
@@ -19,13 +21,14 @@
 | Record | Security-relevant fields |
 | --- | --- |
 | `organization` | immutable org ID; approved SLH service public key(s); supported upstreams |
-| `admin_user` | user ID, opt-in public display alias, authenticator public keys, role/permission set, recovery rules |
-| `device` | immutable device ID, public key + fingerprint, assigned user, type, status, roles, enrolled_by, method, last_seen |
+| `identity_enrollment` (logical principal) | identity ID, enrolled public key/fingerprint, status, roles, policy, enrolled_by, method, last_seen; **same key model regardless of actor** |
+| `admin_user` (optional organization account/display association) | account/display alias and scoped permissions/recovery associations; **not a separate cryptographic identity type** |
+| `device` (legacy API/registry name) | existing device ID and public-key enrollment, descriptive user/type/status labels, roles, last_seen; **not an identity type distinct from people** |
 | `device_metadata` | editable name, descriptive administrator notes, location/group, capabilities; never used as key identifiers |
 | `enrollment` | pending request ID, device key, selected admin alias, requested role, challenge, scope, expiry, physical-inspection requirement |
 | `enrollment_capability` | only salted/hashed bearer verifier stored, one use, expiration, bound request/device/org/admin scope; redeemed atomically |
 | `challenge` | exact intended action, issuer/recipient, nonces, TTL, channel binding and consumed state |
-| `session` | authorized principal, device key, optional personal authenticator, role, policy epoch, expiry and revocation fence |
+| `session` | authenticated LMS-SLH identity, optionally a second LMS-SLH identity required by policy, role, policy epoch, expiry and revocation fence |
 | `seh_binding` | scoped Coolify deployment and approved relay public key, tunnel/session status, revocation epoch |
 | `marketplace` | four upstream profiles, logical workers, delegated wallets and safe spent/earned balance bookkeeping |
 
@@ -60,7 +63,7 @@ GET  /v1/auth/session            (scopes, expiration, person_auth_required, poli
 POST /v1/auth/logout             (invalidate session)
 ```
 
-Sign a canonical, versioned representation containing organization ID, expected SLH identity/key fingerprint, device ID, audience, intended operation, target, nonce, expiry and secure-channel transcript binding. Enforce real signatures, single-use challenge, clock skew policy, role check, rate limit and session revocation. Optional human approval uses distinct authenticator credentials and an explicit scoped operation prompt. No known-device challenge is a payment authorization.
+Sign a canonical, versioned representation containing organization ID, expected SLH identity/key fingerprint, device ID, audience, intended operation, target, nonce, expiry and secure-channel transcript binding. Enforce real signatures, single-use challenge, clock skew policy, role check, rate limit and session revocation. Optional additional approval can require another independently held **LMS-SLH identity** and an explicit scoped operation prompt; it is not a distinct human-only key system. No known-device challenge is a payment authorization.
 
 ## 4. SLH administration: shared host/remote backend
 

@@ -494,7 +494,7 @@ def build_stable_msk_smoke_result(
 
     # The stable contract after issuance is intentionally key-id-first. The
     # validate call does not include wallet_address; the Hub must derive wallet,
-    # account, chain, and signed-request metadata from the stored full MSK record.
+    # account and chain from verified fields in the stored MSK record.
     validation_body = {
         "multisession_authorization": {
             "kind": "multisession_key",
@@ -513,10 +513,10 @@ def build_stable_msk_smoke_result(
         "msk_combines_user_and_hub_slugs": multisession_key_id.startswith(f"msk_{signed_user_slug}_")
         and bool(key.get("hub_slug"))
         and multisession_key_id.endswith(str(key.get("hub_slug"))),
-        "stored_full_signed_request": key.get("has_signed_request") is True and validated_key.get("has_signed_request") is True,
+        "signature_not_stored": key.get("has_signed_request") is False and validated_key.get("has_signed_request") is False,
         "validation_used_key_id_only": sorted(validation_body["multisession_authorization"].keys())
         == ["kind", "multisession_key_id"],
-        "wallet_derived_from_stored_request": validated_wallet == wallet_address,
+        "wallet_derived_from_verified_record": validated_wallet == wallet_address,
         "cross_hub_validation": request_hub.hub_id != validate_hub.hub_id,
     }
 
@@ -558,9 +558,9 @@ def _render_msk_smoke_text(result: dict[str, Any]) -> str:
         f"  signed user_slug: {'yes' if proof['signed_user_slug'] else 'no'}",
         f"  Hub added hub_slug: {'yes' if proof['hub_slug_added'] else 'no'}",
         f"  MSK combines user_slug + hub_slug: {'yes' if proof['msk_combines_user_and_hub_slugs'] else 'no'}",
-        f"  full signed request stored: {'yes' if proof['stored_full_signed_request'] else 'no'}",
+        f"  wallet signature not stored: {'yes' if proof['signature_not_stored'] else 'no'}",
         f"  validate used key id only: {'yes' if proof['validation_used_key_id_only'] else 'no'}",
-        f"  wallet derived from stored request: {'yes' if proof['wallet_derived_from_stored_request'] else 'no'}",
+        f"  wallet derived from verified record: {'yes' if proof['wallet_derived_from_verified_record'] else 'no'}",
         f"  cross-Hub validation: {'yes' if proof['cross_hub_validation'] else 'no'}",
     ]
     return "\n".join(lines)

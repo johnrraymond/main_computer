@@ -1863,9 +1863,12 @@ def _is_mcel_native_shell_child(self) -> bool:
 
 def _legacy_app_child_html() -> str:
     """Keep legacy app behavior, but don't duplicate the host-owned launcher."""
+    # The native header is removed from layout; main becomes the first grid
+    # item. A zero-height first grid row would clip every legacy app child.
+    # Give that one remaining row the full iframe height instead.
     child_css = ('<style id="mcel-native-child-chrome">'
                  '.viewport>header,.launcher{display:none!important;}'
-                 '.viewport{grid-template-rows:0 minmax(0,1fr)!important;}'
+                 '.viewport{height:100dvh;min-height:0;grid-template-rows:minmax(0,1fr)!important;}'
                  'body[data-has-app-taskbar="true"] main{padding-left:16px!important;}'
                  '</style>')
     if '</head>' not in APPLICATIONS_INDEX_HTML:
@@ -1899,6 +1902,40 @@ def dispatch_get(self) -> None:
         return
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
+        return
+    # Source-authored, generated MCEL SLH first slice. It is deliberately not
+    # registered with the existing 21-app launcher until its acceptance phase.
+    if route_path in {"/applications/slh", "/applications/slh/local",
+                      "/applications/slh/workers", "/applications/slh/local/workers",
+                      "/applications/slh/network"}:
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "SLH application is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_slh_application import ROUTES, render_slh_page
+        self._send_text(render_slh_page(ROUTES[route_path]), "text/html; charset=utf-8")
+        return
+    if route_path == "/api/applications/slh/observe":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "SLH observation is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_slh_application import observe_slh
+        from main_computer.mcel_slh_worker_bridge import validate_admin_bearer, WorkerBridgeError
+        query = parse_qs(urlsplit(self.path).query)
+        if set(query) != {"view"} or len(query["view"]) != 1 or query["view"][0] not in {"overview", "workers"}:
+            self._send_json({"ok": False, "error": "Invalid SLH observation view."}, HTTPStatus.BAD_REQUEST)
+            return
+        token = ""
+        if query["view"][0] == "workers":
+            authorization = self.headers.get("Authorization", "")
+            if authorization:
+                try:
+                    if not authorization.startswith("Bearer "):
+                        raise WorkerBridgeError("ADMIN_SESSION_REQUIRED", 401)
+                    token = validate_admin_bearer(authorization[7:])
+                except WorkerBridgeError:
+                    self._send_json({"ok": False, "error": "Invalid administrator session."}, HTTPStatus.UNAUTHORIZED)
+                    return
+        self._send_json(observe_slh(query["view"][0], admin_token=token))
         return
     if route_path == "/applications/mcel-semantic-shell":
         # Isolated, local-only MCEL parent-shell candidate. No route promotion.
@@ -2310,6 +2347,11 @@ def _chat_console_native_execution_allowed(self) -> bool:
 
 
 def dispatch_post(self) -> None:
+    # mcel.slh.target-tabs.v2: strictly local bridge, read-only remote TLS probe.
+    if urlsplit(self.path).path == "/api/applications/slh/network/inspect":
+        from main_computer.mcel_slh_network_route import handle_network_slh_inspect
+        handle_network_slh_inspect(self)
+        return
     self.server.signal("http-request", method="POST", path=self.path)
     route_path = urlsplit(self.path).path
     if route_path in {
@@ -2319,6 +2361,77 @@ def dispatch_post(self) -> None:
         return
     if route_path.startswith("/api/local/authenticator/"):
         _handle_main_computer_authenticator(self, "POST", route_path)
+        return
+    if route_path == "/api/applications/slh/setup/action":
+        from main_computer.mcel_slh_first_run import SlhFirstRunController, FirstRunError
+        # Consequential machine-local operations must not be accessible by
+        # cross-site forms, DNS rebinding, a remote client or an iframe origin.
+        host = (self.headers.get("Host") or "").strip().lower()
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if (not _hard_halt_client_is_local(self) or
+                not __import__("re").fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]{1,5}", host) or
+                origin != "http://" + host or
+                self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json" or
+                (self.headers.get("Sec-Fetch-Site", "").lower() not in ("", "same-origin"))):
+            self._send_json({"ok": False, "error": "SLH local setup origin denied."}, HTTPStatus.FORBIDDEN)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 1 <= length <= 4096:
+                raise FirstRunError("INVALID_SETUP_REQUEST")
+            payload = self._read_json()
+            if not isinstance(payload, dict) or set(payload) != {"action", "arguments"}:
+                raise FirstRunError("INVALID_SETUP_REQUEST")
+            action = payload["action"]
+            if (not isinstance(action, str) or
+                    self.headers.get("X-MCEL-SLH-Operation") != action):
+                raise FirstRunError("INVALID_SETUP_REQUEST")
+            authorization = self.headers.get('Authorization', '')
+            token = authorization[7:] if authorization.startswith('Bearer ') else ''
+            result = SlhFirstRunController().execute(action, payload["arguments"], token=token)
+        except FirstRunError as exc:
+            self._send_json({"ok": False, "error": exc.code}, exc.status)
+            return
+        except (TypeError, ValueError, UnicodeError):
+            self._send_json({"ok": False, "error": "Invalid SLH setup request."}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(result)
+        return
+    if route_path == "/api/applications/slh/worker/rename":
+        from main_computer.mcel_slh_worker_bridge import (
+            OrganizationWorkerClient, WorkerBridgeError, validate_admin_bearer,
+        )
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "SLH worker mutation is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        # A JSON POST with an explicit same-origin Origin and non-simple
+        # operation header prevents cross-site form/CSRF requests.
+        origin = (self.headers.get("Origin") or "").strip()
+        target = (self.headers.get("Host") or "").lower()
+        if (origin != "http://" + target or
+                self.headers.get("X-MCEL-SLH-Operation") != "rename" or
+                self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json"):
+            self._send_json({"ok": False, "error": "SLH cross-origin mutation denied."}, HTTPStatus.FORBIDDEN)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 1 <= length <= 2048:
+                raise WorkerBridgeError("INVALID_REQUEST", 400)
+            authorization = self.headers.get("Authorization", "")
+            if not authorization.startswith("Bearer "):
+                raise WorkerBridgeError("ADMIN_SESSION_REQUIRED", 401)
+            token = validate_admin_bearer(authorization[7:])
+            payload = self._read_json()
+            if set(payload) != {"device_id", "label"}:
+                raise WorkerBridgeError("INVALID_REQUEST", 400)
+            result = OrganizationWorkerClient().rename(token, payload["device_id"], payload["label"])
+        except WorkerBridgeError as exc:
+            self._send_json({"ok": False, "error": exc.code}, exc.status)
+            return
+        except (TypeError, ValueError, UnicodeError):
+            self._send_json({"ok": False, "error": "Invalid SLH mutation body."}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(result)
         return
     if route_path == HARD_HALT_PATH:
         _handle_hard_halt_post(self)

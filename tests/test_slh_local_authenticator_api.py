@@ -57,8 +57,9 @@ def test_real_local_service_identity_api_and_restart(tmp_path):
             assert _http(port, 'POST', '/v1/local/authenticator/identities',
                          {'device_id':'admin-device'})[0] == 409
             code, entries = _http(port, 'GET', '/v1/local/authenticator/identities')
-            assert code == 200 and len(entries['identities']) == 1
-            assert 'public_key' not in entries['identities'][0]
+            assert code == 200 and len(entries['identities']) == 2
+            assert {x['device_id'] for x in entries['identities']} >= {'admin-device', entries['default_device_id']}
+            assert all('public_key' not in x for x in entries['identities'])
             statement = _challenge('admin-device')
             code, signed = _http(port, 'POST', '/v1/local/authenticator/identities/admin-device/sign',
                                  {'challenge': statement})

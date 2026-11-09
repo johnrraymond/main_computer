@@ -36,7 +36,10 @@ def test_resident_control_plane_serves_before_bootstrap_and_never_launches_gatew
             assert data['local_service']['port'] == server.server_port
             assert data['initialization']['initialized'] is False
             assert data['organization_service'] == {
-                'configured': False, 'enabled': False, 'state': 'not_configured', 'listening': False}
+                'configured': False, 'enabled': False, 'state': 'not_configured', 'listening': False,
+                'bind_host': None, 'api_port': None, 'network_access': 'NOT_CONFIGURED'}
+            assert data['administrator_enrollment'] == {
+                'state': 'NOT_ESTABLISHED', 'local_credential': 'NOT_VERIFIED'}
             assert _existing_local_service(server.server_port)
             assert _read_local(server.server_port, '/v1/bootstrap/status')[0] == 200
             assert (tmp_path / 'bootstrap.secret').exists()
@@ -62,6 +65,7 @@ def test_real_local_service_bootstrap_does_not_start_organization(tmp_path: Path
             status, data = _read_local(server.server_port)
             assert status == 200
             assert data['initialization']['initialized'] is True
+            assert data['administrator_enrollment']['state'] == 'ENROLLED'
             assert data['organization_service']['enabled'] is False
             assert data['organization_service']['listening'] is False
             assert not (tmp_path / 'bootstrap.secret').exists()
@@ -111,26 +115,31 @@ def test_launcher_still_supervises_slh_without_rebinding_local_boot_task():
     assert 'main_computer.slh.local_service' in (root / 'scripts/slh-local-service-boot.ps1').read_text()
 
 
-def test_start_only_refreshes_windows_slh_boot_owner_for_plain_start():
-    """--no-dev-hub must not restart the boot task or launch the SLH child."""
+def test_start_slh_is_independent_of_dev_hub_and_never_registers_a_boot_task():
+    """Only --no-slh-hub may suppress the local SLH startup pathway."""
     script = (Path(__file__).resolve().parents[1] / 'scripts/main-computer-start-stop.ps1').read_text(encoding='utf-8-sig')
     start = script[script.index('function Start-MainComputer('):script.index('function Start-MainComputerDevHubOnly')]
-    assert 'if (-not $NoDevHubRequested) {\n    # Check ownership BEFORE' in start
+    assert 'if (-not $NoSLHHubRequested) {\n    # Check ownership BEFORE' in start
     assert 'Get-MainComputerSLHBootTask $RootPath' in start
     assert start.index('Get-MainComputerSLHBootTask $RootPath') < start.index('Stop-MainComputer $RootPath $true')
-    assert 'if (-not $NoDevHubRequested) {\n    $slhBootRestart = Restart-MainComputerSLHBootTask' in start
+    assert 'if (-not $NoSLHHubRequested) {\n    $slhBootRestart = Restart-MainComputerSLHBootTask' in start
     assert start.index('Stop-MainComputer $RootPath $true') < start.index('Restart-MainComputerSLHBootTask $RootPath $slhBootTask')
     assert start.index('Restart-MainComputerSLHBootTask $RootPath $slhBootTask') < start.index('Start-Process `')
-    assert 'SLH startup skipped by --no-dev-hub' in start
-    assert 'Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoDevHubRequested) { "0" } else { "1" })' in start
+    assert 'SLH startup disabled by --no-slh-hub' in start
+    assert 'Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoSLHHubRequested) { "0" } else { "1" })' in start
     assert start.index('MAIN_COMPUTER_SUPERVISE_SLH') < start.index('Set-MainComputerLaunchEnvironment $launchContext')
-    assert 'run start.bat --no-dev-hub in an elevated terminal' not in script
-    # start.bat forwards the flag through the existing batch launcher, while
-    # plain start.bat omits the flag and chooses normal SLH startup.
+    assert 'Register-ScheduledTask' not in start
+    assert 'New-ScheduledTaskTrigger' not in start
+    # Dev-Hub opt-out remains independent of SLH policy.
+    slh_section = start[start.index('# SLH and Dev-Test Hub'):start.index('  if ($NanoJevManagedRequested)')]
+    assert '$NoDevHubRequested' not in slh_section
     starter = (Path(__file__).resolve().parents[1] / 'start_v2.bat').read_text(encoding='utf-8')
     assert 'if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub' in starter
+    assert 'if /I "%~1"=="--no-slh-hub" goto mc_disable_slh_hub' in starter
     assert 'set "MC_NO_DEV_HUB=0"' in starter
-    assert '-Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" -NoDevHub' in starter
+    assert 'set "MC_NO_SLH_HUB=0"' in starter
+    assert 'set "MC_HUB_START_ARGS=%MC_HUB_START_ARGS% -NoDevHub"' in starter
+    assert 'set "MC_HUB_START_ARGS=%MC_HUB_START_ARGS% -NoSLHHub"' in starter
 
 
 def test_boot_task_restart_verifies_exact_checkout_and_only_owns_local_api():

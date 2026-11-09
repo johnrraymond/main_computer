@@ -181,6 +181,34 @@ def compare(reference: dict, actual: dict) -> list[str]:
     return errors
 
 
+def navigation_link_errors(links: dict, registry: dict, icon_ids: set[str]) -> list[str]:
+    """A semantic destination requires a real canonical href in both launchers.
+
+    A button that happens to navigate when clicked is insufficient: it cannot
+    be independently copied, opened in another window, or bookmarked.
+    """
+    routes = {entry['id']: entry['route'] for entry in registry['apps']}
+    failures = []
+    for collection, expected in (('icons', icon_ids), ('launcher', set(routes))):
+        found = links.get(collection)
+        if not isinstance(found, list) or len(found) != len(expected):
+            failures.append(collection + '-navigation-inventory-invalid')
+            continue
+        seen = set()
+        for item in found:
+            app_id = item.get('app') if isinstance(item, dict) else None
+            if app_id not in expected or app_id in seen:
+                failures.append(collection + '-navigation-identity-invalid')
+                continue
+            seen.add(app_id)
+            if (item.get('tag') != 'A' or item.get('href') != routes[app_id] or
+                item.get('destination') != 'applications.' + app_id):
+                failures.append(collection + '-canonical-navigation-link-invalid:' + app_id)
+        if seen != expected:
+            failures.append(collection + '-navigation-inventory-incomplete')
+    return failures
+
+
 def canonical_mount_errors(*, parent_url: str, expected_route: str, child_src: str | None,
                            promoted: str | None, active_app: str | None, rail_count: int) -> list[str]:
     """Validate a production shell navigation, not the opt-in preview route.
@@ -247,6 +275,18 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                 reference = capture(reference_page)
                 actual = capture(candidate_page)
                 failures.extend(compare(reference, actual))
+                # A browser-native URL is part of the semantic destination
+                # contract, not an optional JavaScript click effect.
+                navigation_links = candidate_page.evaluate("""() => ({
+                  icons:[...document.querySelectorAll('#mcel-shell-desktop-overlay .desktop-icon')]
+                    .map(e=>({app:e.dataset.app,tag:e.tagName,href:e.getAttribute('href'),
+                      destination:e.dataset.mcelDestinationId})),
+                  launcher:[...document.querySelectorAll('.mcel-shell-app-card')]
+                    .map(e=>({app:e.dataset.app,tag:e.tagName,href:e.getAttribute('href'),
+                      destination:e.dataset.mcelDestinationId}))
+                })""")
+                failures.extend(navigation_link_errors(
+                    navigation_links, reg, {entry['app'] for entry in ref['icons']}))
                 # A fresh-page hover isn't enough. Reproduce the reported
                 # desktop-icon -> semantic app -> FIRST rail hover sequence.
                 # Causal mode runs in about:blank: stub only the URL write,

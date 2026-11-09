@@ -15,6 +15,7 @@ from main_computer.chat_ai_subprocess import (
 from main_computer.models import ChatResponse
 from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, credit_wei_to_display_text, positive_credit_wei
 from main_computer.remote_overflow import RemoteOverflowDecisionEngine, RemoteHubExecutionGateway, estimate_remote_request
+from main_computer.hub_interface import resolve_hub_destination, require_legacy_overflow, HubInterfaceError
 
 
 def _should_inline_test_provider(provider: Any) -> bool:
@@ -387,10 +388,12 @@ class ViewportChatConsoleRoutesMixin:
 
     def _chat_console_backend_paid_overflow_context(self, body: dict[str, Any]) -> dict[str, Any]:
         settings = self._chat_console_load_worker_settings()
-        hub_url = str(settings.get("registrationHubUrl") or settings.get("registration_hub_url") or self.server.config.hub_url).strip().rstrip("/")
-        active_key = self._chat_console_active_worker_multisession_key(hub_url=hub_url) or self._chat_console_active_worker_multisession_key()
-        if active_key and active_key.get("hub_url"):
-            hub_url = str(active_key.get("hub_url") or hub_url).strip().rstrip("/") or hub_url
+        destination = resolve_hub_destination(settings)
+        hub_url = destination.hub_url
+        # A key for a previous network cannot retarget requester work.
+        active_key = self._chat_console_active_worker_multisession_key(hub_url=hub_url) if hub_url else None
+        if active_key and str(active_key.get("hub_url") or "").strip().rstrip("/") != hub_url:
+            active_key = None
 
         remote_enabled = self._chat_console_bool_setting(settings.get("remoteEnabled", settings.get("remote_enabled")), False)
         max_output_tokens = self._chat_console_int_setting(
@@ -425,6 +428,7 @@ class ViewportChatConsoleRoutesMixin:
         chain_id = str((active_key or {}).get("chain_id") or "0x28757b2").strip() or "0x28757b2"
         return {
             "settings": settings,
+            "hub_destination": destination,
             "hub_url": hub_url,
             "remote_enabled": remote_enabled,
             "max_output_tokens": max_output_tokens,
@@ -506,14 +510,19 @@ class ViewportChatConsoleRoutesMixin:
         required_credit_wei = positive_credit_wei(context.get("estimated_max_credit_wei"), default=0)
         hub_response: dict[str, Any] | None = None
         hub_error = ""
+        unsupported_operation = False
         try:
-            gateway = RemoteHubExecutionGateway(config=getattr(self.server, "config", None))
+            gateway = RemoteHubExecutionGateway(config=getattr(self.server, "config", None),
+                                               destination=context["hub_destination"])
             provider = gateway._provider_for_request(enriched)
             hub_response = provider.validate_multisession_key(enriched)
             hub_reachable = bool(hub_response.get("hub_reachable", True) and hub_response.get("ok", True) is not False)
         except Exception as exc:
             hub_reachable = False
             hub_error = str(exc)
+            if isinstance(exc, HubInterfaceError):
+                unsupported_operation = True
+                hub_error = f"Unsupported selected Hub operation: {exc}"
 
         checks.append(
             self._chat_console_readiness_check(
@@ -605,6 +614,9 @@ class ViewportChatConsoleRoutesMixin:
                 else str((failing or {}).get("key") or "paid_overflow_not_ready")
             )
             user_message = str((failing or {}).get("detail") or "Paid overflow readiness did not pass.")
+            if unsupported_operation:
+                reason_code = "unsupported_selected_hub_protocol"
+                user_message = hub_error
 
         return {
             "ok": True,
@@ -615,6 +627,7 @@ class ViewportChatConsoleRoutesMixin:
             "user_message": user_message,
             "paid_overflow_enabled": bool(context.get("remote_enabled")),
             "hub_url": str(context.get("hub_url") or ""),
+            "routing": context["hub_destination"].diagnostics(),
             "wallet_address": wallet_address,
             "account_id": str((hub_response or {}).get("account_id") or ""),
             "multisession_key_id": key_id,
@@ -806,9 +819,23 @@ class ViewportChatConsoleRoutesMixin:
             submit_body = self._chat_console_remote_hub_submit_body(body)
             engine = self._chat_console_remote_hub_submit_engine(submit_body)
             assessment = engine.assess(submit_body)
-            result = RemoteHubExecutionGateway(config=getattr(self.server, "config", None)).run(submit_body, assessment)
+            destination = resolve_hub_destination(self._chat_console_load_worker_settings())
+            # A selected production Hub cannot serve this older Dev-Test-only
+            # simulation endpoint. Return an explicit unsupported result and
+            # do not contact *any* Hub or consume credits.
+            if not destination.legacy_overflow_supported:
+                try:
+                    require_legacy_overflow(destination)
+                except HubInterfaceError as exc:
+                    result = {"ok": False, "status": "unsupported",
+                              "reason_code": "unsupported_selected_hub_protocol",
+                              "error": str(exc), "remote_overflow": assessment.as_dict()}
+            else:
+                result = RemoteHubExecutionGateway(config=getattr(self.server, "config", None),
+                                                   destination=destination).run(submit_body, assessment)
             remote_result = result.get("remote_overflow_result") if isinstance(result.get("remote_overflow_result"), dict) else {}
             remote_overflow_request_id = str(remote_result.get("remote_overflow_request_id") or "")
+            result["routing"] = destination.diagnostics()
             self.server.signal(
                 "api-chat-console-remote-overflow-hub-submit",
                 status=result.get("status"),
@@ -832,6 +859,8 @@ class ViewportChatConsoleRoutesMixin:
                 output_cell["metadata"] = {
                     **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
                     "remote_overflow": True,
+                    "simulated": bool(remote_result.get("simulated", False)),
+                    "execution_mode": str(remote_result.get("execution_mode") or ""),
                     "remote_hub_ai": True,
                     "remote_hub_gateway": True,
                     "safe_remote_hub_path": True,

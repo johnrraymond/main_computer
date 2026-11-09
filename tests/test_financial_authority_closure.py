@@ -113,13 +113,13 @@ def _dispatch_conditions(filename: str, klass: str) -> list[str]:
 
 
 def test_every_hub_post_dispatch_has_a_documented_authority_policy():
-    assert set(_dispatch_conditions('hub.py', 'HubServerHandler')) == set(LEGACY_POST_POLICIES)
+    assert set(_dispatch_conditions('hub_http_legacy_handler.py', 'HubServerHandler')) == set(LEGACY_POST_POLICIES)
     assert set(_dispatch_conditions('stable_hub.py', 'StableHubRequestHandler')) == set(STABLE_POST_POLICIES)
-    assert set(_dispatch_conditions('hub.py', 'HubWorkerHandler')) == set(WORKER_SIDE_POST_POLICIES)
+    assert set(_dispatch_conditions('hub_worker_http.py', 'HubWorkerHandler')) == set(WORKER_SIDE_POST_POLICIES)
 
 
 def test_no_previous_deleted_financial_path_reentered_handler():
-    for filename, cls in [('hub.py', 'HubServerHandler'), ('stable_hub.py', 'StableHubRequestHandler')]:
+    for filename, cls in [('hub_http_legacy_handler.py', 'HubServerHandler'), ('stable_hub.py', 'StableHubRequestHandler')]:
         source = ast.parse((ROOT / 'main_computer' / filename).read_text(encoding='utf-8'))
         c = next(x for x in source.body if isinstance(x, ast.ClassDef) and x.name == cls)
         f = next(x for x in c.body if isinstance(x, ast.FunctionDef) and x.name == 'do_POST')

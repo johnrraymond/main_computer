@@ -98,6 +98,11 @@ def normalize_zip_member_path(raw_name: str) -> PurePosixPath | None:
         raise PatchApplicationError(f"Unsafe zip member path contains parent traversal: {raw_name}")
     if any(has_windows_drive_designator(part) for part in parts):
         raise PatchApplicationError(f"Unsafe zip member path contains a Windows drive designator: {raw_name}")
+    if any(part.casefold().startswith("main_computer_test") for part in parts):
+        raise PatchApplicationError(
+            f"Forbidden main_computer_test snapshot path: {raw_name}. "
+            "ZIP members must already be repository-relative; no wrapper stripping is allowed."
+        )
 
     return PurePosixPath(*parts)
 
@@ -166,13 +171,6 @@ def build_unified_diff(old_root: Path, files_root: Path, changes: Iterable[FileC
     return "".join(chunks)
 
 
-def detect_single_top_level_dir(paths: list[PurePosixPath]) -> str | None:
-    top_parts = {path.parts[0] for path in paths if path.parts}
-    if len(top_parts) != 1:
-        return None
-    return next(iter(top_parts))
-
-
 def extract_zip_normalized(zip_path: Path, destination: Path) -> None:
     destination_resolved = destination.resolve()
     with zipfile.ZipFile(zip_path) as archive:
@@ -197,23 +195,46 @@ def extract_zip_normalized(zip_path: Path, destination: Path) -> None:
                 shutil.copyfileobj(source, handle)
 
 
-def find_bundle_root(extracted_root: Path) -> Path | None:
-    direct = extracted_root
-    if (direct / "manifest.json").exists() and (direct / "files").is_dir():
-        return direct
-    children = [child for child in extracted_root.iterdir() if child.is_dir()]
-    if len(children) == 1:
-        child = children[0]
-        if (child / "manifest.json").exists() and (child / "files").is_dir():
-            return child
-    return None
+def archive_mode(zip_path: Path) -> str:
+    """Require exact ZIP paths; refuse exported snapshots and wrapped bundles.
+
+    Neither raw ZIPs nor verified bundles are ever re-rooted. Bundle metadata
+    is recognized only at the archive root, so nested manifests cannot be
+    accidentally copied into the repository as ordinary files.
+    """
+    if zip_path.name.casefold().startswith("main_computer_test"):
+        raise PatchApplicationError(
+            f"Forbidden main_computer_test snapshot ZIP: {zip_path.name}. "
+            "Exported snapshots are not patch archives."
+        )
+    with zipfile.ZipFile(zip_path) as archive:
+        members = [normalize_zip_member_path(info.filename) for info in archive.infolist()]
+    members = [member for member in members if member is not None]
+    if not members:
+        raise PatchApplicationError("ZIP contains no repository-relative members")
+
+    names = {member.as_posix() for member in members}
+    if "manifest.json" in names:
+        if not any(name.startswith("files/") for name in names):
+            raise PatchApplicationError("Verified bundle must have files/ beside root manifest.json")
+        return "bundle"
+
+    for member in members:
+        if member.name != "manifest.json" or len(member.parts) < 2:
+            continue
+        prefix = "/".join(member.parts[:-1]) + "/files/"
+        if any(name.startswith(prefix) for name in names):
+            raise PatchApplicationError(
+                f"Wrapped verified bundle rejected: {member.as_posix()}. "
+                "Place manifest.json and files/ at the ZIP root; no wrapper stripping is allowed."
+            )
+    return "snapshot"
 
 
-def find_snapshot_root(extracted_root: Path) -> Path:
-    files = [PurePosixPath(str(path.relative_to(extracted_root)).replace("\\", "/")) for path in extracted_root.rglob("*") if path.is_file()]
-    top_dir = detect_single_top_level_dir(files)
-    if top_dir and (extracted_root / top_dir).is_dir():
-        return extracted_root / top_dir
+def find_bundle_root(extracted_root: Path) -> Path:
+    """The manifest is valid only at the literal ZIP root."""
+    if not (extracted_root / "manifest.json").is_file() or not (extracted_root / "files").is_dir():
+        raise PatchApplicationError("Verified bundle requires manifest.json and files/ at ZIP root")
     return extracted_root
 
 
@@ -341,10 +362,11 @@ def build_bundle_from_snapshot(zip_path: Path, target_root: Path, run_dir: Path)
     extracted = run_dir / "extracted"
     extracted.mkdir(parents=True, exist_ok=True)
     extract_zip_normalized(zip_path, extracted)
-    snapshot_root = find_snapshot_root(extracted)
-    changes = snapshot_changes(snapshot_root, target_root)
+    # Every ZIP member is already a repository-relative destination; never
+    # infer or remove an enclosing directory.
+    changes = snapshot_changes(extracted, target_root)
     bundle_root = run_dir / "bundle"
-    return write_bundle(bundle_root, snapshot_root, changes, reference_patch=None)
+    return write_bundle(bundle_root, extracted, changes, reference_patch=None)
 
 
 def bundle_from_zip(zip_path: Path, run_dir: Path) -> BundleData:
@@ -352,9 +374,6 @@ def bundle_from_zip(zip_path: Path, run_dir: Path) -> BundleData:
     extracted.mkdir(parents=True, exist_ok=True)
     extract_zip_normalized(zip_path, extracted)
     bundle_root = find_bundle_root(extracted)
-    if bundle_root is None:
-        raise PatchApplicationError("Zip file is not a verified patch-set bundle")
-    loaded = load_bundle(bundle_root)
     destination = run_dir / "bundle"
     shutil.copytree(bundle_root, destination)
     return load_bundle(destination)
@@ -470,12 +489,11 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = create_run_dir(target_root)
     mode = "snapshot"
     try:
-        try:
+        mode = archive_mode(zip_path)
+        if mode == "bundle":
             bundle = bundle_from_zip(zip_path, run_dir)
-            mode = "bundle"
-        except PatchApplicationError:
+        else:
             bundle = build_bundle_from_snapshot(zip_path, target_root, run_dir)
-            mode = "snapshot"
 
         validate_bundle_targets(bundle, target_root)
         verification, actual_patch, expected_patch = compute_verification(bundle, target_root)
@@ -548,9 +566,9 @@ def main(argv: list[str] | None = None) -> int:
 
         apply_bundle(bundle, target_root)
         report["status"] = (
-            "applied"
-            if verification in {"exact", "no_reference"}
-            else "applied_with_fuzz"
+            "no_changes" if not bundle.changes else
+            "applied" if verification in {"exact", "no_reference"} else
+            "applied_with_fuzz"
         )
         write_run_report(run_dir, report)
         print_run_summary(
@@ -563,7 +581,9 @@ def main(argv: list[str] | None = None) -> int:
             undo_zip_path=undo_zip_path,
             target_root=target_root,
         )
-        if verification == "fuzzy":
+        if not bundle.changes:
+            print("no changes: ZIP contents already match the exact target paths; nothing copied.")
+        elif verification == "fuzzy":
             print("applied: overwrote target files because --allowfuzz was set.")
         else:
             print("applied: copied replacement files into the target root.")

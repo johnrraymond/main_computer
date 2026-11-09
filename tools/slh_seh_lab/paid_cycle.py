@@ -91,6 +91,52 @@ class PaidCycleDiagnostics:
         sys.stderr.flush()
 
 
+
+def _await_paid_terminal(store, session_id: str, trace: PaidCycleDiagnostics,
+                         *, seconds: float = 18):
+    """Read-only poll with a terminal-state/latency summary even on timeout."""
+    poll = {'reads': 0, 'last_status': 'not_visible', 'last_read_ms': 0.0,
+            'max_read_ms': 0.0, 'read_error_count': 0}
+    poll_start = time.monotonic()
+    def _terminal():
+        started = time.monotonic()
+        poll['reads'] += 1
+        try:
+            state=store.load()
+        except BaseException as exc:
+            poll['read_error_count'] += 1
+            trace._emit('paid_terminal_ledger_read', 'error',
+                        round((time.monotonic()-started)*1000, 1),
+                        error_type=type(exc).__name__, poll_number=poll['reads'])
+            raise
+        finally:
+            read_ms = round((time.monotonic() - started) * 1000, 1)
+            poll['last_read_ms'] = read_ms
+            poll['max_read_ms'] = max(poll['max_read_ms'], read_ms)
+        record=state.get('accepted_sessions',{}).get(session_id)
+        observed = str(record.get('status') or 'empty') if isinstance(record, dict) else 'not_visible'
+        if observed not in {'not_visible', 'empty', 'accepted', 'running',
+                            'succeeded', 'failed', 'cancelled'}:
+            observed = 'unknown_status'
+        if observed != poll['last_status']:
+            poll['last_status'] = observed
+            trace._emit('paid_terminal_status_change', 'observed',
+                        round((time.monotonic()-poll_start)*1000, 1),
+                        session_id=session_id, status_observed=observed,
+                        poll_number=poll['reads'], read_ms=poll['last_read_ms'])
+        if isinstance(record, dict) and observed in {'succeeded','failed','cancelled'}:
+            return record
+        return None
+    try:
+        with trace.stage('paid_work_terminal'):
+            terminal=_eventually(_terminal, seconds=seconds)
+    finally:
+        trace._emit('paid_terminal_poll_summary', 'observed',
+                    round((time.monotonic()-poll_start)*1000, 1),
+                    session_id=session_id, **poll)
+    return terminal
+
+
 def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLedgerDirectory,
                       worker_account_id: str, lab_mode: str,
                       trace_file: Path | None = None,
@@ -164,14 +210,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     # Determine the selected connection only from the lab-owned ledger later.
     result_worker=''
     connected_slots={str(slot.accepted.get('connection_id')) for slot in proxy.sessions.values()}
-    def _terminal():
-        state=ledger.store.load()
-        record=state.get('accepted_sessions',{}).get(session_id)
-        if not isinstance(record,dict):return None
-        if record.get('status') in {'succeeded','failed','cancelled'}:return record
-        return None
-    with trace.stage('paid_work_terminal'):
-        terminal=_eventually(_terminal, seconds=18)
+    terminal = _await_paid_terminal(ledger.store, session_id, trace, seconds=18)
     payout=dict(terminal.get('payout') or {})
     store_state=ledger.store.load()
     charges=[x for x in store_state.get('payout_charges',{}).values()

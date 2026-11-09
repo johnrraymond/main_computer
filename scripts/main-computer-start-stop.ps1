@@ -12,6 +12,8 @@ param(
 
   [switch]$NoDevHub,
 
+  [switch]$NoSLHHub,
+
   [switch]$NanoJevManaged,
 
   [int]$NanoJevIdleSeconds = 300
@@ -2455,6 +2457,46 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     $endpoints = @((Resolve-MainComputerDevHubEndpoint $RootPath $LaunchContext))
   }
   $endpoint = $endpoints[0]
+
+  # P3: check the explicit Dev-Test Hub boundary BEFORE replacing any listener,
+  # changing runtime state, or starting a child. Never fall back to the registry's
+  # production default (mainnet) when local topology or environment is wrong.
+  $hubKind = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb").Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($hubKind)) { $hubKind = "exp-fdb" }
+  if ($hubKind -notin @("exp-fdb", "legacy")) {
+    throw "Dev-Test Hub kind must be exp-fdb or legacy; got '$hubKind'."
+  }
+  $requestedNetwork = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"
+  $topologyMode = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_TOPOLOGY_MODE" "cluster").Trim().ToLowerInvariant()
+  if ($topologyMode -notin @("cluster", "single")) {
+    throw "Dev-Test Hub topology mode must be cluster or single."
+  }
+  $preflightArgs = @(
+    "-m", "main_computer.dev_test_hub", "preflight",
+    "--network", [string]$endpoint.network,
+    "--network-kind", [string]$endpoint.network,
+    "--requested-network", [string]$requestedNetwork,
+    "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
+    "--chain-id", [string]$endpoint.chain_id,
+    "--host", [string]$endpoint.host
+  )
+  foreach ($item in @($endpoints)) {
+    $preflightArgs += @("--hub-url", [string]$item.hub_url)
+  }
+  if ($topologyMode -eq "cluster") {
+    $preflightTopologyPath = Resolve-MainComputerRepoPath `
+      $RootPath `
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_TOPOLOGY" "deploy\hub-topology\dev-topology.json")
+    if (-not (Test-Path -LiteralPath $preflightTopologyPath -PathType Leaf)) {
+      throw "Dev-Test Hub cluster topology is missing: $preflightTopologyPath"
+    }
+    $preflightArgs += @("--topology", [string]$preflightTopologyPath)
+  }
+  $preflightOutput = & $PythonCommand @preflightArgs 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw ("Dev-Test Hub isolation preflight refused startup: " + (($preflightOutput | Out-String).Trim()))
+  }
+  Write-Host "Dev-Test Hub network/loopback preflight passed."
   $hubPorts = @()
   foreach ($item in @($endpoints)) {
     try {
@@ -2491,10 +2533,6 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ENTRY_URLS", (($endpoints | ForEach-Object { [string]$_.hub_url }) -join ","), "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
-  $hubKind = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb").Trim().ToLowerInvariant()
-  if ([string]::IsNullOrWhiteSpace($hubKind)) {
-    $hubKind = "exp-fdb"
-  }
   $smokeBridgeSetting = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE" "1"
   $missingBridgeSignerSetting = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER" "0"
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_DEV_HUB_KIND", $hubKind, "Process")
@@ -2566,7 +2604,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   if ($hubKind -eq "legacy") {
     $arguments = @(
       "-m", "main_computer.cli",
-      "hub",
+      "dev-test-hub",
       "--host", [string]$endpoint.host,
       "--port", [string]$endpoint.port,
       "--network", [string]$endpoint.network,
@@ -2589,7 +2627,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
       "--no-fdb-autostart",
       "--network-key", [string]$endpoint.network,
       "--network-display-name", "Main Computer Local Dev",
-      "--network-kind", "dev",
+      "--network-kind", [string]$endpoint.network,
       "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
       "--chain-id", [string]$endpoint.chain_id,
       "--bridge-backend", [string]$bridgeBackend,
@@ -2633,6 +2671,9 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     return [ordered]@{
       ok = $false
       state = "unhealthy-after-start"
+      role = "dev-test-hub"
+      implementation = $hubKind
+      network = [string]$endpoint.network
       endpoint = $endpoint
       endpoints = $endpoints
       ports = $hubPorts
@@ -2651,6 +2692,9 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   return [ordered]@{
     ok = $true
     state = $(if ($endpoints.Count -gt 1) { "started-topology" } else { "started" })
+    role = "dev-test-hub"
+    implementation = $hubKind
+    network = [string]$endpoint.network
     endpoint = $endpoint
     endpoints = $endpoints
     ports = $hubPorts
@@ -2677,7 +2721,8 @@ function New-StartSession(
   [object]$LocalPlatformStart,
   [object]$DevChainStart,
   [object]$DevHubStart,
-  [object]$NanoJevStart
+  [object]$NanoJevStart,
+  [object]$SLHStart
 ) {
   $applicationsProject = Get-SafeDockerName `
     (Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT") "main-computer-applications") `
@@ -2724,6 +2769,7 @@ function New-StartSession(
     local_platform = $LocalPlatformStart
     dev_chain = $DevChainStart
     dev_hub = $DevHubStart
+    slh = $SLHStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
       (Join-Path $RootPath ".main_computer_main_log_service.pid"),
@@ -2787,7 +2833,8 @@ function New-StartSession(
       },
       [ordered]@{
         name = "dev-hub"
-        module = "main_computer.cli hub --network dev"
+        display_name = "Dev-Test Hub"
+        module = $(if ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb") -eq "legacy") { "main_computer.cli dev-test-hub --network " + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev") } else { "exp-fdb-hub.py --network-key " + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev") })
         pid_file = Get-DevHubPidPath $RootPath
         state_file = Join-Path $RootPath "runtime\hub\dev"
       },
@@ -3041,32 +3088,43 @@ function Restart-MainComputerSLHBootTask([string]$RootPath, [object]$VerifiedTas
   throw "SLH boot task did not start a fresh, verified localhost API on port 8897."
 }
 
-function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
+function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NoSLHHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
 
-  # --no-dev-hub also opts out of this launcher's SLH startup. Do not even
-  # inspect/restart the separate Windows boot task in that mode. A service
-  # already owned by Windows stays untouched; the supervisor must not launch
-  # another SLH child to replace it.
+  # SLH and Dev-Test Hub have independent startup policies. --no-slh-hub
+  # skips both the Windows task handoff and the supervisor's SLH child, but
+  # does not affect Dev-Test Hub startup. Do not register an SLH boot task.
   $slhBootTask = $null
-  if (-not $NoDevHubRequested) {
+  if (-not $NoSLHHubRequested) {
     # Check ownership BEFORE stopping Main Computer processes. Never take over
     # a Windows task registered by a different checkout.
     $slhBootTask = Get-MainComputerSLHBootTask $RootPath
   }
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
-  if (-not $NoDevHubRequested) {
+  $slhStart = [ordered]@{
+    ok = $true
+    requested = (-not $NoSLHHubRequested)
+    state = "skipped-disabled"
+    message = "SLH startup disabled by --no-slh-hub; separately owned SLH services are untouched."
+  }
+  if (-not $NoSLHHubRequested) {
     $slhBootRestart = Restart-MainComputerSLHBootTask $RootPath $slhBootTask
+    $slhStart = [ordered]@{
+      ok = $true
+      requested = $true
+      state = [string]$slhBootRestart.state
+      message = "SLH supervision requested; check supervisor state for listener readiness."
+    }
     Write-Host ("SLH local listener: " + [string]$slhBootRestart.state)
   } else {
-    Write-Host "SLH startup skipped by --no-dev-hub; separately owned SLH services are untouched."
+    Write-Host ([string]$slhStart.message)
   }
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
-  # The supervisor normally launches an SLH child even without a Windows boot
-  # task. Explicitly suppress that child for --no-dev-hub as well.
-  Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoDevHubRequested) { "0" } else { "1" })
+  # The supervisor starts or skips its SLH child solely according to the SLH
+  # opt-out, regardless of whether Dev-Test Hub is started.
+  Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoSLHHubRequested) { "0" } else { "1" })
   if ($NanoJevManagedRequested) {
     $idleSeconds = [Math]::Max(0, $NanoJevIdleSecondsRequested)
     Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_MANAGED" "1"
@@ -3226,7 +3284,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
     }
   }
 
-  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart $nanoJevStart
+  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart $nanoJevStart $slhStart
   $sessionPath = Get-StartSessionPath $RootPath
   Write-JsonFile $sessionPath $session
 
@@ -3251,6 +3309,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   Write-Host ("Applications:     " + (Join-Path $RootPath "runtime\applications_service\state.json"))
   Write-Host ("Dev Hub PID:      " + (Get-DevHubPidPath $RootPath))
   Write-Host ("Dev Hub runtime:  " + (Join-Path $RootPath "runtime\hub\dev"))
+  Write-Host ("SLH startup:      " + [string]$slhStart.state)
   Write-Host ("Blockchain:       " + (Join-Path $RootPath "runtime\blockchain_service\state.json"))
   Write-Host ("NanoJev API:      " + (Get-MainComputerNanoJevUrl $launchContext))
   Write-Host ("stdout:           " + $stdout)
@@ -3543,7 +3602,8 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_PORT" "8767"),
-      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_SLH_PORT" "8898"),
+      # SLH ports are owned by the supervisor's SLH child or an independent
+      # local service, never by the Viewport-wide port sweep.
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8871")
     )) {
@@ -3668,6 +3728,16 @@ function Get-NetstatListenRows {
   return $rows
 }
 
+function Test-MainComputerSeparatelyOwnedSLH([string]$CommandLine) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+    return $false
+  }
+  $normalized = $CommandLine.ToLowerInvariant()
+  return ($normalized.Contains("main_computer.slh.gateway_service") -or
+          $normalized.Contains("tools.slh_managed_gateway") -or
+          $normalized.Contains("main_computer.slh.local_service"))
+}
+
 function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [string]$RootPath, [object]$LaunchContext) {
   # start_v2/stop_v2 are intended to clear the app that is actually running now,
   # even when stale PID/session files no longer point at it.  Add live
@@ -3681,6 +3751,11 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
 
   foreach ($process in $processes) {
     $commandLine = [string]$process.CommandLine
+    # SLH is stopped by its known supervisor child PID only. Never infer
+    # ownership of a separately launched SLH from its command line.
+    if (Test-MainComputerSeparatelyOwnedSLH $commandLine) {
+      continue
+    }
     if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -and (Test-OwnedMainComputerPid ([int]$process.ProcessId) $RootPath $commandLine)) {
       $processName = [string]$process.Name
       if ($processName -match '^(python|pythonw)\.exe$') {
@@ -3696,6 +3771,9 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
     }
 
     $commandLine = Get-ProcessCommandLine $processId
+    if (Test-MainComputerSeparatelyOwnedSLH $commandLine) {
+      continue
+    }
     $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
     $processName = ""
     if ($null -ne $process) {
@@ -4231,7 +4309,7 @@ $resolvedRoot = Resolve-MainComputerRoot $Root
 
 switch ($Action) {
   "start" {
-    Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub) ([bool]$NanoJevManaged) $NanoJevIdleSeconds
+    Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub) ([bool]$NoSLHHub) ([bool]$NanoJevManaged) $NanoJevIdleSeconds
   }
   "dev-hub-start" {
     Start-MainComputerDevHubOnly $resolvedRoot $StartedBy

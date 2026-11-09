@@ -118,7 +118,7 @@ def test_stable_hub_issues_and_validates_multisession_key_by_id_only() -> None:
     assert issued["key"]["user_slug"] == DEFAULT_USER_SLUG
     assert issued["key"]["hub_slug"]
     assert issued["key"]["id"].startswith(f"msk_{DEFAULT_USER_SLUG}_")
-    assert issued["key"]["has_signed_request"] is True
+    assert issued["key"]["has_signed_request"] is False
     assert issued["multisession_authorization"] == {
         "kind": "multisession_key",
         "multisession_key_id": issued["key"]["id"],
@@ -170,7 +170,7 @@ def test_stable_hub_validates_decimal_authorization_against_hex_stored_chain_id(
     assert validated["chain_id"] == "42424242"
 
 
-def test_stable_hub_stores_full_signed_request_and_both_entropy_slugs() -> None:
+def test_stable_hub_discards_signed_request_and_preserves_verified_identity_and_slugs() -> None:
     store = InMemoryStableMultiSessionKeyStore()
     server, thread = _start_server("dev-hub1", store)
     signed_request = _signed_msk_request(request_id="stored-full-signed-request")
@@ -186,8 +186,10 @@ def test_stable_hub_stores_full_signed_request_and_both_entropy_slugs() -> None:
         thread.join(timeout=2)
 
     stored = store.load()["keys"][issued["key"]["id"]]
-    assert stored["signed_request"] == signed_request
-    assert stored["signed_message"]["user_slug"] == DEFAULT_USER_SLUG
+    assert "signed_request" not in stored
+    assert "signed_message" not in stored
+    assert "signature" not in stored
+    assert signed_request["signature"] not in json.dumps(stored)
     assert stored["user_slug"] == DEFAULT_USER_SLUG
     assert stored["hub_slug"]
     assert stored["id"] == f"msk_{stored['user_slug']}_{stored['hub_slug']}"

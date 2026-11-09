@@ -1996,7 +1996,7 @@ class HubServerTests(unittest.TestCase):
     def test_remote_overflow_safe_chat_retries_loopback_when_hub_dns_name_fails(self) -> None:
         class DnsFailOnceHubProvider(HubProvider):
             def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
-                if self.hub_url.startswith("http://unresolvable-hub-name"):
+                if self.hub_url.startswith("http://host.docker.internal"):
                     raise RuntimeError(
                         "Hub request failed for "
                         f"{self.hub_url.rstrip('/')}{path}: "
@@ -2015,7 +2015,7 @@ class HubServerTests(unittest.TestCase):
             try:
                 provider = DnsFailOnceHubProvider(
                     model="fake-model",
-                    hub_url=f"http://unresolvable-hub-name:{hub.server_port}",
+                    hub_url=f"http://host.docker.internal:{hub.server_port}",
                     client_node_id="chat-console-client",
                 )
                 response = provider.remote_overflow_safe_chat(
@@ -2029,7 +2029,7 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(response.metadata["hub_url"], f"http://127.0.0.1:{hub.server_port}")
                 self.assertEqual(
                     response.metadata["hub_url_fallback_from"],
-                    f"http://unresolvable-hub-name:{hub.server_port}",
+                    f"http://host.docker.internal:{hub.server_port}",
                 )
                 self.assertEqual(
                     response.metadata["hub_url_fallback_to"],

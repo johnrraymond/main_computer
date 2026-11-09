@@ -35,6 +35,7 @@ class LocalAuthenticatorAPI:
                     'hardware_key_protection_available': False,
                 }
             if method == 'GET' and path == '/v1/local/authenticator/identities':
+                # Includes the installation's designated ordinary identity.
                 return 200, store.list()
             if method == 'POST' and path == '/v1/local/authenticator/identities':
                 if set(body) - {'device_id', 'label'}:

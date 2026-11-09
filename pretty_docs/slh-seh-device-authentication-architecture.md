@@ -6,20 +6,22 @@
 
 ## 1. Governing simplification
 
-Main Computer does **not** operate an organizational certificate authority, issue X.509 client certificates, require client CSRs, or maintain internal CA renewal. An SLH stores **approved device public keys** and verifies proof of possession with the Main Computer Authenticator. A human administrator controls **first enrollment**, and the current human user authenticates independently when SLH policy requires it. A device does **not** need a marketplace wallet.
+Main Computer does **not** operate an organizational certificate authority, issue X.509 client certificates, require client CSRs, or maintain internal CA renewal. An SLH stores **enrolled public keys for the same LMS-SLH identity model** and verifies possession with the Main Computer Authenticator. An authorized administrator controls **first enrollment**; policy may require an independently held second identity for confirmation, without treating a person and a machine as different kinds of cryptographic principals. A device does **not** need a marketplace wallet.
 
-Separate four kinds of authority:
+Distinguish **identity**, **organization permissions**, and **other authorities**—not a machine identity class from a human identity class:
 
 | Authority | Credential | What it can do | What it cannot do |
 | --- | --- | --- | --- |
-| Device | Protected per-device private signing key; registered public key in SLH | Prove a Known Device identity | Automatically become administrator, approve money, or impersonate its user |
-| Human user / administrator | Separately registered personal authenticator key (built into SLH/Worker app or phone) | Prove individual identity, sign narrowly scoped approvals | Authorize actions not granted by SLH policy |
-| Marketplace | SLH-owned marketplace wallets | Represent virtual public workers and settle paid Ring 2 jobs | Approve new SLH people/devices |
-| Deployment | Coolify API token held by SLH | Create/update/observe an SEH target | Authenticate a user/worker or act as an SLH signing key |
+| **Unified LMS-SLH identity** (person, machine, Worker, default installation identity, or an independently held second factor) | Same protected signing-key format and same local identity APIs for every actor | Prove possession of its key; sign properly scoped challenges | Automatically become an organization administrator, approve payments, or inherit another identity's privileges |
+| **Organization policy and enrollment** | Backend record mapping an enrolled public identity to roles/permissions, revocation and policy | Authorize scoped actions after identity proof | Create a private key or infer privileges from an identity's machine/user label |
+| Marketplace | SLH-owned marketplace wallets | Represent virtual public Workers and settle paid Ring 2 jobs | Approve enrollment or impersonate any LMS-SLH identity |
+| Deployment | Coolify API token held by SLH | Create/update/observe an SEH target | Authenticate any LMS-SLH identity or act as a signing key |
 
 **Encryption remains mandatory.** The SEH's public address uses ordinary, publicly trusted HTTPS/WSS TLS certificates managed by the host/proxy. Client-to-SLH privacy and SLH-to-SEH service trust use **pinned application public keys** and an established authenticated encrypted-channel protocol; there is no organization-issued X.509 hierarchy. A login signature alone does not encrypt traffic.
 
 ## 2. First installation: create the administrator path
+
+**Governing local identity custody:** [LMS-SLH Identity Ownership](lms-slh-identity-ownership.md). The frontend/local-management SLH (**LMS-SLH**) manages **one uniform identity model** for the installation default and every other locally held identity; “machine” and “user” describe usage, not different cryptographic identities. The Organization Service receives public keys during explicit enrollment and remains the organization authorization authority. An LMS-SLH identity existing at startup does not authorize first-admin bootstrap or create a backend organization. Automatic default installation identity creation is a **target**; the explicit local Authenticator API exists now.
 
 1. **[TARGET]** Launch **Host an SLH** on the designated organization machine. Establish a backend state store, organization ID, SLH service keypair, protected local admin bootstrap and recovery material; bind the SLH listener only to explicitly selected LAN interfaces. Keep the general Main Computer viewport on loopback.
 2. **[TARGET]** The first local setup session creates the **first administrator account** and enrolls their personal Main Computer Authenticator. Require an explicit local possession/OS-user check and a confirmation of the SLH public-key fingerprint, rather than permitting the first remote caller to claim ownership.
@@ -30,11 +32,11 @@ An SLH service public key is a stable *pinned identity*, not a CA. Changing it r
 
 ## 3. Main Computer Authenticator implementation
 
-The shared authenticator provides `create_identity`, `public_identity`, `sign_challenge`, `approve_action`, `lock_identity` and `reset_identity`. Use established platform signing APIs (for example, P-256 ECDSA/SHA-256) rather than a custom cryptographic primitive. Bind every signed challenge to protocol/version, organization, SLH service identity, **signer credential ID**, operation, target/request ID, nonce, expiry and current protected session/channel. The SLH consumes challenges once, validates the signature and checks policy before issuing a short-lived scoped session. Keys are never sent to the SEH or SLH.
+The **LMS-SLH-owned local Authenticator** is the **single identity lifecycle interface for all local actors**, including an ordinary identity designated as the installation default. Labels such as `device`, `person`, `phone` or `worker` are application metadata and access-policy context, **not independent identity APIs, types, or key-authority categories**. The shared authenticator **target contract** provides `create_identity`, `public_identity`, `sign_challenge`, `approve_action`, `lock_identity` and `reset_identity`; current API support covers explicit P-256 creation, listing, public metadata and challenge signing, not the entire target contract. Use established platform signing APIs (for example, P-256 ECDSA/SHA-256) rather than a custom cryptographic primitive. Bind every signed challenge to protocol/version, organization, SLH service identity, **signer credential ID**, operation, target/request ID, nonce, expiry and current protected session/channel. The SLH consumes challenges once, validates the signature and checks policy before issuing a short-lived scoped session. Private keys remain under local LMS-SLH custody and must never be sent to the SEH **or the backend SLH Organization Service**. Locally authorized signing may occur through LMS-SLH; the Organization Service stores enrolled public keys and checks roles.
 
 Worker and locally running SLH applications supply built-in authenticators. The Android Authenticator & Wallet companion may use hardware-backed Android Keystore when available, and can require biometric/device confirmation. On Windows prefer native protected key storage/TPM where available. Browser WebCrypto-based keys are a compatibility option with clearly disclosed storage limitations. The phone's personal auth key is separate from any wallet key. The authenticator may approve a particular action without needing a marketplace wallet.
 
-**Harness:** simulated devices and persons get *distinct real signing keypairs* and exercise the production verifier. Only the act of human approval is simulated; signatures, nonce consumption, expiry, role checks, channel binding and denial paths are not mocked away. Test secrets must never work against production installations.
+**Harness:** simulated actors receive *independent instances of the same signing-key type* and exercise the production verifier; their “device” or “person” labels do not affect the cryptographic algorithm or role eligibility. Only the act of human approval is simulated; signatures, nonce consumption, expiry, role checks, channel binding and denial paths are not mocked away. Test secrets must never work against production installations.
 
 ## 4. One device enrollment engine, two approval methods
 

@@ -361,8 +361,9 @@ class ServiceSupervisor:
         self.process_command_reader = process_command_reader or _read_process_command_line_default
         self.process_terminator = process_terminator or _terminate_process_default
         self.process_factory = process_factory
-        # The normal launcher passes an explicit startup policy. --no-dev-hub
-        # must not start SLH indirectly through the resident supervisor.
+        # The normal launcher passes an explicit independent SLH startup policy.
+        # --no-slh-hub must not start SLH through the resident supervisor;
+        # --no-dev-hub never affects this setting.
         self.supervise_slh = os.environ.get("MAIN_COMPUTER_SUPERVISE_SLH", "1") != "0"
 
         self.runtime_dir = self.root / "runtime" / "service_supervisor"
@@ -709,7 +710,7 @@ class ServiceSupervisor:
             return {
                 "ok": False,
                 "state": "disabled-by-startup-policy",
-                "message": "SLH startup is disabled by --no-dev-hub",
+                "message": "SLH startup is disabled by --no-slh-hub",
                 "child": name,
             }
         spec = next((candidate for candidate in CHILD_SPECS if candidate.name == name), None)

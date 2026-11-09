@@ -91,15 +91,16 @@ def test_stable_hub_lab_smoke_msk_creates_wallet_issues_on_one_hub_and_validates
         "signed_user_slug": True,
         "hub_slug_added": True,
         "msk_combines_user_and_hub_slugs": True,
-        "stored_full_signed_request": True,
+        "signature_not_stored": True,
         "validation_used_key_id_only": True,
-        "wallet_derived_from_stored_request": True,
+        "wallet_derived_from_verified_record": True,
         "cross_hub_validation": True,
     }
 
     stored = store.load()["keys"][result["multisession_key_id"]]
-    assert stored["signed_request"]["message"]["user_slug"] == TEST_USER_SLUG
-    assert stored["signed_message"]["user_slug"] == TEST_USER_SLUG
+    assert "signed_request" not in stored
+    assert "signed_message" not in stored
+    assert stored["user_slug"] == TEST_USER_SLUG
     assert stored["issued_by_hub_id"] == "dev-hub1"
     assert result["validated_key"]["issued_by_hub_id"] == "dev-hub1"
 

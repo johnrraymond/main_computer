@@ -272,7 +272,7 @@
     function renderHubConfig(data) {
       const saved = data.saved || {};
       hubProvider.value = data.active_provider || "ollama";
-      hubUrl.value = data.hub_url || saved.hub_url || "http://127.0.0.1:8770";
+      hubUrl.value = data.hub_url || saved.hub_url || "http://127.0.0.1:8871";
       hubClientNodeId.value = data.hub_client_node_id || saved.hub_client_node_id || "main-computer-client";
       hubTimeoutS.value = data.hub_timeout_s || saved.hub_timeout_s || 600;
       hubUpstreamUrl.value = saved.upstream_hub_url || hubUpstreamUrl.value || "";

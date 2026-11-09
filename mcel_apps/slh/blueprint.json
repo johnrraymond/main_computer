@@ -1,0 +1,39 @@
+{
+  "schema": "mcel.application-blueprint.v1",
+  "appId": "slh",
+  "label": "Secure Local Hub",
+  "route": "/applications/slh",
+  "rootSelector": "#mcel-workbench",
+  "dominantObject": "Observed SLH service and Worker Bank availability",
+  "purpose": "Read actual SLH status without starting the service or fabricating worker records",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "layoutZones": [
+    "generated-from-semantic-ir"
+  ],
+  "sourceHints": [
+    "application.js",
+    "pretty_docs/secure-local-hub-administrator-manual.md"
+  ],
+  "testHints": [
+    "tests/test_acceptance.py",
+    "tests/test_package.py",
+    "tests/test_operations.py",
+    "tests/test_surface.py",
+    "tests/test_browser.py",
+    "tests/test_truth.py"
+  ],
+  "presentationAuthority": {
+    "kind": "existing-host-html",
+    "runtimeFacade": "McelSemanticOperationalRuntime"
+  }
+}

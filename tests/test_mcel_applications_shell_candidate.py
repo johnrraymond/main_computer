@@ -163,7 +163,7 @@ def test_browser_initial_deep_link(inert_host):
                     pytest.skip("Chromium loopback navigation blocked by test environment")
                 raise
             assert page.locator("body").get_attribute("data-mcel-shell-active-app") == "task-manager"
-            assert page.locator("#mcel-shell-frame").get_attribute("src") == "/applications/task-manager"
+            assert page.locator("#mcel-shell-frame").get_attribute("src") == "/applications/task-manager?mcel-shell-child=1"
             page.goto(inert_host + ROUTE + "?app=not-a-route")
             assert page.locator("body").get_attribute("data-mcel-shell-active-app") == "desktop"
             assert page.locator("#mcel-shell-frame").get_attribute("src") is None
@@ -187,7 +187,7 @@ def test_static_browser_semantic_mount_and_overlay_without_network(width):
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             page.get_by_role("button", name="Apps", exact=True).click()
             assert page.locator("#mcel-shell-launcher-panel").get_attribute("data-open") == "true"
-            assert page.locator('.mcel-shell-app-card[data-app="chat-console"]').get_attribute("href").endswith("?app=chat-console")
+            assert page.locator('.mcel-shell-app-card[data-app="chat-console"]').get_attribute("href") == "/applications/chat-console"
             assert errors == []
         finally:
             browser.close()

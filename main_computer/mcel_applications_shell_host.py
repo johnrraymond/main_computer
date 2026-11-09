@@ -13,6 +13,7 @@ import json
 from pathlib import Path, PureWindowsPath
 
 from main_computer.mcel_dsl_compiler import compile_dsl_application
+from main_computer.mcel_navigation_contract import make_destination
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 import re
 
@@ -145,6 +146,9 @@ def compile_applications_shell(repo: Path = ROOT) -> tuple[dict, dict]:
                 f"MCEL launcher route mismatch for {entry['id']}: "
                 f"registry={registered['route']!r}, source={entry['route']!r}"
             )
+        # Every app is an addressable destination, not only an in-shell click.
+        # This contract is shared by the desktop and expanded Apps launcher.
+        make_destination("applications." + entry["id"], entry["route"])
         synchronized.append({
             "id": entry["id"],
             "title": entry["title"],
@@ -205,6 +209,7 @@ def legacy_desktop_reference(repo: Path = ROOT) -> dict:
 
 def legacy_desktop_icon_markup(reference: dict, *, launch: bool) -> str:
     result = []
+    routes = {app["id"]: app["route"] for app in reference["launcher"]}
     for item in reference["icons"]:
         slug, title, summary = (escape(item[key], quote=True) for key in ("app", "title", "summary"))
         glyph = reference["svg"].get(item["app"])
@@ -212,10 +217,21 @@ def legacy_desktop_icon_markup(reference: dict, *, launch: bool) -> str:
             drawing = '<svg class="desktop-glyph-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + glyph + '</svg>'
         else:
             drawing = escape(item["glyph"])
-        launcher = f' data-shell-launch="{slug}"' if launch else ""
-        result.append(f'<button type="button" class="desktop-icon" data-app="{slug}"{launcher}>'
-                      f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
-                      f'<strong>{title}</strong><span>{summary}</span></button>')
+        if launch:
+            # A real anchor is required: Ctrl/Shift-click, context-menu Open in
+            # New Window, copy link, and browser history must all use the same
+            # canonical route. Plain clicks may still mount within the shell.
+            route = escape(make_destination("applications." + item["app"],
+                                            routes[item["app"]])["href"], quote=True)
+            result.append(f'<a class="desktop-icon" data-app="{slug}"'
+                          f' data-shell-launch="{slug}" data-mcel-destination-id="applications.{slug}"'
+                          f' href="{route}">'
+                          f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
+                          f'<strong>{title}</strong><span>{summary}</span></a>')
+        else:
+            result.append(f'<button type="button" class="desktop-icon" data-app="{slug}">'
+                          f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
+                          f'<strong>{title}</strong><span>{summary}</span></button>')
     return "\n".join(result)
 
 

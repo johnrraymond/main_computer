@@ -1,0 +1,48 @@
+{
+  "schema": "mcel.application-package.v1",
+  "appId": "slh",
+  "title": "Secure Local Hub",
+  "template": {
+    "id": "mcel.canonical-application-template",
+    "version": "1.0.0"
+  },
+  "requirements": "requirements.md",
+  "blueprint": "blueprint.json",
+  "contracts": {
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "adapter": "contracts/adapter.js",
+    "surface": "contracts/surface.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "acceptance": "contracts/acceptance.js"
+  },
+  "runtime": {},
+  "tests": {
+    "root": "tests",
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json"
+  },
+  "conformance": {
+    "currentMode": "structural-only",
+    "targetMode": "semantic-runtime-proven",
+    "missingBridges": [
+      "authenticated-worker-inventory",
+      "administrator-actions",
+      "hosted-live-backend-acceptance",
+      "applications-shell-launcher-promotion"
+    ],
+    "scope": "read-only-service-observation-first-slice"
+  },
+  "authoring": {
+    "schema": "mcel.application-authoring.v1",
+    "status": "runtime-hosted-semantic",
+    "source": "application.js"
+  },
+  "projection": {
+    "mountMode": "host-bound",
+    "presentationAuthority": "generated-semantic-composition",
+    "hostBoundRuntimeActive": true,
+    "liveRuntimeChanged": true,
+    "generatedArtifactsAreDerived": true
+  }
+}

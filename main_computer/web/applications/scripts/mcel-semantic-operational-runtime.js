@@ -59,6 +59,39 @@
     }
     return map;
   }
+  function validateVisibility(when, states, modeStates, depth=0) {
+    assert(when && typeof when==="object" && !Array.isArray(when) && depth<=4,
+      "visibility-invalid");
+    const keys=Object.keys(when);
+    if(keys.length===1 && (keys[0]==="all" || keys[0]==="any")){
+      const clauses=when[keys[0]];
+      assert(Array.isArray(clauses) && clauses.length>=1 && clauses.length<=12,"visibility-compound-invalid");
+      for(const clause of clauses)validateVisibility(clause,states,modeStates,depth+1);
+      return;
+    }
+    assert(keys.every(k=>["state","path","equals","maxAgeSeconds"].includes(k)) &&
+      own(when,"state") && own(when,"equals"),"visibility-fields-invalid");
+    const s=states.get(ref(when.state));
+    assert(s && ["derived","renderer-local"].includes(s.authority),"visibility-state-invalid");
+    let schema=s.schema;
+    if(own(when,"maxAgeSeconds"))assert(s.authority==="derived" &&
+      s.schema.kind==="record" && s.schema.fields?.observedAt?.kind==="string" &&
+      Number.isSafeInteger(when.maxAgeSeconds) && when.maxAgeSeconds>=1 && when.maxAgeSeconds<=600,
+      "visibility-age-invalid");
+    if(own(when,"path")){
+      assert(typeof when.path==="string" && schema?.kind==="record" &&
+        own(schema.fields||{},when.path),"visibility-path-invalid");
+      schema=schema.fields[when.path];
+    }
+    const v=when.equals;
+    assert((schema?.kind==="string" && typeof v==="string" &&
+      (!schema.enum || schema.enum.includes(v))) ||
+      (schema?.kind==="boolean" && typeof v==="boolean") ||
+      (schema?.kind==="integer" && Number.isSafeInteger(v)),"visibility-type-invalid");
+    if(s.authority==="renderer-local")assert(modeStates.has(s.id) &&
+      !own(when,"path") && s.schema.kind==="string" && s.schema.enum?.includes(v),
+      "visibility-view-invalid");
+  }
   function contract(ir, composition) {
     assert(ir && ir.schema === "mcel.application-ir.v1", "ir-schema");
     assert(ir.application && typeof ir.application.appId === "string", "application");
@@ -85,12 +118,8 @@
       const usedRecipes=new Set();
       const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
         .map(i=>ref(i.viewTransition.target)));
-      for (const n of surface.nodes || []) if (n.visibleWhen) {
-        const when=n.visibleWhen, mode=states.get(ref(when.state));
-        assert(modeStates.has(ref(when.state)) && mode?.authority==="renderer-local" &&
-          mode.schema?.kind==="string" && mode.schema.enum?.includes(when.equals),
-          "generated-mode-binding-invalid");
-      }
+      for (const n of surface.nodes || []) if (n.visibleWhen)
+        validateVisibility(n.visibleWhen,states,modeStates);
       for (const r of composition.regions) {
         const expectedTasks=composition.policy==="mcel.semantic-structure.p3" &&
           composition.purpose==="monitor" && ["collection","results"].includes(r.recipe)
@@ -331,7 +360,7 @@
       global.McelSemanticLayoutInference?.applyWorkspaceLayout, "generated-layout-engine-missing");
     const port = options.capabilities || {};
     const expert = options.presentation === "expert";
-    const state = new Map(), receipts = [], displays = new Map();
+    const state = new Map(), observedTimes=new Map(), receipts = [], displays = new Map();
     const directoryForms = new Set();
     const folderTrees = new Map();
     // Read-only navigation dependencies are identified by source/target state,
@@ -341,7 +370,7 @@
     const refreshers = [];
     const taskRefreshPeriodMs = 5000;
     const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
-    const conditionedNodes=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
+    const conditionedNodes=new Map(), sharedFieldInputs=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
     const pendingConsequential=new Set();
     let serial = 0, disposed = false;
     let refreshTimer = null, initialRefreshTimer = null, refreshBusy = false, refreshEnabled = true;
@@ -357,15 +386,40 @@
       if (own(s,"initial")) { checkSchema(s.schema,s.initial,s.id); state.set(s.id,clone(s.initial)); }
     }
     const read = id => state.get(id);
+    // Missing/expired derived state never satisfies operational applicability.
+    // A backend-supplied observation timestamp, when present, is checked as
+    // well as the time at which this runtime received its validated response.
+    function conditionSatisfied(when) {
+      if(own(when,"all"))return when.all.every(conditionSatisfied);
+      if(own(when,"any"))return when.any.some(conditionSatisfied);
+      const id=ref(when.state),descriptor=c.states.get(id),source=read(id);
+      if(source===undefined || source===null)return false;
+      if(descriptor?.authority==="derived"){
+        const received=observedTimes.get(id);
+        if(!Number.isFinite(received) || Date.now()-received>60000 || received-Date.now()>5000)return false;
+        if(source && typeof source==="object" && !Array.isArray(source)){
+          if(source.observationState==="STALE")return false;
+          if(own(when,"maxAgeSeconds")){
+            const whenObserved=Date.parse(source.observedAt);
+            if(!Number.isFinite(whenObserved) ||
+               Date.now()-whenObserved>when.maxAgeSeconds*1000 ||
+               whenObserved-Date.now()>5000)return false;
+          }
+        }
+      }
+      const value=own(when,"path")?source?.[when.path]:source;
+      return value!==undefined && value===when.equals;
+    }
+    const applicable = n => !n?.visibleWhen || conditionSatisfied(n.visibleWhen);
     function notify() {
       for (const [r,el] of regionHosts) {
         if (r.visibleWhen) el.hidden = read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
       }
-      for (const [n, el] of conditionedNodes) el.hidden = read(ref(n.visibleWhen.state)) !== n.visibleWhen.equals;
+      for (const [n, el] of conditionedNodes) el.hidden = !applicable(n);
       if(c.generated)for(const [r,el] of regionHosts)if(r.recipe!=="root" && r.members?.length) {
         el.hidden=r.members.every(member=>{
           const node=c.nodes.get(ref(member));
-          return !!node?.visibleWhen && read(ref(node.visibleWhen.state))!==node.visibleWhen.equals;
+          return !!node?.visibleWhen && !applicable(node);
         });
       }
       for (const [n, host] of selectedRecordHosts) updateSelectedRecord(n,host);
@@ -412,8 +466,16 @@
       for (const host of receiptHosts) {
         const recent = expert ? receipts.filter(r => c.intents.get(r.intentId)?.operationKind === "capability").slice(-6).reverse() : receipts;
         const list = host.list || host;
-        list.replaceChildren(...recent.map(r => elt("li",{"data-intent":r.intentId,"data-disposition":r.disposition},
-          fmt(r.intentId) + ": " + r.disposition + (r.reason ? " (" + r.reason + ")" : ""))));
+        list.replaceChildren(...recent.map(r => {
+          const nodes=[...c.nodes.values()].filter(n=>ref(n.intent)===r.intentId);
+          // A receipt is evidence, not an available action. Preserve the
+          // legacy intent selector while applicable; retired conditional
+          // actions retain their auditable receipt under a distinct attribute.
+          const attrs={"data-operation-intent":r.intentId,"data-disposition":r.disposition};
+          if(!nodes.length || nodes.some(applicable))attrs["data-intent"]=r.intentId;
+          return elt("li",attrs,fmt(r.intentId) + ": " + r.disposition +
+            (r.reason ? " (" + r.reason + ")" : ""));
+        }));
         if (host.details) {
           host.summary.textContent = recent.length ? "Activity · " + recent.length + " recent operation" + (recent.length===1 ? "" : "s") : "Activity · No operations yet";
           if (recent.some(r => r.disposition === "failed" || r.disposition === "refused-before-attempt")) host.details.open=true;
@@ -443,6 +505,10 @@
       traceOperation(id,"dispatch","");
       let attempted = false;
       try {
+        // The same declarative applicability gate governs the generated
+        // control and programmatic execute(). This is NOT backend authority.
+        const controls=[...c.nodes.values()].filter(n=>ref(n.intent)===id);
+        if(controls.length && !controls.some(applicable))fail("operational-condition-not-satisfied");
         const input = {};
         for (const parameter of intent.input || []) {
           assert(own(given,parameter.sourceName),"missing-input:"+parameter.sourceName);
@@ -598,6 +664,7 @@
         for (const binding of intent.resultBindings || []){
           const target=ref(binding.target);
           state.set(target,clone(value));
+          observedTimes.set(target,Date.now());
           for(const receiver of resultReceivers.get(target)||[]){
             if(!receiver.input.isConnected || receiver.whenIntent && receiver.whenIntent!==id)continue;
             const next=receiver.pick?value?.[receiver.pick]:value;
@@ -953,7 +1020,7 @@
             targetRuns.set(id,run);
             if (clearResult) {
               if (own(descriptor,"initial")) state.set(id,clone(descriptor.initial));
-              else state.delete(id);
+              else {state.delete(id);observedTimes.delete(id);}
             }
           }
           if (clearResult) notify();
@@ -993,16 +1060,25 @@
           form.append(item.wrap);controls[k]=item.input;
           const mappedState=ref(n.fieldState?.[k]);
           if(mappedState){
+            if(!sharedFieldInputs.has(mappedState))sharedFieldInputs.set(mappedState,new Set());
+            sharedFieldInputs.get(mappedState).add(item.input);
+            const syncField=(next)=>{
+              state.set(mappedState,next);
+              for(const sibling of sharedFieldInputs.get(mappedState))if(sibling!==item.input){
+                if(schema.kind==="boolean")sibling.checked=next;
+                else sibling.value=String(next);
+              }
+            };
             const currentValue=read(mappedState);
             if(currentValue!==undefined && currentValue!==null)item.input.value=String(currentValue);
             item.input.addEventListener("input",()=>{
               let next=parseInput(schema,item.input);
               if(schema.kind==="number" && !Number.isFinite(next))return;
-              state.set(mappedState,next);
+              syncField(next);
             });
             item.input.addEventListener("change",()=>{
               const next=parseInput(schema,item.input);
-              if(schema.kind!=="number" || Number.isFinite(next))state.set(mappedState,next);
+              if(schema.kind!=="number" || Number.isFinite(next))syncField(next);
             });
           }
         }
@@ -1599,7 +1675,7 @@
         // Still refuse an unscoped/always-visible result as an implicit poll
         // target when the app has an explicit mode selector.
         if(viewBound && !n?.visibleWhen && !r.visibleWhen)continue;
-        if(n?.visibleWhen && read(ref(n.visibleWhen.state))!==n.visibleWhen.equals)continue;
+        if(n?.visibleWhen && !applicable(n))continue;
         if(n?.nodeKind==="collection")targets.add(ref(n.state));
         if(n?.nodeKind==="state-value")targets.add(ref(n.value?.state));
       }

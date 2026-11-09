@@ -84,7 +84,7 @@ def test_supervisor_starts_app_executor_applications_and_blockchain_with_python_
     assert load_service_supervisor_state(repo)["ok"] is True
 
 
-def test_no_dev_hub_policy_never_launches_slh_child(monkeypatch, tmp_path: Path) -> None:
+def test_no_slh_hub_policy_never_launches_slh_child(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MAIN_COMPUTER_SUPERVISE_SLH", "0")
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -110,6 +110,7 @@ def test_no_dev_hub_policy_never_launches_slh_child(monkeypatch, tmp_path: Path)
     assert state["children"]["executor"]["state"] == "running"
     refusal = supervisor._restart_child("slh", source="test")
     assert refusal["state"] == "disabled-by-startup-policy"
+    assert refusal["message"] == "SLH startup is disabled by --no-slh-hub"
     assert "slh" not in state["children"]
     restarted = supervisor._restart_all_children(source="test")
     assert restarted["ok"] is True

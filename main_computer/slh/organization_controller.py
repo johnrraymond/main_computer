@@ -92,7 +92,9 @@ class OrganizationController:
                 config = read_config(self.directory)
             except OrganizationConfigError:
                 return {'configured': False, 'enabled': False, 'state': 'configuration_error',
-                        'listening': False, 'last_error': 'Invalid organization configuration'}
+                        'listening': False, 'bind_host': None, 'api_port': None,
+                        'network_access': 'UNVERIFIED',
+                        'last_error': 'Invalid organization configuration'}
             proc = self._process
             running = proc is not None and proc.poll() is None
             listening = running and self._listening(config)
@@ -110,6 +112,12 @@ class OrganizationController:
                 state = 'not_configured'
             return {'configured': config['configured'], 'enabled': config['enabled'],
                     'state': state, 'listening': listening,
+                    # An observed local TLS handshake proves only local readiness;
+                    # binding a LAN interface does NOT prove remote reachability.
+                    'bind_host': config['host'] if config['configured'] else None,
+                    'network_access': ('NOT_CONFIGURED' if not config['configured'] else
+                                       'LOOPBACK_ONLY' if config['host'].startswith('127.') else
+                                       'BIND_CONFIGURED_REACHABILITY_UNVERIFIED'),
                     'pid': proc.pid if running else None,
                     'api_port': config['api_port'] if config['configured'] else None,
                     'worker_port': config['worker_port'] if config['workers_enabled'] else None,

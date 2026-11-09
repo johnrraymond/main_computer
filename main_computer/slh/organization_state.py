@@ -111,8 +111,14 @@ def organization_status(state_dir: Path) -> dict:
         data = read_config(state_dir)
     except OrganizationConfigError:
         return {'configured': False, 'enabled': False,
-                'state': 'configuration_error', 'listening': False}
+                'state': 'configuration_error', 'listening': False,
+                'bind_host': None, 'api_port': None, 'network_access': 'UNVERIFIED'}
     return {'configured': data['configured'], 'enabled': data['enabled'],
             'state': 'not_started' if data['enabled'] else
                      ('disabled' if data['configured'] else 'not_configured'),
-            'listening': False}
+            'listening': False,
+            'bind_host': data['host'] if data['configured'] else None,
+            'api_port': data['api_port'] if data['configured'] else None,
+            'network_access': ('NOT_CONFIGURED' if not data['configured'] else
+                               'LOOPBACK_ONLY' if data['host'].startswith('127.') else
+                               'BIND_CONFIGURED_REACHABILITY_UNVERIFIED')}

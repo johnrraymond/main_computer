@@ -570,35 +570,48 @@ def verify_worker_requester(*, worker_connection: str, trace_dir: Path | None = 
 
 
 def verify_local() -> dict:
-    hardening = _verify_four_issue_hardening()
-    edge = _credit_edge_regressions()
-    from .service_lifecycle import verify_services
-    services = verify_services()
-    from .decision_stress import verify_decisions
-    decisions = verify_decisions()
+    # Crash-safe progress journal: each checkpoint is flushed BEFORE a native
+    # TLS / cryptography / socket operation can terminate this interpreter.
+    # A native crash cannot generate a normal JSON report or Python exception.
+    with lab_stage('local.hardening_regressions'):
+        hardening = _verify_four_issue_hardening()
+    with lab_stage('local.credit_edge_regressions'):
+        edge = _credit_edge_regressions()
+    with lab_stage('local.two_service_lifecycle'):
+        from .service_lifecycle import verify_services
+        services = verify_services()
+    with lab_stage('local.decision_stress'):
+        from .decision_stress import verify_decisions
+        decisions = verify_decisions()
     # Keep the previously proven in-process paid-work regression lane while
     # independently proving the real Organization Service marketplace path.
-    server, thread = _in_memory_hub()
+    with lab_stage('local.in_memory_hub.start'):
+        server, thread = _in_memory_hub()
     try:
         from .real_paid_service import verify_real_process_paid
-        real_paid = verify_real_process_paid(
-            hub_url=f'http://127.0.0.1:{server.server_port}',
-            payout_ledger=server.payout_ledger_directory)
-        # A separate fresh Organization Service must prove the actual paid
-        # credit -> Worker withdrawal -> local admission cycle. No simulated
-        # upstream acknowledgments may satisfy this gate.
-        recovery = verify_real_process_paid(
-            hub_url=f'http://127.0.0.1:{server.server_port}',
-            payout_ledger=server.payout_ledger_directory,
-            credit_recovery_acceptance=True,
-            hub_session_directory=server.worker_session_directory)
-        trial = _local_demo(f'http://127.0.0.1:{server.server_port}',
-                            topology_label='in-memory-stable-hub', payout_ledger=server.payout_ledger_directory)
+        with lab_stage('local.real_process_paid_work'):
+            real_paid = verify_real_process_paid(
+                hub_url=f'http://127.0.0.1:{server.server_port}',
+                payout_ledger=server.payout_ledger_directory)
+        # A fresh Organization Service must prove the paid-credit -> Worker
+        # withdrawal -> local admission cycle, with real upstream acknowledgments.
+        with lab_stage('local.real_process_credit_recovery'):
+            recovery = verify_real_process_paid(
+                hub_url=f'http://127.0.0.1:{server.server_port}',
+                payout_ledger=server.payout_ledger_directory,
+                credit_recovery_acceptance=True,
+                hub_session_directory=server.worker_session_directory)
+        with lab_stage('local.in_memory_hub_paid_demo'):
+            trial = _local_demo(f'http://127.0.0.1:{server.server_port}',
+                                topology_label='in-memory-stable-hub',
+                                payout_ledger=server.payout_ledger_directory)
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
-    seh = _mock_coolify_gate()
+        with lab_stage('local.in_memory_hub.shutdown'):
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+    with lab_stage('local.canonical_seh_mock'):
+        seh = _mock_coolify_gate()
     from .credit_recovery_acceptance import accepted as recovery_accepted
     ok = (hardening['pass'] and edge['pass'] and services['pass'] and real_paid['pass']
           and recovery['pass'] and recovery_accepted(recovery.get('credit_recovery'))
@@ -607,7 +620,8 @@ def verify_local() -> dict:
             'two_service_lab':services, 'real_process_paid_work':real_paid,
             'real_process_credit_recovery':recovery,
             'decision_stress':decisions, 'slh':trial, 'seh_coolify_contract':seh,
-            'slh_seh_hardening':hardening, 'credit_edge_regressions':edge, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
+            'slh_seh_hardening':hardening, 'credit_edge_regressions':edge,
+            'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
             'paid_work_settlement':'LAB_LEDGER_SETTLED_NOT_BRIDGED'}
 
 

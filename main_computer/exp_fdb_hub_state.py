@@ -13,12 +13,12 @@ from main_computer.exp_fdb_credit_ledger import (
     ExperimentalFoundationDbConfig,
     activate_cached_foundationdb_native_client,
 )
-from main_computer.hub import (
-    HUB_SECURITY_PROFILE,
+from main_computer.hub_registry_json import HubRegistry  # Shared JSON-registry base; FDB remains authoritative in subclass.
+from main_computer.hub_security import HUB_SECURITY_PROFILE
+from main_computer.hub_registry_shared import (
     HUB_WORKER_LEASE_SECONDS,
     HUB_WORKER_STALE_AFTER_SECONDS,
     HUB_WORKER_INSTANCE_SLOT_LIMIT,
-    HubRegistry,
     HubUpstream,
     HubWorker,
     _clean_node_id,

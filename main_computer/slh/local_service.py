@@ -17,6 +17,7 @@ from typing import Callable
 from wsgiref.simple_server import make_server
 
 from main_computer.slh.api import SLHAPI
+from main_computer.slh.authenticator_store import LocalIdentityStore
 from main_computer.slh.local_authenticator_api import LocalAuthenticatorAPI
 from main_computer.slh.authority import SLHAuthority
 from main_computer.slh.organization_state import initialize_disabled, organization_status
@@ -33,6 +34,7 @@ def local_status(authority: SLHAuthority, port: int, controller=None) -> dict:
         'local_service': {'state': 'running', 'binding': 'loopback',
                           'host': DEFAULT_SLH_API_HOST, 'port': port},
         'initialization': authority.status(),
+        'administrator_enrollment': authority.administrator_enrollment_status(),
         'organization_service': (controller.status() if controller is not None and authority.initialized()
                                  and controller.config()['enabled'] else organization_status(authority.directory)),
     }
@@ -51,12 +53,18 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
     else:
         secure_machine_state_dir(directory)
     initialize_disabled(directory)
+    # The resident LMS-SLH owns the installation's ordinary local identities.
+    # This is independent of Organization Service activation and enrollment.
+    resolved_identity_dir = Path(identity_dir) if identity_dir is not None else directory / 'identities'
+    if identity_dir is None:
+        secure_machine_state_dir(resolved_identity_dir)
+    LocalIdentityStore(resolved_identity_dir).ensure_default_identity()
     authority = authority_factory(directory)
     controller = OrganizationController(authority)
     bound_port = [port]
     api = SLHAPI(authority, local_status_provider=lambda: local_status(authority, bound_port[0], controller),
                  organization_controller=controller,
-                 local_authenticator=LocalAuthenticatorAPI(identity_dir))
+                 local_authenticator=LocalAuthenticatorAPI(resolved_identity_dir))
     try:
         server = make_server(DEFAULT_SLH_API_HOST, port, api.wsgi_app, server_class=ExclusiveSLHServer)
     except BaseException:

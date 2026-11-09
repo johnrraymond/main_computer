@@ -66,7 +66,7 @@ def test_captain_engage_computer_runs_ring3_worker_pull(monkeypatch) -> None:
 
     monkeypatch.setattr(cli.MainComputer, "build", fake_build)
     monkeypatch.setattr(cli, "serve_hub_worker_pull", fake_worker_pull)
-    monkeypatch.setattr(cli, "_captain_smoke_hub_url", lambda config, explicit_hub_url="": explicit_hub_url or "https://mainnet-hub.greatlibrary.io")
+    monkeypatch.setattr(cli, "_captain_smoke_hub_url", lambda config, explicit_hub_url="", *, network=None: explicit_hub_url or "https://mainnet-hub.greatlibrary.io")
 
     args = argparse.Namespace(
         captain_args=[
@@ -144,7 +144,8 @@ def test_worker_registration_uses_v1_api_headers(monkeypatch) -> None:
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr(hub, "urlopen", fake_urlopen)
+    from main_computer import hub_worker_client
+    monkeypatch.setattr(hub_worker_client, "urlopen", fake_urlopen)
 
     result = hub.register_worker_with_hub(
         hub_url="https://mainnet-hub.greatlibrary.io",
@@ -164,7 +165,7 @@ def test_worker_registration_uses_v1_api_headers(monkeypatch) -> None:
     headers = {str(key).lower(): value for key, value in captured["headers"].items()}
     assert headers["accept"] == "application/json"
     assert headers["user-agent"].startswith("main-computer-worker-cli/")
-    assert headers["x-main-computer-client"] == "captain-engage-worker"
+    assert headers["x-main-computer-client"] == "main-computer-worker-cli"
     body = captured["body"]
     assert isinstance(body, dict)
     assert body["assigned_ring"] == 3
@@ -180,7 +181,7 @@ def test_captain_engage_computer_reports_registration_error_without_traceback(mo
         provider = FakeProvider()
 
     monkeypatch.setattr(cli.MainComputer, "build", lambda config: FakeComputer())
-    monkeypatch.setattr(cli, "_captain_smoke_hub_url", lambda config, explicit_hub_url="": "https://mainnet-hub.greatlibrary.io")
+    monkeypatch.setattr(cli, "_captain_smoke_hub_url", lambda config, explicit_hub_url="", *, network=None: "https://mainnet-hub.greatlibrary.io")
 
     def fake_worker_pull(*args, **kwargs):
         raise RuntimeError("Hub request failed for https://mainnet-hub.greatlibrary.io/api/hub/v1/workers/register with HTTP 403: forbidden")

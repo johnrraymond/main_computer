@@ -14,11 +14,11 @@ def _copy_script(repo: Path) -> Path:
     return destination
 
 
-def _zip_snapshot(zip_path: Path, top_dir: str, files: dict[str, str]) -> None:
+def _zip_snapshot(zip_path: Path, files: dict[str, str]) -> None:
     with zipfile.ZipFile(zip_path, "w") as archive:
         for relative, content in files.items():
             windows_relative = relative.replace("/", "\\")
-            archive.writestr(f"{top_dir}\\{windows_relative}", content)
+            archive.writestr(windows_relative, content)
 
 
 def _zip_bundle(zip_path: Path, files: dict[str, str], reference_patch: str | None = None) -> None:
@@ -30,11 +30,11 @@ def _zip_bundle(zip_path: Path, files: dict[str, str], reference_patch: str | No
         ],
     }
     with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr("bundle/manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         if reference_patch is not None:
-            archive.writestr("bundle/reference.patch", reference_patch)
+            archive.writestr("reference.patch", reference_patch)
         for relative, content in files.items():
-            archive.writestr(f"bundle/files/{relative}", content)
+            archive.writestr(f"files/{relative}", content)
 
 
 def _reference_patch(path: str, old_text: str, new_text: str) -> str:
@@ -61,7 +61,6 @@ def test_new_patch_dry_run_shows_actual_diff_and_builds_undo_from_snapshot_zip(t
     snapshot_zip = tmp_path / "snapshot.zip"
     _zip_snapshot(
         snapshot_zip,
-        "main_computer_test",
         {
             "TODO.md": "# TODO\n\n- old item\n- new item\n",
             "README.md": "# Readme\n",
@@ -105,7 +104,7 @@ def test_new_patch_applies_snapshot_zip_and_undo_bundle_reverts_it(tmp_path: Pat
     script = _copy_script(repo)
 
     snapshot_zip = tmp_path / "snapshot.zip"
-    _zip_snapshot(snapshot_zip, "main_computer_test", {"TODO.md": applied_text})
+    _zip_snapshot(snapshot_zip, {"TODO.md": applied_text})
 
     result = subprocess.run(
         [sys.executable, str(script), str(snapshot_zip)],
@@ -193,3 +192,105 @@ def test_new_patch_blocks_fuzz_only_when_reference_patch_exists(tmp_path: Path) 
     assert "verification: fuzzy" in allowed.stdout
     assert "overwrote target files" in allowed.stdout
     assert (repo / "TODO.md").read_text(encoding="utf-8") == "# TODO\n\n- new item\n"
+
+
+def test_single_tests_directory_is_never_stripped(tmp_path: Path) -> None:
+    """Regression: preserve tests/, even if a stale root-level file matches."""
+    repo = tmp_path / "main_computer_test"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_route.py").write_text("old\n", encoding="utf-8")
+    (repo / "test_route.py").write_text("new\n", encoding="utf-8")
+    script = _copy_script(repo)
+    archive = tmp_path / "deep_link_fix.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("tests/test_route.py", "new\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "changed_files: 1" in result.stdout
+    assert (repo / "tests" / "test_route.py").read_text(encoding="utf-8") == "new\n"
+    latest = sorted((repo / "tools/patching/reports/new_patch_runs").iterdir())[-1]
+    manifest = json.loads((latest / "bundle/manifest.json").read_text(encoding="utf-8"))
+    assert [c["path"] for c in manifest["changes"]] == ["tests/test_route.py"]
+
+
+def test_arbitrary_top_level_directory_is_preserved_even_when_wrapper_like(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests/test_route.py").write_text("old\n", encoding="utf-8")
+    script = _copy_script(repo)
+    archive = tmp_path / "wrapped.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("some_wrapper/tests/test_route.py", "new\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / "some_wrapper/tests/test_route.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "tests/test_route.py").read_text(encoding="utf-8") == "old\n"
+
+
+def test_main_computer_test_wrapper_rejected_before_copy(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("original\n", encoding="utf-8")
+    script = _copy_script(repo)
+    archive = tmp_path / "patch.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("main_computer_test/README.md", "replacement\n")
+        z.writestr("README.md", "replacement\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Forbidden main_computer_test" in result.stderr
+    assert (repo / "README.md").read_text(encoding="utf-8") == "original\n"
+    assert not (repo / "main_computer_test").exists()
+
+
+def test_main_computer_test_named_export_rejected_even_without_wrapper(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    script = _copy_script(repo)
+    archive = tmp_path / "main_computer_test-20261108.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("tests/test_route.py", "new\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Forbidden main_computer_test" in result.stderr
+    assert not (repo / "tests").exists()
+
+
+def test_wrapped_verified_bundle_is_rejected_not_copied_as_files(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("original\n", encoding="utf-8")
+    script = _copy_script(repo)
+    archive = tmp_path / "bundle.zip"
+    manifest = {"format": 1, "changes": [{"path": "README.md", "operation": "modify", "sha256": None}]}
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("bundle/manifest.json", json.dumps(manifest))
+        z.writestr("bundle/files/README.md", "replacement\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Wrapped verified bundle rejected" in result.stderr
+    assert (repo / "README.md").read_text(encoding="utf-8") == "original\n"
+    assert not (repo / "bundle").exists()
+
+
+def test_no_changes_does_not_claim_copy(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests/test_route.py").write_text("same\n", encoding="utf-8")
+    script = _copy_script(repo)
+    archive = tmp_path / "patch.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("tests/test_route.py", "same\n")
+
+    result = subprocess.run([sys.executable, str(script), str(archive)], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "changed_files: 0" in result.stdout
+    assert "no changes:" in result.stdout
+    assert "applied: copied" not in result.stdout
+    latest = sorted((repo / "tools/patching/reports/new_patch_runs").iterdir())[-1]
+    assert json.loads((latest / "run.json").read_text(encoding="utf-8"))["status"] == "no_changes"

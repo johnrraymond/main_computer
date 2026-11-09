@@ -38,6 +38,7 @@ from main_computer.conductor import ConductorService
 from main_computer.dev_chain_runtime import apply_dev_chain_runtime_config
 from main_computer.executor_backend import create_executor_backend
 from main_computer.mounted_windows_paths import build_mounted_windows_path_resolver
+from main_computer.viewport_bind_policy import require_local_viewport_bind
 
 
 HUB_CONFIGURATION_FILENAME = "hub_configuration.json"
@@ -73,6 +74,7 @@ def _load_saved_hub_runtime_config(config: MainComputerConfig, runtime_root: Pat
 
 class ViewportServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MainComputerConfig, *, verbose: bool = True) -> None:
+        require_local_viewport_bind(server_address[0], container_internal=True)
         super().__init__(server_address, ViewportHandler)
         self.debug_root = Path.cwd().resolve()
         self.control_root = _control_root_path(self.debug_root)
@@ -199,6 +201,7 @@ ViewportServer.provider_name = property(_provider_name)  # type: ignore[attr-def
 
 
 def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765, *, verbose: bool = True) -> None:
+    require_local_viewport_bind(host, container_internal=True)
     runtime_root = Path.cwd().resolve()
     control_root = _control_root_path(runtime_root)
     heartbeat_port = int(os.environ.get("MAIN_COMPUTER_HEARTBEAT_PORT") or port + 1)
@@ -206,7 +209,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
     ensure_heartbeat_service(
         HeartbeatConfig(
             workspace=runtime_root,
-            bind_host=host,
+            bind_host="127.0.0.1",
             server_port=port,
             heartbeat_port=heartbeat_port,
             verbose=verbose,
@@ -229,7 +232,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
     from main_computer.heartbeat import status_payload
     _heartbeat_stop = threading.Event()
     _heartbeat_config = HeartbeatConfig(
-        workspace=runtime_root, bind_host=host, server_port=port,
+        workspace=runtime_root, bind_host="127.0.0.1", server_port=port,
         heartbeat_port=heartbeat_port, verbose=verbose, control_root=control_root)
     def _heartbeat_watchdog():
         cooldown = 15.0

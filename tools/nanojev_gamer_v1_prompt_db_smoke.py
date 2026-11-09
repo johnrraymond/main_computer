@@ -367,7 +367,7 @@ def export_verified(path: Path, jsonl: Path, *, replace=False):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('stage',choices=('build','verify','export','train','score','query','audit','construct-train','construct-query','construct-census'))
+    parser.add_argument('stage',choices=('build','verify','export','train','score','query','audit','construct-train','construct-query','construct-census','construct-audit','hawk-dove-train','hawk-dove-query','hawk-dove-language-train','hawk-dove-language-query','hawk-dove-language-census'))
     parser.add_argument('--output',type=Path,help='SQLite prompt database (required for original DB stages)')
     parser.add_argument('--cases-per-game',type=int,default=18,help='Certified examples per source-executable game (multiple of six)')
     parser.add_argument('--catalog-prompts-per-game',type=int,default=2,help='Unlabelled research prompts per catalog-only game (1 or 2)')
@@ -376,6 +376,11 @@ def main(argv=None):
     parser.add_argument('--train-output',type=Path,help='Isolated auxiliary strategy-router training output directory')
     parser.add_argument('--prompt',help='For score/query: raw unlabelled prompt; bounded 2x2 games can also be supplied as strict JSON (no oracle labels)')
     parser.add_argument('--construction-output',type=Path,help='Isolated frozen-Qwen game-construction checkpoint directory')
+    parser.add_argument('--hawk-dove-output',type=Path,help='Isolated T08->T00 fixed-game acquired payoff head')
+    parser.add_argument('--hawk-dove-language-output',type=Path,help='Isolated T08 15-train/5-holdout language head')
+    parser.add_argument('--hawk-dove-language-encoder',choices=('frozen-qwen','text'),default='frozen-qwen',help='Frozen Qwen/LoRA plus lexical context (or text-only diagnostic)')
+    parser.add_argument('--hawk-dove-step',type=int,default=1000,help='Full acquired count-grid stride (must divide 1,000,000)')
+    parser.add_argument('--hawk-dove-fixture',type=Path,default=Path('examples/hawk_dove_million_DEMO_ONLY.json'),help='Original fixed teacher fixture, if available')
     parser.add_argument('--run',type=Path,default=Path('runtime/reports/gamer-v1/transition-005'),help='Source frozen GAMER V1 run containing lora/best_adapter')
     parser.add_argument('--model',default='Qwen/Qwen3-0.6B',help='Frozen original GAMER Qwen model identifier')
     parser.add_argument('--device',default='cuda',help='Qwen frozen feature capture device')
@@ -389,7 +394,7 @@ def main(argv=None):
     parser.add_argument('--replace',action='store_true',help='Explicitly replace the output (never trained model state)')
     parser.add_argument('--full-oracle-verify',action='store_true',help='Regenerate every numerical label during verification')
     args=parser.parse_args(argv)
-    if args.stage not in ('construct-train','construct-query','construct-census') and args.output is None:
+    if args.stage not in ('construct-train','construct-query','construct-census','construct-audit','hawk-dove-train','hawk-dove-query','hawk-dove-language-train','hawk-dove-language-query','hawk-dove-language-census') and args.output is None:
         parser.error(args.stage + ' requires --output')
     if args.stage=='build':
         report=build(args.output,cases_per_game=args.cases_per_game,
@@ -425,6 +430,44 @@ def main(argv=None):
             print(f'GAMER TRAIN: reusing existing SQLite corpus; verifying {args.output}',
                   flush=True)
         report=train(args.output,args.train_output,epochs=args.epochs,alpha=args.alpha,seed=args.seed)
+    elif args.stage=='hawk-dove-train':
+        if args.hawk_dove_output is None:
+            parser.error('hawk-dove-train requires --hawk-dove-output')
+        from tools.nanojev_gamer_v1_hawk_dove_acquisition import train as hawk_dove_train
+        report=hawk_dove_train(args.hawk_dove_output,epochs=args.epochs,seed=args.seed,
+                               fixture=args.hawk_dove_fixture,step=args.hawk_dove_step)
+    elif args.stage=='hawk-dove-query':
+        if args.hawk_dove_output is None or args.prompt is None:
+            parser.error('hawk-dove-query requires --hawk-dove-output and --prompt')
+        from tools.nanojev_gamer_v1_hawk_dove_acquisition import query as hawk_dove_query
+        report=hawk_dove_query(args.hawk_dove_output,args.prompt)
+    elif args.stage=='hawk-dove-language-census':
+        from tools.nanojev_gamer_v1_hawk_dove_t08_corpus import generate,TRAIN_TEMPLATES,HOLDOUT_TEMPLATES
+        rows=generate(seed=args.seed,samples_per_template=args.samples_per_template)
+        report={'status':'T08_LANGUAGE_15_TRAIN_5_HOLDOUT_CORPUS_PLAN',
+                'training_templates':len(TRAIN_TEMPLATES),
+                'heldout_templates':len(HOLDOUT_TEMPLATES),
+                'training_cases':sum(r['split']=='train' for r in rows),
+                'heldout_cases':sum(r['split']=='holdout' for r in rows),
+                'checkpoint_or_source_modified':False}
+    elif args.stage=='hawk-dove-language-train':
+        if args.hawk_dove_language_output is None or args.hawk_dove_output is None:
+            parser.error('hawk-dove-language-train requires --hawk-dove-output and --hawk-dove-language-output')
+        from tools.nanojev_gamer_v1_hawk_dove_t08_language import train as language_train
+        report=language_train(language_output=args.hawk_dove_language_output,
+                              hawk_dove_output=args.hawk_dove_output,
+                              run=args.run,model_id=args.model,device=args.device,layer=args.layer,
+                              encoder=args.hawk_dove_language_encoder,
+                              epochs=args.epochs,seed=args.seed,
+                              samples_per_template=args.samples_per_template,
+                              max_length=args.max_length)
+    elif args.stage=='hawk-dove-language-query':
+        if args.hawk_dove_language_output is None or args.hawk_dove_output is None or args.prompt is None:
+            parser.error('hawk-dove-language-query requires --hawk-dove-output, --hawk-dove-language-output and --prompt')
+        from tools.nanojev_gamer_v1_hawk_dove_t08_language import query as language_query
+        report=language_query(language_output=args.hawk_dove_language_output,
+                              hawk_dove_output=args.hawk_dove_output,
+                              prompt=args.prompt,device=args.device)
     elif args.stage=='construct-train':
         if args.construction_output is None:
             parser.error('construct-train requires --construction-output')
@@ -440,6 +483,12 @@ def main(argv=None):
         report=construction_query(run=args.run,output=args.construction_output,
                                   prompt=args.prompt,device=args.device,
                                   min_confidence=args.min_confidence)
+    elif args.stage=='construct-audit':
+        if args.construction_output is None:
+            parser.error('construct-audit requires --construction-output')
+        from tools.nanojev_gamer_v1_construction_head import audit_existing_checkpoint
+        report=audit_existing_checkpoint(run=args.run,output=args.construction_output,
+                                         device=args.device)
     elif args.stage=='construct-census':
         from tools.nanojev_gamer_v1_construction_head import generate,TRAIN_TEMPLATES,TEST_TEMPLATES
         rows=generate(seed=args.seed,samples_per_template=args.samples_per_template)

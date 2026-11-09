@@ -136,6 +136,29 @@ class SLHAuthority:
         with self._db() as c:
             return c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone() is not None
 
+    def administrator_enrollment_status(self) -> dict:
+        """Coarse public lifecycle evidence, never an authentication capability.
+
+        A migrated initialized setup record can exist without any active
+        administrator device. Do not equate initialized with enrolled.
+        """
+        with self._lock, self._db() as conn:
+            initialized = conn.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone() is not None
+            admins = conn.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND status='active'").fetchone()[0]
+            devices = conn.execute("""SELECT COUNT(*) FROM devices d JOIN users u ON u.id=d.user_id
+                WHERE d.status='active' AND u.status='active' AND u.role='admin'""").fetchone()[0]
+        if not initialized and (admins or devices):
+            state = 'INCONSISTENT'
+        elif not initialized:
+            state = 'NOT_ESTABLISHED'
+        elif devices and admins:
+            state = 'ENROLLED'
+        elif admins:
+            state = 'NO_ACTIVE_DEVICE'
+        else:
+            state = 'MISSING'
+        return {'state': state, 'local_credential': 'NOT_VERIFIED'}
+
     def status(self):
         # Public status deliberately contains no pending administrator details or
         # setup nonce; it is safe to display before initial provisioning.

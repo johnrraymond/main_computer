@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 import re
 import time
@@ -123,8 +124,101 @@ def _write_exclusive(path: Path, data: bytes) -> None:
 
 
 class LocalIdentityStore:
+    _DEFAULT_FILE = '.default-identity.json'
+    _DEFAULT_LOCK = '.default-identity.lock'
+
     def __init__(self, directory: Path | None = None):
         self.directory = Path(directory) if directory is not None else default_identity_directory()
+
+    def _default_device_id(self) -> str | None:
+        path = self.directory / self._DEFAULT_FILE
+        if path.is_symlink():
+            raise IdentityStoreError('DEFAULT_IDENTITY_UNSAFE', 409)
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, UnicodeError):
+            raise IdentityStoreError('DEFAULT_IDENTITY_CORRUPT', 409) from None
+        if (not isinstance(data, dict) or set(data) != {'schema', 'device_id', 'fingerprint'}
+                or data.get('schema') != 'main-computer.local-default-identity.v1'
+                or not isinstance(data.get('device_id'), str)
+                or not _DEVICE_ID.fullmatch(data['device_id'])
+                or not isinstance(data.get('fingerprint'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', data['fingerprint'])):
+            raise IdentityStoreError('DEFAULT_IDENTITY_CORRUPT', 409)
+        identity = self.get(data['device_id'])
+        if identity['fingerprint'] != data['fingerprint']:
+            raise IdentityStoreError('DEFAULT_IDENTITY_MISMATCH', 409)
+        return data['device_id']
+
+    def _persist_default(self, identity: dict) -> None:
+        path = self.directory / self._DEFAULT_FILE
+        temporary = self.directory / (self._DEFAULT_FILE + '.' + uuid.uuid4().hex + '.tmp')
+        data = json.dumps({'schema': 'main-computer.local-default-identity.v1',
+                           'device_id': identity['device_id'],
+                           'fingerprint': identity['fingerprint']}, sort_keys=True).encode('utf-8')
+        try:
+            _write_exclusive(temporary, data)
+            secure_private_state_file(temporary)
+            # Only called under the exclusive default-selection lock.
+            if path.exists() or path.is_symlink():
+                raise IdentityStoreError('DEFAULT_IDENTITY_ALREADY_DESIGNATED', 409)
+            os.replace(temporary, path)
+            if os.name == 'posix':
+                descriptor = os.open(self.directory, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except OSError:
+            raise IdentityStoreError('IDENTITY_STORAGE_UNAVAILABLE', 503) from None
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def ensure_default_identity(self, *, timeout_seconds: float = 8.0) -> dict:
+        """Ensure >=1 ordinary identity with a stable default designation.
+
+        Cross-process exclusive creation serializes competing LMS-SLH startups.
+        Interrupted creation before the designation is safely reconciled by
+        selecting the existing valid key on the following startup. A leftover
+        lock or corrupted designation fails closed; neither is auto-replaced.
+        """
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name == 'posix':
+                self.directory.chmod(0o700)
+        except OSError:
+            raise IdentityStoreError('IDENTITY_STORAGE_UNAVAILABLE', 503) from None
+        lock = self.directory / self._DEFAULT_LOCK
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+                break
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise IdentityStoreError('DEFAULT_IDENTITY_LOCKED', 503) from None
+                time.sleep(0.025)
+            except OSError:
+                raise IdentityStoreError('IDENTITY_STORAGE_UNAVAILABLE', 503) from None
+        try:
+            designated = self._default_device_id()
+            if designated is not None:
+                return self.get(designated)
+            listed = self.list()
+            if listed['identities']:
+                identity = self.get(listed['identities'][0]['device_id'])
+            elif listed['invalid_identities']:
+                raise IdentityStoreError('IDENTITY_CORRUPT_OR_LOCKED', 409)
+            else:
+                # The random ID is an ordinary identity identifier, not a type.
+                identity = self.create('mc-' + secrets.token_hex(16), label='Default identity')
+            self._persist_default(identity)
+            return identity
+        finally:
+            lock.unlink(missing_ok=True)
 
     def create(self, device_id: str, *, label: str | None = None) -> dict:
         path = _identity_path(self.directory, device_id)
@@ -170,7 +264,7 @@ class LocalIdentityStore:
 
     def list(self) -> dict:
         if not self.directory.exists():
-            return {'identities': [], 'invalid_identities': []}
+            return {'identities': [], 'invalid_identities': [], 'default_device_id': None}
         identities, invalid = [], []
         try:
             files = sorted(self.directory.glob('*.key.pem'))
@@ -184,7 +278,8 @@ class LocalIdentityStore:
                 identities.append(_identity_metadata(self.directory, device_id))
             except IdentityStoreError as exc:
                 invalid.append({'device_id': device_id, 'error': exc.code})
-        return {'identities': identities, 'invalid_identities': invalid}
+        return {'identities': identities, 'invalid_identities': invalid,
+                'default_device_id': self._default_device_id()}
 
     def sign(self, device_id: str, challenge: dict) -> dict:
         if not isinstance(challenge, dict) or len(json.dumps(challenge, ensure_ascii=True)) > 8192:

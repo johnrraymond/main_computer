@@ -1578,16 +1578,19 @@ def probe_blind_lora(args,cases,manifest):
 
 def parser():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('stage',choices=('prepare','validate','lora','switch','to-numerical','probe','blind-probe','experiment','shadow','route-accept','route-activate','route-rollback','route'))
+    ap.add_argument('stage',choices=('prepare','validate','lora','switch','to-numerical','probe','blind-probe','experiment','shadow','v30-live'))
     ap.add_argument('--dataset',help='Optional explicit path; by default OUTPUT/certified_pairs.jsonl')
-    ap.add_argument('--output',required=True,help='GAMER run directory; read-only for shadow/route stages')
+    ap.add_argument('--output',required=True,help='Fresh, isolated Gamer experiment directory')
+    ap.add_argument('--v27-run',help='v30-live only: V27 frozen candidate-capture run')
+    ap.add_argument('--v29-run',help='v30-live only: accepted V29 role selector run')
+    ap.add_argument('--v30-run',help='v30-live only: accepted V30 decoder run')
+    ap.add_argument('--v30-prompt',help='v30-live only: raw inference prompt')
+    ap.add_argument('--v30-prompt-file',help='v30-live only: path to raw prompt')
+    ap.add_argument('--v30-expected',help='v30-live only: expected value for a single raw prompt; scored AFTER prediction')
+    ap.add_argument('--v30-cases-jsonl',help='v30-live only: JSONL raw prompts with optional expected answers')
+    ap.add_argument('--v30-report',help='v30-live only: fresh JSON output path')
+    ap.add_argument('--v30-plan-only',action='store_true',help='v30-live only: verify fingerprints without forwarding model')
     ap.add_argument('--shadow-closure',help='shadow only: completed frozen S-closure report directory')
-    ap.add_argument('--shadow-evidence',help='route: completed 160-case production shadow directory')
-    ap.add_argument('--route-report',help='route: isolated serving-route acceptance report directory')
-    ap.add_argument('--authority-file',help='route: reversible authority state (outside frozen production run)')
-    ap.add_argument('--route-demo',action='store_true',help='route: serve representative canonical GAMER requests')
-    ap.add_argument('--route-request-file',help='route: JSONL file of {id,prompt} requests')
-    ap.add_argument('--route-response-file',help='route: isolated JSONL output file')
     ap.add_argument('--shadow-wide',help='shadow only: explicit Wide checkpoint, otherwise latest completed staircase head cycle')
     ap.add_argument('--shadow-separate-adapters',action='store_true',help='shadow only: compare original Wide and candidate with separately attested frozen adapters')
     ap.add_argument('--shadow-report',help='shadow only: fresh, separate output directory (never within production run)')
@@ -1649,14 +1652,14 @@ def validate_flags(args):
     focus=getattr(args,'zero_line_focus',None)
     radius=getattr(args,'zero_line_radius',None)
     resolve_policy(focus=focus,radius=radius)
-    if getattr(args,'stage',None) in ('route','route-accept','route-activate','route-rollback'):
-        if any((getattr(args,'shadow_wide',None),getattr(args,'shadow_report',None),
-                getattr(args,'shadow_plan_only',False),getattr(args,'shadow_separate_adapters',False))):
-            raise ValueError('GAMER_ROUTE_CANNOT_USE_SHADOW_MUTATION_FLAGS')
-        return
-    if any(getattr(args,f,None) for f in ('shadow_evidence','route_report','authority_file',
-                                         'route_demo','route_request_file','route_response_file')):
-        raise ValueError('GAMER_ROUTE_FLAGS_ONLY_ROUTE_STAGE')
+    if getattr(args,'stage',None) != 'v30-live' and any((getattr(args,n,None) for n in ('v27_run','v29_run','v30_run','v30_prompt','v30_prompt_file','v30_cases_jsonl','v30_report','v30_expected'))):
+        raise ValueError('GAMER_V30_FLAGS_ONLY_V30_LIVE_STAGE')
+    if getattr(args,'stage',None) != 'v30-live' and getattr(args,'v30_plan_only',False):
+        raise ValueError('GAMER_V30_FLAGS_ONLY_V30_LIVE_STAGE')
+    if getattr(args,'stage',None) == 'v30-live' and (
+        not all(getattr(args,n,None) for n in ('v27_run','v29_run','v30_run')) or
+        (not args.v30_plan_only and not getattr(args,'v30_report',None))):
+        raise ValueError('GAMER_V30_REQUIRES_REPORT_AND_ACCEPTED_V27_V29_V30_RUNS')
     if getattr(args,'stage',None) != 'shadow' and any((getattr(args,'shadow_closure',None),getattr(args,'shadow_wide',None),getattr(args,'shadow_report',None),getattr(args,'shadow_plan_only',False),getattr(args,'shadow_separate_adapters',False))):
         raise ValueError('GAMER_SHADOW_FLAGS_ONLY_SHADOW_STAGE')
     if getattr(args,'stage',None)=='shadow' and not (getattr(args,'shadow_closure',None) and getattr(args,'shadow_report',None)):
@@ -1696,17 +1699,9 @@ def validate_flags(args):
 def main(argv=None):
     args = parser().parse_args(argv)
     validate_flags(args)
-    if args.stage in ('route','route-accept','route-activate','route-rollback'):
-        from tools import nanojev_gamer_v1_to_numerical_serve as route
-        return route.main([args.stage, '--output', str(args.output)] +
-            sum(([flag,str(getattr(args,name))] for name,flag in (
-                ('shadow_closure','--shadow-closure'),('shadow_evidence','--shadow-evidence'),
-                ('route_report','--route-report'),('authority_file','--authority-file'),
-                ('route_request_file','--route-request-file'),
-                ('route_response_file','--route-response-file')) if getattr(args,name,None)),[]) +
-            (['--route-demo'] if args.route_demo else []) +
-            ['--capture-batch',str(args.capture_batch),'--eval-batch',str(args.eval_batch),
-             '--device',str(args.device)])
+    if args.stage == 'v30-live':
+        from tools import nanojev_gamer_v1_v30_live_inference as live_v30
+        return live_v30.run(args)
     if args.stage == 'shadow':
         # Integrate the shadow with the real to_numerical CLI; do not create a
         # manifest, train, or overwrite existing handoff/production artifacts.

@@ -31,6 +31,7 @@ from main_computer.log_metric_distribution import run_from_args as run_log_metri
 from main_computer.heartbeat import HeartbeatConfig, serve as serve_heartbeat
 from main_computer.hub import DEFAULT_HUB_PORT, DEFAULT_HUB_WORKER_PORT, register_worker_with_hub, serve_hub, serve_hub_worker, serve_hub_worker_pull
 from main_computer.hub_credit_indexer import wallet_account_id
+from main_computer.dev_test_hub import DevTestHubConfigurationError, validate_dev_test_config
 from main_computer.hub_networks import (
     HubNetworkConfigError,
     env_chain_id_override,
@@ -53,6 +54,7 @@ from main_computer.static_code_analyzer import run_from_args as run_code_stats_f
 from main_computer.router import MainComputer
 from main_computer.models import ChatResponse
 from main_computer.viewport import serve
+from main_computer.viewport_bind_policy import require_local_viewport_bind
 
 
 def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
@@ -1443,6 +1445,7 @@ def cmd_providers(args: argparse.Namespace) -> int:
 
 
 def cmd_viewport(args: argparse.Namespace) -> int:
+    require_local_viewport_bind(args.host, container_internal=True)
     config = _config_from_args(args)
     serve(config, host=args.host, port=args.port, verbose=bool(args.verbose or config.fallback))
     return 0
@@ -1465,6 +1468,7 @@ def cmd_openclaw_ops(args: argparse.Namespace) -> int:
 
 
 def cmd_heartbeat(args: argparse.Namespace) -> int:
+    require_local_viewport_bind(args.host, service="Heartbeat")
     workspace = Path(args.workspace) if args.workspace else MainComputerConfig.from_env().workspace
     serve_heartbeat(
         HeartbeatConfig(
@@ -1479,7 +1483,32 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def cmd_hub(args: argparse.Namespace) -> int:
+    # This is the older development broker, NOT the production Stable Hub.
+    # A registry default of mainnet must never turn it into a mainnet server.
+    if not (getattr(args, "network", None) or env_hub_network_name()):
+        raise DevTestHubConfigurationError(
+            "The old 'hub' entrypoint requires --network dev or --network test. "
+            "Use 'dev-test-hub' for the local default or the Stable Hub runtime for public networks."
+        )
     config = _config_from_args(args)
+    validate_dev_test_config(config)
+    serve_hub(config, host=config.hub_bind_host, port=config.hub_bind_port, verbose=args.verbose)
+    return 0
+
+
+def cmd_dev_test_hub(args: argparse.Namespace) -> int:
+    # Explicit local service identity: an unrelated registry default cannot
+    # redirect this command to testnet/mainnet, including through env settings.
+    selected = str(getattr(args, "network", None) or "dev").strip().lower()
+    env_selected = env_hub_network_name()
+    if env_selected and env_selected != selected:
+        raise DevTestHubConfigurationError(
+            f"Dev-Test Hub requested network {selected!r} conflicts with "
+            f"MAIN_COMPUTER_HUB_NETWORK={env_selected!r}."
+        )
+    args.network = selected
+    config = _config_from_args(args)
+    validate_dev_test_config(config)
     serve_hub(config, host=config.hub_bind_host, port=config.hub_bind_port, verbose=args.verbose)
     return 0
 
@@ -1896,9 +1925,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     heartbeat.set_defaults(func=cmd_heartbeat)
 
-    hub = sub.add_parser("hub", help="Start the Main Computer hub broker.")
+    hub = sub.add_parser("hub", help="Compatibility name for the local development broker; requires dev/test network selection.")
     add_common_options(hub)
-    hub.add_argument("--network", help="Hub network key from the configured network registry. Defaults to the registry default.")
+    hub.add_argument("--network", help="Hub network key from the configured network registry. Use dev/test only; no implicit mainnet default.")
     hub.add_argument("--network-config", type=Path, help="Path to a Hub network registry JSON file.")
     hub.add_argument("--host", default=None, help="Hub bind host override. Defaults to the selected network profile.")
     hub.add_argument("--port", type=int, default=None, help="Hub bind port override. Defaults to the selected network profile.")
@@ -1939,6 +1968,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suppress hub request logging.",
     )
     hub.set_defaults(func=cmd_hub, use_hub_network_defaults=True)
+
+
+    hub = sub.add_parser("dev-test-hub", help="Start the local Dev-Test Hub (defaults to dev; never public testnet/mainnet).")
+    add_common_options(hub)
+    hub.add_argument("--network", help="Hub network key from the configured network registry. Defaults to local dev.")
+    hub.add_argument("--network-config", type=Path, help="Path to a Hub network registry JSON file.")
+    hub.add_argument("--host", default=None, help="Hub bind host override. Defaults to the selected network profile.")
+    hub.add_argument("--port", type=int, default=None, help="Hub bind port override. Defaults to the selected network profile.")
+    hub.add_argument("--hub-runtime-dir", type=Path, help="Hub runtime root override. Alias for the profile hub_runtime_dir.")
+    hub.add_argument("--chain-rpc-url", help="Chain RPC URL override for the selected network.")
+    hub.add_argument("--chain-id", help="Chain id override for the selected network. Accepts decimal or 0x-prefixed hex.")
+    hub.add_argument(
+        "--bridge-backend",
+        choices=["dev-chain", "credit-bridge-contract", "mock-chain"],
+        help="Hub bridge backend. Defaults to dev-chain/contract mode; use mock-chain only for explicit lab/fake-chain runs.",
+    )
+    hub.add_argument(
+        "--dev-chain-deployment-path",
+        type=Path,
+        help="Deployment metadata JSON used by the dev-chain/contract bridge backend. Defaults to the selected network manifest.",
+    )
+    hub.add_argument(
+        "--contracts-path",
+        type=Path,
+        help="Public contract config JSON used for contract-address-only Hub startup.",
+    )
+    hub.add_argument(
+        "--allow-missing-bridge-signer",
+        action="store_true",
+        help="Allow read/status-only contract-address startup without private bridge signer metadata.",
+    )
+    hub.add_argument(
+        "--enable-smoke-bridge",
+        action="store_true",
+        help="Explicitly enable the admin-only smoke bridge path that may load smoke_client wallet metadata.",
+    )
+    hub.add_argument(
+        "-noverbose",
+        "--noverbose",
+        dest="verbose",
+        action="store_false",
+        default=True,
+        help="Suppress hub request logging.",
+    )
+    hub.set_defaults(func=cmd_dev_test_hub, use_hub_network_defaults=True)
 
     hub_worker = sub.add_parser("hub-worker", help="Start a local model worker and optionally register it with a hub.")
     add_common_options(hub_worker)

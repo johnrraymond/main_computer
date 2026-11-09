@@ -1,0 +1,14 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": "slh",
+  "bindings": [
+    {
+      "id": "slh.binding.first-slice",
+      "acceptanceContractId": "slh.acceptance.first-slice",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_package_acceptance_first_slice"
+      ]
+    }
+  ]
+}

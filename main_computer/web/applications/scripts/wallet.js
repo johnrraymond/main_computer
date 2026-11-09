@@ -11,7 +11,7 @@
       },
       events: [],
       agentCredits: {
-        hubUrl: "http://127.0.0.1:8770",
+        hubUrl: "http://127.0.0.1:8871",
         status: "idle",
         statusMessage: "Connect wallet, enter a helper wallet, then grant credits.",
         grants: [],
@@ -45,7 +45,7 @@
     const WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
     const WALLET_AGENT_CREDIT_GRANT_ENDPOINT = "/api/applications/wallet/agent-credit-grants";
     const WALLET_DNS_CONTROL_ENDPOINT = "/api/applications/wallet/dns-control";
-    const WALLET_AGENT_CREDIT_DEFAULT_HUB_URL = "http://127.0.0.1:8770";
+    const WALLET_AGENT_CREDIT_DEFAULT_HUB_URL = "http://127.0.0.1:8871";
     const WALLET_AGENT_CREDIT_DEFAULT_MEMO = "Agent helper credits for parallel verification workers.";
     const WALLET_AGENT_CREDIT_MAX_GRANT = 100;
     const WALLET_DNS_CONTROL_DEFAULT_STATUS = "Connect wallet, choose Cloudflare or self-hosted DNS, then save a control profile.";

@@ -408,6 +408,28 @@ class TacticalAIService:
                 "chosenCandidateId": f"beta-c{winner}", "candidateScores": scores},
         }
 
+    def evaluate_gamer_signed_difference(self, request: dict[str, Any], *, device: str = "cuda") -> dict[str, Any]:
+        """Bounded Space Captain numerical handoff, NOT tactical-v6 voting.
+
+        Only explicitly tagged signed-difference tasks reach V29/V30.
+        Captain tactical choices continue through the existing NanoJev
+        decision adapter; a numerical difference cannot authorize a helm or
+        boarding command.  This function requires an independently certified
+        V32 authority switch and an immutable V31 evidence chain.
+        """
+        from main_computer.gamer_numerical_authority import infer
+        return infer(self.root, request, device=device)
+
+    def shadow_gamer_hawk_dove(self, request: dict[str, Any], *, device: str = "cuda") -> dict[str, Any]:
+        """V33 learned T08 shadow inference; NEVER publishes a tactical order.
+
+        V32 numerical authority and the tactical-v6 combat adapter are untouched.
+        The T08 payoff narrative is a caller-supplied assumption, not inferred
+        from bridge telemetry. The output is a legal, non-authoritative intent.
+        """
+        from main_computer.gamer_tactical_shadow import evaluate
+        return evaluate(self.root, request, device=device)
+
     def prepare(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         config = dict(config or {})
         raw_time_step = config.get("time_step_seconds")

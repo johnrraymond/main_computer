@@ -22,6 +22,7 @@ from main_computer.service_supervisor import (
     resolve_python_command,
 )
 from main_computer.viewport import serve
+from main_computer.viewport_bind_policy import require_local_viewport_bind
 from main_computer.viewport_state import (
     _clear_viewport_pid_file,
     _control_root_path,
@@ -189,6 +190,7 @@ def stop_existing_viewport(
 
 
 def replace_heartbeat(*, root: Path | str, host: str, port: int, verbose: bool = True) -> dict[str, Any]:
+    require_local_viewport_bind(host, service="Heartbeat")
     root_path = Path(root).resolve()
     heartbeat_port = int(os.environ.get("MAIN_COMPUTER_HEARTBEAT_PORT") or port + 1)
     control_root = _control_root_path(root_path)
@@ -214,6 +216,7 @@ def run_app(
     process_command_reader: ProcessCommandReader | None = None,
     process_terminator: ProcessTerminator | None = None,
 ) -> int:
+    require_local_viewport_bind(host)
     port = _resolve_control_port(port)
     root_path = Path(root).resolve()
     install_main_log_hooks_from_env(default_service_name=APP_CONTROL_SERVICE_NAME, root=root_path)
@@ -242,6 +245,7 @@ def bootstrap(
     port: int | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
+    require_local_viewport_bind(host)
     port = _resolve_control_port(port)
     root_path = Path(root).resolve()
     resolved_python_command = resolve_python_command(python_command)

@@ -410,3 +410,28 @@ python .\scripts\smoke_temporal_fdb_hub_stress.py
 
 The stress smoke is the mock-chain bridge soak/freeze test. It should run before swapping the mock bridge for a dev-chain backend.
 
+
+
+### P4: Local-only Viewport and heartbeat binding
+
+The Main Computer Viewport is a trusted **local** application, not a public
+HTTP API. Every native Windows entrypoint (`start.bat`, `dev-control.ps1`,
+`control-main-computer.ps1`, `python -m main_computer.app_control`, and direct
+`python -m main_computer.cli viewport`) accepts only `127.0.0.1` as its bind
+host. The separate heartbeat/control listener is restricted to loopback as
+well. The usual ports are Viewport 8765 and heartbeat 8766, but local port
+overrides remain supported. Invalid bind overrides fail before a supervised
+process is stopped, a PID is changed, or the listener is created.
+
+The Docker development Viewport retains an **internal container** wildcard
+listener required for forwarding, but Docker Compose publishes it to the host
+**only** on `127.0.0.1:18765` (or an explicitly configured host port). The
+container-only exception is unavailable to native Windows processes. Other
+containers on the same Docker network may still contact the internal service;
+do not deploy this development Compose service into an untrusted Docker
+network or use host networking. No Viewport authentication is added. The
+Dev-Test Hub, SLH, SEH, and Stable Hubs retain independent bindings and trust
+policies. Startup flags `--no-dev-hub` and `--no-slh-hub` are unchanged.
+
+See [P4 Viewport local-binding acceptance](pretty_docs/viewport-local-bind-p4.md)
+for the Windows runtime checks and negative cases.

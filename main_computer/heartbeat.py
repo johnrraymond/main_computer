@@ -17,6 +17,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from main_computer.viewport_bind_policy import require_local_viewport_bind
 
 try:
     import psutil  # type: ignore
@@ -396,6 +397,7 @@ def stop_viewport(config: HeartbeatConfig) -> dict[str, Any]:
 
 
 def ensure_heartbeat_service(config: HeartbeatConfig, *, replace_existing: bool = False) -> dict[str, Any]:
+    require_local_viewport_bind(config.bind_host, service="Heartbeat")
     current = _heartbeat_pid(config)
     if replace_existing and current:
         try:
@@ -460,6 +462,7 @@ def ensure_heartbeat_service(config: HeartbeatConfig, *, replace_existing: bool 
 
 class HeartbeatServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: HeartbeatConfig, *, verbose: bool = True) -> None:
+        require_local_viewport_bind(server_address[0], service="Heartbeat")
         super().__init__(server_address, HeartbeatHandler)
         self.config = config
         self.verbose = verbose
@@ -647,6 +650,7 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
 
 
 def serve(config: HeartbeatConfig) -> None:
+    require_local_viewport_bind(config.bind_host, service="Heartbeat")
     config.workspace.mkdir(parents=True, exist_ok=True)
     _write_pid_file(config.heartbeat_pid_file, os.getpid())
     server = HeartbeatServer((config.bind_host, config.actual_heartbeat_port), config, verbose=config.verbose)

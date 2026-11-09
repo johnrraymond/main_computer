@@ -51,12 +51,44 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _without_saved_authorization(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep verified MSK facts, never persist the replayable wallet authorization.
+
+    The verified wallet, chain, request hash and key identifier are sufficient
+    for key validation and idempotency. Signed blobs and their full messages
+    aren't required after the signature has been verified in memory.
+    """
+    clean = dict(record)
+    clean.pop("signed_request", None)
+    clean.pop("signed_message", None)
+    clean.pop("signature", None)
+    return clean
+
+
+def _redact_saved_authorizations_document(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Remove obsolete wallet signature material without touching MSK authority."""
+    clean = dict(data)
+    keys = data.get("keys")
+    removed = 0
+    if isinstance(keys, dict):
+        cleaned_keys = dict(keys)
+        for key_id, record in keys.items():
+            if not isinstance(record, dict):
+                continue
+            cleaned = _without_saved_authorization(record)
+            if cleaned != record:
+                removed += 1
+                cleaned_keys[key_id] = cleaned
+        clean["keys"] = cleaned_keys
+    return clean, removed
+
+
 def _normalize_store(data: dict[str, Any] | None) -> dict[str, Any]:
     clean = dict(data) if isinstance(data, dict) else {}
     keys = clean.get("keys")
     if not isinstance(keys, dict):
         keys = {}
-    clean["keys"] = {str(key): dict(value) for key, value in keys.items() if isinstance(value, dict)}
+    clean["keys"] = {str(key): _without_saved_authorization(value) for key, value in keys.items() if isinstance(value, dict)}
     clean.setdefault("version", STABLE_MSK_STORE_VERSION)
     return clean
 
@@ -108,6 +140,42 @@ class JsonStableMultiSessionKeyStore:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(clean, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+    def redact_stored_authorizations(self, *, execute: bool = False) -> dict[str, Any]:
+        """Explicit one-time cleanup; preview by default, never print signatures."""
+        with self._lock:
+            if not self.path.exists():
+                return {"backend": "local-json", "records_scanned": 0, "records_redacted": 0, "executed": execute}
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise StableHubMultiSessionKeyError("MSK JSON store must contain an object")
+            cleaned, count = _redact_saved_authorizations_document(raw)
+            if execute and count:
+                # Replace atomically without exposing signature-bearing content
+                # in logs or temporary plaintext copies of the new document.
+                import tempfile
+                temp_path: Path | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", encoding="utf-8", dir=self.path.parent,
+                        prefix=".msk-redacted-", suffix=".tmp", delete=False,
+                    ) as temp:
+                        temp_path = Path(temp.name)
+                        temp.write(json.dumps(cleaned, ensure_ascii=False, sort_keys=True, indent=2))
+                        temp.flush()
+                        os.fsync(temp.fileno())
+                    os.chmod(temp_path, self.path.stat().st_mode)
+                    os.replace(temp_path, self.path)
+                finally:
+                    if temp_path is not None:
+                        temp_path.unlink(missing_ok=True)
+            return {
+                "backend": "local-json",
+                "records_scanned": len(raw.get("keys", {})) if isinstance(raw.get("keys"), dict) else 0,
+                "records_redacted": count,
+                "executed": execute,
+            }
 
 
 @dataclass(frozen=True)
@@ -296,6 +364,95 @@ class FoundationDbStableMultiSessionKeyStore:
         # original single-value store key.
         return self._legacy_key()
 
+    def redact_stored_authorizations(self, *, execute: bool = False) -> dict[str, Any]:
+        """Explicit and resumable cleanup of old FDB MSK signature copies.
+
+        Indexed records are processed in bounded transactions. Legacy whole-
+        document and chunked records are also redacted without changing the
+        record-index or any authorization, wallet, key or revocation fields.
+        Preview performs reads only. No raw request or signature is logged.
+        """
+        self._open()
+        key_range = self._records_range()
+        records_scanned = 0
+        records_redacted = 0
+        start = key_range.start
+
+        @self._fdb.transactional
+        def _record_batch(tr: Any, begin: bytes) -> tuple[int, bytes | None, int]:
+            _configure_fdb_transaction_safety(tr)
+            entries = list(tr.get_range(begin, key_range.stop, limit=20))
+            changed = 0
+            for entry in entries:
+                record = _json_loads(entry.value)
+                if not isinstance(record, dict):
+                    raise StableHubMultiSessionKeyError("malformed indexed MSK record")
+                clean = _without_saved_authorization(record)
+                if clean != record:
+                    changed += 1
+                    if execute:
+                        tr[entry.key] = _json_dumps(clean)
+            return len(entries), bytes(entries[-1].key) if entries else None, changed
+
+        while True:
+            count, last, changed = _record_batch(self._db, start)
+            records_scanned += count
+            records_redacted += changed
+            if not last or count < 20:
+                break
+            start = last + b"\x00"  # Lexicographically after last FDB key.
+
+        @self._fdb.transactional
+        def _legacy_cleanup(tr: Any) -> dict[str, int]:
+            _configure_fdb_transaction_safety(tr)
+            counts = {"legacy_records_redacted": 0, "legacy_chunks_redacted": 0}
+            legacy_key = self._legacy_key()
+            raw = _fdb_value_bytes(tr[legacy_key].wait())
+            if raw is not None:
+                document = json.loads(raw.decode("utf-8"))
+                if not isinstance(document, dict):
+                    raise StableHubMultiSessionKeyError("malformed legacy MSK document")
+                clean, changed = _redact_saved_authorizations_document(document)
+                counts["legacy_records_redacted"] = changed
+                if execute and changed:
+                    tr[legacy_key] = _json_dumps(clean)
+
+            meta_key = self._legacy_chunk_meta_key()
+            meta = _json_loads(tr[meta_key].wait()) or {}
+            count = int(meta.get("chunk_count") or 0)
+            if count < 0 or count > 10000:
+                raise StableHubMultiSessionKeyError("invalid legacy MSK chunk count")
+            if count:
+                chunks = []
+                for index in range(count):
+                    chunk = _fdb_value_bytes(tr[self._legacy_chunk_key(index)].wait())
+                    if chunk is None:
+                        raise StableHubMultiSessionKeyError("missing legacy MSK chunk")
+                    chunks.append(chunk)
+                document = json.loads(b"".join(chunks).decode("utf-8"))
+                if not isinstance(document, dict):
+                    raise StableHubMultiSessionKeyError("malformed chunked MSK document")
+                clean, changed = _redact_saved_authorizations_document(document)
+                counts["legacy_chunks_redacted"] = changed
+                if execute and changed:
+                    raw_clean = _json_dumps(clean)
+                    new_chunks = [raw_clean[i:i+60000] for i in range(0, len(raw_clean), 60000)]
+                    for index, chunk in enumerate(new_chunks):
+                        tr[self._legacy_chunk_key(index)] = chunk
+                    for index in range(len(new_chunks), count):
+                        del tr[self._legacy_chunk_key(index)]
+                    tr[meta_key] = _json_dumps({**meta, "chunk_count": len(new_chunks)})
+            return counts
+
+        legacy = _legacy_cleanup(self._db)
+        return {
+            "backend": "foundationdb",
+            "records_scanned": records_scanned,
+            "records_redacted": records_redacted,
+            **legacy,
+            "executed": execute,
+        }
+
     def _decode_key_id(self, raw: Any) -> str:
         data = _fdb_value_bytes(raw)
         if data is None:
@@ -335,7 +492,7 @@ class FoundationDbStableMultiSessionKeyStore:
             _configure_fdb_transaction_safety(tr)
             record = _json_loads(tr[self._record_key(clean_key_id)].wait())
             if isinstance(record, dict):
-                return dict(record)
+                return _without_saved_authorization(record)
             return None
 
         try:
@@ -361,7 +518,7 @@ class FoundationDbStableMultiSessionKeyStore:
         if not key_id:
             raise StableHubMultiSessionKeyError("multi-session key id is required.")
 
-        payload = dict(record)
+        payload = _without_saved_authorization(record)
         payload["signed_request_hash"] = clean_hash
 
         @self._fdb.transactional
@@ -372,12 +529,12 @@ class FoundationDbStableMultiSessionKeyStore:
             if existing_key_id:
                 existing = _json_loads(tr[self._record_key(existing_key_id)].wait())
                 if isinstance(existing, dict):
-                    return {"record": dict(existing), "idempotent": True}
+                    return {"record": _without_saved_authorization(existing), "idempotent": True}
 
             existing_same_id = _json_loads(tr[self._record_key(key_id)].wait())
             if isinstance(existing_same_id, dict):
                 if existing_same_id.get("signed_request_hash") == clean_hash:
-                    return {"record": dict(existing_same_id), "idempotent": True}
+                    return {"record": _without_saved_authorization(existing_same_id), "idempotent": True}
                 raise StableHubMultiSessionKeyError("multi-session key id collision.")
 
             tr[self._record_key(key_id)] = _json_dumps(payload)
@@ -412,6 +569,7 @@ class FoundationDbStableMultiSessionKeyStore:
             record = _json_loads(tr[self._record_key(key_id)].wait())
             if not isinstance(record, dict) or record.get("wallet_address") != wallet_address:
                 return None
+            record = _without_saved_authorization(record)
             if record.get("status") == "active":
                 record["status"] = "revoked"
                 record["revoked_at"] = _utc_now()
@@ -461,7 +619,7 @@ class FoundationDbStableMultiSessionKeyStore:
             for key_id, value in keys.items():
                 if not isinstance(value, dict):
                     continue
-                record = dict(value)
+                record = _without_saved_authorization(value)
                 record["id"] = str(record.get("id") or key_id)
                 signed_hash = str(record.get("signed_request_hash") or "").strip()
                 tr[self._record_key(record["id"])] = _json_dumps(record)
@@ -572,7 +730,7 @@ def _public_key_record(record: dict[str, Any]) -> dict[str, Any]:
         "cluster_id": str(record.get("cluster_id") or ""),
         "issued_by_hub_id": str(record.get("issued_by_hub_id") or ""),
         "signed_request_hash": str(record.get("signed_request_hash") or ""),
-        "has_signed_request": isinstance(record.get("signed_request"), dict),
+        "has_signed_request": False,
     }
 
 
@@ -674,8 +832,6 @@ class StableHubMultiSessionKeyService:
                         "cluster_id": self.cluster_id,
                         "issued_by_hub_id": self.hub_id,
                         "signed_request_hash": signed_request_hash,
-                        "signed_request": json.loads(json.dumps(signed_request)),
-                        "signed_message": json.loads(json.dumps(message)),
                         "verified": {
                             "wallet_address": wallet_address,
                             "account_id": account_id,
@@ -737,8 +893,6 @@ class StableHubMultiSessionKeyService:
                         "cluster_id": self.cluster_id,
                         "issued_by_hub_id": self.hub_id,
                         "signed_request_hash": signed_request_hash,
-                        "signed_request": json.loads(json.dumps(signed_request)),
-                        "signed_message": json.loads(json.dumps(message)),
                         "verified": {
                             "wallet_address": wallet_address,
                             "account_id": account_id,

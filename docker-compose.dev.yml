@@ -24,6 +24,9 @@ services:
       - "8765"
       - -noverbose
     environment:
+      # The wildcard bind is inside the container ONLY; the published host port
+      # below is explicitly restricted to Windows host loopback.
+      MAIN_COMPUTER_VIEWPORT_CONTAINER_INTERNAL_BIND: "1"
       MAIN_COMPUTER_PROVIDER: hub
       MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-gemma4:26b-a4b-it-q4_K_M}
       MAIN_COMPUTER_WORKSPACE: /workspace
@@ -50,7 +53,7 @@ services:
     ports:
       # The dev-control Docker mode sets MAIN_COMPUTER_DOCKER_VIEWPORT_PORT
       # and keeps the Docker viewport away from the local 8765 viewport.
-      - "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765"
+      - "127.0.0.1:${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765"
 
   # Start with --profile worker after the host or remote Ollama service has
   # the requested model available and a host/remote hub is reachable at

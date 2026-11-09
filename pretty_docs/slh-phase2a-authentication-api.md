@@ -4,6 +4,8 @@
 
 ## Governing invariant
 
+**Identity lifecycle owner:** [LMS-SLH Unified Identity Contract](lms-slh-identity-ownership.md). The LMS-SLH local management service owns **all identities in one uniform model**: the installation default and other identities have the same keys and lifecycle APIs whether used by people or machines. The backend Organization Service owns enrollment, role grants, and authentication decisions. The Phase 2A CLI examples below are historical explicit-key workflows, not evidence that backend SLH should generate user private keys. The existing LMS-SLH Authenticator API lists, explicitly creates, reads public metadata and signs challenges; **automatic default installation identity creation is not yet implemented**.
+
 No device may receive an SLH session unless its own public signing key was enrolled by an administrator, the device proves possession of that key with a fresh challenge, and the user's/device's account is still active. Admin operations additionally require the enrolled account's `admin` role. A protected, locally presented bootstrap secret is the only exception that establishes the first administrator.
 
 ## Run the backend and harness
@@ -34,6 +36,10 @@ The sole Phase 2A loopback API target is `http://127.0.0.1:8897` (canonical port
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8897/v1/bootstrap/status
 ```
+
+### Current local Authenticator API (LMS-SLH)
+
+On the loopback local management service, `GET /v1/local/authenticator/status` describes the local signer, `GET /v1/local/authenticator/identities` lists local identities, `POST /v1/local/authenticator/identities` explicitly creates an identity, `GET /v1/local/authenticator/identities/{device_id}` returns public metadata, and `POST /v1/local/authenticator/identities/{device_id}/sign` signs a validated challenge locally. These are **LMS-SLH** operations, not Organization Service endpoints or proof of enrollment. The current identity store is per-user; private keys are unencrypted-at-rest PEM guarded by local file permissions.
 
 ### Persistent development Authenticator CLI
 
@@ -79,7 +85,7 @@ Use `GET /v1/bootstrap/status` to identify unclaimed local installation. The fir
 3. `POST /v1/auth/verify` with `device_id`, `challenge_id`, and `signature` verifies identity and grants a random bearer session with a 15-minute lifetime.
 4. The local API verifies session and current device/user revocation on each privileged request. `POST /v1/auth/logout` revokes the process-local session. All sessions are invalid after SLH restart.
 
-A registered device authenticates a **machine**. Separate individual-user/phone MFA is specified but not implemented in this phase. Unattended worker policies, wallets, remote encrypted sessions and worker execution are not yet live.
+An enrolled identity proves possession of **its own key**; it is not a different cryptographic kind when used by a machine versus a person. Organization policy may additionally require proof from **another ordinary identity** as a second factor (e.g. one held on a phone), but that optional requirement creates no separate “human identity” system. Such MFA is specified but not implemented in this phase. Unattended worker policies, wallets, remote encrypted sessions and worker execution are not yet live.
 
 ## Implemented API
 

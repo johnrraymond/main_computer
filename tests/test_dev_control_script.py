@@ -32,7 +32,8 @@ def test_dev_control_script_exposes_explicit_modes_and_polite_guard() -> None:
 def test_dev_control_script_prefers_127001_and_separate_ports() -> None:
     script = (ROOT / "dev-control.ps1").read_text(encoding="utf-8")
 
-    assert '[string]$BindHost = "0.0.0.0"' in script
+    assert '[string]$BindHost = "127.0.0.1"' in script
+    assert '$BindHost -cne "127.0.0.1"' in script
     assert "[int]$LocalPort = 8765" in script
     assert "[int]$DockerHostPort = 18765" in script
     assert "Avoid localhost" in script
@@ -59,7 +60,7 @@ def test_docker_default_host_port_and_renderer_are_configured() -> None:
     compose = (ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
     dockerfile = (ROOT / "docker" / "dev" / "app.Dockerfile").read_text(encoding="utf-8")
 
-    assert "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
+    assert "127.0.0.1:${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
     assert '"8765:8765"' not in compose
     assert "PLAYWRIGHT_BROWSERS_PATH: /ms-playwright" in compose
 

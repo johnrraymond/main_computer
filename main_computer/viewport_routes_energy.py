@@ -3289,6 +3289,9 @@ class ViewportEnergyRoutesMixin:
                 session["connection_error"] = f"Selected worker network {selected!r} is not present in the Hub network registry."
             else:
                 session["profile"] = profile
+                # The Worker network profiles are sourced from the same Hub
+                # registry as the requester resolver. Keep the live-session
+                # status and supervisor behavior unchanged.
                 hub_url = str(profile.get("hub_url") or "")
                 if check_hub:
                     status = self._fetch_hub_status(hub_url)
@@ -3350,10 +3353,8 @@ class ViewportEnergyRoutesMixin:
     def _worker_network_profile_hub_url(self, network: str) -> str:
         if str(network or "none") == "none":
             return ""
-        for profile in self._worker_network_profiles_payload():
-            if str(profile.get("network") or profile.get("network_key") or "") == str(network):
-                return self._clean_hub_url(str(profile.get("hub_url") or profile.get("hub_public_url") or ""), allow_empty=True)
-        return ""
+        from main_computer.hub_interface import resolve_hub_destination
+        return self._clean_hub_url(resolve_hub_destination({"selectedNetwork": network}).hub_url, allow_empty=True)
 
     def _worker_saved_setup_has_runtime_material(self, settings: dict[str, Any]) -> bool:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
@@ -4503,7 +4504,7 @@ class ViewportEnergyRoutesMixin:
                 self._send_json({"ok": False, "error": "Wallet agent credit grants are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
                 return
             grants = self._load_wallet_agent_credit_grants_history()
-            hub_url = self._clean_hub_url(str(getattr(self.server.config, "hub_url", "") or "http://127.0.0.1:8770"))
+            hub_url = self._clean_hub_url(str(getattr(self.server.config, "hub_url", "") or "http://127.0.0.1:8871"))
             self.server.signal("api-wallet-agent-credit-grants-load", count=len(grants), hub_url=hub_url)
             self._send_json({"ok": True, "hub_url": hub_url, "grants": grants[:20]})
         except Exception as exc:
@@ -4519,7 +4520,7 @@ class ViewportEnergyRoutesMixin:
             issuer_wallet = self._normalize_worker_wallet_address(body.get("issuer_wallet"))
             recipient_wallet = self._normalize_worker_wallet_address(body.get("recipient_wallet", body.get("account_id", "")))
             credits = self._normalize_wallet_agent_credit_grant_amount(body.get("credits"))
-            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url or "http://127.0.0.1:8770"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url or "http://127.0.0.1:8871"))
             memo = str(body.get("memo") or "Agent helper credits for parallel verification workers.").strip()
             if not memo:
                 memo = "Agent helper credits for parallel verification workers."

@@ -281,7 +281,7 @@ def test_chat_console_paid_overflow_modal_checks_hub_multisession_key_before_pai
     route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
     dispatch_source = (REPO_ROOT / "main_computer" / "viewport_route_dispatch.py").read_text(encoding="utf-8")
     provider_source = (REPO_ROOT / "main_computer" / "providers" / "hub.py").read_text(encoding="utf-8")
-    hub_source = (REPO_ROOT / "main_computer" / "hub.py").read_text(encoding="utf-8")
+    hub_source = (REPO_ROOT / "main_computer" / "hub_http_legacy_handler.py").read_text(encoding="utf-8")
 
     assert "Paid overflow readiness" in source
     assert "Multi-session key usable" in source
