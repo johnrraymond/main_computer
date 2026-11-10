@@ -301,13 +301,16 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     config = read_config(state_dir)
     if not config['configured'] or not config['enabled'] or not config['activation_confirmed']:
         raise RuntimeError('Organization Service is not explicitly enabled')
+    # ORG-SLH, not LMS-SLH, creates and owns the durable bearer root.
+    authority.ensure_local_auth_key()
     tls_context, fingerprint = transport_identity(state_dir)
     server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.authority = authority
     server.state_dir = Path(state_dir)
     server.wallet_service = OrganizationWallet(state_dir)
-    server.api = SLHAPI(authority, wallet_service=server.wallet_service)
+    server.api = SLHAPI(authority, wallet_service=server.wallet_service,
+                        root_api_enabled=True)
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']
     server.seh_enabled = config['seh_enabled']

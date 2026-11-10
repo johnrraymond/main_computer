@@ -16,7 +16,7 @@ from main_computer.slh.organization_state import initialize_disabled, save_confi
 from main_computer.mcel_slh_target_navigation import TARGET_ROUTES
 
 ROOT=Path(__file__).resolve().parents[1]
-ORACLE=ROOT/'mcel_oracles/organization-observation/oracle.v3.json'
+ORACLE=ROOT/'tests/fixtures/mcel_oracles/organization-observation/oracle.v3.json'
 CONTRACT=json.loads(ORACLE.read_text(encoding='utf-8'))
 
 
@@ -124,7 +124,7 @@ def test_local_unconfigured_and_loopback_status_are_not_network_reachability(tmp
 
 
 @pytest.mark.parametrize('case', CONTRACT['scenarios'], ids=lambda c:c['id'])
-def test_generated_browser_login_requires_enrolled_admin_and_local_tls(case):
+def test_generated_browser_login_entry_is_not_admin_authority(case):
     data=observe_slh('overview',probe=lambda:('RUNNING',case_payload(case)))
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
@@ -132,15 +132,31 @@ def test_generated_browser_login_requires_enrolled_admin_and_local_tls(case):
             page=browser.new_page(viewport={'width':1100,'height':800})
             errors=[]
             page.on('pageerror',lambda e:errors.append(str(e)))
-            page.evaluate('''data=>{window.fetch=async()=>({ok:true,json:async()=>data})}''',data)
+            page.evaluate('''data=>{
+              window.slhLoginAttempts=[];
+              window.fetch=async(url)=>{
+                if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>({
+                  schema:'mcel.slh.identities.v4b',state:'AVAILABLE',defaultDeviceId:'test-admin',
+                  explanation:'Identity discovered; role unverified',identities:[{deviceId:'test-admin',
+                    label:'Test',fingerprint:'a'.repeat(64),defaultStatus:'DEFAULT'}]})};
+                if(url==='/api/applications/slh/setup/action'){
+                  window.slhLoginAttempts.push(url);
+                  return {ok:false,status:403,json:async()=>({error:'IDENTITY_NOT_ENROLLED'})};
+                }
+                return {ok:true,json:async()=>data};
+              };
+            }''',data)
             page.set_content(render_slh_page('overview'))
             page.get_by_text('SLH observation complete',exact=False).wait_for(timeout=20000)
-            login=page.locator('form[data-intent="intent:login-administrator"]')
-            assert login.is_visible()==case['login'],(case['id'],login.is_visible())
-            if not case['login']:
-                receipt=page.evaluate('''async()=>window.__mcelSlh.app.execute(
-                  'intent:login-administrator',{adminDeviceId:'x'})''')
-                assert receipt['disposition']!='completed'
+            login=page.locator('button[data-intent="intent:login-administrator"]')
+            # The newer login entry is available before administrator enrollment;
+            # the old V3 scenario 'login' flag describes superseded UI gating.
+            # Visibility confers no credential or organization authority.
+            login.wait_for(state='visible',timeout=10000)
+            assert page.evaluate('window.slhLoginAttempts.length') == 0
+            login.click()
+            page.wait_for_function('window.slhLoginAttempts.length === 1')
+            assert page.get_by_text('Organization session not established',exact=True).count()==1
             assert page.get_by_role('tab',name='This Computer').get_attribute('aria-selected')=='true'
             assert page.get_by_role('tab',name='Network SLH').get_attribute('href')=='/applications/slh/network'
             assert not errors,errors

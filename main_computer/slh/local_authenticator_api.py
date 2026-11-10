@@ -40,8 +40,8 @@ class LocalAuthenticatorAPI:
             if method == 'POST' and path == '/v1/local/authenticator/identities':
                 if set(body) - {'device_id', 'label'}:
                     raise IdentityStoreError('INVALID_REQUEST')
-                if not body.get('device_id'):
-                    raise IdentityStoreError('IDENTITY_ID_REQUIRED')
+                if 'device_id' not in body:
+                    return 201, store.create_generated(label=body.get('label'))
                 return 201, store.create(body['device_id'], label=body.get('label'))
             matched = _ROUTE.fullmatch(path)
             if matched:

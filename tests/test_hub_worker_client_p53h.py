@@ -90,7 +90,8 @@ def test_rest_pull_loop_preserves_register_heartbeat_poll_result_order_and_metad
     def chat(messages):
         seen.append([(message.role,message.content) for message in messages])
         return ChatResponse(content='done',provider='mock',model='test-model',metadata={'sample':'yes'})
-    hub.serve_hub_worker_pull(config,chat,verbose=False,max_requests=1,poll_interval_s=.1)
+    hub.serve_hub_worker_pull(config,chat,verbose=False,max_requests=1,poll_interval_s=.1,
+                              allow_legacy_worker_rest=True)
     assert [key for key,_ in recorded] == ['register',
         '/api/hub/v1/workers/heartbeat','/api/hub/v1/workers/poll',
         '/api/hub/v1/workers/heartbeat','/api/hub/v1/workers/results']

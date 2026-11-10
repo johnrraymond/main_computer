@@ -9,6 +9,7 @@ import hashlib
 from contextlib import contextmanager
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -17,6 +18,7 @@ import time
 import uuid
 
 from .authenticator import public_key_fingerprint, verify_object
+from .storage import secure_private_state_file
 
 
 class SLHError(Exception):
@@ -98,6 +100,8 @@ class SLHAuthority:
                 allowed_role TEXT NOT NULL, expires_at INTEGER NOT NULL, redeemed_at INTEGER);
             CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY, device_id TEXT NOT NULL,
                 payload TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER);
+            CREATE TABLE IF NOT EXISTS root_admin_nonces(
+                nonce TEXT PRIMARY KEY, issued_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS policies(name TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
                 actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL);
@@ -131,6 +135,142 @@ class SLHAuthority:
         fd = os.open(path, flags, 0o600)
         with os.fdopen(fd, 'w', encoding='ascii') as f:
             f.write(secrets.token_urlsafe(40) + '\n')
+
+    # Bearer root belongs to ORG-SLH, not the local Authenticator, bootstrap
+    # secret, session service or TLS identity. Only the Organization Service
+    # calls this initializer during its startup; the local service must not.
+    LOCAL_AUTH_KEY_FILENAME = 'LOCAL-AUTH-KEY'
+
+    @property
+    def local_auth_key_path(self) -> Path:
+        return self.directory / self.LOCAL_AUTH_KEY_FILENAME
+
+    def ensure_local_auth_key(self) -> Path:
+        """Create once, exclusively, or reuse a valid durable ORG root file.
+
+        A short read retry accommodates another process still writing its
+        exclusively-created file. Persistent partial/corrupt state fails closed.
+        Never repair, rotate or replace an existing root here.
+        """
+        path = self.local_auth_key_path
+        if path.is_symlink():
+            raise SLHError('LOCAL_AUTH_KEY_INVALID', 503)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SLHError('LOCAL_AUTH_KEY_UNAVAILABLE', 503) from exc
+        else:
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(secrets.token_urlsafe(48).encode('ascii') + b'\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                secure_private_state_file(path)
+            except (OSError, PermissionError, ValueError) as exc:
+                # Do not delete a possibly issued root. An explicit operator
+                # intervention is required for incomplete/corrupt state.
+                raise SLHError('LOCAL_AUTH_KEY_UNAVAILABLE', 503) from exc
+        self._read_local_auth_key()
+        return path
+
+    def _read_local_auth_key(self) -> str:
+        path = self.local_auth_key_path
+        if path.is_symlink() or not path.is_file():
+            raise SLHError('LOCAL_AUTH_KEY_UNAVAILABLE', 503)
+        for attempt in range(50):
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                raise SLHError('LOCAL_AUTH_KEY_UNAVAILABLE', 503) from exc
+            if re.fullmatch(rb'[A-Za-z0-9_-]{64}\n', raw):
+                return raw[:-1].decode('ascii')
+            if attempt < 49:
+                time.sleep(0.02)
+        raise SLHError('LOCAL_AUTH_KEY_INVALID', 503)
+
+    def _authorize_local_root(self, candidate: str):
+        expected = self._read_local_auth_key()
+        if (not isinstance(candidate, str) or len(candidate) != len(expected)
+                or not secrets.compare_digest(candidate, expected)):
+            raise SLHError('LOCAL_AUTH_KEY_DENIED', 403)
+
+    def register_root_administrator(self, data: dict, *, root_key: str) -> dict:
+        """Explicit ORG-only grant of admin authorization to an ordinary P-256 identity.
+
+        Does not mint an identity, session or network listener, and never
+        modifies other users/devices or the existing organization setup.
+        """
+        self._authorize_local_root(root_key)
+        device_id = _required(data.get('device_id'), 'device_id')
+        public_key = data.get('public_key')
+        if not isinstance(public_key, str) or not 0 < len(public_key) <= 2048:
+            raise SLHError('INVALID_PUBLIC_KEY')
+        nonce = _required(data.get('client_nonce'), 'client_nonce', max_length=128)
+        if len(nonce) < 24 or not re.fullmatch(r'[A-Za-z0-9_-]+', nonce):
+            raise SLHError('INVALID_CLIENT_NONCE')
+        issued_at = data.get('issued_at')
+        now = int(time.time())
+        if type(issued_at) is not int or abs(now - issued_at) > 120:
+            raise SLHError('ROOT_PROOF_EXPIRED', 403)
+        bootstrap_only = data.get('bootstrap_only', False)
+        if (type(bootstrap_only) is not bool or ('bootstrap_only' in data and bootstrap_only is not True) or set(data) - {
+                'device_id', 'public_key', 'client_nonce', 'issued_at',
+                'proof', 'bootstrap_only'}):
+            raise SLHError('INVALID_REQUEST', 400)
+        statement = {
+            'version': 1, 'action': 'slh.admin.root.register',
+            'audience': 'slh://' + self.service_fingerprint(),
+            'device_id': device_id, 'public_key': public_key,
+            'client_nonce': nonce, 'issued_at': issued_at,
+        }
+        if bootstrap_only:
+            statement['bootstrap_only'] = True
+        if not verify_object(public_key, statement, data.get('proof')):
+            raise SLHError('INVALID_KEY_PROOF', 403)
+        fingerprint = public_key_fingerprint(public_key)
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone() is None:
+                raise SLHError('NOT_INITIALIZED', 409)
+            existing = c.execute("SELECT d.id,d.public_key,d.fingerprint,d.status,u.role,u.status AS user_status "
+                "FROM devices d JOIN users u ON d.user_id=u.id "
+                "WHERE d.id=? OR d.fingerprint=?", (device_id, fingerprint)).fetchall()
+            if existing:
+                if (len(existing) == 1 and existing[0]['id'] == device_id
+                        and existing[0]['fingerprint'] == fingerprint
+                        and existing[0]['public_key'] == public_key
+                        and existing[0]['status'] == 'active'
+                        and existing[0]['role'] == 'admin'
+                        and existing[0]['user_status'] == 'active'):
+                    # A retried identical grant makes no additional changes.
+                    return {'status': 'ALREADY_REGISTERED', 'device_id': device_id,
+                            'fingerprint': fingerprint, 'role': 'admin'}
+                raise SLHError('DEVICE_ALREADY_REGISTERED', 409)
+            # Automatic first-login registration must never expand an existing
+            # administrator set. This check is inside the same write transaction
+            # as the grant, so a stale LMS status cannot authorize a second admin.
+            if bootstrap_only and c.execute('''SELECT COUNT(*) FROM devices d
+                    JOIN users u ON d.user_id=u.id
+                    WHERE d.status='active' AND u.status='active'
+                    AND u.role='admin' ''').fetchone()[0]:
+                raise SLHError('ADMINISTRATOR_ALREADY_ENROLLED', 409)
+            if c.execute('SELECT 1 FROM root_admin_nonces WHERE nonce=?', (nonce,)).fetchone():
+                raise SLHError('ROOT_PROOF_REPLAY', 403)
+            # Expired proofs cannot be replayed; bound the nonce table size.
+            c.execute('DELETE FROM root_admin_nonces WHERE issued_at < ?', (now - 300,))
+            c.execute('INSERT INTO root_admin_nonces VALUES (?,?)', (nonce, issued_at))
+            user_id = uuid.uuid4().hex
+            c.execute('INSERT INTO users VALUES (?,?,?,?)',
+                      (user_id, device_id, 'admin', 'active'))
+            c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
+                      (device_id, user_id, public_key, fingerprint,
+                       'p256_device', device_id, '', 'active', now))
+            self._audit(c, 'local-root', 'administrator.root_grant', device_id,
+                        'identity proof verified; fingerprint=' + fingerprint)
+        return {'status': 'REGISTERED', 'device_id': device_id,
+                'fingerprint': fingerprint, 'role': 'admin'}
 
     def initialized(self):
         with self._db() as c:

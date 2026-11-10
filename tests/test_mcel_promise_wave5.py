@@ -17,7 +17,7 @@ def _ir():
 def test_new_file_explorer_candidate_is_source_bound():
     expected,meta=build()
     assert TARGET.read_text(encoding='utf-8')==expected
-    assert meta['source']=='mcel_experiments/file-explorer-candidate/application.js'
+    assert meta['source']=='tools/fixtures/mcel_candidates/file-explorer-candidate/application.js'
     assert meta['status']=='opt-in-read-only-candidate'
 
 def test_second_app_uses_public_ir_and_shared_shell_without_primary_notebook():

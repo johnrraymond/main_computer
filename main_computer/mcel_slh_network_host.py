@@ -9,7 +9,7 @@ from main_computer.mcel_knowledge.semantic_composition import synthesize_composi
 from main_computer.mcel_slh_target_navigation import TAB_STYLE, target_tabs
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=Path('mcel_sources/slh_network/application.js')
+SOURCE=Path('mcel_apps/slh/network/application.js')
 STYLE=Path('main_computer/web/applications/styles/mcel-semantic-workbench.css')
 ASSETS=(
     'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',

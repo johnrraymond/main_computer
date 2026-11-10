@@ -21,7 +21,7 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_notebook_projection import _validate_projection_scope
 from main_computer.mcel_semantic_application_shell import validate_semantic_application_shell
 
-SOURCE = ROOT / 'mcel_experiments/task-manager-notebook/application.js'
+SOURCE = ROOT / 'tools/fixtures/mcel_candidates/task-manager-notebook/application.js'
 TARGET = ROOT / 'main_computer/web/applications/scripts/mcel-task-manager-notebook-candidate-ir.js'
 
 def build() -> tuple[str, dict]:
@@ -36,7 +36,7 @@ def build() -> tuple[str, dict]:
         raise ValueError('MCEL_TASK_NOTEBOOK_CANDIDATE_AUTHORITY_REFUSED')
     raw = SOURCE.read_bytes()
     metadata = {'schema':'mcel.task-notebook-source-bound-candidate.v1',
-                'source':'mcel_experiments/task-manager-notebook/application.js',
+                'source':'tools/fixtures/mcel_candidates/task-manager-notebook/application.js',
                 'sourceSha256':hashlib.sha256(raw).hexdigest(),
                 'semanticFingerprint':report.semantic_fingerprint,
                 'sourceBindingFingerprint':report.source_binding_fingerprint,

@@ -1158,7 +1158,8 @@
         form.addEventListener("submit",e=>{
           e.preventDefault();
           const input={};for(const [k,schema] of Object.entries(n.fields || {}))input[k]=parseInput(schema,controls[k]);
-          if((intent.risk==="consequential" || intent.risk==="source-write") &&
+          if(intent.confirmationRequired !== false &&
+             (intent.risk==="consequential" || intent.risk==="source-write") &&
              (typeof global.confirm!=="function" || !global.confirm(
                "Confirm "+fmt(intent.sourceName || intent.id)+"?\n"+
                Object.entries(input).map(([key,value])=>fmt(key)+": "+String(value)).join("\n")+
@@ -1196,7 +1197,8 @@
           if (params.length) {button.disabled=true;button.title="Requires selected record or form input";}
           if(intent.requestArguments?.length)actionButtons.push({button,intent});
           button.addEventListener("click",()=>{
-            if(intent.risk==="source-write" || intent.risk==="consequential"){
+            if(intent.confirmationRequired !== false &&
+               (intent.risk==="source-write" || intent.risk==="consequential")){
               if(typeof global.confirm!=="function" ||
                 !global.confirm("Confirm consequential operation: "+fmt(intent.sourceName || intent.id)+
                   (intent.requestArguments?.length ? "\nTarget: "+intent.requestArguments.map(arg=>String(read(ref(arg.state))||"unselected")).join(", ") : "")+

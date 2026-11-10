@@ -21,8 +21,7 @@ import threading
 import time
 
 from main_computer.mcel_slh_worker_bridge import OrganizationWorkerClient, WorkerBridgeError
-from main_computer.slh.authenticator import sign_object
-from main_computer.slh.authenticator_store import LocalIdentityStore, IdentityStoreError
+from main_computer.slh.authenticator_store import LocalIdentityStore
 from main_computer.slh.ports import DEFAULT_SLH_API_PORT, DEFAULT_SLH_MANAGED_PORT
 from main_computer.slh.storage import slh_state_dir
 
@@ -80,17 +79,18 @@ def _assigned_private_ip(value: object) -> str:
 class SlhFirstRunController:
     """No ambient administrative authority: every consequential call is explicit.
 
-    Local admin device keys are used through the same LocalIdentityStore and
-    challenge/response protocol as the shipped SLH operator CLI. Tokens and
-    bootstrap secrets never appear in status, semantic state, logs or receipts.
+    Identity discovery and signing are delegated to the LMS-SLH API; the
+    viewport neither accesses production private keys nor invents authority.
+    Tokens and bootstrap secrets never appear in status, semantic state, logs
+    or operation receipts.
     """
     def __init__(self, *, state_dir: Path | None = None, identity_dir: Path | None = None,
                  local_port: int = DEFAULT_SLH_API_PORT, runner=None):
         self.state_dir = Path(state_dir) if state_dir is not None else slh_state_dir()
-        try:
-            self.identities = LocalIdentityStore(identity_dir)
-        except IdentityStoreError as exc:
-            raise FirstRunError(exc.code, exc.status) from exc
+        # Only an explicit disposable test store is exposed for fixture setup.
+        # Operational signing and public-key discovery always call LMS-SLH.
+        self.identity_dir = Path(identity_dir) if identity_dir is not None else None
+        self.identities = LocalIdentityStore(identity_dir) if identity_dir is not None else None
         self.local_port = local_port
         self.runner = runner or subprocess.Popen
 
@@ -99,9 +99,12 @@ class SlhFirstRunController:
             ('GET', '/v1/local/status'), ('GET', '/v1/local/organization/config'),
             ('POST', '/v1/auth/challenge'), ('POST', '/v1/auth/verify'),
             ('POST', '/v1/bootstrap/begin'), ('POST', '/v1/local/organization/enable'),
+            ('POST', '/v1/local/organization/admin/identities'),
             ('PATCH', '/v1/local/organization/config'),
         } and not (re.fullmatch(r'/v1/bootstrap/[0-9a-f]{32}/administrator', path) and method == 'PUT') and not (
-            re.fullmatch(r'/v1/bootstrap/[0-9a-f]{32}/activate-p256', path) and method == 'POST'):
+            re.fullmatch(r'/v1/bootstrap/[0-9a-f]{32}/activate-p256', path) and method == 'POST') and not (
+            method == 'GET' and re.fullmatch(r'/v1/local/authenticator/identities/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', path)) and not (
+            method == 'POST' and re.fullmatch(r'/v1/local/authenticator/identities/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}/sign', path)):
             raise FirstRunError('OPERATION_NOT_ADMITTED', 403)
         connection = http.client.HTTPConnection('127.0.0.1', self.local_port, timeout=3)
         try:
@@ -133,6 +136,24 @@ class SlhFirstRunController:
         finally:
             connection.close()
 
+    def _identity(self, device_id: str) -> dict:
+        device_id = _identity_id(device_id)
+        result = self._request('GET', f'/v1/local/authenticator/identities/{device_id}')
+        if (result.get('device_id') != device_id or not isinstance(result.get('public_key'), str)
+                or not isinstance(result.get('fingerprint'), str) or result.get('usable') is not True):
+            raise FirstRunError('LOCAL_IDENTITY_UNVERIFIED', 503)
+        return result
+
+    def _sign(self, device_id: str, challenge: dict) -> str:
+        device_id = _identity_id(device_id)
+        signed = self._request('POST',
+            f'/v1/local/authenticator/identities/{device_id}/sign', {'challenge': challenge})
+        signature = signed.get('signature')
+        if (signed.get('device_id') != device_id or not isinstance(signature, str)
+                or not 1 <= len(signature) <= 512):
+            raise FirstRunError('LOCAL_IDENTITY_SIGNATURE_UNVERIFIED', 503)
+        return signature
+
     def status(self) -> dict:
         try:
             data = self._request('GET', '/v1/local/status')
@@ -153,6 +174,8 @@ class SlhFirstRunController:
                 return {'outcome': 'ALREADY_RUNNING', 'message': 'Existing loopback SLH control service verified'}
             command = [sys.executable, '-m', 'main_computer.slh.gateway_service', 'run',
                        '--state-dir', str(self.state_dir), '--port', str(self.local_port)]
+            if self.identity_dir is not None:
+                command += ['--identity-dir', str(self.identity_dir)]
             try:
                 proc = self.runner(command, cwd=str(_ROOT), stdin=subprocess.DEVNULL,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -185,13 +208,9 @@ class SlhFirstRunController:
             secret = secret_path.read_text(encoding='ascii').strip()
             if not 32 <= len(secret) <= 200:
                 raise FirstRunError('LOCAL_BOOTSTRAP_SECRET_INVALID', 503)
-            try:
-                identity = self.identities.get(device_id)
-            except IdentityStoreError as exc:
-                if exc.code != 'IDENTITY_NOT_FOUND':
-                    raise
-                identity = self.identities.create(device_id, label=admin_name.strip())
-            key = self.identities.load_private_key(device_id)
+            # The first administrator must select an existing LMS-SLH key.
+            # MCEL neither creates keys nor reads private key files.
+            identity = self._identity(device_id)
             public = identity['public_key']
             pending = self._request('POST', '/v1/bootstrap/begin', {'bootstrap_secret': secret})
             transaction_id = pending['transaction_id']
@@ -200,12 +219,12 @@ class SlhFirstRunController:
             self._request('PUT', f'/v1/bootstrap/{transaction_id}/administrator',
                           {'admin_id': admin_id, 'admin_name': admin_name.strip(),
                            'device_id': device_id, 'public_key': public,
-                           'proof': sign_object(key, proof), 'bootstrap_secret': secret})
+                           'proof': self._sign(device_id, proof), 'bootstrap_secret': secret})
             self._request('POST', f'/v1/bootstrap/{transaction_id}/activate-p256',
                           {'bootstrap_secret': secret, 'defer_totp': True})
         except FirstRunError:
             raise
-        except (IdentityStoreError, KeyError, OSError, TypeError, ValueError) as exc:
+        except (KeyError, OSError, TypeError, ValueError) as exc:
             raise FirstRunError('BOOTSTRAP_FAILED', 503) from exc
         if not self.status()['initialized']:
             raise FirstRunError('BOOTSTRAP_UNVERIFIED', 503)
@@ -214,17 +233,17 @@ class SlhFirstRunController:
 
     def _local_admin_token(self, device_id: str) -> str:
         try:
-            key = self.identities.load_private_key(_identity_id(device_id))
+            self._identity(device_id)
             challenge = self._request('POST', '/v1/auth/challenge', {'device_id': device_id})
             session = self._request('POST', '/v1/auth/verify',
                                     {'device_id': device_id, 'challenge_id': challenge['challenge_id'],
-                                     'signature': sign_object(key, challenge)})
+                                     'signature': self._sign(device_id, challenge)})
             token = session.get('access_token')
             if not isinstance(token, str) or len(token) < 24:
                 raise FirstRunError('LOCAL_ADMIN_LOGIN_REFUSED', 403)
             self._request('GET', '/v1/local/organization/config', token=token)
             return token
-        except (IdentityStoreError, KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise FirstRunError('LOCAL_ADMIN_LOGIN_REFUSED', 403) from exc
 
     def configure(self, *, device_id: str, host: str, api_port: object,
@@ -260,13 +279,65 @@ class SlhFirstRunController:
         raise FirstRunError('ORGANIZATION_START_UNVERIFIED', 503)
 
     def login(self, *, device_id: str) -> dict:
+        """One click: establish a genuinely fresh organization, then log in.
+
+        An existing initialized organization cannot be re-bootstrapped. An
+        already-enrolled administrator is never replaced or expanded by login.
+        The trusted local service checks its own authority state; no remote
+        enrollment lookup and no browser-managed root/bootstrap material.
+        """
         device_id = _identity_id(device_id)
-        try:
-            result = OrganizationWorkerClient(state_dir=self.state_dir).login_from_local_identity(
-                device_id, self.identities.directory)
-        except WorkerBridgeError as exc:
-            raise FirstRunError(exc.code, exc.status) from exc
-        return result
+        with _START_LOCK:
+            try:
+                identity = self._identity(device_id)
+                local = self._request('GET', '/v1/local/status')
+                if local.get('schema') != 'main-computer.slh-local-status.v1':
+                    raise FirstRunError('LOCAL_STATUS_UNVERIFIED', 503)
+                enrollment = local.get('administrator_enrollment')
+                state = enrollment.get('state') if isinstance(enrollment, dict) else None
+                initialization = local.get('initialization')
+                initialized = (initialization.get('initialized') if isinstance(initialization, dict) else None)
+                fresh = initialized is False and state == 'NOT_ESTABLISHED'
+                if fresh:
+                    # The existing one-use local bootstrap establishes the
+                    # organization. The selected ordinary identity supplies
+                    # both its device and administrator labels; no form or
+                    # hand-authored role-named key is needed.
+                    name = identity.get('label') or device_id
+                    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+                        name = device_id
+                    self.bootstrap(admin_id=device_id, admin_name=name,
+                                   device_id=device_id, acknowledge_p256_only=True)
+                    # A new organization must have a TLS listener before it
+                    # can authenticate. Configure only a fresh installation,
+                    # using loopback defaults; preserve any pre-existing
+                    # explicit network configuration when resetting the DB.
+                    current = self._request('GET', '/v1/local/status')
+                    org = current.get('organization_service')
+                    if not isinstance(org, dict):
+                        raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 503)
+                    if org.get('configured') is False and org.get('state') == 'not_configured':
+                        self.configure(device_id=device_id, host='127.0.0.1',
+                                       api_port=DEFAULT_SLH_MANAGED_PORT + 1,
+                                       worker_port=DEFAULT_SLH_MANAGED_PORT)
+                    elif org.get('configured') is not True:
+                        raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 409)
+                    if self.status()['organization'] != 'running':
+                        self.activate(device_id=device_id)
+                elif initialized is True and state in ('MISSING', 'NO_ACTIVE_DEVICE'):
+                    # V6-C conditional root grant: the ORG endpoint atomically
+                    # rechecks that the active administrator set is empty.
+                    self._request('POST', '/v1/local/organization/admin/identities',
+                                  {'device_id': device_id, 'bootstrap_only': True})
+                elif initialized is True and state == 'ENROLLED':
+                    pass  # No grant. Only normal signed authentication.
+                else:
+                    raise FirstRunError('ADMINISTRATOR_STATE_UNAVAILABLE', 409)
+                result = OrganizationWorkerClient(state_dir=self.state_dir).login_with_signer(
+                    device_id, lambda challenge: self._sign(device_id, challenge))
+            except WorkerBridgeError as exc:
+                raise FirstRunError(exc.code, exc.status) from exc
+            return result
 
     def logout(self, token: str) -> dict:
         try:

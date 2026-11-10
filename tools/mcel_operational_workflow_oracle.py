@@ -11,9 +11,12 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "mcel_oracles/operational-workflows/oracle.v1.json"
-GENERIC = ROOT / "mcel_oracles/operational-workflows/generic_application.js"
+SPEC = ROOT / "tests/fixtures/mcel_oracles/operational-workflows/oracle.v1.json"
+GENERIC = ROOT / "tests/fixtures/mcel_oracles/operational-workflows/generic_application.js"
 SCHEMA = "mcel.operational-workflow-oracle.v1"
+# A frozen contract describes its original source path; relocating bytes must not
+# rewrite the historical oracle or invalidate its SHA256-locked baseline.
+FROZEN_GENERIC_REF = "mcel_oracles/operational-workflows/generic_application.js"
 CONSEQUENTIAL = frozenset({
     "intent:start-local", "intent:bootstrap-administrator",
     "intent:configure-organization", "intent:activate-organization",
@@ -79,7 +82,7 @@ def read_contract(path: Path = SPEC) -> dict:
     if nav != {"overview": "/applications/slh", "worker_bank": "/applications/slh/workers",
                "require_real_hrefs": True, "modified_clicks_native": True}:
         raise OracleContractError("navigation-contract-changed")
-    if data.get("generic_control", {}).get("fixture") != GENERIC.relative_to(ROOT).as_posix():
+    if data.get("generic_control", {}).get("fixture") != FROZEN_GENERIC_REF:
         raise OracleContractError("generic-control-missing")
     pairs = {(x["from"], x["to"], x["on"]) for x in data.get("transitions", [])}
     if not {
@@ -185,9 +188,8 @@ def capture_browser_baseline(contract: dict, *, screenshots_dir: Path | None = N
                 page, errors = module.browser_page(browser, initial, transitions=transitions)
                 try:
                     if case_id == 'running-authenticated':
-                        form = page.locator('form[data-intent="intent:login-administrator"]')
-                        form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-                        form.locator('button[type="submit"]').click()
+                        # V4-B's identity is selected from LMS-SLH, not typed in a form.
+                        page.locator('button[data-intent="intent:login-administrator"]').click()
                         page.get_by_text('Organization administrator authenticated', exact=True).wait_for(timeout=15000)
                     check = evaluate_visible_case(contract, case_id, visible_intents(page))
                     check['observed_at'] = page.evaluate('''()=>window.oracleFixture.cases[window.oracleFixture.current].overview.observedAt''')

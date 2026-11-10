@@ -15,7 +15,7 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_application_ir import validate_application_ir
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL = ROOT / "mcel_experiments/task-manager-notebook/application.js"
+DSL = ROOT / "tools/fixtures/mcel_candidates/task-manager-notebook/application.js"
 RUNTIME = ROOT / "main_computer/web/applications/scripts/mcel-view-transition.js"
 
 

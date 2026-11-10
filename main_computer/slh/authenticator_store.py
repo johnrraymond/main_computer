@@ -6,6 +6,7 @@ Device keys are NOT marketplace wallet keys.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import secrets
@@ -21,6 +22,25 @@ from .authenticator import generate_identity, public_key_fingerprint, sign_objec
 from .storage import legacy_authenticator_dir, user_identity_dir, secure_private_state_file
 
 _DEVICE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
+
+# Public identity IDs are opaque, not role names. The region field is a
+# randomly chosen US state abbreviation; it does not identify the key owner.
+_US_STATE_CODES = (
+    'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+    'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+    'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+    'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+    'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+)
+_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+
+def generate_identity_slug() -> str:
+    """Return NNN-LLL-SS-NNN-LL-YY-MM-DD (all randomness from secrets)."""
+    letters = lambda length: ''.join(secrets.choice(_ALPHABET) for _ in range(length))
+    return (f'{secrets.randbelow(1000):03d}-{letters(3)}-'
+            f'{secrets.choice(_US_STATE_CODES)}-{secrets.randbelow(1000):03d}-'
+            f'{letters(2)}-{datetime.now(timezone.utc):%y-%m-%d}')
 
 
 class IdentityStoreError(ValueError):
@@ -214,11 +234,24 @@ class LocalIdentityStore:
                 raise IdentityStoreError('IDENTITY_CORRUPT_OR_LOCKED', 409)
             else:
                 # The random ID is an ordinary identity identifier, not a type.
-                identity = self.create('mc-' + secrets.token_hex(16), label='Default identity')
+                identity = self.create_generated(label='Default identity')
             self._persist_default(identity)
             return identity
         finally:
             lock.unlink(missing_ok=True)
+
+    def create_generated(self, *, label: str | None = None) -> dict:
+        """Persist an ordinary identity with an opaque randomly generated slug.
+
+        Collision retries never overwrite an existing key or default selection.
+        """
+        for _ in range(16):
+            try:
+                return self.create(generate_identity_slug(), label=label)
+            except IdentityStoreError as exc:
+                if exc.code != 'IDENTITY_ALREADY_EXISTS':
+                    raise
+        raise IdentityStoreError('IDENTITY_ID_COLLISION_EXHAUSTED', 409)
 
     def create(self, device_id: str, *, label: str | None = None) -> dict:
         path = _identity_path(self.directory, device_id)
@@ -302,6 +335,28 @@ class LocalIdentityStore:
                     or type(challenge.get('expires_at')) is not int
                     or not 0 < challenge['expires_at'] - challenge['issued_at'] <= 120
                     or not challenge['issued_at'] - 30 <= int(time.time()) < challenge['expires_at']):
+                raise IdentityStoreError('INVALID_CHALLENGE')
+        elif action == 'slh.admin.root.register':
+            # Exact V6-A grant statement. A local identity signs only its own
+            # public key, for a short window, bound to one ORG service.
+            expected = {'version', 'action', 'audience', 'device_id',
+                        'public_key', 'client_nonce', 'issued_at'}
+            if 'bootstrap_only' in challenge:
+                if challenge['bootstrap_only'] is not True:
+                    raise IdentityStoreError('INVALID_CHALLENGE')
+                expected.add('bootstrap_only')
+            nonce = challenge.get('client_nonce')
+            issued = challenge.get('issued_at')
+            if (set(challenge) != expected or type(challenge.get('version')) is not int
+                    or challenge['version'] != 1
+                    or not isinstance(challenge.get('audience'), str)
+                    or not re.fullmatch(r'slh://[0-9a-f]{64}', challenge['audience'])
+                    or challenge.get('public_key') != identity['public_key']
+                    or not isinstance(nonce, str)
+                    or not 24 <= len(nonce) <= 128
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', nonce)
+                    or type(issued) is not int
+                    or abs(int(time.time()) - issued) > 120):
                 raise IdentityStoreError('INVALID_CHALLENGE')
         elif action == 'slh.admin.bootstrap':
             expected = {'version','action','admin_id','device_id','public_key'}

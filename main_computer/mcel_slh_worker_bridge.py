@@ -116,35 +116,43 @@ class OrganizationWorkerClient:
                 TypeError, UnicodeError) as exc:
             raise WorkerBridgeError("ORG_TRANSPORT_UNAVAILABLE", 503) from exc
 
-    def login_from_local_identity(self, device_id: str, identity_dir: Path | None = None) -> dict:
-        """Explicit interactive CLI ceremony; never used by a browser endpoint.
+    def login_with_signer(self, device_id: str, signer) -> dict:
+        """Organization login signed by a trusted identity provider (LMS-SLH).
 
-        SLH administrator sessions are process-local, so a login to the
-        resident 8897 control plane cannot authorize the Organization process.
+        The caller supplies a signer for the exact challenge; key material is
+        never transferred into the viewport adapter or browser.
         """
-        from main_computer.slh.authenticator_store import LocalIdentityStore, IdentityStoreError
-        from main_computer.slh.authenticator import sign_object
-        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id):
+        if not isinstance(device_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id):
             raise WorkerBridgeError("INVALID_ADMIN_DEVICE_ID", 400)
-        try:
-            key = LocalIdentityStore(identity_dir).load_private_key(device_id)
-        except (IdentityStoreError, OSError, ValueError, TypeError) as exc:
-            raise WorkerBridgeError("LOCAL_ADMIN_IDENTITY_UNAVAILABLE", 403) from exc
         challenge = self.request('POST', '/v1/auth/challenge', '', {'device_id': device_id})
         if challenge.get('device_id') != device_id or not isinstance(challenge.get('challenge_id'), str):
             raise WorkerBridgeError('INVALID_AUTH_CHALLENGE', 503)
-        proof = sign_object(key, challenge)
+        proof = signer(challenge)
+        if not isinstance(proof, str) or not 1 <= len(proof) <= 512:
+            raise WorkerBridgeError('INVALID_AUTH_SIGNATURE', 503)
         session = self.request('POST', '/v1/auth/verify', '',
                                {'device_id': device_id, 'challenge_id': challenge['challenge_id'],
                                 'signature': proof})
         token = validate_admin_bearer(session.get('access_token'))
-        # An ordinary known-device login is insufficient. Verify the exact
-        # administrator authority that will gate Worker operations.
         self.request('GET', '/v1/admin/devices', token)
         if session.get('role') != 'admin':
             raise WorkerBridgeError('ADMIN_REQUIRED', 403)
         return {'access_token': token, 'expires_at': session.get('expires_at'),
                 'device_id': device_id, 'role': 'admin'}
+
+    def login_from_local_identity(self, device_id: str, identity_dir: Path | None = None) -> dict:
+        """CLI compatibility: load an explicitly local key, then verify Org role."""
+        from main_computer.slh.authenticator_store import LocalIdentityStore, IdentityStoreError
+        from main_computer.slh.authenticator import sign_object
+        if not isinstance(device_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", device_id):
+            raise WorkerBridgeError("INVALID_ADMIN_DEVICE_ID", 400)
+        try:
+            key = LocalIdentityStore(identity_dir).load_private_key(device_id)
+        except (IdentityStoreError, OSError, ValueError, TypeError) as exc:
+            raise WorkerBridgeError("LOCAL_ADMIN_IDENTITY_UNAVAILABLE", 403) from exc
+        return self.login_with_signer(device_id, lambda challenge: sign_object(key, challenge))
 
     def logout(self, token: str) -> dict:
         reply = self.request('POST', '/v1/auth/logout', token, {})

@@ -1,0 +1,39 @@
+{
+  "schema": "mcel.operational-workflow-oracle.v1",
+  "purpose": "Verify state-dependent MCEL interaction synthesis independently of presentation design or implementation strategy",
+  "implementation_policy": {
+    "observation_authority": "backend-confirmed",
+    "stale_or_unknown": "fail-closed-for-consequential-operations",
+    "action_eligibility_is_not_authorization": true,
+    "authority_enforced_by": "backend",
+    "refresh_after_effect": "reobserve-and-reconcile-with-authoritative-state",
+    "success_basis": "verified-effect-and-fresh-observation-not-click-or-receipt-alone",
+    "no_manual_widget_layout": true,
+    "no_app_specific_runtime_conditionals": true,
+    "browser_compatible_navigation": true,
+    "no_automatic_windows_boot_startup": true
+  },
+  "scenarios": [
+    {"id":"local-offline","observation":{"local":"UNREACHABLE","initialized":null,"organization":"NOT_OBSERVED","authenticated":false,"fresh":true},"primary":"intent:start-local","not_competing":["intent:bootstrap-administrator","intent:configure-organization","intent:activate-organization","intent:login-administrator","intent:logout-administrator"],"reason":"Unavailable is not uninitialized"},
+    {"id":"local-uninitialized","observation":{"local":"RUNNING","initialized":false,"organization":"not_configured","authenticated":false,"fresh":true},"primary":"intent:bootstrap-administrator","not_competing":["intent:start-local","intent:configure-organization","intent:activate-organization","intent:login-administrator","intent:logout-administrator"],"reason":"Local bootstrap must precede organization configuration"},
+    {"id":"organization-unconfigured","observation":{"local":"RUNNING","initialized":true,"organization":"not_configured","authenticated":false,"fresh":true},"primary":"intent:configure-organization","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:activate-organization","intent:login-administrator","intent:logout-administrator"],"reason":"Not configured differs from configured but disabled"},
+    {"id":"organization-disabled","observation":{"local":"RUNNING","initialized":true,"organization":"disabled","authenticated":false,"fresh":true},"primary":"intent:activate-organization","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:login-administrator","intent:logout-administrator"],"reason":"Activation requires completed configuration"},
+    {"id":"running-unauthenticated-screenshot","observation":{"local":"RUNNING","initialized":true,"organization":"running","authenticated":false,"fresh":true},"primary":"intent:login-administrator","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:configure-organization","intent:activate-organization","intent:logout-administrator"],"reason":"Exact November 8 screenshot: resident RUNNING, initialized, organization running, no session"},
+    {"id":"running-authenticated","observation":{"local":"RUNNING","initialized":true,"organization":"running","authenticated":true,"fresh":true},"primary":"intent:refresh-workers","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:configure-organization","intent:activate-organization","intent:login-administrator"],"reason":"Active administrator proceeds to Worker Bank; logout remains available"},
+    {"id":"organization-failed","observation":{"local":"RUNNING","initialized":true,"organization":"stopped_unexpectedly","authenticated":false,"fresh":true},"primary":"intent:refresh-overview","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:login-administrator"],"reason":"Failure is not a successful activation or login"},
+    {"id":"status-unverified","observation":{"local":"UNVERIFIED","initialized":null,"organization":"NOT_OBSERVED","authenticated":null,"fresh":false},"primary":"intent:refresh-overview","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:configure-organization","intent:activate-organization","intent:login-administrator","intent:logout-administrator","intent:rename-worker"],"reason":"Unknown service identity fails closed"},
+    {"id":"observation-stale","observation":{"local":"RUNNING","initialized":true,"organization":"running","authenticated":false,"fresh":false},"primary":"intent:refresh-overview","not_competing":["intent:start-local","intent:bootstrap-administrator","intent:configure-organization","intent:activate-organization","intent:login-administrator","intent:logout-administrator","intent:rename-worker"],"reason":"Stale status cannot authorize a new consequential step"}
+  ],
+  "transitions": [
+    {"id":"start-to-bootstrap","from":"local-offline","to":"local-uninitialized","on":"intent:start-local","requires":"verified-local-service"},
+    {"id":"bootstrap-to-configure","from":"local-uninitialized","to":"organization-unconfigured","on":"intent:bootstrap-administrator","requires":"verified-first-admin"},
+    {"id":"configure-to-activate","from":"organization-unconfigured","to":"organization-disabled","on":"intent:configure-organization","requires":"persisted-disabled-config"},
+    {"id":"activate-to-login","from":"organization-disabled","to":"running-unauthenticated-screenshot","on":"intent:activate-organization","requires":"organization-service-tls-listening"},
+    {"id":"login-to-operate","from":"running-unauthenticated-screenshot","to":"running-authenticated","on":"intent:login-administrator","requires":"authenticated-worker-inventory"},
+    {"id":"logout-to-login","from":"running-authenticated","to":"running-unauthenticated-screenshot","on":"intent:logout-administrator","requires":"backend-revoked-token"}
+  ],
+  "shared_input": {"semantic_identity":"administrator-device-id","field_name":"adminDeviceId","max_simultaneously_visible_editors":1,"applicability_scope":"same-authenticated-human-identity-not-auto-authorization"},
+  "navigation": {"overview":"/applications/slh","worker_bank":"/applications/slh/workers","require_real_hrefs":true,"modified_clicks_native":true},
+  "generic_control": {"fixture":"mcel_oracles/operational-workflows/generic_application.js","expected_condition_source":"backend-derived-enum","must_react_without_application_specific_js":true},
+  "test_evidence": {"record_per_case":["scenario","authoritative_observation","visible_intents","primary_present","competing_intents","observed_at","errors"],"screenshots":"diagnostic-only","pixels":"not-an-acceptance-criterion"}
+}

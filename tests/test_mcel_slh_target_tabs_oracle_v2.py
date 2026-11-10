@@ -18,7 +18,7 @@ from main_computer.mcel_slh_network_route import handle_network_slh_inspect
 from main_computer.mcel_slh_target_navigation import TARGET_ROUTES, target_tabs
 
 ROOT=Path(__file__).resolve().parents[1]
-ORACLE=ROOT/'mcel_oracles/target-selection/oracle.v2.json'
+ORACLE=ROOT/'tests/fixtures/mcel_oracles/target-selection/oracle.v2.json'
 
 
 def test_v2_contract_is_explicit_and_does_not_weaken_v1():

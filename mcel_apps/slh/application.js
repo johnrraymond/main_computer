@@ -32,8 +32,13 @@ module.exports = mcel.defineApp(
     const workers = dsl.state.derived("workers", workerRows);
     const workerSummary = dsl.state.derived("worker-summary", workerSummaryShape);
     const selectedWorker = dsl.state.rendererLocal("selected-worker", text, {initial: ""});
-    // One operator-entered identity across independently gated first-run steps.
-    const adminDevice = dsl.state.rendererLocal("administrator-device-id", text, {initial: ""});
+    // Identities are ordinary LMS-SLH keys. Their selection grants no organization role.
+    const identityRow = dsl.field.record({deviceId:text,label:text,fingerprint:text,defaultStatus:text});
+    const identityRows = dsl.field.list(identityRow,{key:"deviceId"});
+    const identitySummaryShape = dsl.field.record({state:text,defaultDeviceId:text,explanation:text});
+    const identities = dsl.state.derived("local-identities",identityRows);
+    const identitySummary = dsl.state.derived("local-identity-status",identitySummaryShape);
+    const adminDevice = dsl.state.rendererLocal("selected-local-identity", text, {initial: ""});
     const mutationShape = dsl.field.record({outcome: text, message: text, deviceId: text});
     const mutationResult = dsl.state.derived("worker-operation-result", mutationShape);
     const setupShape = dsl.field.record({outcome: text, message: text, deviceId: text});
@@ -51,6 +56,8 @@ module.exports = mcel.defineApp(
     observer.operation("health", "observeSlhHealth", {result: healthRows});
     observer.operation("workers", "observeSlhWorkers", {result: workerRows});
     observer.operation("worker-summary", "observeSlhWorkerSummary", {result: workerSummaryShape});
+    observer.operation("identities", "observeSlhIdentities", {result: identityRows});
+    observer.operation("identity-status", "observeSlhIdentityStatus", {result: identitySummaryShape});
 
     const refreshOverview = dsl.intent.capabilityRequest("refresh-overview", observer,
       {operation: "overview", resultTo: overview});
@@ -60,6 +67,11 @@ module.exports = mcel.defineApp(
       {operation: "workers", resultTo: workers});
     const refreshWorkerSummary = dsl.intent.capabilityRequest("refresh-worker-summary", observer,
       {operation: "worker-summary", resultTo: workerSummary});
+    const refreshIdentities = dsl.intent.capabilityRequest("refresh-identities", observer,
+      {operation:"identities",resultTo:identities});
+    const refreshIdentityStatus = dsl.intent.capabilityRequest("refresh-identity-status", observer,
+      {operation:"identity-status",resultTo:identitySummary});
+    const chooseIdentity = dsl.intent.selectFromCollection("choose-identity",identities,adminDevice);
     const admin = dsl.capability.external("slh-worker-admin", {
       risk: "consequential", description: "Authenticated, audited Worker identity management"
     });
@@ -91,15 +103,16 @@ module.exports = mcel.defineApp(
     const startLocal = dsl.intent.capabilityRequest("start-local", setup,
       {operation: "start", resultTo: setupResult});
     const bootstrap = dsl.intent.capabilityRequest("bootstrap-administrator", setup,
-      {operation: "bootstrap", inputs: {adminId: text, adminName: text, deviceId: text,
-        acknowledgeP256Only: acknowledgement}, resultTo: setupResult});
+      {operation: "bootstrap", inputs: {adminId: text, adminName: text, acknowledgeP256Only: acknowledgement},
+        arguments: {deviceId:adminDevice}, resultTo: setupResult});
     const configure = dsl.intent.capabilityRequest("configure-organization", setup,
-      {operation: "configure", inputs: {adminDeviceId: text, host: text, apiPort: text, workerPort: text},
-       resultTo: setupResult});
+      {operation: "configure", inputs: {host: text, apiPort: text, workerPort: text},
+       arguments: {adminDeviceId:adminDevice}, resultTo: setupResult});
     const activate = dsl.intent.capabilityRequest("activate-organization", setup,
-      {operation: "activate", inputs: {adminDeviceId: text}, resultTo: setupResult});
+      {operation: "activate", arguments: {adminDeviceId:adminDevice}, resultTo: setupResult});
     const login = dsl.intent.capabilityRequest("login-administrator", setup,
-      {operation: "login", inputs: {adminDeviceId: text}, resultTo: setupResult});
+      {operation: "login", arguments: {adminDeviceId:adminDevice},
+        confirmationRequired: false, resultTo: setupResult});
     const logout = dsl.intent.capabilityRequest("logout-administrator", setup,
       {operation: "logout", resultTo: setupResult});
     const chooseWorker = dsl.intent.selectFromCollection("choose-worker", workers, selectedWorker);
@@ -121,33 +134,35 @@ module.exports = mcel.defineApp(
     const localTls = observed("organizationTlsState","VERIFIED_LOCAL");
     const authenticated = {state:workerSummary,path:"observationState",equals:"AUTHENTICATED"};
     const authRequired = {state:workerSummary,path:"observationState",equals:"AUTH_REQUIRED"};
-    const canLogin = whenAll(currentLocal,initialized,orgRunning,established,
-      administratorEnrolled,localTls,authRequired);
+    const haveIdentity = {state:identitySummary,path:"state",equals:"AVAILABLE"};
+    // Login Administrator is the single entry for both an unestablished local
+    // organization and an already enrolled one. The backend, not this UI,
+    // decides whether initial enrollment is permitted.
+    const canLogin = whenAll(currentLocal,authRequired,haveIdentity);
     const canOperate = whenAll(currentLocal,initialized,orgRunning,established,
       administratorEnrolled,localTls,authenticated);
     const surface = dsl.surface.define("slh", {purpose: "monitor", root:
       dsl.surface.region("semantic-source", {children: [
         dsl.surface.action("select-view", {intent: selectView}),
         dsl.surface.action("refresh-overview", {intent: refreshOverview}),
+        dsl.surface.action("refresh-identities", {intent:refreshIdentities}),
+        dsl.surface.text("local-identity-status",{value:identitySummary,when:isView("overview")}),
+        dsl.surface.collection("available-local-identities",{
+          key:"deviceId",fields:["label","deviceId","defaultStatus"],state:identities,
+          select:chooseIdentity,when:isView("overview")}),
+        dsl.surface.text("selected-local-identity",{value:adminDevice,when:isView("overview")}),
         dsl.surface.action("start-local", {intent: startLocal,
           when: whenAll(observed("serviceState","UNREACHABLE",true),
             observed("observationState","UNAVAILABLE"))}),
-        dsl.surface.form("bootstrap-administrator", {fields: {adminId: text, adminName: text,
-          deviceId: text, acknowledgeP256Only: acknowledgement},
-          fieldState: {deviceId:adminDevice}, intent: bootstrap,
-          when: whenAll(isView("overview"),currentLocal,observed("initializationState","UNCONFIGURED"),
-            observed("administratorEnrollmentState","NOT_ESTABLISHED"))}),
-        dsl.surface.form("configure-organization", {fields: {adminDeviceId: text, host: text,
+        dsl.surface.form("configure-organization", {fields: {host: text,
           apiPort: text, workerPort: text}, defaults: {host: "127.0.0.1", apiPort: "8899",
-          workerPort: "8898"}, fieldState: {adminDeviceId:adminDevice}, intent: configure,
-          when: whenAll(isView("overview"),currentLocal,initialized,established,
+          workerPort: "8898"}, intent: configure,
+          when: whenAll(isView("overview"),currentLocal,haveIdentity,initialized,established,
             administratorEnrolled,observed("organizationState","not_configured"))}),
-        dsl.surface.form("activate-organization", {fields: {adminDeviceId: text},
-          fieldState: {adminDeviceId:adminDevice}, intent: activate,
-          when: whenAll(isView("overview"),currentLocal,initialized,established,
+        dsl.surface.action("activate-organization", {intent: activate,
+          when: whenAll(isView("overview"),currentLocal,haveIdentity,initialized,established,
             administratorEnrolled,observed("organizationState","disabled"))}),
-        dsl.surface.form("login-administrator", {fields: {adminDeviceId: text},
-          fieldState: {adminDeviceId:adminDevice}, intent: login,when:canLogin}),
+        dsl.surface.action("login-administrator", {intent: login,when:canLogin}),
         dsl.surface.action("logout-administrator", {intent: logout,when:authenticated}),
         dsl.surface.text("first-run-result", {value: setupResult, when: isView("overview")}),
         dsl.surface.action("refresh-health", {intent: refreshHealth}),
@@ -169,9 +184,10 @@ module.exports = mcel.defineApp(
         dsl.surface.receipt("observation-evidence")
       ]})
     });
-    return {states: [overview, checks, workers, workerSummary, view, selectedWorker, adminDevice, mutationResult, setupResult],
+    return {states: [overview, checks, workers, workerSummary, identities, identitySummary, view, selectedWorker, adminDevice, mutationResult, setupResult],
       capabilities: [observer, admin, setup],
       intents: [refreshOverview, refreshHealth, refreshWorkers, refreshWorkerSummary,
+        refreshIdentities,refreshIdentityStatus,chooseIdentity,
         selectView, chooseWorker, renameWorker, startLocal, bootstrap, configure, activate, login, logout],
       surfaces: [surface]};
   }

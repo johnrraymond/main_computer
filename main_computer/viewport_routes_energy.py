@@ -884,6 +884,11 @@ class ViewportEnergyRoutesMixin:
             "workerConnectionError": text(settings.get("workerConnectionError", settings.get("worker_connection_error")), ""),
             "workerConnectedHubUrl": self._clean_hub_url(text(settings.get("workerConnectedHubUrl", settings.get("worker_connected_hub_url")), ""), allow_empty=True),
             "signedWorkerConnection": signed_connection,
+            # Server-owned offer synchronization. Ordinary form saves must not
+            # erase the desired market or incorrectly claim Hub acceptance.
+            "workerOfferPending": boolish(settings.get("workerOfferPending"), False),
+            "workerOfferIntent": jsonable(settings.get("workerOfferIntent"), {}),
+            "workerOfferStatus": jsonable(settings.get("workerOfferStatus"), {}),
             "workerRuntimeEnabled": boolish(settings.get("workerRuntimeEnabled", settings.get("worker_runtime_enabled")), False),
             "workerRuntimePhase": runtime_phase,
             "workerRuntimeActiveJobs": intish(settings.get("workerRuntimeActiveJobs", settings.get("worker_runtime_active_jobs")), 0, minimum=0, maximum=1024),
@@ -956,6 +961,15 @@ class ViewportEnergyRoutesMixin:
             return {}
 
     def _save_worker_settings(self, settings: dict[str, Any], *, changed_fields: list[str] | None = None) -> dict[str, Any]:
+        # The browser owns editable seller fields, not the persisted offer
+        # state. Preserve server-owned intent across ordinary settings saves.
+        if not isinstance(settings, dict):
+            settings = {}
+        if not all(name in settings for name in ("workerOfferPending", "workerOfferIntent", "workerOfferStatus")):
+            previous = self._load_worker_settings()
+            settings = dict(settings)
+            for name, default in (("workerOfferPending", False), ("workerOfferIntent", {}), ("workerOfferStatus", {})):
+                settings.setdefault(name, previous.get(name, default))
         incoming = self._sanitize_worker_settings(settings)
         allowed_changes = {str(field or "").strip() for field in (changed_fields or []) if str(field or "").strip()}
         if allowed_changes:
@@ -3434,6 +3448,10 @@ class ViewportEnergyRoutesMixin:
         settings["workerHubRegistration"] = {}
         settings["workerPool"] = {}
         settings["signedWorkerConnection"] = {}
+        # A desired offer is Hub and network scoped, never transferable.
+        settings["workerOfferPending"] = False
+        settings["workerOfferIntent"] = {}
+        settings["workerOfferStatus"] = {}
 
 
     def _handle_worker_network_session_select(self) -> None:
@@ -3619,6 +3637,11 @@ class ViewportEnergyRoutesMixin:
             # and a fresh Hub-issued connection-scoped Worker ID. Simply
             # replacing the cached profile would leave workerRegisteredId stale.
             same_market = effective_market(existing_connection.get("worker")) == effective_market(registration_payload)
+            # Offer updates and Work now may carry distinct local Worker node
+            # identities even with the same market fields. Do not reuse the
+            # previous Hub-issued registration across that identity change.
+            existing_worker = existing_connection.get("worker") if isinstance(existing_connection.get("worker"), dict) else {}
+            same_node = str(existing_worker.get("node_id") or "") == str(registration_payload.get("node_id") or "")
             needs_registration = not (
                 self._worker_runtime_signed_connection_registered(settings)
                 and existing_network == selected
@@ -3626,6 +3649,7 @@ class ViewportEnergyRoutesMixin:
                 and existing_ring == requested_ring
                 and existing_hub == hub_url
                 and same_market
+                and same_node
             )
 
             if not needs_registration:
@@ -4714,7 +4738,8 @@ class ViewportEnergyRoutesMixin:
             raise ValueError(f"Only when totally idle is selected, but this machine's idle status could not be verified: {reason}.")
 
     def _worker_registration_payload_from_ui(
-        self, worker_payload: dict[str, Any], *, work_now_override: bool = False
+        self, worker_payload: dict[str, Any], *, work_now_override: bool = False,
+        validate_offer_only: bool = False,
     ) -> dict[str, Any]:
         models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
         model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
@@ -4784,9 +4809,15 @@ class ViewportEnergyRoutesMixin:
         }
         capabilities["phase12_worker_seller_offer_ui"] = True
         availability, user_activity = self._worker_seller_availability_from_payload(worker_payload)
-        self._enforce_worker_seller_availability(
-            availability, user_activity, work_now_override=work_now_override
-        )
+        if validate_offer_only:
+            # An offer can be stored while the computer is busy. This never
+            # grants Work-now permission or opens a Hub socket.
+            if not availability.get("accept_paid_jobs"):
+                raise ValueError("Accept paid jobs is off; enable it before saving a seller offer.")
+        else:
+            self._enforce_worker_seller_availability(
+                availability, user_activity, work_now_override=work_now_override
+            )
         capabilities["availability"] = availability
         capabilities["target_output_tokens"] = target_output_tokens
 
@@ -4815,38 +4846,251 @@ class ViewportEnergyRoutesMixin:
             raise ValueError("Callback execution requires a valid Worker endpoint.")
         return payload
 
-    def _handle_worker_offer_register(self) -> None:
+    def _worker_offer_registration_destination(self, body: dict[str, Any]):
+        """The saved Worker selection owns offer routing; never a posted URL."""
+        from main_computer.hub_interface import resolve_hub_destination
+
+        if not isinstance(body, dict):
+            raise ValueError("Worker offer update requires a JSON object.")
+        destination = resolve_hub_destination(self._load_worker_settings())
+        if destination.network == "none":
+            raise ValueError("Select a Worker network before updating an offer.")
+        if destination.network == "slh":
+            raise ValueError("SLH offer updates use its managed Worker workflow, not Stable Hub registration.")
+        claimed_network = str(body.get("network") or "").strip().lower()
+        if claimed_network and claimed_network != destination.network:
+            raise ValueError("Worker offer network does not match the saved Worker selection.")
+        requested = self._clean_hub_url(str(body.get("hub_url") or ""), allow_empty=True)
+        if requested and requested != self._clean_hub_url(destination.hub_url):
+            raise ValueError(
+                f"Worker offer Hub {requested!r} does not match selected network "
+                f"{destination.network!r} Hub {destination.hub_url!r}."
+            )
+        return destination
+
+    @staticmethod
+    def _worker_offer_chain_matches(authorized_chain: Any, selected_chain: Any) -> bool:
+        try:
+            return int(str(authorized_chain).strip(), 0) == int(str(selected_chain).strip(), 0)
+        except (TypeError, ValueError):
+            return str(authorized_chain or "").strip() == str(selected_chain or "").strip() and bool(str(selected_chain or "").strip())
+
+    def _worker_offer_sync_pending(self) -> dict[str, Any]:
+        """Synchronize a saved offer using the existing authenticated Worker path.
+
+        Only the ordinary, non-Work-now availability gate can authorize this
+        registration. The call is serialized with the runtime reconciler, and
+        never chooses a REST registration fallback.
+        """
+        from main_computer.hub_interface import resolve_hub_destination
+
+        with self._worker_runtime_transition_lock():
+            settings = self._load_worker_settings()
+            if not settings.get("workerOfferPending"):
+                return {"status": "unchanged"}
+            intent = settings.get("workerOfferIntent") if isinstance(settings.get("workerOfferIntent"), dict) else {}
+            destination = resolve_hub_destination(settings)
+            if (destination.network not in {"dev", "test", "testnet", "mainnet"}
+                    or destination.network != intent.get("network")
+                    or destination.hub_url != intent.get("hub_url")):
+                raise ValueError("Worker offer target changed; select the network and update the offer again.")
+            if str((settings.get("workerOfferStatus") or {}).get("status") or "") == "failed":
+                return {"status": "failed", "error": str(settings["workerOfferStatus"].get("error") or "")}
+            policy = self._worker_runtime_local_policy(settings)
+            if not bool(policy.get("normal_allowed")):
+                return {"status": "deferred", "reason": str(policy.get("normal_reason") or "Normal Worker availability policy blocks work.")}
+            hub_url = destination.hub_url
+            wallet_address = self._normalize_worker_wallet_address(intent.get("wallet_address"))
+            active = self._worker_live_session_active_work_count(hub_url=hub_url, worker_id=wallet_address.lower())
+            if active:
+                return {"status": "deferred", "reason": "Existing Worker jobs must finish before changing an offer."}
+            key_id = str(intent.get("active_multisession_key_id") or "").strip()
+            chain_id = str(intent.get("chain_id") or "").strip()
+            requested_ring = self._normalize_worker_ring(intent.get("requested_ring") or "3")
+            worker = intent.get("worker") if isinstance(intent.get("worker"), dict) else {}
+            matched_authorization = self._worker_multisession_authorization_for_wallet(
+                hub_url=hub_url, wallet_address=wallet_address,
+                chain_id=chain_id, requested_key_id=key_id,
+            )
+            if not self._worker_offer_chain_matches(matched_authorization.get("chain_id"), chain_id):
+                raise ValueError("Worker multi-session key is for a different chain.")
+            now = datetime.now(timezone.utc).isoformat()
+            connection = dict(settings.get("signedWorkerConnection") or {})
+            connection.update({
+                "network": destination.network, "hub_url": hub_url,
+                "wallet_address": wallet_address, "credit_wallet": wallet_address,
+                "chain_id": chain_id, "requested_ring": requested_ring,
+                "multisession_key_id": key_id, "worker": worker,
+                "status": "registering-with-hub", "worker_start_status": "ready",
+                "signed_order_status": "ready", "hub_registration_status": "submitting",
+                "hub_registration_attempted_at": now, "hub_registered": False,
+                "hub_registration_error": "", "last_error": "",
+            })
+            settings["signedWorkerConnection"] = connection
+            settings["workerHubRegistration"] = {}
+            settings["workerRegisteredId"] = ""
+            settings["workerAssignedRing"] = ""
+            settings["workerPool"] = {}
+            settings["workerOfferStatus"] = {"status": "submitting", "at": now}
+            settings["workerConnectionStatus"] = "connecting"
+            self._save_worker_settings(settings)
+            try:
+                authorization = self._worker_multisession_authorization_for_wallet(
+                    hub_url=hub_url, wallet_address=wallet_address,
+                    chain_id=chain_id, requested_key_id=key_id,
+                )
+                registration = self._post_worker_start_to_hub(hub_url=hub_url, payload={
+                    "hub_url": hub_url, "network": destination.network,
+                    "chain_id": chain_id, "requested_ring": requested_ring,
+                    "wallet_address": wallet_address, "credit_wallet": wallet_address,
+                    "worker": worker, "multisession_authorization": authorization,
+                })
+                if not isinstance(registration, dict) or registration.get("ok") is not True:
+                    raise RuntimeError("Selected Hub did not acknowledge authenticated Worker registration.")
+                returned_worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
+                registered_id = str(registration.get("worker_id") or returned_worker.get("worker_id") or "").strip()
+                assigned_ring = str(registration.get("assigned_ring") or returned_worker.get("assigned_ring") or "").strip()
+                # Dev-Test may assign a different allowed ring based on its
+                # admission policy; Stable Hub already verifies the requested
+                # ring during its authenticated live-session handshake.
+                if not registered_id or assigned_ring not in {"0", "1", "2", "3"}:
+                    raise RuntimeError("Hub registration did not verify Worker identity and assigned ring.")
+                latest = self._load_worker_settings()
+                current_destination = resolve_hub_destination(latest)
+                if (current_destination.network != destination.network
+                        or current_destination.hub_url != hub_url
+                        or latest.get("workerOfferIntent") != intent):
+                    raise RuntimeError("Worker offer settings changed during Hub authentication.")
+                # Availability might change during the handshake. A stale
+                # registration must not leave an accepting WebSocket behind.
+                if not bool(self._worker_runtime_local_policy(latest).get("normal_allowed")):
+                    self._close_worker_live_session(hub_url=hub_url, worker_id=wallet_address.lower(), reason="offer_normal_availability_changed")
+                    latest["workerOfferStatus"] = {"status": "pending", "reason": "Availability changed during registration."}
+                    latest["workerOfferPending"] = True
+                    latest["signedWorkerConnection"] = dict(connection, status="ready", hub_registration_status="not_submitted", hub_registered=False)
+                    self._save_worker_settings(latest)
+                    return {"status": "deferred", "reason": "Availability changed during registration."}
+                pricing_policy = str(registration.get("pricing_policy") or returned_worker.get("pricing_policy") or "")
+                connection.update({
+                    "status": "hub-registered", "hub_registration_status": "accepted",
+                    "hub_registered": True, "hub_registered_at": datetime.now(timezone.utc).isoformat(),
+                    "assigned_ring": assigned_ring, "worker_id": registered_id,
+                    "pricing_policy": pricing_policy,
+                    "worker": returned_worker or worker, "hub_registration": registration,
+                    "pool": registration.get("pool") if isinstance(registration.get("pool"), dict) else {},
+                    "multisession_key_id": str(authorization.get("key_id") or key_id),
+                })
+                latest["signedWorkerConnection"] = connection
+                latest["workerAssignedRing"] = assigned_ring
+                latest["workerRegisteredId"] = registered_id
+                latest["workerPricingPolicy"] = pricing_policy
+                latest["workerConnectedHubUrl"] = hub_url
+                latest["workerConnectionStatus"] = "connected"
+                latest["workerHubRegistration"] = registration
+                latest["workerPool"] = connection["pool"]
+                latest["workerOfferPending"] = False
+                latest["workerOfferStatus"] = {"status": "accepted", "at": datetime.now(timezone.utc).isoformat()}
+                self._save_worker_settings(latest)
+                return {"status": "accepted", "registration": registration, "worker_id": registered_id, "assigned_ring": assigned_ring}
+            except Exception as exc:
+                # This may have opened an accepting socket before a later
+                # verification failed. Fail closed, even for bad Hub receipts.
+                try:
+                    self._close_worker_live_session(hub_url=hub_url, worker_id=wallet_address.lower(), reason="offer_authentication_failed")
+                except Exception:
+                    pass
+                latest = self._load_worker_settings()
+                if latest.get("workerOfferIntent") == intent:
+                    connection.update({"status": "hub-registration-failed", "hub_registration_status": "failed",
+                                       "hub_registered": False, "hub_registration_error": str(exc), "last_error": str(exc)})
+                    latest["signedWorkerConnection"] = connection
+                    latest["workerOfferStatus"] = {"status": "failed", "error": str(exc), "at": datetime.now(timezone.utc).isoformat()}
+                    latest["workerConnectionStatus"] = "failed"
+                    latest["workerConnectionError"] = str(exc)
+                    self._save_worker_settings(latest)
+                raise
+
+    def _handle_worker_offer_sync(self) -> None:
+        """Save offer intent and authenticate through the selected Hub when safe."""
         try:
             if not self._worker_ui_client_is_local():
-                self._send_json({"ok": False, "error": "Worker offer registration is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"ok": False, "error": "Worker offer changes are local-only."}, status=HTTPStatus.FORBIDDEN)
                 return
             body = self._read_json()
-            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            destination = self._worker_offer_registration_destination(body)
+            settings = self._load_worker_settings()
             worker_payload = body.get("worker")
             if not isinstance(worker_payload, dict):
-                raise ValueError("worker registration payload is required.")
-
-            payload = self._worker_registration_payload_from_ui(worker_payload)
-            registration = self._post_worker_registration_to_hub(hub_url=hub_url, payload=payload)
-            worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
-            offer = worker.get("offer") if isinstance(worker.get("offer"), dict) else {}
-            self.server.signal(
-                "api-worker-offer-register",
-                hub_url=hub_url,
-                node_id=payload["node_id"],
-                offer_id=offer.get("offer_id", ""),
+                raise ValueError("Worker offer payload is required.")
+            # Validate the profile independently of current availability.
+            # Only the runtime's normal_allowed policy may authorize dispatch.
+            worker = self._worker_registration_payload_from_ui(worker_payload, validate_offer_only=True)
+            wallet = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            ring = self._normalize_worker_ring(body.get("requested_ring") or settings.get("workerRequestedRing") or "3")
+            if ring != self._normalize_worker_ring(settings.get("workerRequestedRing") or "3"):
+                raise ValueError("Offer ring does not match the selected Worker ring.")
+            profile = self._worker_network_session_payload(settings, check_hub=False).get("session", {}).get("profile") or {}
+            chain_id = str(profile.get("chain_id") or "").strip()
+            if not chain_id:
+                raise ValueError("Selected Worker network has no verified chain identifier.")
+            requested_chain = str(body.get("chain_id") or "").strip()
+            if requested_chain and requested_chain != chain_id:
+                raise ValueError("Offer chain does not match the selected Worker network.")
+            key_id = str(body.get("active_multisession_key_id") or body.get("multisession_key_id") or "").strip()
+            if not key_id:
+                raise ValueError("An active Hub-scoped multi-session key is required to register an offer.")
+            matched_authorization = self._worker_multisession_authorization_for_wallet(
+                hub_url=destination.hub_url, wallet_address=wallet,
+                chain_id=chain_id, requested_key_id=key_id,
             )
-            self._send_json(
-                {
-                    "ok": True,
-                    "hub_url": hub_url,
-                    "registration": registration,
-                    "worker": worker,
-                    "offer": offer,
-                }
-            )
+            if not self._worker_offer_chain_matches(matched_authorization.get("chain_id"), chain_id):
+                raise ValueError("Worker multi-session key is for a different chain.")
+            intent = {"network": destination.network, "hub_url": destination.hub_url,
+                      "chain_id": chain_id, "requested_ring": ring,
+                      "wallet_address": wallet, "active_multisession_key_id": key_id,
+                      "worker": worker}
+            with self._worker_runtime_transition_lock():
+                settings = self._load_worker_settings()
+                if self._worker_offer_registration_destination(body) != destination:
+                    raise ValueError("Worker network changed while preparing the offer.")
+                old_hub = self._worker_runtime_hub_url(settings)
+                old_worker = self._worker_runtime_worker_id(settings)
+                active = self._worker_live_session_active_work_count(hub_url=old_hub or None, worker_id=old_worker or None)
+                if active or int(settings.get("workerRuntimeActiveJobs") or 0):
+                    raise ValueError("Active Worker jobs must finish before updating the Hub offer.")
+                if old_hub and old_worker:
+                    closed = self._close_worker_live_session(
+                        hub_url=old_hub, worker_id=old_worker, reason="offer_update_replace_old_market"
+                    )
+                    if isinstance(closed, dict) and closed.get("close_deferred"):
+                        raise ValueError("A Worker job began during offer replacement; try again when it completes.")
+                settings["workerOfferIntent"] = intent
+                settings["workerOfferPending"] = True
+                settings["workerOfferStatus"] = {"status": "pending", "at": datetime.now(timezone.utc).isoformat()}
+                settings["workerHubRegistration"] = {}
+                settings["workerRegisteredId"] = ""
+                settings["workerAssignedRing"] = ""
+                settings["workerPool"] = {}
+                # Nothing has been authenticated yet; a deferred offer must
+                # not be displayed as a live connecting Worker.
+                settings["workerConnectionStatus"] = "disconnected"
+                signed = dict(settings.get("signedWorkerConnection") or {})
+                signed.update({"network": destination.network, "hub_url": destination.hub_url,
+                               "wallet_address": wallet, "credit_wallet": wallet,
+                               "chain_id": chain_id, "requested_ring": ring,
+                               "multisession_key_id": key_id, "worker": worker,
+                               "status": "ready", "worker_start_status": "ready", "signed_order_status": "ready",
+                               "hub_registration_status": "not_submitted", "hub_registered": False,
+                               "worker_id": "", "assigned_ring": "", "hub_registration": {}})
+                settings["signedWorkerConnection"] = signed
+                self._save_worker_settings(settings)
+            result = self._worker_offer_sync_pending()
+            self._kick_worker_runtime_supervisor("worker-offer-update")
+            self.server.signal("api-worker-offer-sync", network=destination.network, status=result.get("status"))
+            self._send_json({"ok": True, "hub_url": destination.hub_url,
+                             "routing": destination.diagnostics(), **result})
         except Exception as exc:
-            self.server.signal("api-worker-offer-register-error", error=exc)
+            self.server.signal("api-worker-offer-sync-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _hub_config_payload(self) -> dict[str, Any]:
@@ -5166,7 +5410,7 @@ class ViewportEnergyRoutesMixin:
             or str(signed.get("network") or "") != network
             or str(signed.get("requested_ring") or "") != requested_ring
             or self._clean_hub_url(str(signed.get("hub_url") or "")) != self._clean_hub_url(hub_url)):
-            raise ValueError("Stable Hub Worker registration does not match the pending local Work now request.")
+            raise ValueError("Stable Hub Worker registration does not match the pending authenticated Worker request.")
         if signed.get("worker") != payload.get("worker"):
             raise ValueError("Stable Hub Worker market profile changed during registration.")
         resolved_authorization = self._worker_runtime_multisession_authorization(settings=settings, hub_url=hub_url)
@@ -5260,27 +5504,6 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(message or str(data["error"]))
         return data
 
-    def _post_worker_registration_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        request = Request(
-            self._clean_hub_url(hub_url) + "/api/hub/v1/workers/register",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=5.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("Hub returned a non-object worker registration response.")
-        if data.get("error"):
-            raise RuntimeError(str(data["error"]))
-        return data
-
     def _energy_passcode_ok(self, body: dict[str, Any]) -> bool:
         required = self.server.config.energy_admin_passcode
         if not required:
@@ -5296,7 +5519,17 @@ class WorkerRuntimeService(ViewportEnergyRoutesMixin):
         self.server = server
 
     def reconcile_worker_runtime(self, *, reason: str = "manual", send_heartbeat: bool = True) -> dict[str, Any]:
+        # The backend supervisor owns deferred offer registration. It attempts
+        # the saved authenticated path only when ordinary policy permits it.
         settings = self._load_worker_settings()
+        if send_heartbeat and settings.get("workerOfferPending") and str((settings.get("workerOfferStatus") or {}).get("status") or "") == "pending":
+            try:
+                self._worker_offer_sync_pending()
+            except Exception as exc:
+                signal = getattr(self.server, "signal", None)
+                if callable(signal):
+                    signal("worker-offer-sync-error", error=exc)
+            settings = self._load_worker_settings()
         _saved, status = self._worker_runtime_transition(
             settings,
             action="sync",

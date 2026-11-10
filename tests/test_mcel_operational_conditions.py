@@ -10,7 +10,7 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_knowledge.semantic_composition import synthesize_composition
 
 
-FIXTURE = Path(__file__).resolve().parents[1] / 'mcel_oracles/operational-workflows/generic_application.js'
+FIXTURE = Path(__file__).resolve().parents[1] / 'tests/fixtures/mcel_oracles/operational-workflows/generic_application.js'
 
 
 def test_generic_derived_condition_is_accepted_without_authored_layout():

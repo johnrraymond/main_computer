@@ -33,8 +33,8 @@ STATUS = ('PASS', 'FAIL', 'UNVERIFIED', 'NOT_IMPLEMENTED')
 REPORT_PATH = Path('runtime/reports/mcel-functional-acid')
 SOURCE = Path('main_computer/web/applications/scripts')
 STYLE = Path('main_computer/web/applications/styles/mcel-lab.css')
-NOTEBOOK = Path('mcel_experiments/task-manager-notebook/application.js')
-FIXTURE = Path('mcel_experiments/task-manager-notebook/read-only-sample.json')
+NOTEBOOK = Path('tools/fixtures/mcel_candidates/task-manager-notebook/application.js')
+FIXTURE = Path('tools/fixtures/mcel_candidates/task-manager-notebook/read-only-sample.json')
 TAB_SPECIMEN = Path('tools/fixtures/mcel_acid_tab_ir.json')
 BROWSER_SCRIPTS = (
     'mcel-element-registry.js', 'mcel-elements-core.js',

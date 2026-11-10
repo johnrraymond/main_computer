@@ -16,6 +16,8 @@ The `Network SLH` tab remains a separate administration target. A private-networ
 
 The loopback service is **LMS-SLH**, owner of **one unified identity lifecycle** for all local actors, including the ordinary identity designated as this installation's default. There is **no machine/user identity-type distinction**. The backend Organization Service is the **authority for organization enrollment and roles**, not the store for LMS-SLH private keys. `administrator_enrollment.local_credential = NOT_VERIFIED` in V3 means **local credential discovery has not occurred**; it does not mean a key is missing or should be re-created. Automatic default identity creation and local identity selection using the **same** identity API are **[TARGET]**, documented in [LMS-SLH Identity Ownership](lms-slh-identity-ownership.md), not an implemented V3 oracle gate.
 
+**Subsequent authority design (November 9, 2026; not part of V3 acceptance):** ORG-SLH will create/reuse a durable `LOCAL-AUTH-KEY` on its own startup; LMS-SLH will read it on the trusted host to request an explicit administrator grant or recovery with identity-key proof. The ORG-SLH endpoint need not be loopback-only; a leaked root is usable remotely. Existing `REQUIRES_RECOVERY` / `NOT_VERIFIED` V3 observations remain accurate descriptions of the then-implemented API, **not** evidence that the root-based recovery path already exists. See [ORG-SLH Root Authorization](slh-local-auth-key-root-authorization.md).
+
 ## Public backend observation contract
 
 `GET /v1/local/status` retains the existing `main-computer.slh-local-status.v1` schema and adds coarse, read-only fields:

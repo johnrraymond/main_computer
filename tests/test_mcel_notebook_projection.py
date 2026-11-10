@@ -14,8 +14,8 @@ from main_computer.mcel_notebook_projection import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "mcel_experiments/task-manager-notebook/application.js"
-SAMPLE = ROOT / "mcel_experiments/task-manager-notebook/read-only-sample.json"
+SOURCE = ROOT / "tools/fixtures/mcel_candidates/task-manager-notebook/application.js"
+SAMPLE = ROOT / "tools/fixtures/mcel_candidates/task-manager-notebook/read-only-sample.json"
 HOST = ROOT / "main_computer/web/applications/apps/task-manager.html"
 HOST_SCRIPT = ROOT / "main_computer/web/applications/scripts/task-manager.js"
 
@@ -95,6 +95,12 @@ def test_live_generated_notebook_in_chromium(tmp_path):
             page.on("request", lambda r: requests.append(r.url))
             # file:// is unavailable in some sandboxed Chromium installations.
             # set_content exercises exactly the same emitted HTML and inline runtime.
+            fixture = json.loads(SAMPLE.read_text(encoding="utf-8"))
+            # Project exactly the copied read-only records, not an obsolete
+            # hard-coded fixture cardinality. The fixture remains untouched.
+            assert isinstance(fixture.get("processes"), list) and fixture["processes"]
+            # An empty connections collection is a valid read-only snapshot.
+            assert isinstance(fixture.get("connections"), list)
             page.set_content(compile_notebook_preview(SOURCE, fixture_path=SAMPLE), wait_until="load")
             tabs = page.locator('[role="tab"]')
             panels = page.locator('[role="tabpanel"]')
@@ -102,13 +108,19 @@ def test_live_generated_notebook_in_chromium(tmp_path):
             assert tabs.all_text_contents() == ["Server Processes", "All Processes", "Connections", "CPU + GPU"]
             assert page.locator('[role="tab"][aria-selected="true"]').count() == 1
             assert page.locator('[role="tabpanel"]:visible').count() == 1
-            assert page.locator('[role=tabpanel]:visible table tbody tr').count() == 3
+            assert page.locator('[role=tabpanel]:visible table tbody tr').count() == len(fixture["processes"])
             assert page.locator('[role=tabpanel]:visible table th').count() >= 3
             # The real click updates view state only; no capability/network requests.
             page.locator('[data-mcel-tab="connections"]').click()
             assert page.locator('[data-mcel-panel="connections"]').is_visible()
             assert page.locator('[data-mcel-panel="server-processes"]').is_hidden()
-            assert page.locator('[role=tabpanel]:visible table tbody tr').count() == 2
+            if fixture["connections"]:
+                assert page.locator('[role=tabpanel]:visible table tbody tr').count() == len(fixture["connections"])
+            else:
+                # Empty data is presented as a no-data notice, not an empty table.
+                connections_panel = page.locator('[data-mcel-panel="connections"]')
+                assert connections_panel.locator("table").count() == 0
+                assert "No data for this view" in connections_panel.inner_text()
             assert page.evaluate("location.hash") == "#tab=connections"
             initial = page.evaluate("McelNotebookPreview.getState()")
             refusal = page.evaluate("McelNotebookPreview.select('invalid-tab')")
@@ -138,7 +150,7 @@ def test_live_generated_notebook_in_chromium(tmp_path):
                 assert page.locator('[role="tabpanel"]:visible').count() == 1
             # Empty/loading/error labels are generated rather than hard-coded into app markup.
             for status, label in (("loading", "Loading data"), ("empty", "No data"),
-                                  ("failed", "Data unavailable")):
+                                  ("failed", "Source unavailable; last successful snapshot retained")):
                 outcome = page.evaluate("""([data,status]) => McelNotebookPreview.updateSnapshot(data,status)""",
                                         [{}, status])
                 assert outcome == {"ok": True, "effects": []}

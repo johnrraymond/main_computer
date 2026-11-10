@@ -1375,6 +1375,79 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
     }
 
 
+def _control_panel_slh_service() -> dict[str, object]:
+    """Read only the fixed loopback SLH status; do not start or authenticate it."""
+    from main_computer.mcel_slh_application import _local_status
+    from main_computer.slh.ports import DEFAULT_SLH_API_PORT
+
+    condition, payload = _local_status(timeout=0.6)
+    local_service = payload.get("local_service", {}) if isinstance(payload, dict) else {}
+    org = payload.get("organization_service", {}) if isinstance(payload, dict) else {}
+    if not isinstance(local_service, dict):
+        local_service = {}
+    if not isinstance(org, dict):
+        org = {}
+
+    if condition == "RUNNING":
+        state = "healthy"
+        summary = "Local management service responding on loopback."
+        detail = f"SLH running | organization {org.get('state') or 'not observed'}"
+    elif condition == "UNREACHABLE":
+        # An intentionally stopped SLH is a valid policy on this Windows host.
+        state = "disabled"
+        summary = "Local SLH not running or not reachable."
+        detail = "On-demand local service; no automatic startup required."
+    else:
+        state = "unknown"
+        summary = "Local SLH endpoint responded without verified SLH status."
+        detail = "Service identity or status did not meet the local SLH contract."
+    return {
+        "id": "slh", "label": "Secure Local Hub (SLH)", "state": state,
+        "required": False, "summary": summary, "detail": detail,
+        "port": DEFAULT_SLH_API_PORT, "scope": "loopback",
+    }
+
+
+def _control_panel_seh_service() -> dict[str, object]:
+    """Observe public SEH health only; no tunnel, credentials, or deployment actions."""
+    url = "https://external.greatlibrary.io/healthz"
+    response = _control_panel_http_json(url, timeout_s=0.8)
+    data = response.get("data")
+    # The WebSocket relay may return JSON with a text/plain content type.
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            data = None
+    valid = (response.get("ok") is True and isinstance(data, dict)
+             and data.get("service") == "main_computer.seh"
+             and type(data.get("live")) is bool)
+    if not valid:
+        state = "unknown"
+        summary = "SEH public health not verified."
+        detail = "Read-only HTTPS health probe unavailable or unexpected response."
+    elif not data["live"]:
+        state = "down"
+        summary = "SEH reports it is not live."
+        detail = "Remote health endpoint responded; relay is not live."
+    elif data.get("ready") is True and data.get("slh_connected") is True:
+        state = "healthy"
+        summary = "SEH live and ready; SLH tunnel connected."
+        detail = "Remote public health response; not administrator authentication proof."
+    else:
+        state = "degraded"
+        summary = "SEH live, but relay is not fully ready."
+        tunnel = data.get("slh_connected")
+        detail = ("SLH tunnel connected" if tunnel is True else
+                  "SLH tunnel disconnected" if tunnel is False else
+                  "SLH tunnel not reported")
+    return {
+        "id": "seh", "label": "Secure External Hub (SEH)", "state": state,
+        "required": False, "summary": summary, "detail": detail,
+        "port": 443, "scope": "public-https", "endpoint": url,
+    }
+
+
 def _control_panel_status(self) -> dict[str, object]:
     """Aggregate live machine/service status for the graphical control panel."""
 
@@ -1502,6 +1575,8 @@ def _control_panel_status(self) -> dict[str, object]:
             "probe": port_probes["gitea"],
             "payload": git_payload,
         },
+        _control_panel_slh_service(),
+        _control_panel_seh_service(),
         _control_panel_energy_credits_service(network_topology),
         {
             "id": "executor",
@@ -1590,7 +1665,7 @@ def _control_panel_status(self) -> dict[str, object]:
         "ports": port_probes,
         "dependencies": dependencies,
         "services": services,
-        "service_order": ["runtime", "supervisor", "app", "worker", "ollama", "gitea", "blockchain", "executor"],
+        "service_order": ["runtime", "supervisor", "app", "worker", "slh", "seh", "ollama", "gitea", "blockchain", "executor"],
         "network_topology": network_topology,
         "network_order": network_topology.get("network_order", list(_CONTROL_PANEL_NETWORK_ORDER)),
         "networks": network_topology.get("networks", []),
@@ -1913,6 +1988,27 @@ def dispatch_get(self) -> None:
             return
         from main_computer.mcel_slh_application import ROUTES, render_slh_page
         self._send_text(render_slh_page(ROUTES[route_path]), "text/html; charset=utf-8")
+        return
+    if route_path == "/api/applications/slh/identities":
+        # This is identity metadata, not an authorization or signing endpoint.
+        # Guard the browser-facing proxy against remote callers, DNS rebinding,
+        # and cross-origin reads before contacting the loopback LMS-SLH API.
+        host = (self.headers.get("Host") or "").strip().lower()
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if (not _hard_halt_client_is_local(self) or
+                not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]{1,5}", host) or
+                (origin and origin != "http://" + host) or
+                fetch_site not in ("", "same-origin", "none")):
+            self._send_json({"ok": False, "error": "LMS-SLH identities are local-only."},
+                            HTTPStatus.FORBIDDEN)
+            return
+        if urlsplit(self.path).query:
+            self._send_json({"ok": False, "error": "Unexpected identity query."},
+                            HTTPStatus.BAD_REQUEST)
+            return
+        from main_computer.mcel_slh_application import observe_lms_slh_identities
+        self._send_json(observe_lms_slh_identities())
         return
     if route_path == "/api/applications/slh/observe":
         if not _hard_halt_client_is_local(self):
@@ -2633,8 +2729,8 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/worker/runtime-sync":
         self._handle_worker_runtime_sync()
         return
-    if self.path == "/api/applications/worker/register-offer":
-        self._handle_worker_offer_register()
+    if self.path == "/api/applications/worker/offer-sync":
+        self._handle_worker_offer_sync()
         return
     if self.path == "/api/applications/worker/hub-health":
         self._handle_worker_hub_health()

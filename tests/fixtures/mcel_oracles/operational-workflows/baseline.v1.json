@@ -1,0 +1,356 @@
+{
+  "browser_and_backend": "Run tests/test_mcel_slh_workflow_browser_oracle.py and existing disposable first-run acceptance",
+  "browser_baseline": {
+    "captured_at_utc": "2026-11-08T22:08:38.838151+00:00",
+    "failing_scenarios": 9,
+    "mutations_performed": false,
+    "passing_scenarios": 0,
+    "scenarios": [
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": null,
+          "local": "UNREACHABLE",
+          "organization": "NOT_OBSERVED"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator"
+        ],
+        "errors": [],
+        "expected_primary": "intent:start-local",
+        "observed_at": "2026-11-08T22:08:39+00:00",
+        "primary_present": true,
+        "scenario": "local-offline",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": false,
+          "local": "RUNNING",
+          "organization": "not_configured"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:bootstrap-administrator",
+        "observed_at": "2026-11-08T22:08:39+00:00",
+        "primary_present": true,
+        "scenario": "local-uninitialized",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "not_configured"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:configure-organization",
+        "observed_at": "2026-11-08T22:08:40+00:00",
+        "primary_present": true,
+        "scenario": "organization-unconfigured",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "disabled"
+        },
+        "competing_intents": [
+          "intent:bootstrap-administrator",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:activate-organization",
+        "observed_at": "2026-11-08T22:08:40+00:00",
+        "primary_present": true,
+        "scenario": "organization-disabled",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "running"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "diagnostic_screenshot": "running-unauthenticated-screenshot.png",
+        "errors": [],
+        "expected_primary": "intent:login-administrator",
+        "observed_at": "2026-11-08T22:08:41+00:00",
+        "primary_present": true,
+        "scenario": "running-unauthenticated-screenshot",
+        "simultaneously_visible_admin_device_id_inputs": 3,
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": true,
+          "fresh": true,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "running"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:refresh-workers",
+        "observed_at": "2026-11-08T22:08:41+00:00",
+        "primary_present": true,
+        "scenario": "running-authenticated",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": true,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "stopped_unexpectedly"
+        },
+        "competing_intents": [
+          "intent:bootstrap-administrator",
+          "intent:login-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:refresh-overview",
+        "observed_at": "2026-11-08T22:08:41+00:00",
+        "primary_present": true,
+        "scenario": "organization-failed",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": null,
+          "fresh": false,
+          "initialized": null,
+          "local": "UNVERIFIED",
+          "organization": "NOT_OBSERVED"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "errors": [],
+        "expected_primary": "intent:refresh-overview",
+        "observed_at": "2000-01-01T00:00:00+00:00",
+        "primary_present": true,
+        "scenario": "status-unverified",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      },
+      {
+        "authoritative_observation": {
+          "authenticated": false,
+          "fresh": false,
+          "initialized": true,
+          "local": "RUNNING",
+          "organization": "running"
+        },
+        "competing_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:start-local"
+        ],
+        "diagnostic_screenshot": "observation-stale.png",
+        "errors": [],
+        "expected_primary": "intent:refresh-overview",
+        "observed_at": "2000-01-01T00:00:00+00:00",
+        "primary_present": true,
+        "scenario": "observation-stale",
+        "status": "FAIL",
+        "visible_intents": [
+          "intent:activate-organization",
+          "intent:bootstrap-administrator",
+          "intent:configure-organization",
+          "intent:login-administrator",
+          "intent:logout-administrator",
+          "intent:refresh-health",
+          "intent:refresh-overview",
+          "intent:refresh-worker-summary",
+          "intent:refresh-workers",
+          "intent:select-view",
+          "intent:start-local"
+        ]
+      }
+    ],
+    "screenshot_basis": "diagnostic-only",
+    "source": "inert-browser-fixture-not-live-slH",
+    "stale_authority_gate": {
+      "errors": [],
+      "post_requests_attempted": 1,
+      "receipt_disposition": "completed",
+      "status": "FAIL"
+    }
+  },
+  "generic_fixture_sha256": "sha256:b2718c13a6d1d47e47e5c6ca5b24abd67551f65c80150f58722967b927237528",
+  "mutations_performed": false,
+  "oracle_sha256": "sha256:cead834df4f521f9d7135dbef3fd3ee1ed5f81c6d30a2bc773ff33b987e8de69",
+  "schema": "mcel.operational-workflow-baseline.v1",
+  "source_checks": {
+    "composition_policy": "mcel.semantic-structure.p3",
+    "generic_app": {
+      "diagnostics": [
+        "MCEL_DSL_UNKNOWN_OPTION"
+      ],
+      "explanation": "A non-SLH semantic app must compile a derived-state-conditioned consequential action",
+      "status": "FAIL"
+    },
+    "slh": {
+      "backend_conditioned_surface_nodes": [],
+      "explanation": "SLH must use backend-derived operational applicability, not only local view selection",
+      "status": "FAIL"
+    },
+    "slh_ir_hash": "sha256:bea2e9f85cc1288c1ed95aef6294b140760191b0e4fca6c4e5b798c4a34552de"
+  }
+}

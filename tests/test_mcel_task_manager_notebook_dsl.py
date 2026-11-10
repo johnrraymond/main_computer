@@ -7,7 +7,7 @@ from pathlib import Path
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 
 ROOT = Path(__file__).resolve().parents[1]
-DSL = ROOT / "mcel_experiments/task-manager-notebook/application.js"
+DSL = ROOT / "tools/fixtures/mcel_candidates/task-manager-notebook/application.js"
 HOST = ROOT / "main_computer/web/applications/apps/task-manager.html"
 EXPECTED_TABS = (
     ("server-processes", "#task-tab-processes", "#task-panel-processes"),

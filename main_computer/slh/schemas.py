@@ -6,6 +6,13 @@ def object_schema(required=(), fields=None):
             'properties': fields or {}, 'additionalProperties': False}
 
 AUTH_REQUESTS = {
+    'local_root_register_admin': object_schema(('device_id',),
+        {'device_id':S,'bootstrap_only':{'type':'boolean','const':True}}),
+    'root_register_admin': object_schema(
+        ('device_id','public_key','client_nonce','issued_at','proof'),
+        {'device_id':S,'public_key':S,'client_nonce':S,
+         'issued_at':{'type':'integer'},'proof':S,
+         'bootstrap_only':{'type':'boolean','const':True}}),
     'private_submit': object_schema(('request_id','model','work'),
                         {'request_id':{'type':'string','minLength':1,'maxLength':128},
                          'model':{'type':'string','minLength':1,'maxLength':128},
@@ -38,6 +45,8 @@ AUTH_REQUESTS = {
 }
 
 KNOWN_RESPONSES={
+    'root_register_admin': object_schema(('status','device_id','fingerprint','role'),
+        {'status':S,'device_id':S,'fingerprint':S,'role':S}),
     'pinky_sweep_status': object_schema(('outstanding_credit_wei','pending_sweeps'),{}),
     'pinky_sweep_now': object_schema(('status',),{}),
     'pinky_policy': object_schema(('policy_id','revision','enabled','assessment_credit_wei'),{}),

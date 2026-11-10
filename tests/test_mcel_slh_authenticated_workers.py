@@ -209,6 +209,10 @@ def test_generated_browser_renders_real_inventory_and_updated_label(live_worker)
               window.__requests=[];
               window.fetch=async(url,opts)=>{
                 window.__requests.push({url,method:opts.method,authenticated:!!opts.headers.Authorization});
+                if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>({
+                  schema:'mcel.slh.identities.v4b',state:'AVAILABLE',defaultDeviceId:'admin-device',
+                  explanation:'Identity discovered; role unverified',identities:[{deviceId:'admin-device',
+                  label:'Admin',fingerprint:'a'.repeat(64),defaultStatus:'DEFAULT'}]})};
                 if(url==='/api/applications/slh/setup/action')return {ok:true,json:async()=>({access_token:data.token})};
                 if(url!=='/api/applications/slh/observe?view=workers')throw Error('unexpected-request');
                 return {ok:true,json:async()=>opts.headers.Authorization ? data.after : data.before};
@@ -217,8 +221,7 @@ def test_generated_browser_renders_real_inventory_and_updated_label(live_worker)
             page.set_content(render_slh_page('worker-bank'))
             page.get_by_text('SLH observation complete', exact=False).wait_for(timeout=15000)
             assert page.get_by_text('Organization session not established').count() == 1
-            page.locator('form[data-intent="intent:login-administrator"] input[name="adminDeviceId"]').fill('admin-device')
-            page.locator('form[data-intent="intent:login-administrator"] button[type=submit]').click()
+            page.locator('button[data-intent="intent:login-administrator"]').click()
             page.get_by_text('Organization administrator authenticated').wait_for(timeout=15000)
             assert page.get_by_text('Renamed Through Admin API').count() >= 1
             assert page.evaluate('window.__mcelSlh.composition.policy') == 'mcel.semantic-structure.p3'
@@ -304,6 +307,11 @@ def test_browser_mutation_executes_against_disposable_real_worker(live_worker):
     def browser_bridge(url, options):
         supplied = str(options.get('headers', {}).get('Authorization', ''))
         observed = supplied.removeprefix('Bearer ') if supplied.startswith('Bearer ') else ''
+        if url == '/api/applications/slh/identities' and options.get('method') == 'GET':
+            return {'ok':True,'data':{'schema':'mcel.slh.identities.v4b','state':'AVAILABLE',
+                'defaultDeviceId':'admin-device','explanation':'Identity discovered; role unverified',
+                'identities':[{'deviceId':'admin-device','label':'Admin',
+                               'fingerprint':'a'*64,'defaultStatus':'DEFAULT'}]}}
         if url == '/api/applications/slh/setup/action' and options.get('method') == 'POST':
             body = json.loads(options.get('body') or '{}')
             assert body['action'] == 'login' and body['arguments'] == {'adminDeviceId': 'admin-device'}
@@ -336,8 +344,7 @@ def test_browser_mutation_executes_against_disposable_real_worker(live_worker):
             page.set_content(render_slh_page('worker-bank'))
             page.get_by_text('SLH observation complete', exact=False).wait_for(timeout=15000)
             assert page.get_by_text('Compute Node 01').count() == 0
-            page.locator('form[data-intent="intent:login-administrator"] input[name="adminDeviceId"]').fill('admin-device')
-            page.locator('form[data-intent="intent:login-administrator"] button[type=submit]').click()
+            page.locator('button[data-intent="intent:login-administrator"]').click()
             page.get_by_text('Organization administrator authenticated').wait_for(timeout=15000)
             page.get_by_text('Compute Node 01').wait_for(timeout=15000)
             page.locator('button[data-select-key="worker-01"]').first.click()

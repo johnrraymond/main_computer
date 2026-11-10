@@ -182,8 +182,14 @@ def serve_hub_worker_pull(
     max_requests: int | None = None,
     officer: str = "o0",
     solve_fn: Callable[..., dict[str, Any]] | None = None,
+    allow_legacy_worker_rest: bool = False,
 ) -> None:
-    """Run a foreground worker-pull loop that lets a local provider service hub requests."""
+    """Run a foreground worker-pull loop using the Hub's advertised transport.
+
+    Legacy REST-pull is retained only as an explicit compatibility choice.
+    An unrecognized service cannot silently select it. Failed identity probes
+    continue to refuse before either transport is used.
+    """
 
     from main_computer.hub_cli_live_session import hub_uses_live_sessions, serve_cli_live_worker
 
@@ -202,6 +208,12 @@ def serve_hub_worker_pull(
 
     if config.provider == "nanojev":
         raise RuntimeError("NanoJev/CLEF requires the existing Hub's authenticated live-session transport")
+    if not allow_legacy_worker_rest:
+        raise RuntimeError(
+            "Hub does not advertise an authenticated live Worker session. "
+            "Refusing implicit legacy REST Worker-pull fallback. To use a "
+            "legacy-compatible Hub intentionally, select --allow-legacy-worker-rest."
+        )
 
     clean_hub_url = (hub_url or config.hub_url).rstrip("/")
     clean_worker_instance_id = config.hub_worker_node_id

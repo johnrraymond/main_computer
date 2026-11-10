@@ -9,6 +9,7 @@ competence. The test split is sealed until an independently certified G7 run.
 """
 from __future__ import annotations
 import argparse
+import copy
 import hashlib
 import json
 import random
@@ -250,7 +251,78 @@ def g1_counterfactual_consistency(left_output,left_labels,right_output,right_lab
     return torch.stack(losses).mean() if losses else \
            left_output['span_logits'].sum()*0
 
-def stage_loss(head, output, labels, row, stage, *, memory=None, structured_weight=.40):
+def g1_parent_retention_loss(student, teacher, labels, *, temperature=2.0):
+    """Preserve gold-correct G1 decisions of the frozen parent on TRAIN rows.
+
+    The teacher is the immutable parent head on the *same* contextual states.
+    Only its already-correct complete gold spans are anchored. Incorrect
+    teacher classifications receive no distillation pressure, so new learning
+    can repair them. Gold labels and teacher scores never reach inference.
+    """
+    if not temperature>0:
+        raise ValueError('GAMER_GRAPH_RETENTION_TEMPERATURE')
+    if student['span_logits'].shape!=teacher['span_logits'].shape or not torch.equal(
+            student['span_valid'],teacher['span_valid']):
+        raise ValueError('GAMER_GRAPH_RETENTION_SPAN_CONTRACT_CHANGED')
+    indices=[];types=[]
+    with torch.no_grad():
+        logits=teacher['span_logits']
+        probs=logits.softmax(-1)
+        for span in labels['spans']:
+            first=span['token_first'];width=span['token_last']-first
+            kind=SPAN_KINDS.index(span['kind'])+1
+            if (teacher['span_valid'][first,width] and
+                    int(logits[first,width].argmax())==kind and
+                    float(probs[first,width,kind])>=.5):
+                indices.append((first,width));types.append(kind)
+    if not indices:
+        return student['span_logits'].sum()*0,0
+    start,width=zip(*indices)
+    source=teacher['span_logits'][list(start),list(width)].detach()
+    current=student['span_logits'][list(start),list(width)]
+    target=F.softmax(source/temperature,dim=-1)
+    distill=F.kl_div(F.log_softmax(current/temperature,dim=-1),
+                    target,reduction='batchmean')*temperature**2
+    classes=torch.tensor(types,device=current.device,dtype=torch.long)
+    parent_margin=source.gather(1,classes[:,None]).squeeze(1)-source[:,0]
+    current_margin=current.gather(1,classes[:,None]).squeeze(1)-current[:,0]
+    # Unlike ordinary symmetric KL, this also prevents an already-correct
+    # complete object from becoming a null object with a weaker margin.
+    floor=F.relu(parent_margin-.25-current_margin).mean()
+    return distill+floor,len(indices)
+
+
+
+def g1_hard_null_positive_loss(output, spans):
+    """Train-only focused margin for gold objects suppressed by the null logit.
+
+    Unlike the default positive-null objective, this arm gives additional
+    gradient ONLY to correctly annotated complete spans where null actually
+    outranks the gold class. An incorrect *non-null* class is not silently
+    reclassified as a null miss. No development set or inference-time label
+    enters this calculation.
+    """
+    logits=output['span_logits']
+    valid=output['span_valid']
+    suppressed=[]
+    for span in spans:
+        first=int(span['token_first'])
+        width=int(span['token_last'])-first
+        label=SPAN_KINDS.index(span['kind'])+1
+        if not bool(valid[first,width]):
+            raise ValueError('GAMER_GRAPH_HARD_NULL_INVALID_GOLD')
+        row=logits[first,width]
+        # Isolate the null-vs-gold mechanism from other class confusions.
+        if int(row.detach().argmax().item())==0:
+            suppressed.append(F.softplus(1.5-(row[label]-row[0])))
+    if not suppressed:
+        return logits.sum()*0
+    # Divide by ALL gold objects, not the number of failures, so a single
+    # remaining hard example never receives a runaway per-example multiplier.
+    return torch.stack(suppressed).sum()/len(spans)
+
+
+def stage_loss(head, output, labels, row, stage, *, memory=None, structured_weight=.40, hard_null_weight=0.0):
     """All seven stage objectives implemented against one fixed head interface."""
     if stage=='G1':
         logits = output['span_logits']
@@ -322,7 +394,8 @@ def stage_loss(head, output, labels, row, stage, *, memory=None, structured_weig
         ranking_loss=torch.stack(rank_losses).mean() if rank_losses else positive_loss*0
         return (positive_loss+hard_loss+0.05*negative_losses.mean()+
                 0.75*positive_null_loss+0.75*ranking_loss+
-                structured_weight*g1_structured_object_set_loss(output,labels['spans']))
+                structured_weight*g1_structured_object_set_loss(output,labels['spans'])+
+                hard_null_weight*g1_hard_null_positive_loss(output,labels['spans']))
     idmap=_align_graph_nodes(labels,row,output)
     edges=row['graph']['edges']
     if stage=='G2':
@@ -500,16 +573,24 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
           max_span_tokens=DEFAULT_MAX_SPAN_TOKENS,
           train_limit=0,refine_checkpoint=None,refine_parent_dataset=None,
           counterfactual_fraction=.5,consistency_weight=.15,
-          structured_weight=.40,family_balanced=False):
+          structured_weight=.40,family_balanced=False,controlled_exposure=False,
+          parent_retention_weight=0.0,hard_null_weight=0.0):
     from safetensors.torch import save_file
     dataset=Path(dataset); output=Path(output); source_adapter=Path(source_adapter)
     if stage not in STAGES:raise ValueError('GAMER_GRAPH_UNKNOWN_TRAINING_STAGE')
     if steps<1 or accum<1 or lr<=0:raise ValueError('GAMER_GRAPH_INVALID_TRAINING_SETTINGS')
     if (not 0<=counterfactual_fraction<=1 or consistency_weight<0 or
-            structured_weight<0):
+            structured_weight<0 or parent_retention_weight<0 or hard_null_weight<0):
         raise ValueError('GAMER_GRAPH_INVALID_COUNTERFACTUAL_TRAINING_SETTINGS')
-    if stage!='G1' and (family_balanced or structured_weight!=.40):
+    if stage!='G1' and hard_null_weight:
+        raise ValueError('GAMER_GRAPH_HARD_NULL_G1_ONLY')
+    if stage!='G1' and (family_balanced or structured_weight!=.40 or controlled_exposure):
         raise ValueError('GAMER_GRAPH_BALANCED_TRAINING_G1_ONLY')
+    if controlled_exposure and (stage!='G1' or not family_balanced or
+          consistency_weight!=0 or train_limit!=0):
+        raise ValueError('GAMER_GRAPH_EXPOSURE_CONTROL_REQUIRES_PURE_G1_REFINEMENT')
+    if parent_retention_weight and (stage!='G1' or not refine_checkpoint):
+        raise ValueError('GAMER_GRAPH_RETENTION_REQUIRES_G1_PARENT')
     if output.exists():raise FileExistsError('GAMER_GRAPH_OUTPUT_IMMUTABLE')
     if source_adapter.resolve() in output.resolve().parents or output.resolve()==source_adapter.resolve():
         raise ValueError('GAMER_GRAPH_CANNOT_WRITE_IN_SOURCE_ADAPTER')
@@ -522,6 +603,9 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
     rows=load_rows(dataset)
     training=[r for r in rows if r['split']=='train']
     if train_limit: training=training[:train_limit]
+    if (controlled_exposure and counterfactual_fraction>0 and
+            not any(r.get('counterfactual_pair') for r in training)):
+        raise ValueError('GAMER_GRAPH_BALANCED_FAMILY_BOTH_SOURCES_REQUIRED')
     model,tok=backbone.model_components(model_id,source_adapter,device)
     if any(p.requires_grad for p in model.parameters()):
         raise RuntimeError('GAMER_GRAPH_SOURCE_NOT_FROZEN')
@@ -568,6 +652,12 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                 'max_span_tokens':max_span_tokens}
         # Construct ALL heads before G1. Future objectives are initially locked.
         head=_new_head(int(model.config.hidden_size),config).to(device)
+    # Separate frozen teacher, never touched by AdamW and never serialized.
+    # A retention weight of zero preserves the original training path exactly.
+    parent_teacher=None
+    if parent_retention_weight:
+        parent_teacher=copy.deepcopy(head).eval()
+        parent_teacher.requires_grad_(False)
     count=trainable_stage(head,stage)
     memory=None
     if STAGES.index(stage)>=5 and any('memory_episode' not in row for row in training):
@@ -610,10 +700,10 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
     for i in replay_indices:
         if training[i]['family'] in replay_by_family:
             replay_by_family[training[i]['family']].append(i)
-    if family_balanced and (not all(pair_by_family.values()) or
-                            not all(replay_by_family.values())):
+    if family_balanced and (not all(replay_by_family.values()) or
+            (counterfactual_fraction>0 and not all(pair_by_family.values()))):
         raise ValueError('GAMER_GRAPH_BALANCED_FAMILY_BOTH_SOURCES_REQUIRED')
-    if family_balanced:
+    if family_balanced and pair_choices:
         by_mode={(family,mode):0 for family in families
                  for mode in ('role_swap','renaming')}
         for group in pair_choices:
@@ -625,9 +715,33 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
             by_mode[marker]+=1
         if len(set(by_mode.values()))!=1 or 0 in by_mode.values():
             raise ValueError('GAMER_GRAPH_BALANCED_PAIR_FAMILY_MODE_IMBALANCE')
+    # Controlled exposure: draw immutable per-family replay/pair streams *before*
+    # choosing their mixture.  Therefore an exposure change cannot change the
+    # identity/order of the replay examples at a given replay ordinal.  All
+    # arms use the same seed, optimizer, examples-per-microbatch weighting and
+    # family schedule; no future-stage or held-out data enters this sampler.
+    replay_stream={};pair_stream={}
+    replay_stream_sha=None;pair_stream_sha=None
+    if controlled_exposure:
+        slots={family:sum(families[(step*accum+micro)%len(families)]==family
+                          for step in range(steps) for micro in range(accum))
+               for family in families}
+        for family_index,family in enumerate(families):
+            rr=random.Random(seed+1001+family_index*107)
+            replay_stream[family]=[rr.choice(replay_by_family[family])
+                                   for _ in range(slots[family])]
+            if pair_by_family[family]:
+                pr=random.Random(seed+2003+family_index*109)
+                pair_stream[family]=[pr.choice(pair_by_family[family])
+                                     for _ in range(slots[family])]
+        replay_stream_sha=hashlib.sha256(json.dumps(replay_stream,sort_keys=True).encode()).hexdigest()
+        if pair_stream:
+            pair_stream_sha=hashlib.sha256(json.dumps(pair_stream,sort_keys=True).encode()).hexdigest()
     microbatch_counts={family:{'counterfactual':0,'replay':0} for family in families}
-    torch.manual_seed(seed)  # Same dropout sequence for the four ablation arms.
+    torch.manual_seed(seed)  # Same dropout sequence for each controlled arm.
     history=[]
+    parent_anchor_total=0
+    parent_replay_items=0
     for step in range(1,steps+1):
         optimizer.zero_grad(set_to_none=True)
         parts=[]
@@ -642,7 +756,11 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                 # not merely equal totals with an accidental pair/replay skew.
                 target_pairs=int((seen+1)*counterfactual_fraction+0.5)
                 is_pair=counts['counterfactual']<target_pairs
-                indices=(rng.choice(group) if is_pair else [rng.choice(replay)])
+                if controlled_exposure:
+                    indices=(pair_stream[family][counts['counterfactual']] if is_pair else
+                             [replay_stream[family][counts['replay']]])
+                else:
+                    indices=(rng.choice(group) if is_pair else [rng.choice(replay)])
                 counts['counterfactual' if is_pair else 'replay']+=1
             else:
                 is_pair=bool(pair_choices) and rng.random()<counterfactual_fraction
@@ -658,8 +776,17 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                     training_spans=lab['spans'] if stage!='G1' else None,
                     memory=bank,active_stage=stage)
                 episode_row={**row,'memory_target':item.get('memory_target')}
-                local_losses.append(stage_loss(head,output_head,lab,episode_row,stage,
-                    memory=bank,structured_weight=structured_weight))
+                stage_objective=stage_loss(head,output_head,lab,episode_row,stage,
+                    memory=bank,structured_weight=structured_weight,hard_null_weight=hard_null_weight)
+                if parent_teacher is not None and not row.get('counterfactual_pair'):
+                    with torch.no_grad():
+                        parent_output=parent_teacher(hidden,eligible=prep['eligible'].to(device),
+                                                     active_stage='G1')
+                    tether,anchors=g1_parent_retention_loss(output_head,parent_output,lab)
+                    stage_objective=stage_objective+parent_retention_weight*tether
+                    parent_anchor_total+=anchors
+                    parent_replay_items+=1
+                local_losses.append(stage_objective)
                 predictions.append((output_head,lab))
             loss=torch.stack(local_losses).mean()
             if is_pair and consistency_weight:
@@ -694,13 +821,22 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
          'steps':steps,'accum':accum,'lr':lr,'seed':seed,'last_loss':history[-1],
          'test_split_used':False,'production_promotion':False,
          'next_training_gate':'LOCKED_PENDING_CERTIFICATION',
-         'g1_training_objective':'positive-null-overlap-structured-set-counterfactual-v2-balanced'
-             if family_balanced else 'positive-null-overlap-structured-set-counterfactual-v1',
+         'g1_training_objective':('positive-null-overlap-exposure-controlled-v1'
+             if controlled_exposure else
+             'positive-null-overlap-structured-set-counterfactual-v2-balanced'
+             if family_balanced else 'positive-null-overlap-structured-set-counterfactual-v1'),
          'counterfactual_pair_count':len(pair_choices),
          'counterfactual_fraction':counterfactual_fraction,
          'consistency_weight':consistency_weight,
+         'parent_retention_weight':parent_retention_weight,
+         'g1_parent_retention_anchor_count':parent_anchor_total,
+         'g1_parent_retention_replay_items':parent_replay_items,
          'structured_weight':structured_weight,
+         'hard_null_weight':hard_null_weight,
          'g1_family_balanced':bool(family_balanced),
+         'g1_controlled_exposure':bool(controlled_exposure),
+         'g1_replay_stream_sha256':replay_stream_sha,
+         'g1_pair_stream_sha256':pair_stream_sha,
          'g1_microbatch_family_counts':microbatch_counts if family_balanced else None,
          'g1_parent_dataset_sha256':backbone.sha256(refine_parent_dataset) if refine_parent_dataset else None,
          'g1_refined_from':str(Path(refine_checkpoint).resolve()) if refine_checkpoint else None,
@@ -1083,6 +1219,25 @@ def main(argv=None):
     ap=argparse.ArgumentParser(description=__doc__)
     sub=ap.add_subparsers(dest='command',required=True)
     sub.add_parser('plan')
+    exposure=sub.add_parser('audit-g1-exposure')
+    exposure.add_argument('--replay',required=True)
+    exposure.add_argument('--fraction-10',required=True)
+    exposure.add_argument('--fraction-25',required=True)
+    exposure.add_argument('--fraction-50',required=True)
+    exposure.add_argument('--output',required=True)
+    miss=sub.add_parser('audit-g1-missed-spans')
+    miss.add_argument('--control',required=True)
+    miss.add_argument('--structured',required=True)
+    miss.add_argument('--null-focused',required=True)
+    miss.add_argument('--output',required=True)
+    miss.add_argument('--baseline-diagnosis')
+    miss.add_argument('--control-diagnosis')
+    miss.add_argument('--structured-diagnosis')
+    miss.add_argument('--null-focused-diagnosis')
+    retain=sub.add_parser('audit-g1-retention')
+    retain.add_argument('--control',required=True)
+    retain.add_argument('--retained',required=True)
+    retain.add_argument('--output',required=True)
     audit=sub.add_parser('audit-g1-ablations')
     audit.add_argument('--none',required=True)
     audit.add_argument('--structured',required=True)
@@ -1097,6 +1252,80 @@ def main(argv=None):
     cmp.add_argument('--output',required=True)
     cmp.add_argument('--device',default='cuda')
     cmp.add_argument('--max-length',type=int,default=2048)
+    frozen=sub.add_parser('frob-g1-frozen-decoder',
+        help='Development-only fixed-score whole-span decoder comparison; no training or promotion')
+    frozen.add_argument('--dataset',required=True)
+    frozen.add_argument('--checkpoint',required=True)
+    frozen.add_argument('--baseline-diagnosis',required=True)
+    frozen.add_argument('--output',required=True)
+    frozen.add_argument('--device',default='cuda')
+    frozen.add_argument('--max-length',type=int,default=2048)
+    frozen.add_argument('--expected-head-sha256',
+        default='114150ae0ef351a2bd365b63c6a7fd70ac53d973d673577c5a910f6b8e1a7c90')
+    transfer=sub.add_parser('frob-g1-decoder-transfer',
+        help='Frozen linear decoder across G1-0007 and three G1-0008 checkpoints; development only')
+    transfer.add_argument('--root',required=True)
+    transfer.add_argument('--output',required=True)
+    transfer.add_argument('--reference-report')
+    transfer.add_argument('--device',default='cuda')
+    transfer.add_argument('--max-length',type=int,default=2048)
+    fresh=sub.add_parser('frob-g1-fresh-dev',
+        help='Frozen top-two checkpoints on newly seeded dev examples; no G2 or challenge')
+    fresh.add_argument('--root',required=True)
+    fresh.add_argument('--transfer-report',required=True)
+    fresh.add_argument('--output',required=True)
+    fresh.add_argument('--device',default='cuda')
+    fresh.add_argument('--max-length',type=int,default=2048)
+    null_boundary=sub.add_parser('frob-g1-null-boundary',
+        help='Read-only null-vs-object margin and decoder-conflict probe; dev only, no G2')
+    null_boundary.add_argument('--root',required=True)
+    null_boundary.add_argument('--transfer-report',required=True)
+    null_boundary.add_argument('--fresh-run',required=True)
+    null_boundary.add_argument('--output',required=True)
+    null_boundary.add_argument('--device',default='cuda')
+    null_boundary.add_argument('--max-length',type=int,default=2048)
+    validation=sub.add_parser('frob-g1-calibration-validation',
+        help='Read-only four-way frozen null calibration on 320 new dev prompts; no G2')
+    validation.add_argument('--root',required=True)
+    validation.add_argument('--transfer-report',required=True)
+    validation.add_argument('--fresh-run',required=True)
+    validation.add_argument('--null-run',required=True)
+    validation.add_argument('--output',required=True)
+    validation.add_argument('--device',default='cuda')
+    validation.add_argument('--max-length',type=int,default=2048)
+    action_errors=sub.add_parser('frob-g1-action-errors',
+        help='Frozen G1-0014 winner action-error attribution; read-only dev, G2 locked')
+    action_errors.add_argument('--root',required=True)
+    action_errors.add_argument('--transfer-report',required=True)
+    action_errors.add_argument('--fresh-run',required=True)
+    action_errors.add_argument('--null-run',required=True)
+    action_errors.add_argument('--validation-run',required=True)
+    action_errors.add_argument('--output',required=True)
+    action_errors.add_argument('--device',default='cuda')
+    action_errors.add_argument('--max-length',type=int,default=2048)
+    action_ranking=sub.add_parser('frob-g1-action-ranking',
+        help='G1-0016 frozen action-span ranking ablation on G1-0014 dev; G2 locked')
+    action_ranking.add_argument('--root',required=True)
+    action_ranking.add_argument('--transfer-report',required=True)
+    action_ranking.add_argument('--fresh-run',required=True)
+    action_ranking.add_argument('--null-run',required=True)
+    action_ranking.add_argument('--validation-run',required=True)
+    action_ranking.add_argument('--action-run',required=True)
+    action_ranking.add_argument('--output',required=True)
+    action_ranking.add_argument('--device',default='cuda')
+    action_ranking.add_argument('--max-length',type=int,default=2048)
+    action_width_validation=sub.add_parser('frob-g1-action-width-validation',
+        help='G1-0018 frozen two-way action-width comparison on 320 unseen dev prompts; G2 locked')
+    action_width_validation.add_argument('--root',required=True)
+    action_width_validation.add_argument('--transfer-report',required=True)
+    action_width_validation.add_argument('--fresh-run',required=True)
+    action_width_validation.add_argument('--null-run',required=True)
+    action_width_validation.add_argument('--validation-run',required=True)
+    action_width_validation.add_argument('--action-run',required=True)
+    action_width_validation.add_argument('--ranking-run',required=True)
+    action_width_validation.add_argument('--output',required=True)
+    action_width_validation.add_argument('--device',default='cuda')
+    action_width_validation.add_argument('--max-length',type=int,default=2048)
     d=sub.add_parser('diagnose-g1')
     d.add_argument('--dataset',required=True);d.add_argument('--checkpoint',required=True)
     d.add_argument('--output',required=True);d.add_argument('--device',default='cuda')
@@ -1113,6 +1342,12 @@ def main(argv=None):
     t.add_argument('--structured-weight',type=float,default=.40)
     t.add_argument('--family-balanced',action='store_true',
                    help='Exactly balance encounter and allocation training microbatches')
+    t.add_argument('--hard-null-weight',type=float,default=0.0,
+                   help='Additional training-only margin on gold complete spans classified as null')
+    t.add_argument('--parent-retention-weight',type=float,default=0.0,
+                   help='Distill only correct parent G1 spans on original replay examples')
+    t.add_argument('--controlled-exposure',action='store_true',
+                   help='Deterministic matched replay/pair streams; G1 only, consistency loss off')
     t.add_argument('--device',default='cuda');t.add_argument('--steps',type=int,default=400)
     t.add_argument('--accum',type=int,default=4);t.add_argument('--lr',type=float,default=3e-4)
     t.add_argument('--max-length',type=int,default=2048)
@@ -1134,6 +1369,21 @@ def main(argv=None):
     g.add_argument('--retention-challenge',action='append',default=[],metavar='G1=REPORT_PATH')
     a=ap.parse_args(argv)
     if a.command=='plan':result=plan()
+    elif a.command=='audit-g1-exposure':
+        from tools.nanojev_gamer_v1_graph_comparison import audit_exposure
+        result=audit_exposure(replay=a.replay,fraction_10=a.fraction_10,
+             fraction_25=a.fraction_25,fraction_50=a.fraction_50,output=a.output)
+    elif a.command=='audit-g1-missed-spans':
+        from tools.nanojev_gamer_v1_graph_comparison import audit_g1_missed_span_objectives
+        result=audit_g1_missed_span_objectives(control=a.control,structured=a.structured,
+               null_focused=a.null_focused,output=a.output,
+               baseline_diagnosis=a.baseline_diagnosis,
+               control_diagnosis=a.control_diagnosis,
+               structured_diagnosis=a.structured_diagnosis,
+               null_focused_diagnosis=a.null_focused_diagnosis)
+    elif a.command=='audit-g1-retention':
+        from tools.nanojev_gamer_v1_graph_comparison import audit_retention
+        result=audit_retention(control=a.control,retained=a.retained,output=a.output)
     elif a.command=='audit-g1-ablations':
         from tools.nanojev_gamer_v1_graph_comparison import audit_ablations
         result=audit_ablations(none=a.none,structured=a.structured,
@@ -1145,6 +1395,49 @@ def main(argv=None):
            baseline_checkpoint=a.baseline_checkpoint,
            candidate_checkpoint=a.candidate_checkpoint,output=a.output,
            device=a.device,max_length=a.max_length)
+    elif a.command=='frob-g1-frozen-decoder':
+        from tools.nanojev_gamer_v1_g1_decoder_frob import run
+        result=run(dataset=a.dataset,checkpoint=a.checkpoint,
+           baseline_diagnosis=a.baseline_diagnosis,output=a.output,
+           device=a.device,max_length=a.max_length,
+           expected_head_sha256=a.expected_head_sha256)
+    elif a.command=='frob-g1-decoder-transfer':
+        from tools.nanojev_gamer_v1_g1_decoder_transfer import run
+        result=run(root=a.root,output=a.output,device=a.device,
+                   reference_report=a.reference_report,max_length=a.max_length)
+    elif a.command=='frob-g1-fresh-dev':
+        from tools.nanojev_gamer_v1_g1_fresh_dev import run
+        result=run(root=a.root,transfer_report=a.transfer_report,output=a.output,
+                   device=a.device,max_length=a.max_length)
+    elif a.command=='frob-g1-null-boundary':
+        from tools.nanojev_gamer_v1_g1_null_boundary import run
+        result=run(root=a.root,transfer_report=a.transfer_report,
+                   fresh_run=a.fresh_run,output=a.output,device=a.device,
+                   max_length=a.max_length)
+    elif a.command=='frob-g1-calibration-validation':
+        from tools.nanojev_gamer_v1_g1_calibration_validation import run
+        result=run(root=a.root,transfer_report=a.transfer_report,
+                   fresh_run=a.fresh_run,null_run=a.null_run,
+                   output=a.output,device=a.device,max_length=a.max_length)
+    elif a.command=='frob-g1-action-errors':
+        from tools.nanojev_gamer_v1_g1_action_errors import run
+        result=run(root=a.root,transfer_report=a.transfer_report,
+                   fresh_run=a.fresh_run,null_run=a.null_run,
+                   validation_run=a.validation_run,output=a.output,
+                   device=a.device,max_length=a.max_length)
+    elif a.command=='frob-g1-action-ranking':
+        from tools.nanojev_gamer_v1_g1_action_ranking import run
+        result=run(root=a.root,transfer_report=a.transfer_report,
+                   fresh_run=a.fresh_run,null_run=a.null_run,
+                   validation_run=a.validation_run,action_run=a.action_run,
+                   output=a.output,device=a.device,max_length=a.max_length)
+    elif a.command=='frob-g1-action-width-validation':
+        from tools.nanojev_gamer_v1_g1_action_width_validation import run
+        result=run(root=a.root,transfer_report=a.transfer_report,
+                   fresh_run=a.fresh_run,null_run=a.null_run,
+                   validation_run=a.validation_run,action_run=a.action_run,
+                   ranking_run=a.ranking_run,output=a.output,
+                   device=a.device,max_length=a.max_length)
     elif a.command=='diagnose-g1':
         from tools.nanojev_gamer_v1_graph_diagnostic import diagnose
         result=diagnose(dataset=a.dataset,checkpoint=a.checkpoint,output=a.output,
@@ -1156,7 +1449,9 @@ def main(argv=None):
        max_span_tokens=a.max_span_tokens,refine_checkpoint=a.refine_checkpoint,
        refine_parent_dataset=a.refine_parent_dataset,
        counterfactual_fraction=a.counterfactual_fraction,consistency_weight=a.consistency_weight,
-       structured_weight=a.structured_weight,family_balanced=a.family_balanced)
+       structured_weight=a.structured_weight,family_balanced=a.family_balanced,
+       controlled_exposure=a.controlled_exposure,
+       parent_retention_weight=a.parent_retention_weight,hard_null_weight=a.hard_null_weight)
     elif a.command=='evaluate':result=evaluate(dataset=a.dataset,checkpoint=a.checkpoint,
        output=a.output,split=a.split,limit=a.limit,device=a.device,
        ablation_limit=a.ablation_limit,max_length=a.max_length,target_stage=a.target_stage,

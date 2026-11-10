@@ -228,7 +228,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "target_output_tokens: targetOutputTokens" in js
     assert 'unit: "compute_credit"' in js
     assert 'mode: settings.executionMode' in js
-    assert '"/api/applications/worker/register-offer"' in js
+    assert '"/api/applications/worker/offer-sync"' in js
+    assert '/api/applications/worker/register-offer' not in js
     assert '"/api/applications/worker/hub-health"' not in js
     assert '"/api/applications/worker/settings"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
@@ -250,8 +251,9 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "workerRegisteredOfferId" not in bindings
     assert "workerRegisteredPrice" not in bindings
 
-    assert '"/api/applications/worker/register-offer"' in dispatch
-    assert "self._handle_worker_offer_register()" in dispatch
+    assert '"/api/applications/worker/offer-sync"' in dispatch
+    assert "/api/applications/worker/register-offer" not in dispatch
+    assert "self._handle_worker_offer_sync()" in dispatch
     assert '"/api/applications/worker/hub-health"' in dispatch
     assert "self._handle_worker_hub_health()" in dispatch
     assert '"/api/applications/worker/settings"' in dispatch
@@ -277,9 +279,10 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/hub/v1/credits/multisession-keys/revoke"' in energy_routes
     assert '"/api/hub/v1/credits/wallet-funding/complete"' in energy_routes
     assert "/api/hub/v1/credits/balance" in energy_routes
-    assert '"/api/hub/v1/workers/register"' in energy_routes
+    assert '"/api/hub/v1/workers/register"' not in energy_routes
+    assert 'def _worker_offer_sync_pending' in energy_routes
     assert "phase12_worker_seller_offer_ui" in energy_routes
-    assert "Worker offer registration is only available to local viewport clients." in energy_routes
+    assert "Worker offer changes are local-only." in energy_routes
 
 
 def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys_visible() -> None:
@@ -593,7 +596,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "def _worker_runtime_policy" in energy_routes
     assert "windows_quser_v1" in energy_routes
     assert '"/api/hub/v1/workers/heartbeat"' not in energy_routes
-    assert '"/api/hub/v1/workers/live-session"' in energy_routes
+    assert '_WorkerHubLiveSessionClient.endpoint_path' in energy_routes
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
     assert '"workerAutoConnectNetwork": auto_connect_network' in energy_routes

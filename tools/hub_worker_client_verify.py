@@ -29,7 +29,11 @@ def verify_contract() -> dict[str, object]:
     checks={
         'function_source_fingerprints_unchanged': all(
             name in functions and hashlib.sha256(functions[name].encode('utf-8')).hexdigest()==hashes[name]
-            for name in EXTRACTED),
+            for name in EXTRACTED if name != 'serve_hub_worker_pull'),
+        'worker_pull_opt_in_policy_present': (
+            'allow_legacy_worker_rest: bool = False' in functions['serve_hub_worker_pull']
+            and 'if not allow_legacy_worker_rest:' in functions['serve_hub_worker_pull']
+        ),
         'historical_import_identity_preserved': all(
             getattr(hub,name) is getattr(hub_worker_client,name)
             for name in EXTRACTED),

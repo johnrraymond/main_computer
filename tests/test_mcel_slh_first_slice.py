@@ -55,12 +55,13 @@ def test_semantic_source_is_authority_not_html_or_compatibility_scaffold():
     assert not ir["layouts"]
     assert plan["schema"] == "mcel.generated-composition.v1"
     assert plan["policy"] == "mcel.semantic-structure.p3"
-    assert sorted(e["risk"] for e in ir["effects"]) == ["consequential"] * 7 + ["external-read"] * 4
+    assert sorted(e["risk"] for e in ir["effects"]) == ["consequential"] * 7 + ["external-read"] * 6
     assert {i["id"] for i in ir["intents"]} == {
         "intent:refresh-overview", "intent:refresh-health", "intent:refresh-workers",
         "intent:refresh-worker-summary", "intent:select-view", "intent:choose-worker", "intent:rename-worker",
         "intent:start-local", "intent:bootstrap-administrator", "intent:configure-organization",
-        "intent:activate-organization", "intent:login-administrator", "intent:logout-administrator"
+        "intent:activate-organization", "intent:login-administrator", "intent:logout-administrator",
+        "intent:refresh-identities", "intent:refresh-identity-status", "intent:choose-identity"
     }
     assert 'href="/applications/slh/workers"' in render_slh_page()
     assert 'href="/applications/slh"' in render_slh_page("worker-bank")
@@ -146,6 +147,9 @@ def test_browser_synthesizes_semantic_app_with_exact_read_adapter(route, expecte
               window.__slhRequests=[];
               window.fetch=async (url, options)=> {
                 window.__slhRequests.push({url,method:options.method});
+                if(url==='/api/applications/slh/identities' && options.method==='GET')
+                   return {ok:true,json:async()=>({schema:'mcel.slh.identities.v4b',state:'UNAVAILABLE',
+                     defaultDeviceId:'',identities:[],explanation:'LMS-SLH not running'})};
                 if(url !== '/api/applications/slh/observe?view=' + data.view || options.method !== 'GET')
                    throw Error('Unexpected SLH request');
                 return {ok:true,json:async()=>data};
@@ -158,8 +162,11 @@ def test_browser_synthesizes_semantic_app_with_exact_read_adapter(route, expecte
             assert page.locator('a[href="/applications/slh/workers"]').count() == 1
             assert page.locator("body").get_attribute("data-mcel-slh-initial-view") == expected_view
             calls = page.evaluate("window.__slhRequests")
-            assert len(calls) == 2
-            assert all(x == {"url": "/api/applications/slh/observe?view=" + requested_view, "method": "GET"} for x in calls)
+            assert len(calls) == 4
+            assert sum(x == {"url": "/api/applications/slh/observe?view=" + requested_view,
+                             "method": "GET"} for x in calls) == 2
+            assert sum(x == {"url": "/api/applications/slh/identities", "method": "GET"}
+                       for x in calls) == 2
             assert errors == []
         finally:
             browser.close()

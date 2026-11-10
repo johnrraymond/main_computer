@@ -11,7 +11,7 @@
 1. Administrator authorizes a device's **first enrollment**. Two UI paths, **Enroll with key** and **Approve from New Device Authorization Queue**, use **one backend approval method**. Selected administrator aliases grant no authority.
 2. Devices generate their own private authentication keys and register public keys. Known Device login proves key possession with one-time, session-bound challenges. Editable names, owners, notes and addresses do not identify a device cryptographically.
 3. Every local actor uses the **same LMS-SLH identity model**. Policy may require a second independently controlled identity to approve an action, but **person and machine are not separate credential types**. Marketplace wallet keys remain distinct financial authority.
-4. Local SLH admin and an equally authorized administrator's separate SLH application use **the same backend admin API**, information model and role checks. Only first-admin bootstrap and true hardware recovery must be host-local.
+4. Local SLH admin and an equally authorized administrator's separate SLH application use **the same backend admin API**, information model and role checks. Under the new **[TARGET]** ORG-SLH root-key mechanism, root material is normally obtained by authorized LMS-SLH access to the host disk; ORG-SLH root-authorized registration is **not** restricted to host-local network callers. A stolen root could be presented remotely. Hardware recovery is not required in this phase.
 5. Direct SLH and SEH-connected clients follow **identical** enrollment/auth/session/authorization APIs. The SEH is a public HTTPS/WSS relay, not an authentication server; keep E2E authenticated encryption from client to SLH.
 6. Walletless workers may be represented by many SLH-owned public wallet sessions. Public marketplace job authorization occurs before forwarding work, and physical-worker capacity is never overbooked.
 7. Private B2SelfB jobs remain private. For **successfully fulfilled qualifying local secure model access**, the SLH records an honest, idempotent **Pinky Promise** obligation of **0.1 credit per request**, using a fixed **1-credit open-market reference for 1,000 output tokens**; the organization wallet later pays the Main Computer Reserve. This is not live market-price discovery or token-based intra-org billing. A route ticket alone is not chargeable fulfillment, and the public Hub cannot verify undisclosed internal work.
@@ -38,7 +38,9 @@ Private signing keys are never present in SLH's device registry and never appear
 
 ### 3.1 First administrator
 
-`POST /v1/bootstrap/admin` is **host-local setup only**: cannot be invoked through LAN/SEH, opens only while uninitialized, checks local installation authority, enrolls the first administrator authenticator, provisions recovery, atomically closes first-claim path and audits the event. Remote management is available **after** this initialization.
+**[HISTORICAL/CURRENT]** `POST /v1/bootstrap/admin` is a one-time host-local bootstrap-secret path; its locality and closure rules describe the existing API, **not** the new root-key design.
+
+**[TARGET]** ORG-SLH creates/reuses a persistent `LOCAL-AUTH-KEY` on startup. LMS-SLH, with trusted local disk access, submits that ORG-SLH-owned root through the network-accessible authenticated/encrypted ORG-SLH administration API with a selected **ordinary LMS-SLH identity** and fresh proof of signing-key possession. ORG-SLH grants that identity administrator authorization for first registration **or later explicit recovery**, including for an already established organization. Ordinary sessions continue to use challenge-response; the root is not an everyday login credential. There is no restriction to loopback source addresses for root verification, and a stolen root can be used remotely. **V6-A implements the root and ORG-SLH endpoint, V6-B the LMS-SLH caller, and V6-C conditional login-triggered first-admin enrollment when local ORG-SLH state shows zero active admin identities. Explicit recovery remains separate.** See [ORG-SLH Root Authorization](slh-local-auth-key-root-authorization.md).
 
 ### 3.2 Two enrollment approvals; one implementation
 
@@ -83,7 +85,7 @@ POST /v1/admin/seh/deploy
 GET  /v1/admin/audit
 ```
 
-The host app uses the same local API behind a local authenticated channel as an enrolled remote SLH app uses over LAN/VPN or SEH. Authorization checks **never** use `client_is_loopback` as a substitute for administrator identity or role; initial bootstrap/hardware recovery are explicit exceptions. Enrolled remote admins must have access to the same data and actions **for identical scopes**, including administration of Coolify-deployed SEH targets. Responses omit secret material; requests to spend, deploy or change access require operation-specific step-up and produce audit records.
+The host app uses the same local API behind a local authenticated channel as an enrolled remote SLH app uses over LAN/VPN or SEH. Authorization checks **never** use `client_is_loopback` as a substitute for administrator identity or role. The existing one-time bootstrap route is a historical local-only exception; the **[V6-A]** `LOCAL-AUTH-KEY` grant verifies the bearer root and identity-key possession rather than the caller's IP address. Enrolled remote admins must have access to the same data and actions **for identical scopes**, including administration of Coolify-deployed SEH targets. Responses omit secret material; requests to spend, deploy or change access require operation-specific step-up and produce audit records.
 
 ## 5. Address/discovery and SEH transport
 
@@ -112,7 +114,7 @@ For a public paid work session, preserve Ring 2 `offer → accept/reserve → hu
 
 | Gate | Positive | Negative |
 | --- | --- | --- |
-| P0 | Local first admin created once; remote admin application subsequently connects | SEH or LAN client cannot claim uninitialized SLH |
+| P0 | First administrator granted only with validated ORG-SLH root (target) and selected identity-key proof, then authenticates normally | Wrong root or unsigned identity is refused; caller IP alone supplies no authority |
 | P1 | Both enrollment paths converge on the same approval method and result | Invalid, expired or reused key rejected; self-approval rejected |
 | P2 | Pending admin queue can defer for physical inspection | Transferable invitation does not bypass physical policy |
 | P3 | Registry supports name/owner/notes changes | Changes don't alter public-key identity or grant implicit roles |

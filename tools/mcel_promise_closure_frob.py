@@ -22,9 +22,9 @@ WAVES = {
     'file-explorer': ('mcel-promise-wave5', 'mcel.promise-wave5-second-app.v1'),
 }
 SOURCES = {
-    'task-manager': ('mcel_experiments/task-manager-notebook/application.js',
+    'task-manager': ('tools/fixtures/mcel_candidates/task-manager-notebook/application.js',
                      'main_computer/web/applications/scripts/mcel-task-manager-notebook-candidate-ir.js'),
-    'file-explorer': ('mcel_experiments/file-explorer-candidate/application.js',
+    'file-explorer': ('tools/fixtures/mcel_candidates/file-explorer-candidate/application.js',
                       'main_computer/web/applications/scripts/mcel-file-explorer-candidate-ir.js'),
 }
 SHARED_CORE = ('main_computer/web/applications/scripts/mcel-semantic-application-shell.js',

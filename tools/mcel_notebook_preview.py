@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from main_computer.mcel_notebook_projection import NotebookProjectionRefused, compile_notebook_preview
 
-DEFAULT_SOURCE = ROOT / "mcel_experiments/task-manager-notebook/application.js"
+DEFAULT_SOURCE = ROOT / "tools/fixtures/mcel_candidates/task-manager-notebook/application.js"
 DEFAULT_OUTPUT = ROOT / "runtime/reports/mcel-experiments/task-manager-notebook/generated-notebook.html"
 
 

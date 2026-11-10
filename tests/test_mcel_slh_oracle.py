@@ -52,8 +52,8 @@ def test_oracle_refuses_mutation_authority(tmp_path):
     source = oracle.SPEC.read_text(encoding='utf-8')
     original = json.loads(source)
     original['presentation_contract']['mutations_enabled'] = True
-    (tmp_path / 'mcel_oracles/slh').mkdir(parents=True)
-    (tmp_path / 'mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(original))
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh').mkdir(parents=True)
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(original))
     with pytest.raises(oracle.OracleError, match='mutations-forbidden'):
         oracle.verify_source(tmp_path)
 
@@ -191,8 +191,8 @@ def test_oracle_cannot_silently_delete_source_requirements(tmp_path):
     source = json.loads(oracle.SPEC.read_text(encoding='utf-8'))
     source['source_contracts'] = [item for item in source['source_contracts']
                                   if item['path'] != '/v1/workers']
-    (tmp_path / 'mcel_oracles/slh').mkdir(parents=True)
-    (tmp_path / 'mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(source))
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh').mkdir(parents=True)
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(source))
     with pytest.raises(oracle.OracleError, match='required-contracts-changed'):
         oracle.verify_source(tmp_path)
 
@@ -228,7 +228,7 @@ def test_slh_navigation_contract_before_synthesis():
 def test_slh_oracle_denies_unopenable_or_misrouted_destination(tmp_path, field, value, error):
     spec = json.loads(oracle.SPEC.read_text(encoding='utf-8'))
     spec['navigation_contract']['destinations'][1][field] = value
-    (tmp_path / 'mcel_oracles/slh').mkdir(parents=True)
-    (tmp_path / 'mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(spec), encoding='utf-8')
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh').mkdir(parents=True)
+    (tmp_path / 'tests/fixtures/mcel_oracles/slh/oracle.v1.json').write_text(json.dumps(spec), encoding='utf-8')
     with pytest.raises(oracle.OracleError, match=error):
         oracle.verify_source(tmp_path)

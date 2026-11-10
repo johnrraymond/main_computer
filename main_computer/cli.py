@@ -257,6 +257,8 @@ def _build_captain_engage_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-interval-s", type=float, default=2.0, help="Seconds between empty worker-pull polls.")
     parser.add_argument("--heartbeat-interval-s", type=float, default=30.0, help="Seconds between worker availability heartbeats.")
     parser.add_argument("--lease-seconds", type=float, default=None, help="Optional requested lease duration for worker-pull work.")
+    parser.add_argument("--allow-legacy-worker-rest", action="store_true", default=False,
+                        help="Opt in to deprecated REST Worker-pull if the Hub does not advertise live sessions; no automatic fallback.")
     parser.add_argument("--max-requests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "-noverbose",
@@ -369,6 +371,7 @@ def _run_captain_engage_computer(args: argparse.Namespace, option_tokens: list[s
             lease_seconds=engage_options.lease_seconds,
             verbose=engage_options.verbose,
             max_requests=engage_options.max_requests,
+            allow_legacy_worker_rest=engage_options.allow_legacy_worker_rest,
         )
     except RuntimeError as exc:
         print(f"ERROR: {exc}")
@@ -841,6 +844,8 @@ def _build_data_engage_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-interval-s", type=float, default=2.0, help="Seconds between empty worker-pull polls.")
     parser.add_argument("--heartbeat-interval-s", type=float, default=30.0, help="Seconds between worker availability heartbeats.")
     parser.add_argument("--lease-seconds", type=float, default=None, help="Optional requested lease duration for worker-pull work.")
+    parser.add_argument("--allow-legacy-worker-rest", action="store_true", default=False,
+                        help="Opt in to deprecated REST Worker-pull if the Hub does not advertise live sessions; no automatic fallback.")
     parser.add_argument("--max-requests", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "-noverbose",
@@ -910,6 +915,7 @@ def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]
             lease_seconds=engage_options.lease_seconds,
             verbose=engage_options.verbose,
             max_requests=engage_options.max_requests,
+            allow_legacy_worker_rest=engage_options.allow_legacy_worker_rest,
             officer="o3",
             solve_fn=worker.solve if worker_config.provider == "nanojev" else None,
         )

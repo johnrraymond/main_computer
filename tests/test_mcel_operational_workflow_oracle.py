@@ -28,7 +28,7 @@ def test_generic_fixture_reference_is_windows_path_independent(monkeypatch):
     root = PureWindowsPath(r"C:\Users\operator\main_computer")
     monkeypatch.setattr(oracle, 'ROOT', root)
     monkeypatch.setattr(
-        oracle, 'GENERIC', root / 'mcel_oracles' / 'operational-workflows' / 'generic_application.js',
+        oracle, 'GENERIC', root / 'tests' / 'fixtures' / 'mcel_oracles' / 'operational-workflows' / 'generic_application.js',
     )
     assert oracle.read_contract()['generic_control']['fixture'] == (
         'mcel_oracles/operational-workflows/generic_application.js'

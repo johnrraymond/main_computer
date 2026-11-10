@@ -74,6 +74,7 @@ def test_first_run_from_stopped_to_org_authenticated(tmp_path):
 
     ctl = SlhFirstRunController(state_dir=state, identity_dir=identities,
                                 local_port=local_port, runner=runner)
+    ctl.identities.create('admin-pc',label='Test Admin')
     try:
         assert ctl.status()['local'] == 'UNREACHABLE'
         assert ctl.execute('start', {})['outcome'] == 'STARTED'
@@ -146,9 +147,9 @@ def test_generated_first_run_browser_completes_authenticated_setup(tmp_path):
     import shutil
 
     state, identities = tmp_path/'state', tmp_path/'identities'
-    local_port, api_port, worker_port = free_port(), free_port(), free_port()
-    while len({local_port, worker_port, api_port}) != 3:
-        local_port, api_port, worker_port = free_port(), free_port(), free_port()
+    # Auto-configuration selects the port immediately after the Worker port.
+    local_port, worker_port = free_port(), free_port()
+    api_port = worker_port + 1
     procs = []
     def spawn(*args, **kwargs):
         process = subprocess.Popen(*args, **kwargs)
@@ -157,6 +158,17 @@ def test_generated_first_run_browser_completes_authenticated_setup(tmp_path):
     ctl = SlhFirstRunController(state_dir=state, identity_dir=identities,
                                 local_port=local_port, runner=spawn)
     bridge = OrganizationWorkerClient(state_dir=state)
+    default=ctl.identities.ensure_default_identity()
+    device_id=default['device_id']
+    def observed_identities():
+        from main_computer.mcel_slh_application import IDENTITIES_SCHEMA
+        if ctl.status()['local']!='RUNNING':
+            return {'schema':IDENTITIES_SCHEMA,'state':'UNAVAILABLE',
+                    'defaultDeviceId':'','identities':[],'explanation':'LMS-SLH is not running'}
+        return {'schema':IDENTITIES_SCHEMA,'state':'AVAILABLE',
+                'defaultDeviceId':device_id,'explanation':'Local identity discovered; role unverified',
+                'identities':[{'deviceId':device_id,'label':default['label'],
+                               'fingerprint':default['fingerprint'],'defaultStatus':'DEFAULT'}]}
     def observed(view, **kw):
         return observe_slh(view, probe=lambda:_local_status(port=local_port),
                            worker_client=bridge, **kw)
@@ -180,8 +192,10 @@ def test_generated_first_run_browser_completes_authenticated_setup(tmp_path):
         except HTTPError as exc:
             return {'ok': False, 'data': json.loads(exc.read())}
     try:
-        with patch('main_computer.mcel_slh_first_run.SlhFirstRunController', return_value=ctl), \
-             patch('main_computer.mcel_slh_application.observe_slh', side_effect=observed):
+        with patch('main_computer.mcel_slh_first_run.DEFAULT_SLH_MANAGED_PORT', worker_port), \
+             patch('main_computer.mcel_slh_first_run.SlhFirstRunController', return_value=ctl), \
+             patch('main_computer.mcel_slh_application.observe_slh', side_effect=observed), \
+             patch('main_computer.mcel_slh_application.observe_lms_slh_identities', side_effect=observed_identities):
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, executable_path=shutil.which('chromium') or None)
                 try:
@@ -198,27 +212,11 @@ def test_generated_first_run_browser_completes_authenticated_setup(tmp_path):
                     page.get_by_text('SLH observation complete', exact=False).wait_for(timeout=15000)
                     page.locator('button[data-intent="intent:start-local"]').click()
                     page.get_by_text('Loopback SLH control service verified', exact=False).wait_for(timeout=15000)
-                    form=page.locator('form[data-intent="intent:bootstrap-administrator"]')
-                    form.locator('input[name="adminId"]').fill('owner')
-                    form.locator('input[name="adminName"]').fill('Browser Operator')
-                    form.locator('input[name="deviceId"]').fill('admin-pc')
-                    form.locator('input[name="acknowledgeP256Only"]').check()
-                    form.locator('button[type="submit"]').click()
-                    page.get_by_text('First administrator established', exact=False).wait_for(timeout=15000)
-                    form=page.locator('form[data-intent="intent:configure-organization"]')
-                    form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-                    form.locator('input[name="host"]').fill('127.0.0.1')
-                    form.locator('input[name="apiPort"]').fill(str(api_port))
-                    form.locator('input[name="workerPort"]').fill(str(worker_port))
-                    form.locator('button[type="submit"]').click()
-                    page.get_by_text('Worker service configured but disabled', exact=False).wait_for(timeout=15000)
-                    form=page.locator('form[data-intent="intent:activate-organization"]')
-                    form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-                    form.locator('button[type="submit"]').click()
-                    page.get_by_text('Organization Service running and TLS listening', exact=False).wait_for(timeout=15000)
-                    form=page.locator('form[data-intent="intent:login-administrator"]')
-                    form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-                    form.locator('button[type="submit"]').click()
+                    assert page.locator('form[data-intent="intent:bootstrap-administrator"]').count()==0
+                    assert page.locator('input[name="adminId"]').count()==0
+                    assert page.locator('input[name="adminName"]').count()==0
+                    assert page.locator('input[name="acknowledgeP256Only"]').count()==0
+                    page.locator('button[data-intent="intent:login-administrator"]').click()
                     page.get_by_text('Organization administrator authenticated').wait_for(timeout=15000)
                     summary = page.evaluate('''() => window.__mcelSlh.app.receipts()
                         .filter(x=>x.intentId&&x.intentId.includes('login-administrator'))''')

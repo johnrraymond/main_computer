@@ -1,0 +1,137 @@
+{
+  "schema": "mcel.slh.application-oracle.v1",
+  "stage": "pre-application;read-only",
+  "application_id": "slh",
+  "single_organization": true,
+  "surfaces": [
+    "overview",
+    "worker-bank"
+  ],
+  "objective": "Show only verified SLH status, configured worker policy, and fresh operational observations; never infer availability or balances from missing data.",
+  "source_contracts": [
+    {
+      "method": "GET",
+      "path": "/v1/local/status",
+      "access": "public",
+      "state": "implemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/capabilities",
+      "access": "public",
+      "state": "implemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/scheduler/policy",
+      "access": "admin",
+      "state": "implemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/scheduler/status",
+      "access": "admin",
+      "state": "implemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/local/seh/status",
+      "access": "admin",
+      "state": "implemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/org/admin/marketplace/status",
+      "access": "admin",
+      "state": "implemented",
+      "source": "slh-org-TLS"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/credits",
+      "access": "admin",
+      "state": "implemented-if-wallet-service-present",
+      "source": "slh-org-TLS"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/workers",
+      "access": "known",
+      "state": "unimplemented",
+      "source": "slh-local"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/marketplace",
+      "access": "admin",
+      "state": "unimplemented",
+      "source": "slh-local"
+    }
+  ],
+  "presentation_contract": {
+    "unknown_not_zero": true,
+    "unavailable_not_disabled": true,
+    "policy_not_capacity": true,
+    "stale_runtime_not_live": true,
+    "seh_enabled_not_connected": true,
+    "observed_wallet_balance_not_spendable": true,
+    "no_privileged_keys_in_browser": true,
+    "no_organization_name_or_id_control": true,
+    "no_automatic_service_start": true,
+    "mutations_enabled": false
+  },
+  "future_work": [
+    "Authenticated server-side bridge for live managed Worker Bank sessions",
+    "Verified Hub credit and Pinky Promise receipts",
+    "Explicit administrator-authorized actions with audit receipts",
+    "MCEL semantic JavaScript and synthesized layout, after oracle acceptance"
+  ],
+  "navigation_contract": {
+    "schema": "mcel.slh.navigation-oracle.v1",
+    "stage": "planned-not-hosted",
+    "rule": "Every navigable entity has a canonical URL and supports same-tab, new-tab and new-window opening. A URL is not authorization.",
+    "destinations": [
+      {
+        "schema": "mcel.navigation-destination.v1",
+        "id": "slh.overview",
+        "href": "/applications/slh",
+        "openModes": [
+          "same-tab",
+          "new-tab",
+          "new-window"
+        ],
+        "access": "authenticated"
+      },
+      {
+        "schema": "mcel.navigation-destination.v1",
+        "id": "slh.worker-bank",
+        "href": "/applications/slh/workers",
+        "openModes": [
+          "same-tab",
+          "new-tab",
+          "new-window"
+        ],
+        "access": "administrator"
+      },
+      {
+        "schema": "mcel.navigation-destination.v1",
+        "id": "slh.worker",
+        "href": "/applications/slh/workers/{workerId}",
+        "openModes": [
+          "same-tab",
+          "new-tab",
+          "new-window"
+        ],
+        "access": "administrator"
+      }
+    ],
+    "not_navigable_without_url": true,
+    "permission_from_url": false,
+    "reload_and_history_required": true
+  }
+}

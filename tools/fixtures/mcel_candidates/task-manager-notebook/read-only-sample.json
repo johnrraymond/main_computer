@@ -1,0 +1,10 @@
+{
+  "_provenance": "DETERMINISTIC SYNTHETIC DATA: not real host telemetry",
+  "processes": [
+    {"pid": 101, "name": "sample-worker", "created_at": "synthetic-g1", "status": "running", "status_availability": "present", "memory_rss": 0, "memory_availability": "present", "cmdline": "example-worker --test", "is_current_process": false, "is_main_computer": false},
+    {"pid": 102, "name": "sample-unavailable", "created_at": "synthetic-g2", "status": "", "status_availability": "unavailable", "memory_rss": null, "memory_availability": "unavailable", "cmdline": "", "is_current_process": false, "is_main_computer": false}
+  ],
+  "all_processes": [],
+  "connections": [],
+  "hardware": {"cpu": "synthetic-sample", "gpu": "not-requested"}
+}

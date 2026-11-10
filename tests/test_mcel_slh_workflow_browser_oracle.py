@@ -62,6 +62,11 @@ def browser_page(browser, initial: str = 'running-unauthenticated-screenshot', *
        window.fetch = async (url,options={})=>{
          const state=window.oracleFixture;
          state.requests.push({url,method:options.method||"GET"});
+         if(url==="/api/applications/slh/identities" && options.method==="GET")
+           return {ok:true,json:async()=>({schema:"mcel.slh.identities.v4b",state:"AVAILABLE",
+             defaultDeviceId:"admin-pc",explanation:"LMS-SLH identity discovered; role unverified",
+             identities:[{deviceId:"admin-pc",label:"Local identity",fingerprint:"a".repeat(64),
+               defaultStatus:"DEFAULT"}]})};
          if(url==="/api/applications/slh/observe?view=overview" && options.method==="GET")
            return {ok:true,json:async()=>state.cases[state.current]};
          if(url==="/api/applications/slh/observe?view=workers" && options.method==="GET"){
@@ -119,6 +124,7 @@ def test_screenshot_stage_has_one_visible_administrator_identity_input(chromium)
     page, errors = browser_page(chromium)
     try:
         visible = page.locator('form[data-intent] input[name="adminDeviceId"]:visible').count()
+        assert visible == 0  # The selected LMS-SLH identity is never a manual form field.
         assert visible <= CONTRACT['shared_input']['max_simultaneously_visible_editors'], {
             'visible_administrator_id_inputs': visible,
             'max_allowed': CONTRACT['shared_input']['max_simultaneously_visible_editors'],
@@ -151,9 +157,7 @@ def test_verified_transition_recomputes_next_action(chromium):
         before = oracle.evaluate_visible_case(CONTRACT, 'organization-disabled',
                                                oracle.visible_intents(page))
         assert before['status'] == 'PASS', before
-        form = page.locator('form[data-intent="intent:activate-organization"]')
-        form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-        form.locator('button[type="submit"]').click()
+        page.locator('button[data-intent="intent:activate-organization"]').click()
         page.wait_for_function('''()=>window.oracleFixture.current==="running-unauthenticated-screenshot" &&
            window.oracleFixture.requests.filter(x=>x.url.includes("view=overview")).length>=3''',
                                timeout=15000)
@@ -185,9 +189,7 @@ def test_login_then_logout_recompute_available_operations(chromium):
         'logout': 'running-unauthenticated-screenshot',
     })
     try:
-        form = page.locator('form[data-intent="intent:login-administrator"]')
-        form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-        form.locator('button[type="submit"]').click()
+        page.locator('button[data-intent="intent:login-administrator"]').click()
         page.get_by_text('Organization administrator authenticated', exact=True).wait_for(timeout=15000)
         logged_in = oracle.evaluate_visible_case(CONTRACT, 'running-authenticated',
                                                   oracle.visible_intents(page))
@@ -207,9 +209,7 @@ def test_login_then_logout_recompute_available_operations(chromium):
 def test_failed_activation_does_not_promote_to_login(chromium):
     page, errors = browser_page(chromium, 'organization-disabled', fail_action='activate')
     try:
-        form = page.locator('form[data-intent="intent:activate-organization"]')
-        form.locator('input[name="adminDeviceId"]').fill('admin-pc')
-        form.locator('button[type="submit"]').click()
+        page.locator('button[data-intent="intent:activate-organization"]').click()
         page.wait_for_function('''()=>window.__mcelSlh.app.receipts().some(
             x=>x.intentId==="intent:activate-organization" && x.disposition!=="completed")''', timeout=15000)
         assert page.evaluate('window.oracleFixture.current') == 'organization-disabled'

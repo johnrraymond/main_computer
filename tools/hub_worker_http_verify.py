@@ -82,9 +82,14 @@ def verify_contract() -> dict[str, object]:
         ),
         'client_protocol_functions_source_unchanged': all(
             name in client_funcs and hashlib.sha256(client_funcs[name].encode('utf-8')).hexdigest() == sha
-            for name, sha in P53F_CLIENT_SOURCE_SHA256.items() if name != 'serve_hub_worker'
+            for name, sha in P53F_CLIENT_SOURCE_SHA256.items()
+            if name not in {'serve_hub_worker', 'serve_hub_worker_pull'}
         ) and hashlib.sha256(facade_funcs['serve_hub_worker'].encode('utf-8')).hexdigest()
             == P53F_CLIENT_SOURCE_SHA256['serve_hub_worker'],
+        'client_pull_legacy_rest_now_opt_in': (
+            'allow_legacy_worker_rest: bool = False' in client_funcs['serve_hub_worker_pull']
+            and 'if not allow_legacy_worker_rest:' in client_funcs['serve_hub_worker_pull']
+        ),
         'client_legacy_import_identity': all(
             getattr(hub, name) is getattr(hub_worker_client, name)
             for name in P53F_CLIENT_SOURCE_SHA256 if name != 'serve_hub_worker'

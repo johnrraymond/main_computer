@@ -983,3 +983,590 @@ def test_ablations_audit_requires_matched_controls_and_never_promotes(tmp_path,m
     with pytest.raises(ValueError,match='ARM_CONFIGURATION_MISMATCH'):
         audit_ablations(**{**reports,'combined':reports['none']},
                         output=tmp_path/'audit_invalid')
+
+
+def test_g1_transition_attribution_uses_same_decoder_and_exact_gold():
+    from tools.nanojev_gamer_v1_graph_comparison import _object_transitions
+    prompt='Quartzite challenges an arbiter.'
+    actor=(prompt.index('arbiter'),prompt.index('arbiter')+len('arbiter'),'actor')
+    correct=(0,len('Quartzite'),'action')
+    partial=(0,len('Quartz'),'action')
+    rows=[{'family':'encounter','prompt':prompt}]
+    old=[({correct}, {correct,actor})]
+    new=[({partial,actor}, {correct,actor})]
+    report=_object_transitions(old,new,rows)
+    action=report['by_kind']['action']
+    assert action['lost_correct']==1 and action['gained_correct']==0
+    assert action['net_correct']==-1
+    assert action['introduced_false_positives']==1
+    item=report['action_regression_cases'][0]
+    assert item['lost_correct'][0]['surface']=='Quartzite'
+    assert item['lost_correct'][0]['candidate_overlaps'][0]['surface']=='Quartz'
+    assert report['by_kind']['actor']['gained_correct']==1
+    assert report['same_decoder']=='global_for_both'
+    with pytest.raises(ValueError,match='GOLD_MISMATCH'):
+        _object_transitions(old,[({partial,actor},{actor})],rows)
+
+
+def test_g1_controlled_exposure_matched_original_replay_and_audit(tmp_path,monkeypatch):
+    from tools.nanojev_gamer_v1_graph_comparison import compare,audit_exposure
+    fake_model(monkeypatch)
+    base=dataset(tmp_path,train=8,dev=4,challenge=4,test=4)
+    src=fake_source(tmp_path)
+    parent=tmp_path/'parent'
+    old=cur.train(dataset=base,output=parent,source_adapter=src,
+                  device='cpu',steps=1,accum=1,width=32)
+    extension=tmp_path/'extension.jsonl'
+    corpus.extend_with_counterfactuals(base,extension,pairs=4)
+    fractions={'replay':0.0,'fraction_10':.1,'fraction_25':.25,'fraction_50':.5}
+    paths={};manifests={}
+    for name,frac in fractions.items():
+        source_data=base if name=='replay' else extension
+        checkpoint=tmp_path/('ck_'+name)
+        manifests[name]=cur.train(dataset=source_data,output=checkpoint,
+            source_adapter=src,device='cpu',steps=5,accum=4,lr=.0001,seed=47,
+            refine_checkpoint=parent,
+            refine_parent_dataset=base if name!='replay' else None,
+            family_balanced=True,controlled_exposure=True,
+            counterfactual_fraction=frac,structured_weight=0.0,consistency_weight=0.0)
+        assert manifests[name]['g1_refined_head_sha256']==old['head_sha256']
+        assert manifests[name]['g1_controlled_exposure'] is True
+        paths[name]=tmp_path/('compare_'+name)
+        report=compare(baseline_dataset=base,baseline_checkpoint=parent,
+                       candidate_dataset=source_data,candidate_checkpoint=checkpoint,
+                       output=paths[name],device='cpu')
+        assert report['object_transitions']['same_decoder']=='global_for_both'
+        assert (paths[name]/'action_regressions.jsonl').exists()
+        counts=manifests[name]['g1_microbatch_family_counts']
+        assert counts['encounter']==counts['allocation']
+        assert counts['encounter']['counterfactual']==int(10*frac+.5)
+    assert len({m['g1_replay_stream_sha256'] for m in manifests.values()})==1
+    assert manifests['replay']['g1_pair_stream_sha256'] is None
+    assert len({manifests[n]['g1_pair_stream_sha256'] for n in fractions if n!='replay'})==1
+    report=audit_exposure(**paths,output=tmp_path/'audit')
+    assert report['g2_unlocked'] is False and report['production_promotion'] is False
+    assert report['blind_test_used'] is False
+    assert report['status']=='DEV_CONTINUATION_EXPOSURE_AUDIT_ONLY_NOT_CERTIFICATION'
+    assert set(report['arms'])==set(fractions)
+    assert set(report['action_transitions'])==set(fractions)
+    assert set(report['counterfactual_effect_relative_to_replay'])=={
+        'fraction_10','fraction_25','fraction_50'}
+    with pytest.raises(FileExistsError,match='EXPOSURE_AUDIT_IMMUTABLE'):
+        audit_exposure(**paths,output=tmp_path/'audit')
+    # A tampered control schedule must fail closed before any audit is written.
+    altered=json.loads((paths['fraction_10']/'comparison.json').read_text())
+    altered['candidate_training_controls']['g1_replay_stream_sha256']='invalid'
+    bad=tmp_path/'tampered.json'
+    bad.write_text(json.dumps(altered),encoding='utf-8')
+    with pytest.raises(ValueError,match='UNMATCHED_G1_REPLAY_STREAM'):
+        audit_exposure(**{**paths,'fraction_10':bad},output=tmp_path/'not_audit')
+    assert not (tmp_path/'not_audit').exists()
+    with pytest.raises(PermissionError,match='STAGE_LOCKED'):
+        cur.train(dataset=base,output=tmp_path/'G2',source_adapter=src,
+                  stage='G2',device='cpu',steps=1)
+
+
+def test_g1_exposure_control_rejects_uncontrolled_training_before_backbone(tmp_path):
+    src=fake_source(tmp_path);base=dataset(tmp_path)
+    kwargs=dict(dataset=base,source_adapter=src,device='cpu',steps=1,accum=1,
+                controlled_exposure=True,family_balanced=True,
+                structured_weight=0,consistency_weight=0,counterfactual_fraction=0)
+    with pytest.raises(ValueError,match='EXPOSURE_CONTROL'):
+        cur.train(**{**kwargs,'family_balanced':False},output=tmp_path/'bad-family')
+    with pytest.raises(ValueError,match='EXPOSURE_CONTROL'):
+        cur.train(**{**kwargs,'consistency_weight':.15},output=tmp_path/'bad-loss')
+    with pytest.raises(ValueError,match='EXPOSURE_CONTROL'):
+        cur.train(**{**kwargs,'train_limit':2},output=tmp_path/'bad-limit')
+    with pytest.raises(ValueError,match='BALANCED_FAMILY_BOTH_SOURCES_REQUIRED'):
+        cur.train(**{**kwargs,'counterfactual_fraction':.25},output=tmp_path/'bad-pair')
+
+
+def test_g1_exposure_audit_cli_has_no_blind_test_or_promotion(capsys):
+    with pytest.raises(SystemExit) as e:
+        cur.main(['audit-g1-exposure','--help'])
+    assert e.value.code==0
+    printed=capsys.readouterr().out
+    for token in ('--replay','--fraction-10','--fraction-25','--fraction-50','--output'):
+        assert token in printed
+    for forbidden in ('--final-test','--certify','--challenge'):
+        assert forbidden not in printed
+
+
+def test_g1_parent_retention_protects_only_teacher_correct_training_spans():
+    count=len(c.SPAN_KINDS)+1
+    kind=c.SPAN_KINDS.index('action')+1
+    t=torch.zeros((2,2,count),dtype=torch.float32)
+    t[0,0,kind]=6.0
+    valid=torch.ones((2,2),dtype=torch.bool)
+    teacher={'span_logits':t,'span_valid':valid}
+    labels={'spans':[{'kind':'action','token_first':0,'token_last':0}]}
+    s=t.clone().detach().requires_grad_()
+    loss,anchors=cur.g1_parent_retention_loss(
+        {'span_logits':s,'span_valid':valid},teacher,labels)
+    assert anchors==1 and abs(loss.item())<1e-5
+    changed=t.clone().detach()
+    changed[0,0,0]=8.0
+    changed=changed.requires_grad_()
+    loss,anchors=cur.g1_parent_retention_loss(
+        {'span_logits':changed,'span_valid':valid},teacher,labels)
+    assert anchors==1 and loss.item()>1.0
+    loss.backward()
+    assert changed.grad is not None and changed.grad[0,0,kind]<0
+    assert teacher['span_logits'].grad is None
+    wrong=t.clone();wrong[0,0,0]=9
+    no_loss,n=cur.g1_parent_retention_loss(
+        {'span_logits':changed,'span_valid':valid},
+        {'span_logits':wrong,'span_valid':valid},labels)
+    assert n==0 and no_loss.item()==0
+    with pytest.raises(ValueError,match='SPAN_CONTRACT_CHANGED'):
+        cur.g1_parent_retention_loss({'span_logits':changed,'span_valid':~valid},teacher,labels)
+
+
+def test_g1_retention_requires_an_immutable_parent_before_model_loading(tmp_path):
+    src=fake_source(tmp_path);base=dataset(tmp_path)
+    with pytest.raises(ValueError,match='RETENTION_REQUIRES_G1_PARENT'):
+        cur.train(dataset=base,output=tmp_path/'bad',source_adapter=src,
+                  device='cpu',steps=1,parent_retention_weight=1.0)
+    assert not (tmp_path/'bad').exists()
+    with pytest.raises(ValueError,match='COUNTERFACTUAL_TRAINING_SETTINGS'):
+        cur.train(dataset=base,output=tmp_path/'negative',source_adapter=src,
+                  device='cpu',steps=1,parent_retention_weight=-1.0)
+
+
+def test_g1_retention_matched_controls_and_readonly_audit(tmp_path,monkeypatch):
+    from tools.nanojev_gamer_v1_graph_comparison import compare,audit_retention
+    fake_model(monkeypatch)
+    base=dataset(tmp_path,train=8,dev=4,challenge=4,test=4)
+    extension=tmp_path/'extended.jsonl'
+    corpus.extend_with_counterfactuals(base,extension,pairs=4)
+    src=fake_source(tmp_path)
+    parent=tmp_path/'parent'
+    parent_manifest=cur.train(dataset=base,output=parent,source_adapter=src,
+                              device='cpu',steps=2,accum=2,lr=.003,width=32)
+    # The independent unit test checks genuine confident-parent anchoring.
+    # Here we exercise the integration path and audit using a tiny synthetic
+    # checkpoint that has not necessarily learned any confident objects yet.
+    real_retention=cur.g1_parent_retention_loss
+    def deterministic_retention(student,teacher,labels,**kwargs):
+        loss,count=real_retention(student,teacher,labels,**kwargs)
+        return loss+student['span_logits'][0,0].square().mean()*.0001, max(1,count)
+    monkeypatch.setattr(cur,'g1_parent_retention_loss',deterministic_retention)
+    paths={}
+    for arm,weight in (('control',0.),('retained',2.)):
+        ck=tmp_path/('checkpoint_'+arm)
+        m=cur.train(dataset=extension,output=ck,source_adapter=src,
+                    refine_checkpoint=parent,refine_parent_dataset=base,
+                    device='cpu',steps=3,accum=4,lr=.00003,
+                    counterfactual_fraction=.25,family_balanced=True,
+                    controlled_exposure=True,structured_weight=0,
+                    consistency_weight=0,parent_retention_weight=weight)
+        assert m['g1_refined_head_sha256']==parent_manifest['head_sha256']
+        assert m['parent_retention_weight']==weight
+        assert m['g1_parent_retention_replay_items']>0 if weight else \
+               m['g1_parent_retention_replay_items']==0
+        assert m['g1_parent_retention_anchor_count']>0 if weight else \
+               m['g1_parent_retention_anchor_count']==0
+        paths[arm]=tmp_path/('comparison_'+arm)
+        result=compare(baseline_dataset=base,baseline_checkpoint=parent,
+                       candidate_dataset=extension,candidate_checkpoint=ck,
+                       output=paths[arm],device='cpu')
+        assert result['candidate_training_controls']['parent_retention_weight']==weight
+    report=audit_retention(**paths,output=tmp_path/'audit')
+    assert report['g2_unlocked'] is False
+    assert report['blind_test_used'] is False
+    assert report['status']=='DEV_RETENTION_AUDIT_ONLY_NOT_CERTIFICATION'
+    assert report['parent_correct_spans_anchored']>0
+    with pytest.raises(FileExistsError,match='RETENTION_AUDIT_IMMUTABLE'):
+        audit_retention(**paths,output=tmp_path/'audit')
+    altered=json.loads((paths['retained']/'comparison.json').read_text())
+    altered['candidate_training_controls']['g1_replay_stream_sha256']='wrong'
+    tampered=tmp_path/'tampered.json';tampered.write_text(json.dumps(altered))
+    with pytest.raises(ValueError,match='UNMATCHED_G1_REPLAY_STREAM'):
+        audit_retention(control=paths['control'],retained=tampered,output=tmp_path/'bad_audit')
+    assert not (tmp_path/'bad_audit').exists()
+    with pytest.raises(PermissionError,match='STAGE_LOCKED'):
+        cur.train(dataset=base,output=tmp_path/'G2',source_adapter=src,
+                  stage='G2',device='cpu',steps=1)
+
+
+def test_g1_hard_null_objective_only_acts_on_null_winning_gold_spans():
+    import torch
+    kinds=c.SPAN_KINDS
+    action=kinds.index('action')+1
+    actor=kinds.index('actor')+1
+    logits=torch.full((3,3,1+len(kinds)),-15.0)
+    logits[...,0]=0.0
+    valid=torch.zeros((3,3),dtype=torch.bool)
+    valid[0,0]=True;valid[1,0]=True;valid[2,0]=True
+    # The first gold action is a genuine null winner.
+    logits[0,0,action]=-2.0
+    # The second gold actor is already correctly recognized.
+    logits[1,0,actor]=6.0
+    # The third gold action is confused with another *positive* class.
+    logits[2,0,action]=2.0;logits[2,0,actor]=5.0
+    logits.requires_grad_(True)
+    spans=[{'token_first':i,'token_last':i,'kind':kind}
+           for i,kind in enumerate(('action','actor','action'))]
+    objective=cur.g1_hard_null_positive_loss(
+        {'span_logits':logits,'span_valid':valid},spans)
+    assert objective.item()>0
+    objective.backward()
+    assert logits.grad[0,0,action]<0
+    assert logits.grad[0,0,0]>0
+    assert logits.grad[1,0].abs().sum().item()==0
+    assert logits.grad[2,0].abs().sum().item()==0
+    assert logits.grad[0,1].abs().sum().item()==0
+    # Do not invent gradients if the parent/student already recognizes all gold.
+    good=logits.detach().clone();good[0,0,action]=8.0
+    assert cur.g1_hard_null_positive_loss(
+        {'span_logits':good,'span_valid':valid},spans).item()==0
+
+
+def test_g1_missed_span_weights_are_validated_without_loading_backbone(tmp_path):
+    base=dataset(tmp_path);src=fake_source(tmp_path)
+    kwargs=dict(dataset=base,source_adapter=src,steps=1,device='cpu')
+    with pytest.raises(ValueError,match='COUNTERFACTUAL_TRAINING_SETTINGS'):
+        cur.train(**kwargs,output=tmp_path/'negative',hard_null_weight=-1)
+    with pytest.raises(ValueError,match='EXPOSURE_CONTROL'):
+        cur.train(**kwargs,output=tmp_path/'bad_consistency',family_balanced=True,
+                  controlled_exposure=True,structured_weight=.4,consistency_weight=.15)
+    with pytest.raises(ValueError,match='EXPOSURE_CONTROL'):
+        cur.train(**kwargs,output=tmp_path/'bad_split',family_balanced=True,
+                  controlled_exposure=True,structured_weight=.4,consistency_weight=0,
+                  train_limit=1)
+    with pytest.raises(ValueError,match='HARD_NULL_G1_ONLY'):
+        cur.train(**kwargs,output=tmp_path/'bad_stage',stage='G2',hard_null_weight=1)
+
+
+def test_g1_missed_span_matched_three_arm_training_and_audit(tmp_path,monkeypatch):
+    from tools.nanojev_gamer_v1_graph_comparison import (
+        compare,audit_g1_missed_span_objectives)
+    fake_model(monkeypatch)
+    base=dataset(tmp_path,train=8,dev=4,challenge=4,test=4)
+    extension=tmp_path/'extended.jsonl'
+    corpus.extend_with_counterfactuals(base,extension,pairs=4)
+    src=fake_source(tmp_path)
+    parent=tmp_path/'parent'
+    pm=cur.train(dataset=base,output=parent,source_adapter=src,
+                 device='cpu',steps=2,accum=2,lr=.003,width=32)
+    original_loss=cur.g1_parent_retention_loss
+    def synthetic_teacher_with_training_anchor(student,teacher,labels,**kw):
+        result,count=original_loss(student,teacher,labels,**kw)
+        return result+student['span_logits'][0,0].square().mean()*.0001,max(count,1)
+    monkeypatch.setattr(cur,'g1_parent_retention_loss',synthetic_teacher_with_training_anchor)
+    arms={'control':(0.,0.),'structured':(.4,0.),'null_focused':(0.,1.)}
+    paths={};hashes=[];sources=[]
+    for arm,(sw,nw) in arms.items():
+        ck=tmp_path/f'checkpoint_{arm}'
+        m=cur.train(dataset=extension,output=ck,source_adapter=src,
+                    refine_checkpoint=parent,refine_parent_dataset=base,
+                    device='cpu',steps=3,accum=4,lr=.00003,
+                    family_balanced=True,controlled_exposure=True,
+                    counterfactual_fraction=.25,consistency_weight=0,
+                    structured_weight=sw,hard_null_weight=nw,
+                    parent_retention_weight=2.)
+        assert m['g1_refined_head_sha256']==pm['head_sha256']
+        assert m['hard_null_weight']==nw
+        assert m['structured_weight']==sw
+        assert m['g1_parent_retention_anchor_count']>0
+        assert m['g1_parent_retention_replay_items']>0
+        hashes.append(m['head_sha256'])
+        sources.append((m['g1_replay_stream_sha256'],m['g1_pair_stream_sha256'],
+                        m['g1_microbatch_family_counts'],
+                        m['g1_parent_retention_anchor_count']))
+        cp=tmp_path/f'comparison_{arm}';paths[arm]=cp
+        r=compare(baseline_dataset=base,baseline_checkpoint=parent,
+                  candidate_dataset=extension,candidate_checkpoint=ck,
+                  output=cp,device='cpu')
+        assert r['candidate_training_controls']['hard_null_weight']==nw
+    assert len(set(hashes))==3
+    assert sources[0]==sources[1]==sources[2]
+    from tools.nanojev_gamer_v1_graph_diagnostic import diagnose
+    diag_paths={}
+    for arm in ('baseline','control','structured','null_focused'):
+        checkpoint=(parent if arm=='baseline' else tmp_path/f'checkpoint_{arm}')
+        current=(base if arm=='baseline' else extension)
+        folder=tmp_path/f'diagnosis_{arm}'
+        diagnose(dataset=current,checkpoint=checkpoint,output=folder,device='cpu')
+        diag_paths[arm+'_diagnosis']=folder
+    result=audit_g1_missed_span_objectives(**paths,**diag_paths,output=tmp_path/'audit')
+    assert result['diagnostic_comparison']['baseline_miss_reasons'] is not None
+    assert set(result['diagnostic_comparison']['arms'])==set(arms)
+    assert all(x['original_misses_recovered']>=0
+               for x in result['diagnostic_comparison']['arms'].values())
+    # A diagnostic for a different checkpoint cannot be mixed into this audit.
+    with pytest.raises(ValueError,match='DIAGNOSIS_LINEAGE'):
+        audit_g1_missed_span_objectives(**paths,
+            **{**diag_paths,'null_focused_diagnosis':diag_paths['control_diagnosis']},
+            output=tmp_path/'wrong_diag')
+    assert not (tmp_path/'wrong_diag').exists()
+    with pytest.raises(ValueError,match='INCOMPLETE_DIAGNOSES'):
+        audit_g1_missed_span_objectives(**paths,
+            baseline_diagnosis=diag_paths['baseline_diagnosis'],
+            output=tmp_path/'incomplete_diag')
+    assert result['blind_test_used'] is False
+    assert result['g2_unlocked'] is False
+    assert result['production_promotion'] is False
+    assert set(result['arms'])==set(arms)
+    assert set(result['effects_relative_to_control'])=={'structured','null_focused'}
+    with pytest.raises(FileExistsError,match='IMMUTABLE'):
+        audit_g1_missed_span_objectives(**paths,output=tmp_path/'audit')
+    bad=json.loads((paths['null_focused']/'comparison.json').read_text())
+    bad['candidate_training_controls']['g1_replay_stream_sha256']='wrong'
+    forged=tmp_path/'forged.json';forged.write_text(json.dumps(bad))
+    with pytest.raises(ValueError,match='UNMATCHED_G1_REPLAY_STREAM'):
+        audit_g1_missed_span_objectives(
+            **{**paths,'null_focused':forged},output=tmp_path/'bad_audit')
+    assert not (tmp_path/'bad_audit').exists()
+    bad['candidate_training_controls']['g1_replay_stream_sha256']=sources[0][0]
+    bad['candidate_training_controls']['hard_null_weight']=0.
+    forged.write_text(json.dumps(bad))
+    with pytest.raises(ValueError,match='ARM_WEIGHTS'):
+        audit_g1_missed_span_objectives(
+            **{**paths,'null_focused':forged},output=tmp_path/'wrong_objective')
+    assert not (tmp_path/'wrong_objective').exists()
+    with pytest.raises(PermissionError,match='STAGE_LOCKED'):
+        cur.train(dataset=base,output=tmp_path/'G2',source_adapter=src,
+                  stage='G2',device='cpu',steps=1)
+
+
+def test_g1_missed_span_cli_is_development_only(capsys):
+    with pytest.raises(SystemExit) as e:
+        cur.main(['audit-g1-missed-spans','--help'])
+    assert e.value.code==0
+    output=capsys.readouterr().out
+    for arg in ('--control','--structured','--null-focused','--output'):
+        assert arg in output
+    for forbidden in ('--final-test','--certify','--challenge'):
+        assert forbidden not in output
+
+
+def test_frozen_g1_decoder_weighted_interval_recovers_whole_span_without_gold():
+    """One two-token action loses to two fragments under ordinary max-sum."""
+    from tools.nanojev_gamer_v1_g1_decoder_frob import (
+        _candidate_scores, decode_whole_span_scores)
+    action=c.SPAN_KINDS.index('action')+1
+    logits=torch.full((2,2,1+len(c.SPAN_KINDS)),-20.0)
+    logits[...,0]=0.0
+    valid=torch.tensor([[True,True],[True,False]])
+    logits[0,0,action]=4.0
+    logits[1,0,action]=4.0
+    logits[0,1,action]=5.6
+    baseline=h.decode_neural_spans(logits,valid)
+    assert [(o['token_first'],o['token_last']) for o in baseline]==[(0,0),(1,1)]
+    candidates=_candidate_scores(logits,valid)
+    assert decode_whole_span_scores(candidates,length_power=0,per_object_penalty=0)==baseline
+    longer=decode_whole_span_scores(candidates,length_power=1,per_object_penalty=0)
+    assert longer==[{'kind':'action','token_first':0,'token_last':1}]
+    fewer=decode_whole_span_scores(candidates,length_power=0,per_object_penalty=3.0)
+    assert fewer==longer
+    # Do not change or mask neural logits during decoding.
+    assert logits[0,1,action].item()==pytest.approx(5.6)
+
+
+def test_frozen_g1_decoder_does_not_force_whole_spans_when_badly_scored():
+    from tools.nanojev_gamer_v1_g1_decoder_frob import (
+        _candidate_scores,decode_whole_span_scores)
+    action=c.SPAN_KINDS.index('action')+1
+    logits=torch.full((2,2,1+len(c.SPAN_KINDS)),-30.0)
+    logits[...,0]=0
+    valid=torch.tensor([[True,True],[True,False]])
+    logits[0,0,action]=10
+    logits[1,0,action]=10
+    logits[0,1,action]=-10
+    scores=_candidate_scores(logits,valid)
+    found=decode_whole_span_scores(scores,length_power=1,per_object_penalty=1.5)
+    assert [(v['token_first'],v['token_last']) for v in found]==[(0,0),(1,1)]
+    for k in ('length_power','per_object_penalty'):
+        values={'length_power':1.0,'per_object_penalty':0}
+        values[k]=-1
+        with pytest.raises(ValueError,match='UNSAFE_SCORING_PARAMETERS'):
+            decode_whole_span_scores(scores,**values)
+
+
+def test_frozen_g1_decoder_frob_end_to_end_is_readonly_and_lineage_checked(tmp_path,monkeypatch):
+    from tools.nanojev_gamer_v1_g1_decoder_frob import run,VARIANTS
+    from tools.nanojev_gamer_v1_graph_diagnostic import diagnose
+    model,tok=fake_model(monkeypatch)
+    path=dataset(tmp_path,train=4,dev=3,challenge=3,test=3)
+    source=fake_source(tmp_path)
+    checkpoint=tmp_path/'parent'
+    manifest=cur.train(dataset=path,output=checkpoint,source_adapter=source,
+                       steps=2,accum=2,lr=.001,device='cpu',width=32)
+    files_before={p.name:p.read_bytes() for p in checkpoint.iterdir() if p.is_file()}
+    diag=tmp_path/'baseline_diagnosis'
+    diagnose(dataset=path,checkpoint=checkpoint,output=diag,device='cpu')
+    result=run(dataset=path,checkpoint=checkpoint,baseline_diagnosis=diag,
+               expected_head_sha256=manifest['head_sha256'],
+               output=tmp_path/'frob',device='cpu')
+    assert result['status']=='DEV_FROZEN_DECODER_ABLATION_ONLY_NOT_CERTIFICATION'
+    assert result['baseline_head_sha256']==manifest['head_sha256']
+    assert set(result['variants'])=={v[0] for v in VARIANTS}
+    report=json.loads((tmp_path/'frob'/'report.json').read_text())
+    assert report['challenge_or_test_split_used'] is False
+    assert report['frozen_neural_scores'] is True
+    assert report['g2_unlocked'] is False
+    assert result['production_promotion'] is False
+    assert report['baseline_misses']==sum(
+        json.loads((diag/'summary.json').read_text())['miss_reasons'].values())
+    assert all(v['metrics']['cases']==3 for v in result['variants'].values())
+    assert all(v['recovered_gold']>=v['recovered_original_overlap_misses']
+               for v in result['variants'].values())
+    assert {p.name:p.read_bytes() for p in checkpoint.iterdir() if p.is_file()}==files_before
+    with pytest.raises(FileExistsError,match='IMMUTABLE_OUTPUT'):
+        run(dataset=path,checkpoint=checkpoint,baseline_diagnosis=diag,
+            expected_head_sha256=manifest['head_sha256'],
+            output=tmp_path/'frob',device='cpu')
+    with pytest.raises(ValueError,match='UNEXPECTED_CHECKPOINT'):
+        run(dataset=path,checkpoint=checkpoint,baseline_diagnosis=diag,
+            output=tmp_path/'bad_head',device='cpu')
+    assert not (tmp_path/'bad_head').exists()
+    summary=json.loads((diag/'summary.json').read_text())
+    summary['dataset_sha256']='tampered'
+    (diag/'summary.json').write_text(json.dumps(summary))
+    with pytest.raises(ValueError,match='REFERENCE_LINEAGE'):
+        run(dataset=path,checkpoint=checkpoint,baseline_diagnosis=diag,
+            expected_head_sha256=manifest['head_sha256'],
+            output=tmp_path/'wrong_reference',device='cpu')
+    assert not (tmp_path/'wrong_reference').exists()
+    # Even with the correct digest, an altered reason in misses.jsonl must be
+    # rejected because attribution is recomputed from the original logits.
+    summary['dataset_sha256']=backbone.sha256(path)
+    (diag/'summary.json').write_text(json.dumps(summary))
+    lines=(diag/'misses.jsonl').read_text().splitlines()
+    assert lines
+    first=json.loads(lines[0]);first['reason']='overlap_blocked' if first['reason']!='overlap_blocked' else 'null_wins'
+    lines[0]=json.dumps(first)
+    (diag/'misses.jsonl').write_text('\n'.join(lines)+'\n')
+    with pytest.raises(ValueError,match='REFERENCE_MISMATCH'):
+        run(dataset=path,checkpoint=checkpoint,baseline_diagnosis=diag,
+            expected_head_sha256=manifest['head_sha256'],
+            output=tmp_path/'wrong_reason',device='cpu')
+    assert not (tmp_path/'wrong_reason').exists()
+
+
+def test_frozen_g1_decoder_cli_does_not_expose_certification_or_training(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cur.main(['frob-g1-frozen-decoder','--help'])
+    assert exc.value.code==0
+    usage=capsys.readouterr().out
+    for flag in ('--dataset','--checkpoint','--baseline-diagnosis',
+                 '--expected-head-sha256','--output'):
+        assert flag in usage
+    for forbidden in ('--challenge','--final-test','--certify','--train-steps'):
+        assert forbidden not in usage
+
+
+def _g1_transfer_mock_inputs(tmp_path):
+    from tools.nanojev_gamer_v1_g1_decoder_transfer import ARMS, EXPECTED_G1_0007_HEAD
+    root=tmp_path/'gamer-v1';root.mkdir()
+    data=root/'graph-span-curriculum-0005.jsonl'
+    data.write_text('same development dataset\n')
+    source_sha='same frozen Qwen adapter'
+    for name, checkpoint_name, diagnosis_name, objective in ARMS:
+        checkpoint=root/checkpoint_name
+        checkpoint.mkdir()
+        (root/diagnosis_name).mkdir()
+        ((root/diagnosis_name)/'summary.json').write_text('{}')
+        ((root/diagnosis_name)/'misses.jsonl').write_text('')
+        manifest={
+            'schema':cur.SCHEMA, 'stage':'G1', 'status':'TRAINED_NOT_CERTIFIED',
+            'production_promotion':False,'train_limit':0,
+            'head_sha256':EXPECTED_G1_0007_HEAD if name=='g1_0007' else 'sha_'+name,
+            'dataset_sha256':backbone.sha256(data),
+            'source_adapter_sha256':source_sha,
+        }
+        if objective is not None:
+            manifest.update({
+                'g1_refined_head_sha256':EXPECTED_G1_0007_HEAD,
+                'structured_weight':objective[0], 'hard_null_weight':objective[1],
+                'parent_retention_weight':2.0,'counterfactual_fraction':.25,
+                'lr':3e-5,'steps':100,'accum':4,'seed':47,
+                'g1_family_balanced':True,'g1_controlled_exposure':True,
+            })
+        (checkpoint/'manifest.json').write_text(json.dumps(manifest))
+    return root
+
+
+def _g1_transfer_mock_executor(**kw):
+    from tools.nanojev_gamer_v1_g1_decoder_frob import SCHEMA as FROB_SCHEMA
+    path=Path(kw['output']);path.mkdir(parents=True)
+    name=path.name
+    gains={'g1_0007':0,'control':-2,'structured':1,'null_focused':3}
+    n=gains[name]
+    def metric(correct):
+        action=correct
+        return {
+            'cases':4,'correct':correct,'expected':100,'predicted':correct,
+            'exact_prompts': 2+(n if name!='control' else -1),
+            'f1':correct/100,'precision':correct/100,'recall':correct/100,
+            'by_kind':{k:{'correct':correct,'total':100,'recall':correct/100}
+                       for k in ('actor','action','quantity','outcome')}
+        }
+    report={
+        'schema':FROB_SCHEMA,'baseline_head_sha256':kw['expected_head_sha256'],
+        'dataset_sha256':backbone.sha256(kw['dataset']),
+        'source_adapter_sha256':'same frozen Qwen adapter',
+        'cases':4,'no_training':True,'original_decoder_unchanged':True,
+        'challenge_or_test_split_used':False,'production_promotion':False,
+        'g2_unlocked':False,'baseline_global':metric(70+n),
+        'variants':{'length_linear':{
+            'metrics':metric(80+n),
+            'recovered_original_overlap_misses':10,
+            'lost_previously_correct_gold':0,
+            'introduced_false_positives':0,'removed_false_positives':12}}
+    }
+    (path/'report.json').write_text(json.dumps(report))
+
+
+def test_frozen_decoder_transfer_matched_checkpoints_and_improvement(tmp_path):
+    from tools.nanojev_gamer_v1_g1_decoder_transfer import run
+    root=_g1_transfer_mock_inputs(tmp_path)
+    out=tmp_path/'transfer'
+    result=run(root=root,output=out,device='cpu',frob_executor=_g1_transfer_mock_executor)
+    assert result['no_training'] is True
+    assert result['challenge_or_test_split_used'] is False
+    assert result['production_promotion'] is False
+    assert result['g2_unlocked'] is False
+    assert result['improved_development_arms']==['structured','null_focused']
+    assert result['arms']['control']['difference_from_protected_g1_0007_linear']['correct_objects']==-2
+    assert result['arms']['null_focused']['difference_from_protected_g1_0007_linear']['correct_objects']==3
+    assert set(result['arms'])=={'g1_0007','control','structured','null_focused'}
+    assert (out/'transfer_report.json').exists()
+    with pytest.raises(FileExistsError,match='IMMUTABLE_OUTPUT'):
+        run(root=root,output=out,device='cpu',frob_executor=_g1_transfer_mock_executor)
+
+
+def test_frozen_decoder_transfer_rejects_changed_training_and_wrong_reference(tmp_path):
+    from tools.nanojev_gamer_v1_g1_decoder_transfer import run
+    root=_g1_transfer_mock_inputs(tmp_path)
+    structured=root/'graph-g1-miss-structured-0008'/'manifest.json'
+    manifest=json.loads(structured.read_text())
+    manifest['hard_null_weight']=1.0
+    structured.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='TRAINING_MISMATCH'):
+        run(root=root,output=tmp_path/'bad_train',device='cpu',
+            frob_executor=_g1_transfer_mock_executor)
+    assert not (tmp_path/'bad_train').exists()
+    manifest['hard_null_weight']=0.0
+    structured.write_text(json.dumps(manifest))
+    reference=tmp_path/'original_0009.json'
+    reference.write_text(json.dumps({
+        'schema':'nanojev.gamer.graph.g1.frozen-whole-span-decoder-dev.v1',
+        'baseline_head_sha256':'wrong head',
+    }))
+    with pytest.raises(ValueError,match='REFERENCE_DIVERGED'):
+        run(root=root,output=tmp_path/'bad_reference',device='cpu',
+            reference_report=reference,frob_executor=_g1_transfer_mock_executor)
+    assert not (tmp_path/'bad_reference'/'transfer_report.json').exists()
+
+
+def test_frozen_decoder_transfer_cli_is_dev_only(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cur.main(['frob-g1-decoder-transfer','--help'])
+    assert exc.value.code==0
+    usage=capsys.readouterr().out
+    for required in ('--root','--output','--reference-report','--device'):
+        assert required in usage
+    for forbidden in ('--challenge','--certify','--promote','--train-steps'):
+        assert forbidden not in usage

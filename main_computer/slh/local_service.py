@@ -19,6 +19,7 @@ from wsgiref.simple_server import make_server
 from main_computer.slh.api import SLHAPI
 from main_computer.slh.authenticator_store import LocalIdentityStore
 from main_computer.slh.local_authenticator_api import LocalAuthenticatorAPI
+from main_computer.slh.local_root_registration import LocalRootAdministratorRegistration
 from main_computer.slh.authority import SLHAuthority
 from main_computer.slh.organization_state import initialize_disabled, organization_status
 from main_computer.slh.organization_controller import OrganizationController
@@ -62,9 +63,11 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
     authority = authority_factory(directory)
     controller = OrganizationController(authority)
     bound_port = [port]
+    authenticator = LocalAuthenticatorAPI(resolved_identity_dir)
     api = SLHAPI(authority, local_status_provider=lambda: local_status(authority, bound_port[0], controller),
                  organization_controller=controller,
-                 local_authenticator=LocalAuthenticatorAPI(resolved_identity_dir))
+                 local_authenticator=authenticator,
+                 local_root_registration=LocalRootAdministratorRegistration(authority, authenticator))
     try:
         server = make_server(DEFAULT_SLH_API_HOST, port, api.wsgi_app, server_class=ExclusiveSLHServer)
     except BaseException:
@@ -97,7 +100,7 @@ def _existing_local_service(port: int) -> bool:
 
 
 def run(*, state_dir: Path | None = None, port: int = DEFAULT_SLH_API_PORT,
-        attach_existing: bool = False, poll_seconds: float = 5.0,
+        identity_dir: Path | None = None, attach_existing: bool = False, poll_seconds: float = 5.0,
         sleep: Callable[[float], None] = time.sleep) -> int:
     directory = Path(state_dir) if state_dir is not None else slh_state_dir()
     while True:
@@ -108,7 +111,7 @@ def run(*, state_dir: Path | None = None, port: int = DEFAULT_SLH_API_PORT,
                 sleep(max(0.1, poll_seconds))
             continue
         try:
-            with create_server(state_dir=directory, port=port) as server:
+            with create_server(state_dir=directory, port=port, identity_dir=identity_dir) as server:
                 print(json.dumps({'service': 'slh-local', 'state': 'listening',
                                   'host': DEFAULT_SLH_API_HOST, 'port': server.server_port,
                                   'organization_service': 'not-started'}), flush=True)
@@ -132,12 +135,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', type=Path, default=Path('.'), help='Main Computer install root')
     parser.add_argument('--state-dir', type=Path, default=None)
     parser.add_argument('--port', type=int, default=int(os.environ.get('MAIN_COMPUTER_SLH_LOCAL_PORT', DEFAULT_SLH_API_PORT)))
+    parser.add_argument('--identity-dir', type=Path, default=None,
+                        help='Explicit disposable identity store override for on-demand local testing')
     parser.add_argument('--attach-existing', action='store_true')
     parser.add_argument('command', choices=('run',))
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error('--port must be between 1 and 65535')
-    return run(state_dir=args.state_dir, port=args.port, attach_existing=args.attach_existing)
+    return run(state_dir=args.state_dir, port=args.port, identity_dir=args.identity_dir,
+               attach_existing=args.attach_existing)
 
 
 if __name__ == '__main__':

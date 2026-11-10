@@ -766,8 +766,10 @@ function createDsl(metadata, source) {
     const operation = authority.operations.get(options.operation);
     assert(operation, "MCEL_DSL_CAPABILITY_OPERATION_UNKNOWN", `Unknown capability operation '${options.operation}'.`);
     assert(options && typeof options === "object" && !Array.isArray(options) &&
-      Object.keys(options).every(key => ["operation", "inputs", "arguments", "reads", "resultTo", "outcomes"].includes(key)),
+      Object.keys(options).every(key => ["operation", "inputs", "arguments", "reads", "resultTo", "outcomes", "confirmationRequired"].includes(key)),
       "MCEL_DSL_CAPABILITY_REQUEST_OPTION_UNKNOWN", "Unsupported capability request option.");
+    assert(options.confirmationRequired === undefined || typeof options.confirmationRequired === "boolean",
+      "MCEL_DSL_CONFIRMATION_REQUIRED_INVALID", "Explicit confirmation policy must be boolean.");
     const inputs = [];
     for (const [fieldName, fieldSchema] of Object.entries(options.inputs || {})) {
       assert(fieldSchema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Capability input '${fieldName}' requires schema.`);
@@ -817,6 +819,7 @@ function createDsl(metadata, source) {
       runtimeMethod: operation.runtimeMethod, risk: authority.record.risk, cancellable: operation.cancellable,
       input: inputs, reads, writes: [], refusals: [], invariants: [],
       requestArguments, effectRefs: [{ref: effectId}], resultBindings,
+      ...(options.confirmationRequired === undefined ? {} : {confirmationRequired: options.confirmationRequired}),
       outcomes: deepClone(options.outcomes || ["completed", "refused", "failed"]), source};
     intents.push(new IntentHandle(record));
     effects.push({id: effectId, kind: "effect", effectKind: "capability-request",

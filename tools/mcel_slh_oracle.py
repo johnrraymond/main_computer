@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from main_computer.mcel_navigation_contract import validate_destination
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / 'mcel_oracles/slh/oracle.v1.json'
+SPEC = ROOT / 'tests/fixtures/mcel_oracles/slh/oracle.v1.json'
 DEFAULT_OUTPUT = ROOT / 'runtime/reports/mcel-slh-oracle/report.json'
 SOURCE_FILES = (
     'main_computer/slh/api.py',
@@ -59,7 +59,7 @@ def verify_source(repo: Path = ROOT) -> dict:
     from main_computer.slh.scheduler_policy import DEFAULT_POLICY
     from main_computer.slh.ports import DEFAULT_SLH_API_HOST
 
-    spec = json.loads((repo / 'mcel_oracles/slh/oracle.v1.json').read_text(encoding='utf-8'))
+    spec = json.loads((repo / 'tests/fixtures/mcel_oracles/slh/oracle.v1.json').read_text(encoding='utf-8'))
     _require(spec['schema'] == 'mcel.slh.application-oracle.v1', 'oracle-schema-invalid')
     nav = spec.get('navigation_contract')
     _require(isinstance(nav, dict) and nav.get('schema') == 'mcel.slh.navigation-oracle.v1',

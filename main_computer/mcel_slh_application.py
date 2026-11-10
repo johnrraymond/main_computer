@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -34,6 +35,8 @@ ROUTES = {
     "/applications/slh/network": "network"
 }
 SCHEMA = "mcel.slh.first-slice-observation.v1"
+IDENTITIES_SCHEMA = "mcel.slh.identities.v4b"
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 OBSERVATION_VIEWS = frozenset(("overview", "workers"))
 
 
@@ -59,7 +62,8 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "intent:refresh-worker-summary", "intent:select-view", "intent:choose-worker",
         "intent:rename-worker", "intent:start-local", "intent:bootstrap-administrator",
         "intent:configure-organization", "intent:activate-organization", "intent:login-administrator",
-        "intent:logout-administrator"
+        "intent:logout-administrator", "intent:refresh-identities",
+        "intent:refresh-identity-status", "intent:choose-identity"
     } or {x["id"] for x in ir.get("capabilities", ())} != {
         "capability:slh-observer", "capability:slh-worker-admin", "capability:slh-first-run"
     }:
@@ -69,6 +73,8 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "capability:slh-first-run": "consequential"
     } or {x["id"]: x.get("risk") for x in ir.get("effects", ())} != {
         "effect:refresh-overview.request": "external-read", "effect:refresh-health.request": "external-read",
+        "effect:refresh-identities.request": "external-read",
+        "effect:refresh-identity-status.request": "external-read",
         "effect:refresh-workers.request": "external-read", "effect:refresh-worker-summary.request": "external-read",
         "effect:rename-worker.request": "consequential",
         "effect:start-local.request": "consequential",
@@ -124,15 +130,46 @@ const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-wor
   {{capabilities:port,composition:data.composition,presentation:"expert"}});
 window.__mcelSlh=Object.freeze({{app,composition:data.composition}});
 const authStatus=document.getElementById("mcel-slh-auth-status");
-port.onSetupChanged(()=>{{
+const refreshIdentities=async()=>{{
+  const observations=await Promise.all([app.execute("intent:refresh-identities"),
+    app.execute("intent:refresh-identity-status")]);
+  if(!observations.every(r=>r && r.disposition==="completed"))return;
+  // Preserve the operator's existing selection when it remains available.
+  // Select the LMS-SLH default only on first discovery or if selection vanished.
+  const selected=app.readState("state:selected-local-identity");
+  const available=app.readState("state:local-identities")||[];
+  if(available.some(row=>row.deviceId===selected))return;
+  const chosen=port.preferredIdentity();
+  if(chosen)await app.execute("intent:choose-identity",{{key:chosen}});
+}};
+port.onSetupChanged(action=>{{
   Promise.all([app.execute("intent:refresh-overview"),app.execute("intent:refresh-health")]);
+  if(action==="start")void refreshIdentities();
 }});
+// Operational applicability expires after 60 seconds. Keep the read-only
+// evidence for both Login and Logout current (including identity status);
+// a successful logout must not
+// strand the operator without either action.
+const refreshSessionEvidence=()=>Promise.all([
+  app.execute("intent:refresh-overview"),
+  app.execute("intent:refresh-worker-summary"),
+  refreshIdentities()]);
+let authTransition=0;
 port.onAuthenticationChanged(authorized=>{{
-  Promise.all([app.execute("intent:refresh-worker-summary"),app.execute("intent:refresh-workers")])
-    .then(()=>{{authStatus.textContent=authorized?
+  const transition=++authTransition;
+  Promise.all([refreshSessionEvidence(),app.execute("intent:refresh-workers")])
+    .then(()=>{{if(transition===authTransition)authStatus.textContent=authorized?
       "Organization administrator authenticated":"Organization session not established";}})
-    .catch(()=>{{authStatus.textContent="Organization session verification unavailable";}});
+    .catch(()=>{{if(transition===authTransition)
+      authStatus.textContent="Organization session verification unavailable";}});
 }});
+// Read-only refresh while the browser page is visible. No service lifecycle,
+// identity registration or administrator grant occurs on this timer.
+const refreshVisibleSessionEvidence=()=>{{
+  if(document.visibilityState!=="hidden")void refreshSessionEvidence().catch(()=>{{}});
+}};
+window.setInterval(refreshVisibleSessionEvidence,30000);
+document.addEventListener("visibilitychange",refreshVisibleSessionEvidence);
 const chosen=document.body.dataset.mcelSlhInitialView;
 const initial=chosen==="worker-bank" ? "worker-bank" : "overview";
 Promise.resolve(initial==="worker-bank" ? app.execute("intent:select-view",{{choice:"worker-bank"}}) : null)
@@ -146,6 +183,7 @@ Promise.resolve(initial==="worker-bank" ? app.execute("intent:select-view",{{cho
     const context=await app.execute("intent:refresh-overview");
     if(!context || context.disposition!=="completed")throw Error("overview-context-unavailable");
   }}
+  await refreshIdentities();
   message.textContent="SLH observation complete · "+initial;}})
 .catch(()=>{{message.textContent="SLH observation refused; inspect operation receipts";}});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
@@ -171,6 +209,60 @@ def _local_status(*, port: int = DEFAULT_SLH_API_PORT, timeout: float = 1.5) -> 
             return "RUNNING", data
     except (OSError, ValueError, UnicodeError, HTTPError, URLError):
         return "UNREACHABLE", {}
+
+
+def observe_lms_slh_identities(*, port: int = DEFAULT_SLH_API_PORT,
+                                 timeout: float = 1.5) -> dict:
+    """Read identity descriptors from LMS-SLH, never from viewport key storage.
+
+    An unreachable or incompatible LMS-SLH is not an empty identity store.
+    No private key, bearer, or signing material crosses into the browser.
+    """
+    def unavailable(state: str, explanation: str) -> dict:
+        return {"schema": IDENTITIES_SCHEMA, "state": state,
+                "defaultDeviceId": "", "identities": [], "explanation": explanation}
+
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("invalid LMS-SLH port")
+    request = Request(f"http://127.0.0.1:{port}/v1/local/authenticator/identities",
+                      headers={"Accept": "application/json"}, method="GET")
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
+            if response.status != 200:
+                return unavailable("UNVERIFIED", "LMS-SLH identity API was not verified")
+            raw = response.read(65537)
+            if len(raw) > 65536:
+                return unavailable("UNVERIFIED", "LMS-SLH identity response exceeds its limit")
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeError, HTTPError, URLError):
+        return unavailable("UNAVAILABLE", "Start or inspect LMS-SLH to discover local identities")
+    if (not isinstance(payload, dict) or not isinstance(payload.get("identities"), list) or
+            not isinstance(payload.get("invalid_identities"), list) or
+            len(payload["identities"]) > 128 or payload["invalid_identities"]):
+        return unavailable("UNVERIFIED", "LMS-SLH identity state requires inspection")
+    default = payload.get("default_device_id")
+    if not isinstance(default, str) or not _ID.fullmatch(default):
+        return unavailable("UNVERIFIED", "LMS-SLH has no verified default identity")
+    identities, seen = [], set()
+    for record in payload["identities"]:
+        if not isinstance(record, dict):
+            return unavailable("UNVERIFIED", "Invalid LMS-SLH identity record")
+        device_id, label, fingerprint = (record.get("device_id"), record.get("label"),
+                                         record.get("fingerprint"))
+        if (not isinstance(device_id, str) or not _ID.fullmatch(device_id) or device_id in seen or
+                not isinstance(label, str) or len(label) > 120 or
+                not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint) or
+                record.get("usable") is not True):
+            return unavailable("UNVERIFIED", "Invalid LMS-SLH identity record")
+        seen.add(device_id)
+        identities.append({"deviceId": device_id, "label": label,
+                           "fingerprint": fingerprint,
+                           "defaultStatus": "DEFAULT" if device_id == default else "ADDITIONAL"})
+    if default not in seen:
+        return unavailable("UNVERIFIED", "Designated identity was not present in LMS-SLH")
+    return {"schema": IDENTITIES_SCHEMA, "state": "AVAILABLE",
+            "defaultDeviceId": default, "identities": identities,
+            "explanation": "Local identities discovered; organizational authority not yet verified"}
 
 
 def _state(raw: object, *, default: str = "NOT_OBSERVED") -> str:
@@ -253,9 +345,9 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
     if condition != "RUNNING":
         next_step = "Refresh or start the local management service on demand; organization state is not verified."
     elif established == "REQUIRES_RECOVERY":
-        next_step = "Administrator recovery required. Setup already exists but there is no active administrator device; do not rebootstrap."
+        next_step = "Administrator recovery required. Setup already exists but there is no active administrator identity; do not rebootstrap."
     elif init == "UNCONFIGURED" and admin == "NOT_ESTABLISHED":
-        next_step = "Establish the first administrator for the local SLH organization."
+        next_step = "Select an LMS-SLH identity and click Login Administrator to establish the local organization and sign in."
     elif established == "UNVERIFIED":
         next_step = "Organization or administrator establishment is unverified. Diagnose authority records before administering."
     elif organization == "not_configured":
@@ -263,7 +355,7 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
     elif organization == "disabled":
         next_step = "Activate the explicitly configured Organization Service with an enrolled administrator identity."
     elif organization == "running" and tls == "VERIFIED_LOCAL" and admin == "ENROLLED":
-        next_step = "Sign in using an enrolled administrator device. Local key possession is NOT verified until authentication."
+        next_step = "Sign in using an enrolled administrator identity. Local key possession is NOT verified until authentication."
     else:
         next_step = "Inspect Organization Service health and identity before attempting administration."
     network_guidance = ("Loopback-only binding: the Organization Service cannot be reached from another computer."
@@ -308,7 +400,7 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
              "source": "Control plane: 127.0.0.1:8897 (loopback only)"},
             {"id": "establishment", "subject": "SLH organization established", "state": established,
              "source": "Organization setup and enrolled administrator evidence"},
-            {"id": "administrator", "subject": "Administrator device enrollment", "state": admin,
+            {"id": "administrator", "subject": "Administrator identity enrollment", "state": admin,
              "source": "Local authority; current computer's credential NOT VERIFIED"},
             {"id": "organization", "subject": "Organization Service", "state": organization,
              "source": "Configured TLS listener: " + endpoint},

@@ -12,7 +12,7 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_semantic_application_shell import validate_semantic_application_shell
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=ROOT/'mcel_experiments/file-explorer-candidate/application.js'
+SOURCE=ROOT/'tools/fixtures/mcel_candidates/file-explorer-candidate/application.js'
 TARGET=ROOT/'main_computer/web/applications/scripts/mcel-file-explorer-candidate-ir.js'
 
 def build():
@@ -25,7 +25,7 @@ def build():
         raise ValueError('MCEL_FILE_EXPLORER_WRONG_APP_AUTHORITY')
     source_sha=hashlib.sha256(SOURCE.read_bytes()).hexdigest()
     meta={'schema':'mcel.file-explorer-source-bound-candidate.v1',
-          'source':'mcel_experiments/file-explorer-candidate/application.js','sourceSha256':source_sha,
+          'source':'tools/fixtures/mcel_candidates/file-explorer-candidate/application.js','sourceSha256':source_sha,
           'semanticFingerprint':report.semantic_fingerprint,'status':'opt-in-read-only-candidate'}
     js='/* Generated from author-owned DSL; do not hand-edit. */\n'+(
        'window.McelFileExplorerCandidateSource = Object.freeze({metadata:'+json.dumps(meta,sort_keys=True,separators=(',',':'))+',\n'+

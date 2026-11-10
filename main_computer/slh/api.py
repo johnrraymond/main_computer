@@ -32,6 +32,7 @@ ENDPOINTS = (
     Endpoint('GET','/v1/local/organization/config','local_org_config','admin'),
     Endpoint('PATCH','/v1/local/organization/config','local_org_configure','admin'),
     Endpoint('POST','/v1/local/organization/enable','local_org_enable','admin'),
+    Endpoint('POST','/v1/local/organization/admin/identities','local_root_register_admin','local_root'),
     Endpoint('POST','/v1/local/organization/disable','local_org_disable','admin'),
     Endpoint('POST','/v1/local/organization/restart','local_org_restart','admin'),
     Endpoint('POST','/v1/local/seh/activate','local_seh_activate','admin'),
@@ -57,6 +58,7 @@ ENDPOINTS = (
     Endpoint('POST','/v1/auth/verify','verify','public'),
     Endpoint('GET','/v1/auth/session','session','known'),
     Endpoint('POST','/v1/auth/logout','logout','known'),
+    Endpoint('POST','/v1/admin/root/identities','root_register_admin','root'),
     Endpoint('GET','/v1/admin/status','admin_status'),
     Endpoint('GET','/v1/admin/devices','devices'),
     Endpoint('GET','/v1/admin/devices/{id}','device'),
@@ -112,15 +114,17 @@ def _match(pattern, path):
 
 class SLHAPI:
     def __init__(self, authority: SLHAuthority, *, control=None, local_status_provider=None,
-                 local_authenticator=None, organization_controller=None, wallet_service=None, private_requests=None, pinky_sweeper=None):
+                 local_authenticator=None, organization_controller=None, local_root_registration=None, wallet_service=None, private_requests=None, pinky_sweeper=None, root_api_enabled=False):
         self.authority=authority
         self.control=control or SLHControlBackend()
         self.local_status_provider=local_status_provider
         self.local_authenticator=local_authenticator or LocalAuthenticatorAPI()
+        self.local_root_registration=local_root_registration
         self.organization_controller=organization_controller
         self.wallet_service=wallet_service
         self.private_requests=private_requests
         self.pinky_sweeper=pinky_sweeper
+        self.root_api_enabled=root_api_enabled
 
     def openapi(self):
         paths={}
@@ -144,6 +148,9 @@ class SLHAPI:
             }
             if e.access in ('admin','known'):
                 op['security']=[{'DeviceSession':[]}]
+            elif e.access=='root':
+                op['security']=[{'ORGLocalRoot':[]}]
+                op['description']='Bearer LOCAL-AUTH-KEY plus fresh proof of the selected P-256 identity.'
             elif e.access=='optional_key':
                 op['description']='Either an admin bearer session or a single-use enrollment_key; same approval engine.'
             if e.method in ('POST','PATCH','PUT'):
@@ -151,7 +158,8 @@ class SLHAPI:
             paths.setdefault(e.path,{})[e.method.lower()]=op
         return {'openapi':'3.1.0','info':{'title':'Main Computer SLH API','version':'2A.1'},
                 'servers':[{'url':DEFAULT_SLH_API_ORIGIN,'description':'Loopback development only; no remote listener'}],
-                'paths':paths, 'components':{'securitySchemes':{'DeviceSession':{'type':'http','scheme':'bearer'}}}}
+                'paths':paths, 'components':{'securitySchemes':{'DeviceSession':{'type':'http','scheme':'bearer'},
+                                               'ORGLocalRoot':{'type':'http','scheme':'bearer'}}}}
 
     def call(self, method: str, path: str, body: dict | None = None, *, token='', loopback=False):
         if path=='/openapi.json' and method=='GET':
@@ -170,8 +178,12 @@ class SLHAPI:
             if not found:raise SLHError('ENDPOINT_NOT_FOUND',404)
             e,params=found
             identity=None
+            if e.access=='root' and not self.root_api_enabled:
+                raise SLHError('ENDPOINT_NOT_FOUND', 404)
             if e.access=='local_identity':
                 return self.local_authenticator.call(method,path,body,loopback=loopback)
+            if e.access=='local_root' and not loopback:
+                raise SLHError('LOCAL_TRANSPORT_ONLY',403)
             if e.access=='local_bootstrap' and not loopback:
                 raise SLHError('BOOTSTRAP_LOCAL_ONLY',403)
             if e.path.startswith('/v1/local/') and not loopback:
@@ -189,6 +201,8 @@ class SLHAPI:
                 return 501,{'error':{'code':'NOT_IMPLEMENTED','operation':e.method+' '+e.path,'available':False}}
             result=self._invoke(e.handler,body,params,identity,token,loopback)
             status = 201 if e.handler in ('bootstrap_admin','bootstrap_begin','request_enrollment','approve_enrollment','issue_key') else 200
+            if e.handler == 'root_register_admin' and result['status'] == 'REGISTERED':
+                status = 201
             return status,result
         except SLHError as exc:
             return exc.status,{'error':{'code':exc.code}}
@@ -210,6 +224,11 @@ class SLHAPI:
     def _invoke(self,op,b,p,ident,token,loopback):
         a=self.authority
         actor=ident['user_id'] if ident else None
+        if op=='root_register_admin':return a.register_root_administrator(b,root_key=token)
+        if op=='local_root_register_admin':
+            if self.local_root_registration is None:
+                raise SLHError('ROOT_REGISTRATION_UNAVAILABLE',503)
+            return self.local_root_registration.register(b)
         if op=='bootstrap_status':return a.status()
         if op=='local_status':
             if self.local_status_provider is not None:

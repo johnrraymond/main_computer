@@ -4844,9 +4844,11 @@
       if (workerRegistrationStatusPill) {
         workerRegistrationStatusPill.textContent = kind === "ok"
           ? "Offer: registered"
-          : kind === "error"
-            ? "Offer: registration failed"
-            : "Offer: local only";
+          : kind === "pending"
+            ? "Offer: pending"
+            : kind === "error"
+              ? "Offer: registration failed"
+              : "Offer: local only";
       }
     }
 
@@ -5232,19 +5234,37 @@
     async function registerWorkerOffer() {
       let payload;
       try {
-        payload = buildWorkerOfferRegistrationPayload();
+        const walletAddress = workerLowerAddress(workerNetworkAuthorizedWalletAddress());
+        if (!workerWalletValidAddress(walletAddress)) {
+          throw new Error("Connect the selected Hub wallet and load an active multi-session key before updating an offer.");
+        }
+        payload = buildWorkerNetworkRegistrationPayload({walletAddress});
       } catch (error) {
         workerSetRegistrationStatus(error.message || String(error), "error");
         return;
       }
-      saveWorkerSettings();
       if (workerRegisterOffer) workerRegisterOffer.disabled = true;
-      workerSetRegistrationStatus(`Registering worker with ${payload.hub_url}...`);
+      workerSetRegistrationStatus(`Updating authenticated Worker offer for ${payload.hub_url}...`);
       try {
-        const data = await workerPostJson("/api/applications/worker/register-offer", payload);
-        const offerId = data.offer?.offer_id || data.worker?.offer?.offer_id || data.registration?.worker?.offer?.offer_id || "offer registered";
-        const registeredId = data.worker?.node_id || data.registration?.worker?.node_id || "worker";
-        workerSetRegistrationStatus(`Registered ${registeredId}: seller offer ${offerId}.`, "ok");
+        // Complete the seller-field save before offer sync. The generic
+        // autosave is asynchronous and could otherwise overwrite registration
+        // state with an old browser snapshot.
+        const offerSettings = readWorkerFormSettings();
+        const sellerFields = ["sellerEnabled", "rentalEnabled", "sellerAvailabilityMode",
+          "sellerOnlyWhenIdle", "rentalOnlyWhenIdle", "nodeId", "endpoint", "models",
+          "sellerTargetTokens", "capability", "sellerCreditsPerToken",
+          "maxConcurrency", "executionMode"];
+        await workerPostJson("/api/applications/worker/settings", {
+          settings: offerSettings, changed_fields: sellerFields
+        });
+        const data = await workerPostJson("/api/applications/worker/offer-sync", payload);
+        if (data.status === "deferred") {
+          workerSetRegistrationStatus(`Offer saved; awaiting normal Worker availability. ${data.reason || ""}`, "pending");
+        } else if (data.status === "accepted") {
+          workerSetRegistrationStatus(`Hub authenticated offer for ${data.worker_id || "Worker"} in ring ${data.assigned_ring}.`, "ok");
+        } else {
+          workerSetRegistrationStatus(`Offer sync status: ${data.status || "pending"}.`, "ok");
+        }
         try {
           localStorage.setItem(
             workerSettingsStorageKey,
