@@ -64,52 +64,72 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
     # neither HTML hierarchy nor CSS geometry nor any administrator authority.
     authored = surface.get("interfaceIntent") or {}
     navigation = [x for x in authored.get("regions", []) if x.get("role") == "navigation"]
-    identities_nav = [x for x in navigation if x["id"] == "interface-region:slh.identities"]
-    network_nav = [x for x in navigation if x["id"] == "interface-region:slh.observation-query"]
     workspaces = [x for x in authored.get("regions", []) if x.get("role") == "task"]
-    lifecycle_regions = [x for x in authored.get("regions", []) if x.get("role") == "commands"]
-    expected_navigation = {"surface-node:slh.available-local-identities"}
-    if (len(navigation) != 2 or len(identities_nav) != 1 or len(network_nav) != 1 or
-        len(workspaces) != 1 or len(lifecycle_regions) != 1 or
-        {m["ref"] for m in workspaces[0]["members"]} != {
-            "surface-node:slh.configure-org-slh", "surface-node:slh.first-administrator-identity"} or
-        {m["ref"] for m in lifecycle_regions[0]["members"]} != {"surface-node:slh.disable-org-slh"} or
-        {member["ref"] for member in identities_nav[0]["members"]} != expected_navigation or
-        {member["ref"] for member in network_nav[0]["members"]} != {"surface-node:slh.network-slh-target"} or
-        any(item.get("prefer") != {"side": "start"} for item in navigation) or
-        not any(relation.get("kind") == "selects" and
-                relation.get("from", {}).get("ref") == identities_nav[0]["id"] and
-                relation.get("to", {}).get("ref") == workspaces[0]["id"]
-                for relation in authored.get("relations", []))):
-        raise SlhApplicationError("SLH identities must own the left semantic navigation")
-    # Exact semantic action allowlist. Configuration and disable are the only
-    # consequential intents and must remain owned by the existing local port.
+    commands = [x for x in authored.get("regions", []) if x.get("role") == "commands"]
+    inspectors = [x for x in authored.get("regions", []) if x.get("role") == "inspector"]
+    activity = [x for x in authored.get("regions", []) if x.get("role") == "status"]
+    membership = lambda region: {member["ref"] for member in region["members"]}
+    if (len(navigation) != 1 or navigation[0]["id"] != "interface-region:slh.identities" or
+        membership(navigation[0]) != {"surface-node:slh.available-local-identities"} or
+        navigation[0].get("prefer") != {"side":"start"} or
+        len(workspaces) != 2 or {frozenset(membership(r)) for r in workspaces} != {
+          frozenset({"surface-node:slh.configure-org-slh","surface-node:slh.first-administrator-identity"}),
+          frozenset({"surface-node:slh.connect-network-slh","surface-node:slh.network-selected-identity"})} or
+        len(commands) != 2 or {frozenset(membership(r)) for r in commands} != {
+          frozenset({"surface-node:slh.disable-org-slh","surface-node:slh.login-administrator",
+                     "surface-node:slh.logout-administrator"}),
+          frozenset({"surface-node:slh.disconnect-network-slh"})} or
+        len([x for x in authored.get("regions",[]) if x.get("id")=="interface-region:slh.organization-identities"]) != 1 or
+        len(inspectors) != 1 or membership(inspectors[0]) != {
+          "surface-node:slh.observed-service","surface-node:slh.last-successful-operation",
+          "surface-node:slh.network-connection-details"} or
+        len(activity) != 1 or membership(activity[0]) != {"surface-node:slh.activity"}):
+        raise SlhApplicationError("SLH semantic target and inspector ownership invalid")
     nodes = {x["id"]: x for x in surface["nodes"]}
-    configure = nodes.get("surface-node:slh.configure-org-slh", {})
-    disabled = nodes.get("surface-node:slh.disable-org-slh", {})
-    if (configure.get("nodeKind") != "form" or
-            configure.get("intent", {}).get("ref") != "intent:configure-and-enable-organization" or
-            disabled.get("intent", {}).get("ref") != "intent:disable-organization" or
-            configure.get("fields") != {"bindAddress": {"kind": "string"}, "port": {"kind": "integer"}} or
-            any(x in nodes for x in ("surface-node:slh.worker-bank",
-                                   "surface-node:slh.login-administrator"))):
-        raise SlhApplicationError("SLH workspace must expose only explicit lifecycle controls")
-    if {x["id"] for x in ir.get("intents", ())} != {
+    local_form = nodes.get("surface-node:slh.configure-org-slh", {})
+    remote_form = nodes.get("surface-node:slh.connect-network-slh", {})
+    if (local_form.get("nodeKind") != "form" or
+        local_form.get("intent",{}).get("ref") != "intent:configure-and-enable-organization" or
+        local_form.get("fields") != {"bindAddress":{"kind":"string"},"port":{"kind":"integer"}} or
+        remote_form.get("nodeKind") != "form" or
+        remote_form.get("intent",{}).get("ref") != "intent:connect-network-slh" or
+        remote_form.get("fields") != {"address":{"kind":"string"},"port":{"kind":"integer"}} or
+        "tlsSha256" in remote_form.get("fields",{}) or
+        "surface-node:slh.worker-bank" in nodes):
+        raise SlhApplicationError("SLH target workspace authority invalid")
+    expected_intents = {
         "intent:refresh-identities", "intent:refresh-identity-status", "intent:refresh-lifecycle",
-        "intent:choose-identity", "intent:select-target", "intent:inspect-network-slh",
-        "intent:configure-and-enable-organization", "intent:disable-organization"
-    } or {x["id"]: x.get("risk") for x in ir.get("capabilities", ())} != {
-        "capability:slh-observer": "external-read",
-        "capability:network-slh-identity": "external-read",
-        "capability:slh-first-run": "consequential"
-    } or {x["id"]: x.get("risk") for x in ir.get("effects", ())} != {
-        "effect:refresh-identities.request": "external-read",
-        "effect:refresh-identity-status.request": "external-read",
-        "effect:refresh-lifecycle.request": "external-read",
-        "effect:inspect-network-slh.request": "external-read",
-        "effect:configure-and-enable-organization.request": "consequential",
-        "effect:disable-organization.request": "consequential"
-    }:
+        "intent:choose-identity", "intent:select-target", "intent:connect-network-slh",
+        "intent:disconnect-network-slh", "intent:configure-and-enable-organization", "intent:disable-organization",
+        "intent:login-administrator", "intent:logout-administrator",
+        *{f"intent:read-organization-{name}" for name in ("pending","enrolled","trash","retention")},
+        *{f"intent:organization-{name}" for name in ("accept","reject","delete","reactivate","remove")},
+        "intent:set-organization-trash-retention", "intent:empty-organization-trash"
+    }
+    expected_capabilities = {
+        "capability:slh-observer":"external-read", "capability:network-slh-connection":"consequential",
+        "capability:slh-first-run":"consequential",
+        "capability:organization-identity-administration":"consequential",
+        "capability:organization-identity-observer":"external-read"
+    }
+    expected_effects = {
+        "effect:refresh-identities.request":"external-read",
+        "effect:refresh-identity-status.request":"external-read",
+        "effect:refresh-lifecycle.request":"external-read",
+        "effect:connect-network-slh.request":"consequential",
+        "effect:disconnect-network-slh.request":"consequential",
+        "effect:configure-and-enable-organization.request":"consequential",
+        "effect:disable-organization.request":"consequential",
+        "effect:login-administrator.request":"consequential",
+        "effect:logout-administrator.request":"consequential",
+        **{f"effect:read-organization-{name}.request":"external-read" for name in ("pending","enrolled","trash","retention")},
+        **{f"effect:organization-{name}.request":"consequential" for name in ("accept","reject","delete","reactivate","remove")},
+        "effect:set-organization-trash-retention.request":"consequential",
+        "effect:empty-organization-trash.request":"consequential"
+    }
+    if ({x["id"] for x in ir.get("intents",[])} != expected_intents or
+        {x["id"]:x.get("risk") for x in ir.get("capabilities",[])} != expected_capabilities or
+        {x["id"]:x.get("risk") for x in ir.get("effects",[])} != expected_effects):
         raise SlhApplicationError("SLH semantic authority boundary refused")
     composition = synthesize_composition(ir, policy="mcel.semantic-structure.p3")
     verify_composition(ir, composition)
@@ -153,13 +173,19 @@ const selectedTarget=document.body.dataset.mcelSlhTarget;
 const port=McelSemanticSlhPorts.create({{appId:data.ir.application.appId,initialView:"{initial_view}"}});
 const networkPort=McelSemanticSlhNetworkPorts.create({{appId:data.ir.application.appId}});
 // The shared UI uses one semantic IR, but two independent bounded transports.
-// Network inspection cannot invoke local setup, login, or Worker mutation.
+// Network connection cannot invoke local setup, login, or Worker mutation.
 const adapter=Object.freeze({{
-  authorize:req=>req.capabilityId==="capability:network-slh-identity"
+  authorize:req=>req.capabilityId==="capability:organization-identity-observer" ||
+    req.capabilityId==="capability:organization-identity-administration"
+    ? (selectedTarget==="network"?networkPort.authorize(req):port.authorize(req))
+    : req.capabilityId==="capability:network-slh-connection"
     ? (selectedTarget==="network" && networkPort.authorize(req))
     : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
         "intent:refresh-lifecycle"].includes(req.intentId)) && port.authorize(req)),
-  invoke:req=>req.capabilityId==="capability:network-slh-identity"
+  invoke:req=>req.capabilityId==="capability:organization-identity-observer" ||
+    req.capabilityId==="capability:organization-identity-administration"
+    ? (selectedTarget==="network"?networkPort.invoke(req):port.invoke(req))
+    : req.capabilityId==="capability:network-slh-connection"
     ? (selectedTarget==="network" ? networkPort.invoke(req) : Promise.reject(Error("NETWORK_TARGET_NOT_SELECTED")))
     : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
         "intent:refresh-lifecycle"].includes(req.intentId)) ? port.invoke(req)
@@ -168,6 +194,12 @@ const adapter=Object.freeze({{
 const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),data.ir,
   {{capabilities:adapter,composition:data.composition,presentation:"expert",
     navigationChrome:document.getElementById("mcel-slh-navigation-context")}});
+port.onAuthenticationChanged(authenticated=>{{
+  if(selectedTarget==="local")app.setNotebookAuthorization(authenticated);
+}});
+networkPort.onConnectionChanged(authenticated=>{{
+  if(selectedTarget==="network")app.setNotebookAuthorization(authenticated);
+}});
 void app.execute("intent:select-target",{{choice:selectedTarget}});
 window.__mcelSlh=Object.freeze({{app,composition:data.composition}});
 const refreshIdentities=async()=>{{
@@ -208,7 +240,7 @@ port.onSetupChanged(()=>{{void refreshLifecycle();}});
 const initialIdentityRefresh=refreshIdentities();
 initialIdentityRefresh.then(()=>{{
   if(selectedTarget==="local")void refreshLifecycle();
-  else message.textContent="Network target inspection available · administrator not authenticated";
+  else message.textContent="Network SLH ready to connect · no remote session established";
 }}).catch(()=>{{message.textContent="Local signing identities unavailable · configuration cannot proceed";}});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''

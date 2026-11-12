@@ -55,7 +55,8 @@ def test_patch1_compiler_declares_configuration_draft_and_no_legacy_workspace_co
     assert form['submitLabel']=='Configure ORG-SLH'
     assert {i['id'] for i in ir['intents']} == {
         'intent:refresh-identities','intent:refresh-identity-status',
-        'intent:choose-identity','intent:select-target','intent:inspect-network-slh',
+        'intent:choose-identity','intent:select-target','intent:connect-network-slh',
+        'intent:disconnect-network-slh',
         'intent:refresh-lifecycle','intent:configure-and-enable-organization','intent:disable-organization'
     }
     assert {effect['risk'] for effect in ir['effects']}=={'external-read','consequential'}
@@ -65,8 +66,8 @@ def test_patch1_compiler_declares_configuration_draft_and_no_legacy_workspace_co
         'worker-bank','login-administrator','activate-organization','start-local',
         'rename-worker','service-status','health-checks','observation-evidence'
     ]) for node in nodes.values())
-    assert len([r for r in composition['regions'] if r['recipe']=='task'])==1
-    assert len([r for r in composition['regions'] if r['recipe']=='commands'])==1
+    assert len([r for r in composition['regions'] if r['recipe']=='task'])==2
+    assert len([r for r in composition['regions'] if r['recipe']=='commands'])==2
     assert ir['surfaces'][0]['purpose']=='manage' 
     assert not any(r['recipe']=='selection-echo' for r in composition['regions'])
 
@@ -81,7 +82,7 @@ def test_local_configuration_ui_has_no_effects_and_identity_selection_drives_fir
             page.evaluate(MOCK)
             _open(page,'overview')
             assert page.get_by_role('heading',name='Configuration').count()==1
-            assert page.locator('[data-mcel-reference-caption]').inner_text()=='Proposed first administrator'
+            assert page.locator('form[data-intent="intent:configure-and-enable-organization"] [data-mcel-reference-caption]').inner_text()=='Proposed first administrator'
             form=page.locator('form[data-intent="intent:configure-and-enable-organization"]')
             assert form.count()==1
             assert form.locator('[name="bindAddress"]').input_value()=='0.0.0.0'
@@ -89,10 +90,10 @@ def test_local_configuration_ui_has_no_effects_and_identity_selection_drives_fir
             button=form.get_by_role('button',name='Configure ORG-SLH')
             assert button.is_enabled()
             assert page.get_by_text('Default identity',exact=True).count()>=1
-            assert page.locator('[data-mcel-reference-label]').inner_text()=='Default identity'
+            assert form.locator('[data-mcel-reference-label]').inner_text()=='Default identity'
             page.locator('[data-select-key="dev-second"]').click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='dev-second'")
-            assert page.locator('[data-mcel-reference-label]').inner_text()=='Second identity'
+            assert form.locator('[data-mcel-reference-label]').inner_text()=='Second identity'
             form.locator('[name="bindAddress"]').fill('192.168.1.24')
             form.locator('[name="port"]').fill('8999')
             assert form.locator('[name="bindAddress"]').input_value()=='192.168.1.24'
@@ -110,7 +111,7 @@ def test_local_configuration_ui_has_no_effects_and_identity_selection_drives_fir
             browser.close()
 
 
-def test_remote_target_keeps_selected_identity_and_remote_query_without_local_draft():
+def test_remote_target_keeps_selected_identity_and_connection_task_without_local_draft():
     with sync_playwright() as playwright:
         browser=_browser(playwright)
         try:
@@ -123,7 +124,8 @@ def test_remote_target_keeps_selected_identity_and_remote_query_without_local_dr
             _open(page,'network')
             assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-second'
             assert page.locator('form[data-intent="intent:configure-and-enable-organization"]:visible').count()==0
-            assert page.locator('form[data-intent="intent:inspect-network-slh"]:visible').count()==1
+            assert page.locator('form[data-intent="intent:connect-network-slh"]:visible').count()==1
+            assert page.locator('input[name="tlsSha256"]').count()==0
             assert page.locator('[data-mcel-selected-details]:visible').count()==0
             assert page.locator('[data-select-key="dev-second"]:visible').count()==1
             assert all(call['url']=='/api/applications/slh/identities' for call in page.evaluate('window.slhCalls'))

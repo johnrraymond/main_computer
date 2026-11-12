@@ -43,8 +43,13 @@ def test_compiled_canonical_shell_cannot_claim_child_effects():
     page = render_applications_shell_candidate(canonical_promoted=True)
     assert 'data-mcel-shell-canonical-promoted="true"' in page
     assert 'id="mcel-shell-launcher-panel"' in page
-    assert 'MCEL SHELL · CANONICAL' in page
-    assert 'href="/applications?mcel-shell-child=1">Legacy desktop' in page
+    # The canonical provenance remains in document metadata, not visible chrome.
+    assert 'MCEL SHELL · CANONICAL' not in page
+    assert 'Legacy desktop</a>' not in page
+    assert 'id="mcel-shell-open-native"' not in page
+    assert 'id="mcel-shell-open-apps"' not in page
+    assert 'mcel-shell-apps-trigger' not in page
+    assert '☰' not in page
 
 
 @pytest.mark.parametrize('path,expected', [

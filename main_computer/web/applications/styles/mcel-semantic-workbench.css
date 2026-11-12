@@ -99,6 +99,7 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
 [data-mcel-presentation="expert"] [data-mcel-zone="navigator"]{grid-area:navigator}
 [data-mcel-presentation="expert"] [data-mcel-zone="workspace"]{grid-area:workspace}
 [data-mcel-presentation="expert"] [data-mcel-zone="tools"]{grid-area:tools}
+[data-mcel-presentation="expert"] [data-mcel-zone="details"]{grid-area:details}
 [data-mcel-presentation="expert"] [data-mcel-zone="status"]{grid-area:status}
 [data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-region]{
   min-width:0;max-width:100%;grid-column:auto;grid-row:auto;
@@ -255,12 +256,20 @@ body.mcel-workbench-page {
 .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone] {
   min-width:0;min-height:0;max-height:100%;overflow-x:hidden;
 }
-.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > :is([data-mcel-zone="navigator"],[data-mcel-zone="workspace"],[data-mcel-zone="tools"]) {
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > :is([data-mcel-zone="navigator"],[data-mcel-zone="workspace"],[data-mcel-zone="tools"],[data-mcel-zone="details"]) {
   overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;
   display:flex;flex-direction:column;align-items:stretch;gap:12px;
 }
 .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone="status"] {
   overflow-y:auto;scrollbar-gutter:auto;
+}
+/* Query toolbars may contain many forms. Bound them as their own scroll
+ * surface instead of consuming the entire viewport above primary work. */
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone="controls"] {
+  overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;
+}
+[data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone="details"] > [data-mcel-inspector-activity] {
+  margin-top:auto;flex:0 0 auto;
 }
 .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone] > [data-mcel-region] {
   height:auto;min-height:0;max-height:none;min-width:0;width:100%;
@@ -433,3 +442,92 @@ body.mcel-workbench-page {
   grid-column:1/-1;margin:0;min-width:0;overflow-wrap:anywhere;
   text-align:right;
 }
+
+/* MCEL activity follows the selected-object inspector. Its semantic receipt
+ * region stays live and is NOT a full-width footer or a second event store. */
+[data-mcel-presentation="expert"] [data-mcel-viewport-composed] [data-mcel-inspector-activity] {
+  min-width:0;min-height:0;max-width:100%;margin-top:auto;flex:0 0 auto;
+  overflow:visible;grid-area:auto!important;
+}
+[data-mcel-presentation="expert"] [data-mcel-viewport-composed] [data-mcel-inspector-activity] > [data-mcel-region] {
+  min-width:0;width:100%;max-width:100%;
+}
+[data-mcel-presentation="expert"] [data-mcel-viewport-composed] > [data-mcel-zone="status"] {
+  overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:8px;
+}
+/* A generated inspector is a semantic peer of the workspace, not its footer.
+ * One bounded scroll owner holds observed details followed by activity. */
+.mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]) {
+  grid-template-columns:clamp(175px,20%,270px) minmax(0,1fr) clamp(225px,26%,340px);
+}
+[data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] {
+  min-width:0;min-height:0;max-height:100%;overflow-y:auto;
+  overscroll-behavior:contain;scrollbar-gutter:stable;
+  display:flex;flex-direction:column;gap:12px;align-items:stretch;
+}
+[data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] > [data-mcel-region] {
+  width:100%;min-width:0;max-width:100%;flex:0 0 auto;
+  background:var(--panel);border:1px solid var(--edge);border-radius:12px;
+  padding:clamp(10px,1.4vw,16px);
+}
+[data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="status"] {
+  margin-top:auto;
+}
+[data-mcel-presentation="expert"] [data-mcel-purpose="inspection"] [data-mcel-inspector-label] {
+  font-size:.8rem;font-weight:650;margin:12px 0 5px;color:#b6cad5;
+}
+[data-mcel-presentation="expert"] [data-mcel-purpose="inspection"] output[data-state] {
+  max-height:none;overflow:visible;font-size:.76rem;white-space:pre-wrap;
+}
+@media(max-width:1159px) and (min-width:680px) {
+ .mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]) {
+   grid-template-columns:clamp(175px,23%,270px) minmax(0,1fr);
+   grid-template-rows:minmax(0,1fr) minmax(0,min(30dvh,240px));
+ }
+ [data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] {
+   grid-column:2!important;grid-row:2!important;
+ }
+ [data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="workspace"] {
+   grid-column:2!important;grid-row:1!important;
+ }
+ [data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="navigation"] {
+   grid-column:1!important;grid-row:1/3!important;
+ }
+}
+@media(max-width:679px) {
+ .mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]) {
+   grid-template-columns:minmax(0,1fr);
+   grid-template-rows:minmax(0,110px) minmax(0,1fr) minmax(0,min(28dvh,220px));
+ }
+ [data-mcel-presentation="expert"] [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] {
+   grid-column:1!important;grid-row:3!important;
+ }
+}
+
+[data-mcel-presentation="expert"] [data-mcel-latest-request] {
+  margin:0 0 12px;padding:10px 0;border-bottom:1px solid var(--edge);
+  overflow-wrap:anywhere;
+}
+[data-mcel-presentation="expert"] [data-mcel-latest-request] h3 {
+  font-size:.79rem;color:#b7cad6;margin:0 0 6px;
+}
+[data-mcel-presentation="expert"] [data-mcel-latest-request] [data-mcel-request-result] {
+  font-size:.78rem;line-height:1.5;margin:0;white-space:pre-wrap;
+}
+
+/* Semantic record notebook: scroll belongs to records, never its policy/footer.
+   Layout is selected by the typed notebook node; no application-specific IDs. */
+[data-mcel-presentation="expert"] [data-mcel-notebook]{display:flex;flex-direction:column;min-height:220px;min-width:0;max-width:100%;gap:8px}
+[data-mcel-presentation="expert"] [data-mcel-notebook-tabs]{display:flex;gap:5px;border-bottom:1px solid var(--edge);flex:0 0 auto}
+[data-mcel-presentation="expert"] [data-mcel-notebook-tabs] [role="tab"]{min-height:36px;padding:6px 14px;border-radius:7px 7px 0 0}
+[data-mcel-presentation="expert"] [data-mcel-notebook-tabs] [aria-selected="true"]{background:#305e76;color:white}
+[data-mcel-presentation="expert"] [data-mcel-notebook-scroll]{min-height:120px;max-height:clamp(150px,37vh,450px);overflow:auto;min-width:0;overscroll-behavior:contain}
+[data-mcel-presentation="expert"] [data-mcel-notebook-scroll] [data-mcel-record-row]{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--edge)}
+[data-mcel-presentation="expert"] [data-mcel-notebook-scroll] [data-record-field]{flex:1 1 100px;min-width:0;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-notebook-row-actions]{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+[data-mcel-presentation="expert"] [data-mcel-notebook-row-actions] button{min-height:30px;padding:4px 10px}
+[data-mcel-presentation="expert"] [data-mcel-notebook-status]{min-height:1.2em;margin:0;font-size:.83rem;color:var(--mute)}
+[data-mcel-presentation="expert"] [data-mcel-notebook-footer]{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;min-height:42px;padding-top:10px;border-top:1px solid var(--edge);flex:0 0 auto}
+[data-mcel-presentation="expert"] [data-mcel-notebook-footer][hidden]{display:none}
+[data-mcel-presentation="expert"] [data-mcel-notebook-policy]{display:inline-flex;gap:6px;align-items:center}
+[data-mcel-presentation="expert"] [data-mcel-notebook-policy] input{min-height:16px;width:16px}

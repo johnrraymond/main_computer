@@ -12,14 +12,13 @@
   const mount = document.getElementById("mcel-shell-application-mount");
   const frame = document.getElementById("mcel-shell-frame");
   const title = document.getElementById("mcel-shell-active-title");
-  const openNative = document.getElementById("mcel-shell-open-native");
   function refuse(reason) {
     document.body.dataset.mcelShellReady = "false";
     if (status) { status.dataset.error = "true"; status.textContent = "MCEL shell refused: " + reason; }
     if (shell) shell.inert = true;
     return null;
   }
-  if (!irTag || !catalogTag || !shell || !status || !entries || !panel || !mount || !frame || !title || !openNative)
+  if (!irTag || !catalogTag || !shell || !status || !entries || !panel || !mount || !frame || !title)
     return refuse("required-shell-element-missing");
 
   let ir, catalog;
@@ -136,8 +135,6 @@
       title.textContent = app.title;
       document.title = "MCEL Shell · " + app.title;
       mount.dataset.mode = app.mount;
-      openNative.href = childHref(app);
-      openNative.hidden = app.mount === "overview";
       if (app.mount !== "overview") {
         frame.title = app.title + " (canonical application)";
         frame.src = childHref(app); // Explicit native child, never shell recursion
@@ -156,7 +153,6 @@
       const desired = childHref(app);
       if (frame.getAttribute("src") !== desired) {
         frame.src = desired;
-        openNative.href = desired;
       }
     }
     if (push && location.pathname + location.search !== candidateHref(id))
@@ -185,7 +181,6 @@
       event.preventDefault();
       select(app.id, true);
     }));
-  const trigger = document.getElementById("mcel-shell-open-apps");
   function closeLauncher(returnFocus) {
     // The latch is only needed when dismissing a launcher that is already
     // exposed by hover, keyboard focus, or explicit opening. Desktop-icon
@@ -195,8 +190,7 @@
       panel.matches(":hover") || panel.contains(document.activeElement);
     panel.dataset.open = "false";
     panel.dataset.dismissed = suppressHover ? "true" : "false";
-    if (returnFocus && trigger) trigger.focus({preventScroll: true});
-    else if (panel.contains(document.activeElement)) document.activeElement.blur();
+    if (panel.contains(document.activeElement)) document.activeElement.blur();
     traceLauncher("launcher-closed", {reason:returnFocus ? "keyboard" : "navigation", suppressHover});
   }
   panel.addEventListener("pointerenter", event => {
@@ -226,14 +220,6 @@
       closeLauncher(true);
       event.preventDefault();
     }
-  });
-  if (trigger) trigger.addEventListener("click", () => {
-    const shouldOpen = panel.dataset.open !== "true";
-    if (shouldOpen) panel.dataset.dismissed = "false";
-    if (shouldOpen) {
-      panel.dataset.open = "true";
-      traceLauncher("launcher-opened-by-button");
-    } else closeLauncher(false);
   });
   // An application may navigate its own iframe to another application URL.
   // If it lands on a shell document, recover the intended selection in this

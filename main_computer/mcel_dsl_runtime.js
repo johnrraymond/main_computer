@@ -1062,6 +1062,55 @@ function createDsl(metadata, source) {
         ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...modeCondition(options, `surface.form:${name}`)};
       return surfaceNode(name, record);
     },
+    notebook(name, options = {}) {
+      knownOptions(options,["title","tabs","retention","empty"],`surface.notebook:${name}`);
+      assert(typeof options.title==="string" && options.title.length>0 && options.title.length<=120 &&
+        Array.isArray(options.tabs) && options.tabs.length>=2 && options.tabs.length<=8,
+        "MCEL_DSL_NOTEBOOK_INVALID","A notebook requires a title and bounded tabs.");
+      const seen=new Set();
+      const tabs=options.tabs.map(tab=>{
+        knownOptions(tab,["id","label","state","key","fields","refresh","actions"],"surface.notebook.tab");
+        assert(typeof tab.id==="string" && /^[a-z][a-z0-9-]*$/.test(tab.id) && !seen.has(tab.id) &&
+          typeof tab.label==="string" && tab.label.length<=80 && tab.label.length>0 &&
+          tab.state instanceof StateHandle && tab.state.record.authority==="derived" &&
+          tab.state.record.schema.kind==="list" && tab.state.record.schema.key===tab.key &&
+          Array.isArray(tab.fields) && tab.fields.length>0 &&
+          tab.fields.every(field=>typeof field==="string" && field in tab.state.record.schema.items.fields) &&
+          tab.refresh instanceof IntentHandle && tab.refresh.record.operationKind==="capability" &&
+          tab.refresh.record.risk==="external-read" &&
+          tab.refresh.record.resultBindings.some(binding=>binding.target.ref===tab.state.id),
+          "MCEL_DSL_NOTEBOOK_TAB_INVALID","Notebook tabs require keyed observed records and a read intent.");
+        seen.add(tab.id);
+        const actions=tab.actions||{};
+        assert(Object.keys(actions).length<=6 && Object.entries(actions).every(([label,action])=>
+          typeof label==="string" && label.length>0 && label.length<=40 &&
+          action?.intent instanceof IntentHandle && action.intent.record.operationKind==="capability" &&
+          action.intent.record.risk==="consequential" &&
+          action.intent.record.input.length===1 &&
+          action.intent.record.input[0].sourceName==="recordId" &&
+          action.intent.record.input[0].schema.kind==="string" &&
+          (action.confirm===undefined || typeof action.confirm==="string" && action.confirm.length<=240)),
+          "MCEL_DSL_NOTEBOOK_ACTION_INVALID","Row actions must be keyed consequential intents.");
+        return {id:tab.id,label:tab.label,key:tab.key,fields:[...tab.fields],state:ref(tab.state),
+          refresh:ref(tab.refresh),actions:Object.fromEntries(Object.entries(actions).map(([label,action])=>
+            [label,{intent:ref(action.intent),...(action.confirm?{confirm:action.confirm}:{})}]))};
+      });
+      const retention=options.retention;
+      assert(retention?.state instanceof StateHandle && retention.state.record.authority==="derived" &&
+        retention.state.record.schema.kind==="record" &&
+        retention.state.record.schema.fields?.enabled?.kind==="boolean" &&
+        retention.refresh instanceof IntentHandle && retention.refresh.record.risk==="external-read" &&
+        retention.refresh.record.resultBindings.some(b=>b.target.ref===retention.state.id) &&
+        retention.update instanceof IntentHandle && retention.update.record.risk==="consequential" &&
+        retention.update.record.input.length===1 && retention.update.record.input[0].sourceName==="enabled" &&
+        retention.update.record.input[0].schema.kind==="boolean" &&
+        options.empty instanceof IntentHandle && options.empty.record.risk==="consequential" &&
+        options.empty.record.input.length===0,
+        "MCEL_DSL_NOTEBOOK_RETENTION_INVALID","Retention requires a persistent boolean read/write and bulk action.");
+      return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"record-notebook",
+        title:options.title,tabs,retention:{state:ref(retention.state),refresh:ref(retention.refresh),
+          update:ref(retention.update)},empty:ref(options.empty)});
+    },
     collection(name, options = {}) {
       knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "when"], `surface.collection:${name}`);
       assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");

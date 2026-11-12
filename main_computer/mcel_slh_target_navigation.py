@@ -33,9 +33,8 @@ def target_tabs(selected: str) -> str:
                          '<p>Start SLH on demand. No Windows boot startup.</p></details></section>')
         elif active and target == "network":
             links.append('<section role="tabpanel" data-slh-target-context="network">'
-                         '<details data-mcel-navigation-note><summary>About network verification</summary>'
-                         '<p>The remote TLS fingerprint must be verified independently. '
-                         'Inspection does not authenticate the selected local identity.</p></details>'
+                         '<details data-mcel-navigation-note><summary>About network authentication</summary>'
+                         '<p>The selected local identity authenticates after the remote service identity is verified.</p></details>'
                          '</section>')
     return '<nav role="tablist" aria-label="SLH administration target" class="slh-target-tabs">' + "".join(links) + '</nav>'
 

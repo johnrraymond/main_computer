@@ -49,7 +49,11 @@ def sample(app, width):
         if wide:
             zones['workspace']['w']=width*.60
             zones['tools'].update(x=x,y=320,w=width-24)
+            zones['details']=dict(x=x+width*.60+12,y=150,w=width*.30,h=160)
             zones['status']['y']=530
+        else:
+            zones['details']=dict(x=x,y=530,w=width-24,h=140)
+            zones['status']['y']=680
     else:
         zones={'navigator':dict(x=x,y=40,w=width-24,h=100),
                'workspace':dict(x=x,y=150,w=width-24,h=160),
@@ -66,9 +70,12 @@ def sample(app, width):
                **{'application':{'zone':None}},
                **{region:{'zone':zone} for region,zone in oracle.EXPECTED_REGION_ZONES[app].items()}},
             'fileExplorer':{name:True for name in ('treeInNavigator','listingInWorkspace','inspectorInTools',
+                'activityInInspectorRail','activityAfterDetails','activityNotDesktopFooter',
                 'navigationScrollOwner','workspaceScrollOwner','inspectorScrollOwner',
                 'treeDoesNotScroll','listDoesNotScroll','outerFrameBounded')} if app=='file-manager' else None,
-            'tabCount':4 if app in oracle.TOOL_TABS else 0,
+            'taskManager':{name:True for name in ('detailsInRail','activityInDetails','rightAtDesktop',
+                'inspectorScrollOwner','workspaceNotCollapsed')} if app=='task-manager' else None,
+            'tabCount':len(oracle.TOOL_TABS[app]) if app in oracle.TOOL_TABS else 0,
             'selectedTabs':1 if app in oracle.TOOL_TABS else 0,
             'visiblePanels':1 if app in oracle.TOOL_TABS else 0}
 

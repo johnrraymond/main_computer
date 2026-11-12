@@ -153,7 +153,8 @@ def test_unverified_network_tab_cannot_perform_local_setup_or_mutation():
             page.wait_for_function('''()=>document.querySelector('#mcel-workbench')?.children.length > 0''')
             assert page.get_by_role('tab',name='Network SLH').get_attribute('aria-selected')=='true'
             assert page.get_by_role('tab',name='This Computer').get_attribute('href')=='/applications/slh/local'
-            assert page.locator('form[data-intent="intent:inspect-network-slh"]').count()==1
+            assert page.locator('form[data-intent="intent:connect-network-slh"]').count()==1
+            assert page.locator('input[name="tlsSha256"]').count()==0
             assert page.locator('[data-intent="intent:bootstrap-administrator"]').count()==0
             # Login may be declared by the shared semantic app, but must be
             # unavailable until remote trust and authorization are established.
@@ -163,46 +164,13 @@ def test_unverified_network_tab_cannot_perform_local_setup_or_mutation():
             browser.close()
 
 
-def test_network_verification_browser_uses_only_network_port_and_shows_unauthed_result():
-    with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
-        try:
-            page=browser.new_page(viewport={'width':1000,'height':850})
-            errors=[]
-            page.on('pageerror',lambda err:errors.append(str(err)))
-            page.evaluate('''()=>{
-              window.networkCalls=[];
-              window.fetch=async(url, options={})=>{
-                window.networkCalls.push({url,method:options.method,body:options.body});
-                if(url==="/api/applications/slh/identities")return {ok:true,json:async()=>({
-                  schema:"mcel.slh.identities.v4b",state:"AVAILABLE",defaultDeviceId:"test-admin",
-                  identities:[{deviceId:"test-admin",label:"Test",fingerprint:"a".repeat(64),
-                    defaultStatus:"DEFAULT"}],explanation:"Identity discovered; role unverified"})};
-                if(url!=="/api/applications/slh/network/inspect")throw Error("cross-target-request");
-                const request=JSON.parse(options.body);
-                return {ok:true,json:async()=>({
-                  endpoint:request.address+":"+request.port,tlsSha256:request.tlsSha256,
-                  organizationState:"RUNNING",authenticationState:"NOT_AUTHENTICATED",
-                  observedAt:"2026-11-08T23:00:00Z",explanation:"Pinned TLS identity verified"
-                })};
-              };
-            }''')
-            page.set_content(render_slh_page('network'))
-            form=page.locator('form[data-intent="intent:inspect-network-slh"]')
-            form.locator('input[name="address"]').fill('192.168.10.20')
-            form.locator('input[name="tlsSha256"]').fill('a'*64)
-            form.locator('button[type="submit"]').click()
-            page.wait_for_function('''()=>window.networkCalls.some(x=>x.url==='/api/applications/slh/network/inspect')''')
-            page.get_by_text('192.168.10.20:8899',exact=False).wait_for(timeout=10000)
-            requests=[x for x in page.evaluate('window.networkCalls')
-                      if x['url']=='/api/applications/slh/network/inspect']
-            assert len(requests)==1 and requests[0]['method']=='POST'
-            assert requests[0]['url']=='/api/applications/slh/network/inspect'
-            assert 'Authorization' not in requests[0]
-            assert 'NOT_AUTHENTICATED' in page.locator('#mcel-workbench').inner_text()
-            assert errors==[],errors
-        finally:
-            browser.close()
+def test_network_connection_browser_uses_only_bounded_network_port():
+    # The full paired TLS + signed-device scenario is exercised in the
+    # dedicated integration oracle; retain it as part of V2 target acceptance.
+    from test_mcel_slh_network_connection_integration import (
+        test_network_browser_connect_uses_current_selected_identity_and_inspector,
+    )
+    test_network_browser_connect_uses_current_selected_identity_and_inspector()
 
 
 def test_real_viewport_routes_local_and_network_targets_without_cross_target_fallback(tmp_path):

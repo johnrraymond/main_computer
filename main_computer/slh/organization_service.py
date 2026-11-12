@@ -107,7 +107,9 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                 'seh_outbound_connections': diagnostics.get('connections', 0),
                                 'seh_outbound_failures': diagnostics.get('failures', 0),
                                 'seh_outbound_last_error_class': diagnostics.get('last_error_class'),
-                                'seh_outbound_last_http_status': diagnostics.get('last_http_status')})
+                                'seh_outbound_last_http_status': diagnostics.get('last_http_status'),
+                                'trash_retention_last_error': getattr(self.server, 'trash_retention_last_error', None),
+                                'trash_retention_last_removed_count': getattr(self.server, 'trash_retention_last_removed_count', 0)})
             return
         if method == 'POST' and path == '/v1/org/admin/seh/activate':
             try:
@@ -308,6 +310,25 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
         return _run_ready_service(state_dir, parent_pid, parent_created, authority, config)
 
 
+def _trash_retention_loop(authority: SLHAuthority, stop: threading.Event, server=None,
+                          *, interval_seconds: float = 60.0) -> None:
+    # Durable ORG-owned policy; no MCEL page or connected browser is necessary.
+    while not stop.is_set():
+        try:
+            result=authority.purge_expired_trash()
+        except Exception as exc:
+            # A cleanup fault must not kill the identity service. Expose the
+            # error class, not keys, tokens, or potentially sensitive paths.
+            if server is not None:
+                server.trash_retention_last_error=type(exc).__name__
+        else:
+            if server is not None:
+                server.trash_retention_last_error=None
+                server.trash_retention_last_removed_count=result['removed_count']
+        if stop.wait(interval_seconds):
+            break
+
+
 def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
                        authority: SLHAuthority, config: dict) -> int:
     # ORG-SLH, not LMS-SLH, creates and owns the durable bearer root.
@@ -330,6 +351,12 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     server.private_requests = None
     server.pinky_sweeper = None
     stop_watch = threading.Event()
+    server.trash_retention_last_error=None
+    server.trash_retention_last_removed_count=0
+    trash_thread = threading.Thread(target=_trash_retention_loop,
+                                    args=(authority,stop_watch,server),daemon=True,
+                                    name='slh-org-trash-retention')
+    trash_thread.start()
     def check_controller():
         while not stop_watch.wait(2):
             try:
@@ -391,6 +418,7 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     finally:
         stop_watch.set()
         watcher.join(timeout=3)
+        trash_thread.join(timeout=3)
         server.server_close()
         if server.pinky_sweeper:
             server.pinky_sweeper.stop()

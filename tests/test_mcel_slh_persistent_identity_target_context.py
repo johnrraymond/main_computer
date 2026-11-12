@@ -6,6 +6,7 @@ There are no SLH service starts, certificates, or real network requests.
 from __future__ import annotations
 
 import shutil
+import json
 
 from playwright.sync_api import sync_playwright
 
@@ -19,7 +20,7 @@ def _mountable_browser(page):
     page.evaluate('''()=>{
       const held={};Object.defineProperty(window,'sessionStorage',{configurable:true,
         value:{getItem:k=>held[k]||null,setItem:(k,v)=>{held[k]=v},removeItem:k=>{delete held[k]}}});
-      window.networkCalls=[];window.nonIdentityLocalCalls=[];
+      window.networkCalls=[];window.nonIdentityLocalCalls=[];window.confirm=()=>true;
       window.fetch=async(url,options={})=>{
         if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>({
           schema:'mcel.slh.identities.v4b',state:'AVAILABLE',defaultDeviceId:'dev-default',
@@ -27,12 +28,17 @@ def _mountable_browser(page):
             {deviceId:'dev-default',label:'Default identity',fingerprint:'a'.repeat(64),defaultStatus:'DEFAULT'},
             {deviceId:'dev-alt',label:'Other identity',fingerprint:'b'.repeat(64),defaultStatus:'ADDITIONAL'}
           ],explanation:'Local keys discovered; administrator role not verified'})};
-        if(url==='/api/applications/slh/network/inspect'){
+        if(url==='/api/applications/slh/network/connect'){
           window.networkCalls.push({url,method:options.method,headers:options.headers,body:options.body});
-          const q=JSON.parse(options.body);
-          return {ok:true,json:async()=>({endpoint:q.address+':'+q.port,tlsSha256:q.tlsSha256,
-            organizationState:'RUNNING',authenticationState:'NOT_AUTHENTICATED',
-            observedAt:'2026-11-11T12:00:00Z',explanation:'Read-only pinned TLS inspection'})};
+          const payload=JSON.parse(options.body),q=payload.arguments;
+          if(payload.action==='disconnect')return {ok:true,json:async()=>({authenticationState:'DISCONNECTED',explanation:'Revoked'})};
+          if(!q.confirmPin)return {ok:true,json:async()=>({pairingRequired:true,
+            endpoint:q.address+':'+q.port,tlsSha256:'f'.repeat(64)})};
+          return {ok:true,json:async()=>({pairingRequired:false,sessionTicket:'x'.repeat(40),
+            endpoint:q.address+':'+q.port,tlsSha256:q.confirmPin,
+            organizationState:'RUNNING',authenticationState:'AUTHENTICATED',role:'admin',
+            deviceId:q.adminDeviceId,services:'WORKER_SERVICE_ENABLED',
+            observedAt:'2026-11-11T12:00:00Z',explanation:'Signed remote login'})};
         }
         window.nonIdentityLocalCalls.push(url);
         throw Error('Unexpected local operation:'+url);
@@ -48,15 +54,13 @@ def test_compiled_source_has_one_app_two_navigation_regions_and_independent_stat
     ir,composition=compile_slh_application()
     assert ir['application']['appId']=='slh'
     assert {'state:selected-target','state:selected-local-identity','state:local-identities',
-            'state:network-observations'} <= {s['id'] for s in ir['states']}
-    assert {'intent:select-target','intent:choose-identity','intent:inspect-network-slh'} <= {
+            'state:network-session'} <= {s['id'] for s in ir['states']}
+    assert {'intent:select-target','intent:choose-identity','intent:connect-network-slh'} <= {
         i['id'] for i in ir['intents']}
     regions=[r for r in composition['regions'] if r['purpose']=='navigation']
     assert [r['id'] for r in regions]==[
-        'interface-region:generated-navigation-observation-query',
-        'interface-region:generated-navigation-identities']
-    assert [m['ref'] for m in regions[0]['members']]==['surface-node:slh.network-slh-target']
-    assert 'surface-node:slh.available-local-identities' in [m['ref'] for m in regions[1]['members']]
+        'interface-region:generated-navigation']
+    assert [m['ref'] for m in regions[0]['members']]==['surface-node:slh.available-local-identities']
     assert ROUTES['/applications/slh/network']=='network'
     assert ROUTES['/applications/slh/network/workers']=='network-worker-bank'
     for url in TARGET_ROUTES.values():
@@ -77,9 +81,8 @@ def test_local_and_network_have_same_semantic_application_but_different_disclosu
             assert page.locator('[data-slh-target=network]').get_attribute('aria-selected')=='true'
             assert page.locator('[data-slh-target-context=network]').count()==1
             assert page.locator('[data-slh-target-context=local]').count()==0
-            assert page.locator('[data-mcel-region="interface-region:generated-navigation-observation-query"]:visible').count()==1
-            assert page.locator('[data-mcel-region="interface-region:generated-navigation-identities"]:visible').count()==1
-            assert page.locator('form[data-intent="intent:inspect-network-slh"]:visible').count()==1
+            assert page.locator('[data-mcel-region="interface-region:generated-navigation"]:visible').count()==1
+            assert page.locator('form[data-intent="intent:connect-network-slh"]:visible').count()==1
             assert page.locator('button[data-intent="intent:login-administrator"]:visible').count()==0
             assert page.locator('[data-select-key="dev-default"]:visible').count()==1
             assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-default'
@@ -91,7 +94,7 @@ def test_local_and_network_have_same_semantic_application_but_different_disclosu
             assert page.locator('[data-slh-target-context=local]').count()==1
             assert page.get_by_text('Organization session not established',exact=True).count()==1
             assert page.locator('[data-slh-target-context=local]').get_by_text('About local administration').count()==1
-            assert page.locator('form[data-intent="intent:inspect-network-slh"]:visible').count()==0
+            assert page.locator('form[data-intent="intent:connect-network-slh"]:visible').count()==0
             assert page.locator('[data-select-key="dev-default"]:visible').count()==1
             assert errors==[],errors
         finally:
@@ -116,17 +119,17 @@ def test_selected_identity_survives_target_change_and_remote_pin_stays_distinct(
             _wait_identities(page)
             assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-alt'
             assert page.evaluate('window.nonIdentityLocalCalls')==[]
-            form=page.locator('form[data-intent="intent:inspect-network-slh"]')
+            form=page.locator('form[data-intent="intent:connect-network-slh"]')
             form.locator('input[name="address"]').fill('192.168.1.20')
-            form.locator('input[name="tlsSha256"]').fill('f'*64)
             form.locator('button[type="submit"]').click()
-            page.wait_for_function('''()=>window.__mcelSlh.app.readState('state:network-observations')?.length===1''')
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:network-session')?.authenticationState === 'AUTHENTICATED'")
             assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-alt'
-            assert page.evaluate('window.__mcelSlh.app.readState("state:network-observations")[0].tlsSha256')=='f'*64
+            assert page.evaluate('window.__mcelSlh.app.readState("state:network-session").tlsSha256')=='f'*64
             requests=page.evaluate('window.networkCalls')
-            assert len(requests)==1 and requests[0]['method']=='POST'
+            assert len(requests)==2 and requests[0]['method']=='POST'
+            assert all(json.loads(q['body'])['arguments']['adminDeviceId']=='dev-alt' for q in requests)
             assert not any(key.lower()=='authorization' for key in requests[0]['headers'])
-            assert 'NOT_AUTHENTICATED' in page.locator('#mcel-workbench').inner_text()
+            assert 'AUTHENTICATED' in page.locator('#mcel-workbench').inner_text()
             assert errors==[],errors
         finally:
             browser.close()

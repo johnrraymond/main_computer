@@ -8,9 +8,6 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-applications-shell{display:grid;grid-template-rows:68px minmax(0,1fr) auto;min-height:100dvh;height:100dvh;min-width:0}
 .mcel-shell-masthead{padding:12px 22px;border-bottom:1px solid var(--mcel-line);background:#0c0d0a;display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0}
 .mcel-shell-masthead h1{font-size:18px;letter-spacing:.055em;text-transform:uppercase;margin:0}
-.mcel-shell-head-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.mcel-shell-proof{font:700 11px/1.3 ui-monospace,monospace;letter-spacing:.04em;color:#c4dfae;border:1px solid #446247;background:#152118;border-radius:20px;padding:6px 10px}
-.mcel-shell-head-right a{font-weight:700;color:var(--mcel-gold);border:1px solid var(--mcel-line);border-radius:6px;padding:7px 10px}
 .mcel-shell-content{display:grid;grid-template-columns:var(--mcel-rail) minmax(0,1fr);min-height:0;min-width:0;position:relative}
 .mcel-shell-launcher{width:var(--mcel-rail);height:100%;position:relative;z-index:1300;min-height:0;overflow:visible}
 .mcel-shell-launcher-panel{position:fixed;top:68px;bottom:26px;left:0;width:min(var(--mcel-expand),calc(100vw - 12px));border:1px solid var(--mcel-line);border-left:0;background:#11110e;box-shadow:0 20px 65px #000b;transform:translateX(calc(-100% + var(--mcel-rail)));transition:transform 180ms ease;overflow:auto;overscroll-behavior:contain;direction:rtl;scrollbar-gutter:stable;border-radius:0 8px 8px 0}
@@ -29,9 +26,6 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-shell-workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0;background:#10061d}
 .mcel-shell-workspace-header{background:#11110e;min-height:56px;padding:9px 18px;display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid var(--mcel-line)}
 .mcel-shell-workspace-header h2{font-size:17px;margin:0}
-.mcel-shell-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.mcel-shell-toolbar a,.mcel-shell-toolbar button{background:#15160f;border:1px solid #67573b;border-radius:7px;color:var(--mcel-gold);font-weight:700;padding:7px 11px;white-space:nowrap}
-.mcel-shell-toolbar a[hidden]{display:none}
 .mcel-shell-application-mount{min-width:0;min-height:0;position:relative;overflow:hidden}
 .mcel-shell-overview{height:100%;padding:clamp(18px,5vw,64px);overflow:auto;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:12px}
 .mcel-shell-overview h3{font-size:clamp(27px,3vw,44px);line-height:1.08;margin:0;max-width:720px}
@@ -43,10 +37,8 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-shell-application-mount:is([data-mode="semantic"],[data-mode="legacy"]) .mcel-shell-overview{display:none}
 .mcel-shell-status{background:#0a0a08;color:#c9c0aa;border-top:1px solid var(--mcel-line);height:26px;font:12px/24px ui-monospace,monospace;padding:0 12px 0 calc(var(--mcel-rail) + 10px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mcel-shell-status[data-error="true"]{color:#ff9a9a}
-@media (max-width:600px){.mcel-shell-masthead{padding:8px 12px}.mcel-shell-masthead h1{font-size:14px}.mcel-shell-proof{display:none}.mcel-shell-workspace-header{padding:8px}.mcel-shell-workspace-header h2{font-size:15px}.mcel-shell-head-right a{font-size:12px;padding:5px}.mcel-shell-overview{justify-content:flex-start}}
+@media (max-width:600px){.mcel-shell-masthead{padding:8px 12px}.mcel-shell-masthead h1{font-size:14px}.mcel-shell-workspace-header{padding:8px}.mcel-shell-workspace-header h2{font-size:15px}.mcel-shell-overview{justify-content:flex-start}}
 @media (prefers-reduced-motion:reduce){.mcel-shell-launcher-panel{transition:none}}
-.mcel-shell-apps-trigger{background:#201d12;border:1px solid #75613a;color:var(--mcel-gold);font-weight:800;border-radius:7px;padding:7px 12px}
-
 /* Original desktop icons are dynamically sourced from the authoritative legacy CSS. */
 body.mcel-applications-candidate{--ink:#f7f3e8;--muted:#c9c0aa;--gold:#f6c75b}
 .mcel-shell-overview{position:relative;padding:0;display:block;overflow:hidden}

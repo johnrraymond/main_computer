@@ -113,7 +113,7 @@
         "generated-composition-invalid");
       const tags={root:"main",queries:"section",collection:"section","selection-echo":"aside",
         evidence:"footer",results:"section",controls:"section",operations:"section",document:"section",navigation:"nav",
-        task:"section",commands:"section"};
+        task:"section",commands:"section",inspection:"aside"};
       const allowedPurposes=new Set(["monitor","compare","inspect","navigate","manage"]);
       assert(allowedPurposes.has(composition.purpose),"generated-purpose-invalid");
       const usedRecipes=new Set();
@@ -122,8 +122,8 @@
         .filter(r=>["navigation","mode-selector"].includes(r.role))
         .map(r=>"interface-region:generated-navigation-"+r.id.split(".").pop()));
       const authoredTaskIds=new Set((surface.interfaceIntent?.regions||[])
-        .filter(r=>["task","commands"].includes(r.role))
-        .map(r=>"interface-region:generated-"+r.role+"-"+r.id.split(".").pop()));
+        .filter(r=>["task","commands","inspector"].includes(r.role))
+        .map(r=>"interface-region:generated-"+(r.role==="inspector"?"inspection":r.role)+"-"+r.id.split(".").pop()));
       const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
         .map(i=>ref(i.viewTransition.target)));
       for (const n of surface.nodes || []) {
@@ -137,12 +137,12 @@
         const expectedTasks=composition.policy==="mcel.semantic-structure.p3" &&
           composition.purpose==="monitor" && ["collection","results"].includes(r.recipe)
           ? ["monitor"] : [];
-        if(["task","commands"].includes(r.recipe))assert(typeof r.semanticTitle==="string" &&
+        if(["task","commands","inspection"].includes(r.recipe))assert(typeof r.semanticTitle==="string" &&
           /^[a-z][a-z0-9-]*$/.test(r.semanticTitle),"generated-task-title-invalid");
         const namedNavigation=r?.recipe==="navigation" && authoredNavigationIds.has(r.id);
-        const namedTask=["task","commands"].includes(r?.recipe) && authoredTaskIds.has(r.id);
+        const namedTask=["task","commands","inspection"].includes(r?.recipe) && authoredTaskIds.has(r.id);
         assert(r && tags[r.recipe] === r.nativeTag && !usedRegionIds.has(r.id) &&
-          (["navigation","task","commands"].includes(r.recipe) || !usedRecipes.has(r.recipe)) &&
+          (["navigation","task","commands","inspection"].includes(r.recipe) || !usedRecipes.has(r.recipe)) &&
           Array.isArray(r.members) && Array.isArray(r.tasks) &&
           JSON.stringify(r.tasks)===JSON.stringify(expectedTasks) &&
           Array.isArray(r.reasons) && r.reasons.length > 0 &&
@@ -151,7 +151,10 @@
         usedRegionIds.add(r.id);
         usedRecipes.add(r.recipe);
       }
-      assert(usedRecipes.has("root") && usedRecipes.has("collection") &&
+      // A configuration task is a valid primary workspace without any
+      // collection. Do not synthesize a fake record list to satisfy layout.
+      assert(usedRecipes.has("root") &&
+        (usedRecipes.has("collection") || usedRecipes.has("task") || usedRecipes.has("document")) &&
         composition.rootId === "interface-region:generated-root", "generated-root-invalid");
       const permittedRisks=composition.policy==="mcel.semantic-structure.p3"
         ? ["local-state","external-read","consequential"] : ["local-state","external-read"];
@@ -166,7 +169,7 @@
     const regions = index(generated ? composition.regions : surface.interfaceIntent.regions, "region");
     const rootId = generated ? composition.rootId : surface.interfaceIntent.hierarchy.rootId;
     if (generated) {
-      const expected={form:"queries",collection:"collection",control:"controls",
+      const expected={form:"queries",collection:"collection","record-notebook":"collection",control:"controls",
         "operation-evidence":"evidence","document-editor":"document"};
       const navigationMembers=new Set();
       for(const authored of surface.interfaceIntent?.regions || []) {
@@ -187,6 +190,7 @@
           (a.members||[]).some(m=>ref(m)===n.id));
         const recipe=navigationMembers.has(n.id) ? "navigation" :
           declared?.role==="task" ? "task" : declared?.role==="commands" ? "commands" :
+          declared?.role==="inspector" ? "inspection" :
           composition.policy==="mcel.semantic-structure.p3" &&
           ["form","control"].includes(n.nodeKind) && referenced?.risk==="consequential"
           ? "operations" : n.nodeKind==="state-value"
@@ -275,7 +279,7 @@
           checkSchema(n.fields[field],value,n.id + ".defaults." + field);
         }
       }
-      assert(["form","control","state-value","collection","plot","operation-evidence","document-editor","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
+      assert(["form","control","state-value","collection","record-notebook","plot","operation-evidence","document-editor","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
       if (n.intent) assert(intents.has(ref(n.intent)), "unbound-intent:" + n.id);
       for(const item of n.resetOutputs||[]){
         const target=states.get(ref(item.state));
@@ -285,6 +289,29 @@
       }
       if (n.state) assert(states.has(ref(n.state)), "unbound-state:" + n.id);
       if (n.selectionIntent) assert(intents.has(ref(n.selectionIntent)), "unbound-selection:" + n.id);
+      if (n.nodeKind === "record-notebook") {
+        assert(typeof n.title==="string" && Array.isArray(n.tabs) && n.tabs.length>=2 && n.tabs.length<=8,
+          "invalid-notebook:"+n.id);
+        for(const tab of n.tabs){
+          const source=states.get(ref(tab.state)), refresh=intents.get(ref(tab.refresh));
+          assert(source?.authority==="derived" && source.schema?.kind==="list" &&
+            source.schema.key===tab.key && refresh?.risk==="external-read" &&
+            refresh.resultBindings?.some(b=>ref(b.target)===source.id),"invalid-notebook-tab:"+n.id);
+          for(const action of Object.values(tab.actions||{})){
+            const intent=intents.get(ref(action.intent));
+            assert(intent?.risk==="consequential" && intent.input?.length===1 &&
+              intent.input[0].sourceName==="recordId" && intent.input[0].schema?.kind==="string",
+              "invalid-notebook-action:"+n.id);
+          }
+        }
+        const policy=states.get(ref(n.retention?.state)), readPolicy=intents.get(ref(n.retention?.refresh));
+        const updatePolicy=intents.get(ref(n.retention?.update)), empty=intents.get(ref(n.empty));
+        assert(policy?.authority==="derived" && policy.schema?.fields?.enabled?.kind==="boolean" &&
+          readPolicy?.risk==="external-read" && readPolicy.resultBindings?.some(b=>ref(b.target)===policy.id) &&
+          updatePolicy?.risk==="consequential" && updatePolicy.input?.length===1 &&
+          updatePolicy.input[0].schema?.kind==="boolean" && empty?.risk==="consequential" &&
+          empty.input?.length===0,"invalid-notebook-retention:"+n.id);
+      }
       if (n.nodeKind === "state-value") assert(states.has(ref(n.value?.state)), "unbound-display:" + n.id);
       if (n.nodeKind === "document-editor") {
         const source=states.get(ref(n.contentState)), path=states.get(ref(n.path)), draft=states.get(ref(n.draft));
@@ -341,7 +368,7 @@
       "workspace-plan-version-or-source");
     assert(Array.isArray(plan.zones) && plan.zones.length > 0, "workspace-plan-zones");
     const kinds = {controls:"toolbar", navigator:"dock", workspace:"protected-anchor",
-      tools:"tab-group", status:"pinned-compact"};
+      tools:"tab-group", details:"inspector", status:"pinned-compact"};
     const names = new Set(), covered = new Set();
     for (const zone of plan.zones) {
       assert(zone && own(kinds, zone.id) && !names.has(zone.id) &&
@@ -356,6 +383,7 @@
         const region = c.regions.get(id);
         assert(zone.id === "navigator" ? region.purpose === "navigation" :
           zone.id === "status" ? region.purpose === "status" :
+          zone.id === "details" ? region.purpose === "inspection" :
           zone.id === "controls" ? ["query-controls","mode-control"].includes(region.purpose) :
           zone.id === "workspace" ? region.priority === "primary" || !!region.visibleWhen :
           region.priority !== "primary" && !["status","navigation","query-controls","mode-control"].includes(region.purpose),
@@ -486,6 +514,7 @@
         }
       }
       for (const [n, host] of collectionHosts) updateCollection(n,host);
+      for (const session of notebooks.values())session.redraw();
       for (const [n, host] of plotHosts) updatePlot(n, host);
       for (const [n, session] of documentHosts) updateDocument(n,session);
       for(const {button,intent,node} of [...actionButtons,...guardedFormButtons]){
@@ -509,6 +538,16 @@
         }));
         if (host.details) {
           host.summary.textContent = recent.length ? "Activity · " + recent.length + " recent operation" + (recent.length===1 ? "" : "s") : "Activity · No operations yet";
+          if (host.latest) {
+            // Consequential requests are more decision-relevant than page-load
+            // observations. Do not let a following read refresh overwrite the
+            // latest setup/disable result; retain the actual error reason.
+            const operations=receipts.filter(r=>c.intents.get(r.intentId)?.operationKind==="capability");
+            const latest=[...operations].reverse().find(r=>c.intents.get(r.intentId)?.risk==="consequential") || operations.at(-1);
+            host.latest.querySelector('[data-mcel-request-result]').textContent=latest
+              ? fmt(latest.intentId)+": "+latest.disposition+(latest.reason?" ("+latest.reason+")":"")
+              : "No request yet";
+          }
           if (recent.some(r => r.disposition === "failed" || r.disposition === "refused-before-attempt")) host.details.open=true;
         }
       }
@@ -905,6 +944,133 @@
       wrap.append(input);return {wrap,input};
     }
     let region = null;
+    const notebooks=new Map();
+    function renderNotebook(n,holder){
+      const root=elt("section",{"data-mcel-notebook":n.id,"aria-label":n.title});
+      const tabs=elt("div",{"role":"tablist","data-mcel-notebook-tabs":"","aria-label":n.title});
+      const records=elt("div",{"data-mcel-notebook-scroll":"","role":"tabpanel"});
+      const status=elt("p",{"role":"status","data-mcel-notebook-status":""},"Administrator login required");
+      const footer=elt("div",{"data-mcel-notebook-footer":""});
+      const policyLabel=elt("label",{"data-mcel-notebook-policy":""});
+      const checkbox=elt("input",{type:"checkbox","data-mcel-notebook-retention":""});
+      policyLabel.append(checkbox,document.createTextNode(" Remove items after 30 days"));
+      const empty=elt("button",{type:"button","data-mcel-notebook-empty":""},"Empty Trash");
+      footer.append(policyLabel,empty);root.append(tabs,records,status,footer);holder.append(root);
+      const session={node:n,root,records,status,checkbox,empty,footer,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:""};
+      notebooks.set(n,session);
+      const selected=()=>n.tabs.find(t=>t.id===session.active);
+      const footerTab=n.tabs[n.tabs.length-1];
+      function redraw(){
+        tabs.replaceChildren(...n.tabs.map(t=>{
+          const button=elt("button",{type:"button",role:"tab","data-mcel-notebook-tab":t.id,
+            "aria-selected":String(session.active===t.id)},t.label);
+          button.addEventListener("click",()=>{
+            session.active=t.id;redraw();if(session.available)void refreshNotebook(session);
+          });return button;
+        }));
+        const tab=selected();
+        records.setAttribute("aria-label",tab.label+" organizational identities");
+        records.replaceChildren();
+        const data=read(ref(tab.state));
+        if(!session.available)status.textContent="Administrator login required";
+        else if(session.error)status.textContent=session.error;
+        else if(!Array.isArray(data))status.textContent="Loading "+tab.label+" organization records";
+        else status.textContent=data.length?"": "No "+tab.label.toLowerCase()+" records";
+        if(session.available && Array.isArray(data))for(const item of data){
+          const row=elt("div",{"data-mcel-record-row":"","data-record-key":String(item[tab.key])});
+          for(const field of tab.fields){
+            const cell=elt("span",{"data-record-field":field,"data-field-label":fmt(field)},plainValue(item[field]));
+            row.append(cell);
+          }
+          const actions=elt("div",{"data-mcel-notebook-row-actions":""});
+          for(const [label,action] of Object.entries(tab.actions||{})){
+            const button=elt("button",{type:"button","data-mcel-notebook-action":label},label);
+            button.disabled=session.busy;
+            button.addEventListener("click",async()=>{
+              if(session.busy||!session.available)return;
+              if(action.confirm && (typeof global.confirm!=="function" || !global.confirm(action.confirm+"\n\n"+String(item[tab.key]))))return;
+              session.busy=true;redraw();
+              const epoch=session.epoch;
+              try{
+                const receipt=await execute(ref(action.intent),{recordId:String(item[tab.key])});
+                if(epoch!==session.epoch)return;
+                if(receipt?.disposition!=="completed"){
+                  session.error="Operation refused: "+String(receipt?.reason||receipt?.disposition||"UNKNOWN");return;
+                }
+                session.error="";await refreshNotebook(session,true);
+              }finally{session.busy=false;redraw();}
+            });actions.append(button);
+          }
+          row.append(actions);records.append(row);
+        }
+        const policy=read(ref(n.retention.state));
+        checkbox.checked=policy?.enabled===true;
+        checkbox.disabled=!session.available||session.busy||typeof policy?.enabled!=="boolean";
+        empty.disabled=!session.available||session.busy||!Array.isArray(read(ref(footerTab.state)))||
+          !read(ref(footerTab.state))?.length;
+        footer.hidden=session.active!==footerTab.id;
+      }
+      session.redraw=redraw;
+      checkbox.addEventListener("change",async()=>{
+        if(!session.available||session.busy)return;
+        const requested=checkbox.checked;session.busy=true;redraw();
+        try{
+          const receipt=await execute(ref(n.retention.update),{enabled:requested});
+          if(receipt?.disposition!=="completed")session.error="Retention change refused: "+String(receipt?.reason||receipt?.disposition);
+          else session.error="";
+          await execute(ref(n.retention.refresh));
+        }finally{session.busy=false;redraw();}
+      });
+      empty.addEventListener("click",async()=>{
+        if(session.busy||!session.available||!read(ref(footerTab.state))?.length)return;
+        if(typeof global.confirm!=="function" || !global.confirm("Permanently remove ALL trashed identities? This cannot be undone."))return;
+        session.busy=true;redraw();
+        try{
+          const receipt=await execute(ref(n.empty));
+          if(receipt?.disposition!=="completed")session.error="Empty Trash refused: "+String(receipt?.reason||receipt?.disposition);
+          else {session.error="";await refreshNotebook(session,true);}
+        }finally{session.busy=false;redraw();}
+      });
+      redraw();
+    }
+    async function refreshNotebook(session,all=false){
+      if(!session.available)return;
+      const epoch=session.epoch;
+      const n=session.node;
+      const tabs=all?n.tabs:[n.tabs.find(t=>t.id===session.active)];
+      for(const t of tabs){
+        const receipt=await execute(ref(t.refresh));
+        if(epoch!==session.epoch)return;
+        if(receipt?.disposition!=="completed"){
+          state.delete(ref(t.state));
+          session.error="Organization records unavailable: "+String(receipt?.reason||receipt?.disposition||"AUTH_REQUIRED");
+          session.redraw();
+          return;
+        }
+      }
+      if(all||session.active===n.tabs[n.tabs.length-1].id){
+        const policyReceipt=await execute(ref(n.retention.refresh));
+        if(epoch!==session.epoch)return;
+        if(policyReceipt?.disposition!=="completed"){
+          state.delete(ref(n.retention.state));
+          session.error="Organization retention policy unavailable: "+String(policyReceipt?.reason||policyReceipt?.disposition||"AUTH_REQUIRED");
+          session.redraw();
+          return;
+        }
+      }
+      if(epoch===session.epoch){session.error="";session.redraw();}
+    }
+    function changeNotebookAuthorization(available){
+      for(const session of notebooks.values()){
+        ++session.epoch;session.available=!!available;session.busy=false;session.error="";
+        {
+          for(const tab of session.node.tabs)state.delete(ref(tab.state));
+          state.delete(ref(session.node.retention.state));
+        }
+        session.redraw();
+        if(available)void refreshNotebook(session,true);
+      }
+    }
     function renderNode(n) {
       const holder=elt("div",{"data-mcel-node":n.id,"data-node-kind":n.nodeKind});
       if(n.visibleWhen)conditionedNodes.set(n,holder);
@@ -921,8 +1087,17 @@
         const ol=elt("ol",{"aria-label":"Operation receipts"});
         if (expert) {
           const details=elt("details",{"data-mcel-activity":""}),summary=elt("summary",{},"Activity · No operations yet");
-          details.append(summary,ol);holder.append(details);receiptHosts.push({details,summary,list:ol});
+          const latest=c.generated && [...c.regions.values()].some(r=>r.purpose==="inspection")
+            ? elt("section",{"data-mcel-latest-request":"","aria-label":"Latest operation"}) : null;
+          if(latest){
+            latest.append(elt("h3",{},"Latest request"),
+              elt("p",{"data-mcel-request-result":"","role":"status"},"No request yet"));
+            holder.append(latest);
+          }
+          details.append(summary,ol);holder.append(details);receiptHosts.push({details,summary,list:ol,latest});
         } else {holder.append(ol);receiptHosts.push(ol);}
+      } else if (n.nodeKind === "record-notebook") {
+        renderNotebook(n,holder);
       } else if (n.nodeKind === "collection") {
         const list=elt("div",{"data-collection":n.id});
         // Structured multi-field monitoring collections are primary records,
@@ -1901,17 +2076,22 @@
       region=r;
       const tag=allowedTags.has(r.nativeTag) ? r.nativeTag : "section";
       const inferredContent=r.content?.kind ||
-        (r.members?.some(member=>c.nodes.get(ref(member))?.nodeKind==="collection") ? "collection" : "");
-      const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":inferredContent});
+        (r.members?.some(member=>["collection","record-notebook"].includes(c.nodes.get(ref(member))?.nodeKind)) ? "collection" : "");
+      const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":inferredContent,
+        ...(r.preferences?.density ? {"data-mcel-density":r.preferences.density} : {})});
       regionHosts.set(r,el);
       if(c.generated && r.recipe!=="root") {
         const titles={navigation:"Navigation",queries:"Observation query",collection:"Observed records",
           "selection-echo":"Selected record",evidence:"Operation evidence",
           results:"Measurements and results",controls:"Available controls",operations:"Operations",document:"Document",
-          task:"Task",commands:"Commands"};
-        if(["task","commands"].includes(r.recipe))titles[r.recipe]=fmt(r.semanticTitle);
+          task:"Task",commands:"Commands",inspection:"Service details"};
+        if(["task","commands","inspection"].includes(r.recipe))titles[r.recipe]=fmt(r.semanticTitle);
         if(r.recipe==="operations" && r.members.some(m=>c.nodes.get(ref(m))?.nodeKind==="form"))
           titles.operations="Configuration";
+        if(r.recipe==="collection" && r.members.length===1){
+          const node=c.nodes.get(ref(r.members[0]));
+          if(node?.nodeKind==="record-notebook")titles.collection=node.title;
+        }
         if(r.recipe==="results" && r.members.length===1){
           const node=c.nodes.get(ref(r.members[0]));
           if(typeof node?.label==="string" && node.label)titles.results=node.label;
@@ -1971,6 +2151,12 @@
       let actionFlow=null;
       for (const m of r.members || []) {
         const node=c.nodes.get(ref(m));
+        // A derived inspector field retains its own semantic caption; no
+        // application-specific labels or hardcoded data fields are needed.
+        // Put the caption inside its conditioned node, not beside it. A
+        // target-specific inspector row and its caption share visibility.
+        const inspectorLabel=c.generated && r.recipe==="inspection" && node?.label
+          ? elt("h3",{"data-mcel-inspector-label":""},node.label) : null;
         const intent=c.intents.get(ref(node?.intent));
         const plainReadAction=c.generated && r.recipe==="controls" &&
           node?.nodeKind==="control" && intent?.operationKind==="capability" &&
@@ -1984,7 +2170,9 @@
           actionFlow.append(renderNode(node));
         } else {
           actionFlow=null;
-          el.append(renderNode(node));
+          const rendered=renderNode(node);
+          if(inspectorLabel)rendered.prepend(inspectorLabel);
+          el.append(rendered);
         }
       }
       for (const child of c.children.get(id)) el.append(renderRegion(child.id));
@@ -2088,14 +2276,26 @@
       const children=[...tree.children];
       const navigation=elt("div",{"data-mcel-zone":"navigator", "data-mcel-natural-scroller":"navigation", role:"navigation", "aria-label":"Application navigation"});
       const workspace=elt("div",{"data-mcel-zone":"workspace", "data-mcel-natural-scroller":"workspace", role:"main", "aria-label":"Application workspace"});
+      const hasInspector=children.some(child=>child.getAttribute("data-mcel-purpose")==="inspection");
+      const hasEvidence=children.some(child=>child.getAttribute("data-mcel-purpose")==="status");
+      const inspector=hasInspector||hasEvidence ? elt("aside",{"data-mcel-zone":"tools",
+        "data-mcel-zone-kind":"inspector","data-mcel-placement":"dock-end",
+        "data-mcel-natural-scroller":"inspection", "aria-label":"Application details and activity"}) : null;
       // Explicit navigation semantics win over the legacy generic-control
       // fallback. A refresh or query button is not a navigation destination.
       const hasAuthoredNavigation=children.some(child=>
         ["navigation","mode-control"].includes(child.getAttribute("data-mcel-purpose")));
-      for (const child of children) {
+      // In a semantic workbench, the primary computed result is the first
+      // workspace object, before the expression producer. Do not reorder
+      // navigation, inspector, or ordinary secondary results.
+      const firstResult=child=>child.getAttribute("data-mcel-purpose")==="results" &&
+        child.getAttribute("data-mcel-priority")==="primary";
+      const orderedChildren=[...children].sort((a,b)=>Number(firstResult(b))-Number(firstResult(a)));
+      for (const child of orderedChildren) {
         const purpose=child.getAttribute("data-mcel-purpose")||"";
         if (["navigation","mode-control"].includes(purpose) ||
             (!hasAuthoredNavigation && purpose==="query-controls"))navigation.append(child);
+        else if(inspector && ["inspection","status"].includes(purpose))inspector.append(child);
         else workspace.append(child);
       }
       if(!hasAuthoredNavigation)navigation.setAttribute("data-mcel-navigation-legacy-fallback","");
@@ -2103,7 +2303,7 @@
       // identity-bearing rail. Empty navigation is not an excuse to create a
       // separate, full-width application header.
       tree.setAttribute("data-mcel-natural-layout", "");
-      tree.replaceChildren(navigation,workspace);
+      tree.replaceChildren(navigation,workspace,...(inspector?[inspector]:[]));
     }
     if(expert) {
       const rail=tree.querySelector('[data-mcel-zone="navigator"]');
@@ -2111,7 +2311,12 @@
       const title=ir.application?.title;
       assert(typeof title==="string" && title.trim().length>0,"application-title-missing");
       const chrome=elt("div",{"data-mcel-navigation-chrome":""});
-      chrome.append(elt("h1",{"data-mcel-application-title":""},title.trim()));
+      // The canonical parent shell already provides the application heading.
+      // A native standalone page (including a directly opened child URL)
+      // continues to own its identity. Only this exact shell iframe delegates.
+      const frame=root.ownerDocument.defaultView?.frameElement;
+      const parentOwnsTitle=frame?.id==="mcel-shell-frame";
+      if(!parentOwnsTitle)chrome.append(elt("h1",{"data-mcel-application-title":""},title.trim()));
       if(typeof options.navigationContextLabel==="string" && options.navigationContextLabel.trim())
         chrome.append(elt("small",{"data-mcel-application-context":""},options.navigationContextLabel.trim()));
       if(options.navigationChrome!==undefined) {
@@ -2120,7 +2325,7 @@
           "navigation-chrome-must-be-same-document-template");
         chrome.append(template.content.cloneNode(true));
       }
-      rail.prepend(chrome);
+      if(chrome.childNodes.length)rail.prepend(chrome);
     }
     root.replaceChildren(tree);
     for(const {host,node} of pendingChatMounts){
@@ -2147,6 +2352,15 @@
         // Do not apply an inferred grid to the root (its regions are now
         // composed under navigator/workspace scroll owners).
         if (layoutHost.hasAttribute("data-mcel-natural-layout")) {
+          // Natural inspector rails are real bounded scroll owners. Declare the
+          // same responsive placement contract as planned inspectors so that
+          // independent viewport validation can verify their ownership.
+          const side=layoutHost.querySelector(':scope > [data-mcel-natural-scroller="inspection"]');
+          if(side){
+            const width=layoutHost.getBoundingClientRect().width || global.innerWidth || 320;
+            side.setAttribute("data-mcel-placement",width>=1160?"dock-end":
+              width>=680?"dock-bottom":"disclosure-after-anchor");
+          }
           engine.reflowAdaptiveControlGrids?.(root);
           return;
         }
@@ -2187,7 +2401,7 @@
     // Equivalent read-only startup is safe only with one unambiguous,
     // source-declared navigation chain; all requests pass the same port gates.
     if(navigationRoots.length===1)void execute(navigationRoots[0].loader.id);
-    return Object.freeze({execute,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
+    return Object.freeze({execute,setNotebookAuthorization:changeNotebookAuthorization,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
       unmount:()=>{disposed=true;if(refreshTimer!==null)global.clearInterval?.(refreshTimer);
         if(initialRefreshTimer!==null)global.clearTimeout?.(initialRefreshTimer);

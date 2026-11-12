@@ -1,0 +1,82 @@
+{
+  "schema": "mcel.slh.organization-identity-notebook-oracle.v1",
+  "application": "slh",
+  "target_kinds": [
+    "local",
+    "network"
+  ],
+  "title": "Organization Identities",
+  "tabs": [
+    {
+      "id": "pending",
+      "label": "Pending",
+      "read": "intent:read-organization-pending",
+      "actions": {
+        "Accept": "intent:organization-accept",
+        "Reject": "intent:organization-reject"
+      }
+    },
+    {
+      "id": "enrolled",
+      "label": "Enrolled",
+      "read": "intent:read-organization-enrolled",
+      "actions": {
+        "Delete": "intent:organization-delete"
+      }
+    },
+    {
+      "id": "trash",
+      "label": "Trash",
+      "read": "intent:read-organization-trash",
+      "actions": {
+        "Reactivate": "intent:organization-reactivate",
+        "Remove": "intent:organization-remove"
+      }
+    }
+  ],
+  "footer": {
+    "tab": "trash",
+    "retention": "intent:set-organization-trash-retention",
+    "read_policy": "intent:read-organization-retention",
+    "empty": "intent:empty-organization-trash",
+    "outside_scroll": true,
+    "retention_persistent_in_org": true
+  },
+  "authority": {
+    "local": "authenticated ORG-SLH bearer with local TLS pin",
+    "network": "target-bound opaque ticket; re-pin every ORG-SLH HTTPS call",
+    "no_auto_auth": true,
+    "no_cross_target_cache": true,
+    "physical_inspection_not_bypassed": true,
+    "last_admin_protected": true,
+    "confirmation_required": [
+      "Delete",
+      "Remove",
+      "Empty Trash"
+    ],
+    "no_optimistic_mutation": true,
+    "right_rail_operation_errors": true
+  },
+  "placement": {
+    "primary_workspace": true,
+    "below_configuration_and_lifecycle": true,
+    "preserve_navigation": true,
+    "preserve_inspector": true,
+    "preserve_configuration": true
+  },
+  "states": [
+    "AUTH_REQUIRED",
+    "EMPTY",
+    "LOADED",
+    "READ_FAILED"
+  ],
+  "backend_ops": {
+    "Accept": "POST /v1/enrollment/approvals",
+    "Reject": "POST /v1/admin/enrollments/{id}/deny",
+    "Delete": "POST /v1/admin/devices/{id}/revoke",
+    "Reactivate": "POST /v1/admin/devices/{id}/reactivate",
+    "Remove": "POST /v1/admin/devices/{id}/remove",
+    "Empty Trash": "POST /v1/admin/devices/trash/empty",
+    "Remove items after 30 days": "PATCH /v1/admin/policies"
+  }
+}

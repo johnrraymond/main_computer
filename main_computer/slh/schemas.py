@@ -43,6 +43,12 @@ AUTH_REQUESTS = {
     'verify': object_schema(('device_id','challenge_id','signature'),
                             {'device_id':S,'challenge_id':S,'signature':S}),
     'edit_device': object_schema((),{'name':S,'notes':{'type':'string','maxLength':2000}}),
+    'remove_device': object_schema(('confirm',), {'confirm':{'type':'string','const':'REMOVE_DEVICE'}}),
+    'empty_trash': object_schema(('confirm',), {'confirm':{'type':'string','const':'EMPTY_TRASH'}}),
+    'reactivate_device': object_schema(),
+    'change_policy': object_schema((), {
+        'physical_inspection_required': {'type':'boolean'},
+        'remove_trash_after_30_days': {'type':'boolean'}}),
     'issue_key': object_schema((),{'ttl_seconds':{'type':'integer','minimum':1,'maximum':600}}),
     'change_policy': object_schema(('physical_inspection_required',),
                                     {'physical_inspection_required':{'type':'boolean'}}),

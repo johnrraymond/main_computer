@@ -144,3 +144,105 @@ body.mcel-expert-page [data-mcel-application-title] {
   font-size:clamp(.96rem,1.35vw,1.15rem);font-weight:730;line-height:1.25;
   margin:0;overflow-wrap:anywhere;
 }
+
+/* Generated semantic inspection/activity regions use the same right-rail
+ * ownership as other expert MCEL hosts. Standalone Calculator includes this
+ * stylesheet rather than mcel-semantic-workbench.css. Never place evidence in
+ * a new unowned grid row below the application workspace on desktop. */
+body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]) {
+  grid-template-columns:clamp(175px,20%,270px) minmax(0,1fr) clamp(190px,23%,300px)!important;
+  grid-template-rows:minmax(0,1fr)!important;
+}
+body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mcel-natural-scroller="inspection"] {
+  min-width:0;min-height:0;max-height:100%;overflow-y:auto!important;
+  align-items:stretch;
+}
+@media(max-width:679px) {
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]) {
+    grid-template-columns:minmax(0,1fr)!important;
+    grid-template-rows:minmax(0,100px) minmax(0,1fr) minmax(0,84px)!important;
+    gap:8px;
+  }
+}
+
+/* Compact semantic computation density. Authored regions opt into this contract;
+ * document editing, navigation, graphing, and all other input tasks retain
+ * their existing dimensions. The result stays above the expression. */
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"]:has(> [data-mcel-density="compact"]),
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"]:has(> [data-mcel-working-unit] > [data-mcel-density="compact"]) {gap:8px;}
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"] > [data-mcel-density="compact"],
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"] > [data-mcel-working-unit] > [data-mcel-density="compact"] {
+  padding:6px 10px!important;
+  border-radius:9px!important;
+}
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"] > [data-mcel-density="compact"][data-mcel-purpose="results"],
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="workspace"] > [data-mcel-working-unit] > [data-mcel-density="compact"][data-mcel-purpose="results"] {
+  display:flex!important;align-items:center;gap:10px;min-height:42px;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"][data-mcel-purpose="results"] h2 {
+  flex:0 0 auto;margin:0;font-size:.72rem;letter-spacing:.07em;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"][data-mcel-purpose="results"] output {
+  min-width:0;min-height:0!important;flex:1 1 auto;
+  font-size:clamp(1.125rem,1.75vw,1.4rem);line-height:1.15;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] form[data-mcel-composition="expression-workbench"] {
+  gap:4px;align-items:end;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] form[data-mcel-composition="expression-workbench"] > label {
+  grid-column:1;grid-row:1;gap:3px;font-size:.78rem;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] form[data-mcel-composition="expression-workbench"] > label input {
+  min-height:38px;height:38px;padding:6px 10px;font-size:1.25rem;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] [data-mcel-expression-pad] {
+  grid-column:1 / -1;grid-row:2;gap:4px;max-width:380px;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] [data-mcel-expression-pad] button {
+  min-height:34px;height:34px;padding:3px 5px;font-size:1rem;border-radius:6px;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] [data-mcel-expression-pad] button[data-pad-action="submit"] {
+  min-height:36px;height:36px;font-size:1.14rem;
+}
+[data-mcel-presentation="expert"] [data-mcel-density="compact"] form[data-mcel-composition="expression-workbench"] > button[type="submit"] {
+  grid-column:2;grid-row:1;align-self:end;justify-self:end;
+  width:auto;min-width:88px;min-height:38px;max-width:none;padding:6px 10px;
+}
+/* In short viewports, keep the full compute surface in its independent
+ * workspace scroll owner; touch-sized controls remain available on phones. */
+@media (pointer:coarse) {
+  [data-mcel-presentation="expert"] [data-mcel-density="compact"] [data-mcel-expression-pad] button {
+    min-height:42px;height:42px;
+  }
+  [data-mcel-presentation="expert"] [data-mcel-density="compact"] [data-mcel-expression-pad] button[data-pad-action="submit"] {
+    min-height:44px;height:44px;
+  }
+}
+
+/* Opt-in semantic width grouping. Related regions keep their original live
+ * elements; the group is bounded by content, not the entire workspace. */
+[data-mcel-presentation="expert"] [data-mcel-working-unit][data-mcel-sizing="intrinsic"] {
+  display:flex;flex-direction:column;align-items:stretch;gap:8px;
+  width:fit-content;max-width:100%;min-width:0;
+}
+[data-mcel-presentation="expert"] [data-mcel-working-unit]:not(:has(> [data-mcel-region]:not([hidden]))) {display:none}
+[data-mcel-presentation="expert"] [data-mcel-working-unit][data-mcel-sizing="intrinsic"] > [data-mcel-region] {
+  width:100%;max-width:100%;min-width:0;box-sizing:border-box;flex:0 0 auto;
+}
+[data-mcel-presentation="expert"] [data-mcel-working-unit][data-mcel-sizing="intrinsic"] form {
+  min-width:0;max-width:100%;
+}
+/* The result value owns the end edge of its unit; text alignment on the
+ * inner output alone cannot right-align a narrow state-value wrapper. */
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"][data-mcel-align="end"] > [data-node-kind="state-value"] {
+  flex:1 1 auto;min-width:0;text-align:end;
+}
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"][data-mcel-align="end"] > [data-node-kind="state-value"] > output {
+  width:100%;text-align:end;
+}
+/* The working unit derives its intrinsic width from minimum usable key
+ * targets, rather than an app-wide fixed width or a full-width input. */
+[data-mcel-presentation="expert"] [data-mcel-working-unit][data-mcel-sizing="intrinsic"] [data-mcel-expression-pad] {
+  grid-template-columns:repeat(4,minmax(clamp(3.2rem,5.5vw,5rem),1fr));
+  max-width:100%;
+}

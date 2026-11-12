@@ -132,7 +132,13 @@ def test_slh_identity_navigation_is_live_and_separate_from_operations(browser, w
                 const w=document.querySelector('[data-mcel-natural-scroller="workspace"]').getBoundingClientRect();
                 return [n.x+n.width,w.x,n.height,w.height];}''')
             assert placement[0] < placement[1]
-            assert abs(placement[2] - placement[3]) < 2
+            # A semantic inspector may reflow below the workspace at medium
+            # widths. The navigation then spans both rows instead of matching
+            # only the height of the primary workspace row.
+            if page.locator('[data-mcel-natural-scroller="inspection"]').count():
+                assert placement[2] + 2 >= placement[3]
+            else:
+                assert abs(placement[2] - placement[3]) < 2
         result = assess(page.evaluate(DOM_OBSERVATION))
         assert result['status'] == 'PASS', result
         assert result['checks']['authored-navigation-owned']

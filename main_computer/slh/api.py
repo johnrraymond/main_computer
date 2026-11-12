@@ -62,9 +62,13 @@ ENDPOINTS = (
     Endpoint('POST','/v1/admin/root/identities','root_register_admin','root'),
     Endpoint('GET','/v1/admin/status','admin_status'),
     Endpoint('GET','/v1/admin/devices','devices'),
+    Endpoint('GET','/v1/admin/devices/trash','trash_devices'),
+    Endpoint('POST','/v1/admin/devices/trash/empty','empty_trash'),
     Endpoint('GET','/v1/admin/devices/{id}','device'),
     Endpoint('PATCH','/v1/admin/devices/{id}','edit_device'),
     Endpoint('POST','/v1/admin/devices/{id}/revoke','revoke_device'),
+    Endpoint('POST','/v1/admin/devices/{id}/reactivate','reactivate_device'),
+    Endpoint('POST','/v1/admin/devices/{id}/remove','remove_device'),
     Endpoint('GET','/v1/admin/users','users'),
     Endpoint('GET','/v1/admin/enrollments','enrollments'),
     Endpoint('POST','/v1/admin/enrollments/{id}/keys','issue_key'),
@@ -302,6 +306,16 @@ class SLHAPI:
             return item
         if op=='edit_device':return a.update_device(p['id'],b,actor)
         if op=='revoke_device':return a.revoke_device(p['id'],actor)
+        if op=='trash_devices':return {'devices':a.trash()}
+        if op=='reactivate_device':
+            if b:raise SLHError('INVALID_REACTIVATE_REQUEST')
+            return a.reactivate_device(p['id'],actor)
+        if op=='remove_device':
+            if b != {'confirm':'REMOVE_DEVICE'}:raise SLHError('REMOVE_CONFIRMATION_REQUIRED',400)
+            return a.remove_device(p['id'],actor)
+        if op=='empty_trash':
+            if b != {'confirm':'EMPTY_TRASH'}:raise SLHError('EMPTY_TRASH_CONFIRMATION_REQUIRED',400)
+            return a.empty_trash(actor)
         if op=='users':return {'users':a.users()}
         if op=='enrollments':return {'enrollments':a.queue()}
         if op=='issue_key':return a.issue_key(p['id'],actor,ttl=b.get('ttl_seconds',300))
@@ -309,9 +323,11 @@ class SLHAPI:
         if op=='deny':return a.deny(p['id'],actor)
         if op=='get_policy':return a.policy()
         if op=='change_policy':
-            if 'physical_inspection_required' not in b:
+            allowed={'physical_inspection_required','remove_trash_after_30_days'}
+            if not b or set(b)-allowed or any(type(value) is not bool for value in b.values()):
                 raise SLHError('INVALID_POLICY')
-            return a.policy(b['physical_inspection_required'],actor)
+            return a.policy(b.get('physical_inspection_required'),actor,
+                            remove_trash_after_30_days=b.get('remove_trash_after_30_days'))
         if op=='audit':return {'events':a.audit()}
         if op in ('org_wallets', 'org_credits', 'org_reconcile'):
             if self.wallet_service is None:

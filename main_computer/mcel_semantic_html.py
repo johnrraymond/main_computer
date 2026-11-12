@@ -25,6 +25,8 @@ PRIORITIES = frozenset({'primary', 'secondary', 'supporting'})
 SIDES = frozenset({'start', 'end', 'top', 'bottom'})
 REPRESENTATIONS = frozenset({'automatic', 'tabular', 'graphical', 'textual'})
 DENSITIES = frozenset({'automatic', 'compact', 'comfortable'})
+SIZINGS = frozenset({'automatic', 'intrinsic'})
+ALIGNMENTS = frozenset({'start', 'center', 'end'})
 RELATIONS = frozenset({
     'selects', 'contextual-to', 'supports', 'reports-for', 'switches-mode-of',
     'acts-on', 'informs', 'accompanies',
@@ -41,6 +43,8 @@ ATTRS = frozenset({
     'data-mcel-content-kind', 'data-mcel-content-ref', 'data-mcel-priority',
     'data-mcel-prefer-side', 'data-mcel-prefer-density',
     'data-mcel-prefer-representation',
+    'data-mcel-prefer-sizing', 'data-mcel-prefer-width-group',
+    'data-mcel-prefer-align',
     'data-mcel-when-state', 'data-mcel-when-value',
 })
 NATIVE_PURPOSE = {'main':'workspace', 'nav':'navigation', 'aside':'inspection',
@@ -128,11 +132,22 @@ class _SemanticParser(HTMLParser):
                 ('data-mcel-prefer-side','side',SIDES),
                 ('data-mcel-prefer-density','density',DENSITIES),
                 ('data-mcel-prefer-representation','representation',REPRESENTATIONS),
+                ('data-mcel-prefer-sizing','sizing',SIZINGS),
+                ('data-mcel-prefer-align','align',ALIGNMENTS),
             ):
                 if attr in raw:
                     if raw[attr] not in allowed:
                         self.fail('MCEL_HTML_PREFERENCE_INVALID', f'Invalid preference: {attr}.')
                     prefs[key] = raw[attr]
+            group = raw.get('data-mcel-prefer-width-group')
+            if group is not None:
+                if not ID_RE.fullmatch(group):
+                    self.fail('MCEL_HTML_PREFERENCE_INVALID', 'Width group must be a stable semantic identifier.')
+                prefs['widthGroup'] = group
+            if prefs.get('sizing') == 'intrinsic' and group is None:
+                self.fail('MCEL_HTML_PREFERENCE_INVALID', 'Intrinsic sizing requires a width group.')
+            if prefs.get('align') and group is None:
+                self.fail('MCEL_HTML_PREFERENCE_INVALID', 'Group alignment requires a width group.')
             parent = next((n for _,n in reversed(self.stack) if n), None)
             ordinal = self.child_counts.get(parent, 0)
             self.child_counts[parent] = ordinal + 1

@@ -81,7 +81,7 @@ def test_calculator_keypad_is_bounded_but_still_operates(browser, width):
         pad, = obs['controlComposition']['keypads']
         assert pad['keyCount'] == 21 and pad['fourColumns']
         assert pad['width'] <= 422 and pad['maxKeyWidth'] <= 121
-        assert pad['submitWidth'] <= 422 and pad['submitAligned']
+        assert pad['submitWidth'] <= 422 and (pad['submitAligned'] or pad['submitBesideExpression'])
         keys = page.locator('[data-mcel-expression-pad]')
         for action in ('7', '+', '8', 'submit'):
             keys.locator('button[data-pad-action="'+action+'"]').click()
@@ -103,7 +103,8 @@ def test_negative_control_rejects_stretched_keypad(browser):
         page.add_style_tag(content='''
           [data-mcel-expression-pad]{max-width:none!important;}
           form[data-mcel-composition="expression-workbench"] > button[type="submit"]{
-            max-width:none!important;justify-self:stretch!important;
+            grid-column:1/-1!important;grid-row:3!important;
+            width:auto!important;max-width:none!important;justify-self:stretch!important;
           }''')
         result = assess(page.evaluate(DOM_OBSERVATION))
         assert result['status'] == 'FAIL'

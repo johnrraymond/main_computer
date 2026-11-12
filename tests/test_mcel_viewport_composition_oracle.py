@@ -65,6 +65,34 @@ def test_ordinary_card_cannot_become_scroll_owner_and_specialized_content_must_b
     assert 'unowned-scroll-region:actions' in oracle.assess(obs)['failures']
 
 
+def test_top_navigation_with_controls_and_independent_inspector_is_semantically_valid():
+    obs=good_observation(width=390,height=800)
+    nav=panel('navigator','navigator',w=390,h=120,y=0)
+    nav['zoneKind']='dock'
+    nav['zonePlacement']='disclosure-before-anchor'
+    work=panel('workspace','workspace',w=390,h=248,y=282)
+    work['zoneKind']='protected-anchor'
+    work['zonePlacement']='anchor'
+    controls=panel('controls','controls',w=390,h=110,y=160)
+    controls['zoneKind']='toolbar'
+    controls['zonePlacement']='top'
+    details=panel('details','details',w=390,h=120,y=542)
+    details['zoneKind']='inspector'
+    details['zonePlacement']='dock-bottom'
+    obs.update(primary=work,navigation=nav,leadingZones=[nav,controls],
+        scrollRegions=[nav,controls,work,details],
+        applicationChrome={'titleInNavigation':True,'titleCount':1,
+            'titleText':'Task Manager','titleRect':{'h':20,'w':180},
+            'externalHeader':False,'workspaceTopGap':282})
+    result=oracle.assess(obs)
+    assert result['status']=='PASS',result
+    details['zoneKind']='card'
+    assert 'unowned-scroll-region:details' in oracle.assess(obs)['failures']
+    details['zoneKind']='inspector'
+    work['rect']['h']=75
+    assert 'primary-workspace-usable-height' in oracle.assess(obs)['failures']
+
+
 def test_hidden_content_that_cannot_scroll_is_rejected():
     obs=good_observation()
     obs['scrollRegions'].append(panel('clipped-record','inspection',overflow='hidden'))

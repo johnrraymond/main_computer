@@ -1671,9 +1671,20 @@
       zoneHosts.set(zone.id,holder);
       surface.append(holder);
     }
+    // The activity zone follows its associated inspector when one exists.
+    // Nest the original node rather than copying receipts or moving effects.
+    const statusSpec=plan.zones.find(zone=>zone.id==="status");
+    if(statusSpec?.ladder?.wide?.startsWith("inspector-after-")) {
+      const inspectorId=statusSpec.ladder.wide.slice("inspector-after-".length);
+      if(!["tools","details"].includes(inspectorId) || !zoneHosts.has(inspectorId) ||
+          ["medium","narrow"].some(k=>statusSpec.ladder[k]!==statusSpec.ladder.wide))
+        fail("invalid-inspector-activity-placement");
+      zoneHosts.get(inspectorId).append(zoneHosts.get("status"));
+      zoneHosts.get("status").setAttribute("data-mcel-inspector-activity","");
+    }
     // The plan is the placement authority. Do not fold authored inspectors,
-    // controls or status into the primary workspace: that destroys independent
-    // scroll ownership and overrides a verified dock-end instruction.
+    // controls into the primary workspace: that destroys independent scroll
+    // ownership. Evidence is only nested when the plan explicitly pairs it.
     if (!zoneHosts.has("workspace")) fail("workspace-anchor-unassigned");
     const navigationZone=zoneHosts.get("navigator") ||
       make("aside",{"data-mcel-zone":"navigator",role:"navigation", "aria-label":"Application navigation"});
@@ -1695,7 +1706,8 @@
         const p=zone.ladder?.[rung];
         const supported={controls:["top"],navigator:["dock-start","disclosure-before-anchor"],
           workspace:["anchor"],tools:["dock-end","dock-bottom","disclosure-after-anchor"],
-          status:["bottom"]};
+          details:["dock-end","dock-bottom","disclosure-after-anchor"],
+          status:["inspector-after-tools","inspector-after-details","dock-end","dock-bottom","disclosure-after-anchor"]};
         if(!supported[zone.id]?.includes(p))fail("unsupported-workspace-placement:"+zone.id+":"+p);
         placement.set(zone.id,p);
       }
@@ -1703,37 +1715,51 @@
       if(!has("workspace"))fail("workspace-anchor-unassigned");
       const navSide=placement.get("navigator")==="dock-start";
       const toolSide=placement.get("tools")==="dock-end";
+      const detailSide=placement.get("details")==="dock-end";
+      const statusSide=placement.get("status")==="dock-end";
       const before=placement.get("navigator")==="disclosure-before-anchor";
       const after=placement.get("tools")==="dock-bottom" ||
         placement.get("tools")==="disclosure-after-anchor";
-      const columns=(navSide?1:0)+1+(toolSide?1:0);
+      const detailsAfter=["dock-bottom","disclosure-after-anchor"].includes(placement.get("details"));
+      const statusAfter=["dock-bottom","disclosure-after-anchor"].includes(placement.get("status"));
+      if([toolSide,detailSide,statusSide].filter(Boolean).length>1)
+        fail("conflicting-inspector-activity-side-rails");
+      const columns=(navSide?1:0)+1+(toolSide||detailSide||statusSide?1:0);
       const areaRows=[], rowTracks=[];
       const row=(name)=>Array(columns).fill(name);
       const add=(cells,track)=>{areaRows.push(cells);rowTracks.push(track);};
       if(!has("navigator"))add(row("navigator"),"max-content");
-      if(has("controls"))add(row("controls"),"max-content");
+      if(has("controls"))add(row("controls"),"minmax(0, min(16dvh, 115px))");
       if(before)add(row("navigator"),"minmax(0, min(22dvh, 160px))");
       const central=[];
       if(navSide)central.push("navigator");
       central.push("workspace");
       if(toolSide)central.push("tools");
+      if(detailSide)central.push("details");
+      if(statusSide)central.push("status");
       add(central,"minmax(0, 1fr)");
-      if(after)add(row("tools"),"minmax(0, min(30dvh, 250px))");
-      if(has("status"))add(row("status"),"minmax(0, min(9dvh, 70px))");
+      if(after)add(row("tools"),rung==="narrow"?
+        "minmax(0, min(20dvh, 140px))":rung==="medium"?
+        "minmax(0, min(22dvh, 160px))":"minmax(0, min(26dvh, 200px))");
+      if(detailsAfter)add(row("details"),rung==="narrow"?
+        "minmax(0, min(15dvh, 110px))":"minmax(0, min(18dvh, 130px))");
+      if(statusAfter)add(row("status"),"minmax(0, min(28dvh, 230px))");
       if(areaRows.some(c=>c.length!==columns))fail("workspace-grid-nonrectangular");
       // Viewport geometry is solved once at the layout root. Each semantic
       // zone owns its own scroll; nested records cannot create an extra rail.
       const tracks=[];
       if(navSide)tracks.push("minmax(165px, .29fr)");
       tracks.push("minmax(0, 1fr)");
-      if(toolSide)tracks.push("minmax(205px, .38fr)");
+      if(toolSide||detailSide||statusSide)tracks.push("minmax(205px, .38fr)");
       surface.style.gridTemplateColumns=tracks.join(" ");
       surface.style.gridTemplateRows=rowTracks.join(" ");
       surface.style.gridTemplateAreas=areaRows.map(c=>'"'+c.join(" ")+'"').join(" ");
       if(!has("navigator"))navigationZone.style.gridArea="navigator";
       for(const [id,p] of placement){
         const zone=zoneHosts.get(id);
-        zone.style.gridArea=id;
+        // Nested activity belongs to the inspector's flex stack, not to a
+        // phantom grid row. It retains its own semantic node and receipts.
+        zone.style.gridArea=p.startsWith("inspector-after-")?"auto":id;
         zone.setAttribute("data-mcel-placement",p);
       }
     };

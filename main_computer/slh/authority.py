@@ -95,6 +95,9 @@ class SLHAuthority:
                 claimed_user TEXT NOT NULL, kind TEXT NOT NULL, requested_role TEXT NOT NULL,
                 selected_admin TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
                 authorized_by TEXT, inspection_by TEXT);
+            CREATE TABLE IF NOT EXISTS device_trash(
+                device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                trashed_at INTEGER NOT NULL, deleted_by TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS enrollment_keys(id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE,
                 enrollment_id TEXT NOT NULL REFERENCES enrollments(id), issuer TEXT NOT NULL,
                 allowed_role TEXT NOT NULL, expires_at INTEGER NOT NULL, redeemed_at INTEGER);
@@ -123,6 +126,13 @@ class SLHAuthority:
                 c.execute("UPDATE bootstrap_transactions SET status='CANCELED' WHERE status IN ('PENDING','AWAITING_AUTHENTICATOR')")
                 c.execute('ALTER TABLE bootstrap_transactions DROP COLUMN org_id')
             c.execute('INSERT OR IGNORE INTO policies(name,value) VALUES (?,?)', ('physical_inspection_required', 'false'))
+            c.execute('INSERT OR IGNORE INTO policies(name,value) VALUES (?,?)', ('remove_trash_after_30_days', 'false'))
+            # Existing revoked devices predate Trash. Make them recoverable without
+            # inventing a historical deletion date or starting their 30-day clock
+            # before the upgrade actually introduces retention.
+            c.execute('''INSERT OR IGNORE INTO device_trash(device_id,trashed_at,deleted_by)
+                         SELECT id, CAST(strftime('%s','now') AS INTEGER), 'legacy-revocation'
+                         FROM devices WHERE status='revoked' ''')
         if os.name == 'posix':
             os.chmod(self.db_path, 0o600)
         # The local installer owns the bootstrap secret, not a network client.
@@ -718,7 +728,14 @@ class SLHAuthority:
             self._audit(c,actor,'device.updated',device_id,','.join(sorted(changes)))
         return {'status':'UPDATED','device_id':device_id}
 
+    def _drop_device_sessions(self, device_id):
+        # A revoked credential must not recover its previous bearer on restore.
+        for digest, session in list(self._sessions.items()):
+            if session['device_id'] == device_id:
+                self._sessions.pop(digest, None)
+
     def revoke_device(self, device_id, actor):
+        # "Delete" is a recoverable revocation. Access ends in this transaction.
         with self._lock,self._db() as c:
             c.execute('BEGIN IMMEDIATE')
             d=c.execute("SELECT d.id,u.role FROM devices d JOIN users u ON d.user_id=u.id WHERE d.id=? AND d.status='active'", (device_id,)).fetchone()
@@ -728,21 +745,116 @@ class SLHAuthority:
                 count=c.execute("SELECT COUNT(*) FROM devices d JOIN users u ON d.user_id=u.id WHERE d.status='active' AND u.status='active' AND u.role='admin'").fetchone()[0]
                 if count<=1:
                     raise SLHError('LAST_ADMIN_PROTECTED',409)
+            now=int(time.time())
             c.execute("UPDATE devices SET status='revoked' WHERE id=?", (device_id,))
+            c.execute('INSERT INTO device_trash(device_id,trashed_at,deleted_by) VALUES (?,?,?)',
+                      (device_id,now,actor))
             self._audit(c,actor,'device.revoked',device_id)
-        return {'status':'REVOKED','device_id':device_id}
+            self._drop_device_sessions(device_id)
+        return {'status':'REVOKED','device_id':device_id,'trashed_at':now}
+
+    def trash(self):
+        with self._lock,self._db() as c:
+            return [_row(r) for r in c.execute('''
+                SELECT d.id,d.user_id,d.fingerprint,d.kind,d.name,d.notes,d.status,
+                    d.created_at,u.name AS user_name,u.role,t.trashed_at,t.deleted_by
+                FROM device_trash t JOIN devices d ON d.id=t.device_id
+                    JOIN users u ON u.id=d.user_id
+                WHERE d.status='revoked' ORDER BY t.trashed_at DESC,d.name
+            ''').fetchall()]
+
+    def reactivate_device(self, device_id, actor):
+        with self._lock,self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            d=c.execute('''SELECT d.status,u.status AS user_status FROM devices d
+                           JOIN users u ON u.id=d.user_id JOIN device_trash t ON t.device_id=d.id
+                           WHERE d.id=?''',(device_id,)).fetchone()
+            if not d or d['status']!='revoked':
+                raise SLHError('DEVICE_NOT_IN_TRASH',409)
+            if d['user_status']!='active':
+                raise SLHError('USER_NOT_ACTIVE',409)
+            c.execute("UPDATE devices SET status='active' WHERE id=? AND status='revoked'", (device_id,))
+            c.execute('DELETE FROM device_trash WHERE device_id=?',(device_id,))
+            self._audit(c,actor,'device.reactivated',device_id)
+        # Previously revoked bearer sessions are never reinstated.
+        return {'status':'REACTIVATED','device_id':device_id}
+
+    def _remove_trashed_record(self, c, device_id, actor):
+        record=c.execute('''SELECT d.user_id FROM devices d
+                            JOIN device_trash t ON t.device_id=d.id
+                            WHERE d.id=? AND d.status='revoked' ''',(device_id,)).fetchone()
+        if record is None:
+            raise SLHError('DEVICE_NOT_IN_TRASH',409)
+        # Remove recoverable credentials and approved enrollment material, but
+        # retain immutable audit events. Do not delete unrelated user devices.
+        c.execute('DELETE FROM enrollment_keys WHERE enrollment_id IN '
+                  '(SELECT id FROM enrollments WHERE device_id=?)',(device_id,))
+        c.execute("DELETE FROM enrollments WHERE device_id=? AND status='approved'",(device_id,))
+        c.execute('DELETE FROM device_trash WHERE device_id=?',(device_id,))
+        c.execute("DELETE FROM devices WHERE id=? AND status='revoked'",(device_id,))
+        c.execute('''DELETE FROM users WHERE id=? AND NOT EXISTS
+                     (SELECT 1 FROM devices WHERE user_id=?)''',(record['user_id'],record['user_id']))
+        self._drop_device_sessions(device_id)
+        self._audit(c,actor,'device.removed',device_id)
+
+    def remove_device(self, device_id, actor):
+        with self._lock,self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            self._remove_trashed_record(c,device_id,actor)
+        return {'status':'REMOVED','device_id':device_id}
+
+    def empty_trash(self, actor):
+        with self._lock,self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            ids=[r['device_id'] for r in c.execute('SELECT device_id FROM device_trash ORDER BY device_id')]
+            for device_id in ids:
+                self._remove_trashed_record(c,device_id,actor)
+            self._audit(c,actor,'device.trash.emptied','trash',str(len(ids)))
+        return {'status':'EMPTIED','removed_count':len(ids)}
+
+    TRASH_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
+    def purge_expired_trash(self, *, now=None):
+        # Called by the resident Organization Service, independent of MCEL or
+        # the browser. Clock input is injectable for deterministic acceptance.
+        timestamp=int(time.time()) if now is None else int(now)
+        with self._lock,self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            enabled=self._trash_retention_enabled(c)
+            if not enabled:
+                return {'enabled':False,'removed_count':0}
+            ids=[r['device_id'] for r in c.execute('''
+                SELECT device_id FROM device_trash WHERE trashed_at <= ?
+                ORDER BY trashed_at,device_id''',(timestamp-self.TRASH_RETENTION_SECONDS,))]
+            for device_id in ids:
+                self._remove_trashed_record(c,device_id,'system:trash-retention')
+            return {'enabled':True,'removed_count':len(ids)}
 
     def users(self):
         with self._db() as c:
             return [_row(x) for x in c.execute('SELECT id,name,role,status FROM users ORDER BY name')]
 
-    def policy(self, value=None, actor=None):
+    def _trash_retention_enabled(self,c):
+        row=c.execute("SELECT value FROM policies WHERE name='remove_trash_after_30_days'").fetchone()
+        return bool(row and row['value']=='true')
+
+    def policy(self, value=None, actor=None, *, remove_trash_after_30_days=None):
         with self._lock,self._db() as c:
-            if value is not None:
-                if not isinstance(value,bool):raise SLHError('INVALID_POLICY')
-                c.execute("UPDATE policies SET value=? WHERE name='physical_inspection_required'",('true' if value else 'false',))
-                self._audit(c,actor,'policy.physical_inspection',str(value))
-            return {'physical_inspection_required':self._inspection_required(c)}
+            if value is not None or remove_trash_after_30_days is not None:
+                if (value is not None and not isinstance(value,bool)) or (
+                        remove_trash_after_30_days is not None and
+                        not isinstance(remove_trash_after_30_days,bool)):
+                    raise SLHError('INVALID_POLICY')
+                c.execute('BEGIN IMMEDIATE')
+                if value is not None:
+                    c.execute("UPDATE policies SET value=? WHERE name='physical_inspection_required'",('true' if value else 'false',))
+                    self._audit(c,actor,'policy.physical_inspection',str(value))
+                if remove_trash_after_30_days is not None:
+                    c.execute("UPDATE policies SET value=? WHERE name='remove_trash_after_30_days'",
+                              ('true' if remove_trash_after_30_days else 'false',))
+                    self._audit(c,actor,'policy.trash_retention_30_days',str(remove_trash_after_30_days))
+            return {'physical_inspection_required':self._inspection_required(c),
+                    'remove_trash_after_30_days':self._trash_retention_enabled(c)}
 
     def audit(self):
         with self._db() as c:

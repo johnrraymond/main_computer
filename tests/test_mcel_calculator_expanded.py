@@ -54,7 +54,8 @@ def test_expanded_compiles_from_real_semantic_html_and_js():
 def test_semantic_hierarchy_and_purpose_headings_visible(browser):
     p=opened(browser)
     try:
-        assert p.locator('h2').get_by_text('Arithmetic and Units').is_visible()
+        assert p.get_by_text('Arithmetic and Units').count()==0
+        assert p.locator('[data-mcel-purpose="input"][data-mcel-density="compact"]').count()==1
         assert p.locator('[data-mcel-region]').count()==13
         assert p.locator('form[data-intent="intent:draw-graph"]').is_hidden()
         select(p,'graphing')

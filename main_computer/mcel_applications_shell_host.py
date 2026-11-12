@@ -298,16 +298,12 @@ def _markup(ir: dict, reference: dict) -> str:
             extra = ' id="mcel-shell-application-mount" data-mode="overview"'
         attrs = f' class="{class_name}" data-mcel-region-id="{escape(region["id"])}"{extra}'
         if name == "masthead":
-            body = _static(region) + '''<div class="mcel-shell-head-right">
-              <span class="mcel-shell-proof">MCEL SHELL · CANDIDATE</span>
-              <button id="mcel-shell-open-apps" type="button" class="mcel-shell-apps-trigger">Apps</button>
-              <a href="/applications">Current desktop</a></div>'''
+            body = _static(region)
         elif name == "launcher":
             body = '''<div id="mcel-shell-launcher-panel" class="mcel-shell-launcher-panel" data-open="false">''' + _static(region) + '''
               <div class="mcel-shell-launcher-items" id="mcel-shell-launcher-items"></div></div>'''
         elif name == "workspace-header":
-            body = _static(region, title_id=True) + '''<div class="mcel-shell-toolbar">
-               <a id="mcel-shell-open-native" href="/applications" target="_blank" rel="noopener" hidden title="Opens a separate standalone application without the shell">Open standalone</a></div>'''
+            body = _static(region, title_id=True)
         elif name == "application-mount":
             body = ('''<div class="mcel-shell-overview" id="mcel-shell-overview">
              <div id="mcel-shell-desktop-overlay" class="desktop-overlay desktop-home" aria-label="Desktop application launcher">
@@ -339,10 +335,6 @@ def render_applications_shell_candidate(
     ir, registry = compile_applications_shell(repo)
     reference = legacy_desktop_reference(repo)
     markup = _markup(ir, reference)
-    if canonical_promoted:
-        markup = markup.replace('MCEL SHELL · CANDIDATE', 'MCEL SHELL · CANONICAL')
-        markup = markup.replace('href="/applications">Current desktop</a>',
-                                'href="/applications?mcel-shell-child=1">Legacy desktop</a>')
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     apps_json = json.dumps(registry, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     css = (_safe_asset(repo, CSS, tag="style") + "\n" + reference["css"] + "\n"

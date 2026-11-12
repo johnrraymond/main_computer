@@ -56,7 +56,7 @@ def _facts(page):
       const reset=form?.querySelector('button[type="reset"]');
       const footer=form?.querySelector('[data-mcel-task-actions]');
       const status=form?.querySelector('[data-mcel-form-result]');
-      const commands=document.querySelector('[data-mcel-purpose="commands"]');
+      const commands=[...document.querySelectorAll('[data-mcel-purpose="commands"]')].find(e=>e.querySelector('[data-intent="intent:disable-organization"]'));
       const disable=commands?.querySelector('[data-intent="intent:disable-organization"]');
       const rect=el=>el?.getBoundingClientRect();
       return {
@@ -107,15 +107,18 @@ def _check(f,width,identity="Default identity"):
 
 def test_task_relation_is_derived_from_source_and_refuses_detached_echo():
     ir,plan=compile_slh_application()
-    task=next(r for r in plan['regions'] if r['recipe']=='task')
-    commands=next(r for r in plan['regions'] if r['recipe']=='commands')
+    task=next(r for r in plan['regions'] if r['recipe']=='task' and
+      any(m['ref']=='surface-node:slh.configure-org-slh' for m in r['members']))
+    commands=next(r for r in plan['regions'] if r['recipe']=='commands' and
+      any(m['ref']=='surface-node:slh.disable-org-slh' for m in r['members']))
     assert task['purpose']=='task' and task['priority']=='primary'
     assert [m['ref'].rsplit('.',1)[-1] for m in task['members']]==[
       'configure-org-slh','first-administrator-identity']
     assert [m['ref'].rsplit('.',1)[-1] for m in commands['members']]==['disable-org-slh']
     assert not any(r['recipe']=='selection-echo' for r in plan['regions'])
     broken=deepcopy(ir)
-    region=next(r for r in broken['surfaces'][0]['interfaceIntent']['regions'] if r['role']=='task')
+    region=next(r for r in broken['surfaces'][0]['interfaceIntent']['regions'] if r['role']=='task' and
+      any(m['ref']=='surface-node:slh.configure-org-slh' for m in r['members']))
     region['members']=[region['members'][0]]
     with pytest.raises(ValueError):synthesize_composition(broken,policy='mcel.semantic-structure.p3')
 

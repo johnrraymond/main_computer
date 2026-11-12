@@ -7,6 +7,7 @@ semantic-graph extraction module deliberately does not read this information.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 
 ROLES = frozenset({
     'main-workarea', 'navigation', 'collection', 'document', 'inspector',
@@ -173,9 +174,19 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
             errors.append(f'regions[{i}] has invalid priority')
         if 'preferences' in region:
             prefs=region['preferences']
-            allowed={'side':SIDES,'density':{'automatic','compact','comfortable'},'representation':{'automatic','tabular','graphical','textual'}}
-            if not isinstance(prefs,Mapping) or set(prefs)-set(allowed) or any(v not in allowed[k] for k,v in prefs.items()):
+            allowed={'side':SIDES,'density':{'automatic','compact','comfortable'},'representation':{'automatic','tabular','graphical','textual'},
+                     'sizing':{'automatic','intrinsic'},'align':{'start','center','end'}}
+            if not isinstance(prefs,Mapping):
                 errors.append(f'regions[{i}] has invalid preferences')
+            else:
+                if set(prefs)-set(allowed)-{'widthGroup'} or any(not isinstance(v,str) or v not in allowed[k] for k,v in prefs.items() if k in allowed):
+                    errors.append(f'regions[{i}] has invalid preferences')
+                group=prefs.get('widthGroup')
+                if 'widthGroup' in prefs and (not isinstance(group,str) or
+                        not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*',group)):
+                    errors.append(f'regions[{i}] has invalid width group')
+                if (prefs.get('sizing')=='intrinsic' or 'align' in prefs) and not group:
+                    errors.append(f'regions[{i}] group sizing/alignment requires a width group')
         members=region['members']
         if not isinstance(members,list):
             errors.append(f'regions[{i}] members must be an array')
@@ -185,6 +196,20 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
                     errors.append(f'regions[{i}] malformed member')
                 else:
                     member_ids.append(m['ref'])
+    # Width groups are semantic sibling relationships, never arbitrary layout
+    # selectors or cross-zone links. Validate before any browser composition.
+    width_groups={}
+    for region in regions:
+        if not isinstance(region,Mapping):
+            continue
+        prefs=region.get('preferences',{})
+        if not isinstance(prefs,Mapping) or not isinstance(prefs.get('widthGroup'),str):
+            continue
+        width_groups.setdefault(prefs['widthGroup'],[]).append(region)
+    for group,members in width_groups.items():
+        if (len(members)<2 or len({m.get('parentId') for m in members})!=1 or
+            len({m.get('preferences',{}).get('sizing','automatic') for m in members})!=1):
+            errors.append(f'width group {group!r} requires two or more sibling regions with matching sizing')
     roots=[rid for rid,parent in parent_by_id.items() if parent is None]
     if len(roots)!=1 or hierarchy.get('rootId') not in roots:
         errors.append('HTML hierarchy must have exactly one declared root')

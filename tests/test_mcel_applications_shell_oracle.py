@@ -39,7 +39,11 @@ def test_candidate_restores_original_icons_without_promoting_route():
     assert 'data-shell-launch="chat-console"' in html
     assert 'class="desktop-overlay desktop-home"' in html
     assert 'id="mcel-shell-frame"' in html
-    assert 'href="/applications"' in html
+    assert 'id="mcel-shell-open-native"' not in html
+    assert 'id="mcel-shell-open-apps"' not in html
+    assert 'mcel-shell-apps-trigger' not in html
+    assert '☰' not in html
+    assert 'href="/applications/chat-console"' in html
     assert '.desktop-icon[data-app="calculator"]' in html
 
 
@@ -133,15 +137,18 @@ def test_browser_desktop_icons_mount_semantic_apps_and_escape_restores_rail():
                 assert page.locator('.mcel-shell-app-card[aria-current="page"]').get_attribute('data-app') == app
                 assert page.evaluate('window.__shellPushed.at(-1)').endswith('?app=' + app)
                 assert page.evaluate('window.__mcelApplicationsShell.select("desktop", false)') is True
-            page.get_by_role('button',name='Apps',exact=True).click()
             panel=page.locator('#mcel-shell-launcher-panel')
+            assert page.locator('#mcel-shell-open-apps').count() == 0
+            page.mouse.move(20, 360)  # The existing Apps rail expands on hover.
             page.locator('.mcel-shell-app-card[data-app="calculator"]').focus()
             assert abs(panel.evaluate('(el)=>el.getBoundingClientRect().left')) < 3
             page.keyboard.press('Escape')
             assert panel.get_attribute('data-open') == 'false'
             assert abs(panel.evaluate('(el)=>el.getBoundingClientRect().right')-56) < 3
-            assert page.evaluate('document.activeElement.id') == 'mcel-shell-open-apps'
-            page.get_by_role('button',name='Apps',exact=True).click()
+            assert not panel.evaluate('(el)=>el.contains(document.activeElement)')
+            page.mouse.move(450, 360)  # Rearm the existing hover rail.
+            page.mouse.move(20, 360)
+            assert abs(panel.evaluate('(el)=>el.getBoundingClientRect().left')) < 3
             page.locator('.mcel-shell-app-card[data-app="chat-console"]').click()
             assert page.locator('body').get_attribute('data-mcel-shell-active-app') == 'chat-console'
             assert abs(panel.evaluate('(el)=>el.getBoundingClientRect().right')-56) < 3

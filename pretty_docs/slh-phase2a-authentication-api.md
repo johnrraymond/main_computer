@@ -154,3 +154,7 @@ The live harness can only reach the local `127.0.0.1` SLH service; it does **not
 ### Evidence and failure behavior
 
 A passing report contains `mode`, `org_id`, `administrator`, two per-device results (`queue` and `key`), `single_approval_endpoint=/v1/enrollment/approvals`, and `cleanup=verified_revoked` unless retention was requested. A failure returns a nonzero exit code. Failed cleanup is reported as failure rather than as a successful run. Use `--execute-mutations` only with an organization whose test records you are authorized to create.
+
+## Current ORG-SLH identity notebook backend (November 2026)
+
+The older Phase 2A examples above are historical. The current Organization Service extends the existing authenticated admin API with recoverable device Trash, administrator-only Reactivate and Remove, Empty Trash, and an opt-in 30-day retention policy. Revocation still prevents authentication immediately. See the authoritative [ORG-SLH identity notebook backend contract](slh-organization-identity-notebook-backend.md) for endpoint names, exact payloads, retention/authorization behavior, and current tests. The frontend Pending/Enrolled/Trash notebook remains a separate task.

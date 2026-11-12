@@ -49,13 +49,22 @@ class OrganizationWorkerClient:
             token = validate_admin_bearer(token)
         if (method, path) not in {
             ("GET", "/v1/admin/devices"),
+            ("GET", "/v1/admin/devices/trash"),
+            ("GET", "/v1/admin/enrollments"),
+            ("GET", "/v1/admin/policies"),
+            ("PATCH", "/v1/admin/policies"),
+            ("POST", "/v1/enrollment/approvals"),
+            ("POST", "/v1/admin/devices/trash/empty"),
             ("GET", "/v1/org/admin/services"),
             ("GET", "/v1/org/admin/marketplace/status"),
             ("GET", "/v1/auth/session"),
             ("POST", "/v1/auth/logout"),
             ("POST", "/v1/auth/challenge"),
             ("POST", "/v1/auth/verify"),
-        } and not (method == "PATCH" and path.startswith("/v1/admin/devices/") and
+        } and not (method == "POST" and re.fullmatch(
+                   r"/v1/admin/enrollments/[0-9a-f]{32}/deny", path)) and not (
+                   method == "POST" and re.fullmatch(
+                   r"/v1/admin/devices/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}/(?:revoke|reactivate|remove)",path)) and not (method == "PATCH" and path.startswith("/v1/admin/devices/") and
                    _DEVICE_ID.fullmatch(path.removeprefix("/v1/admin/devices/"))):
             raise WorkerBridgeError("OPERATION_NOT_ADMITTED", 403)
         if authentication:
@@ -64,8 +73,22 @@ class OrganizationWorkerClient:
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
             if any(not isinstance(v, str) or len(v) > 512 for v in body.values()):
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
-        elif body is not None and (method, path) != ("POST", "/v1/auth/logout") and (method != "PATCH" or set(body) != {"name"}):
-            raise WorkerBridgeError("OPERATION_NOT_ADMITTED", 403)
+        elif body is not None:
+            allowed_body = (
+                ((method,path)==('POST','/v1/auth/logout') and body=={}) or
+                ((method,path)==('POST','/v1/enrollment/approvals') and
+                 set(body)=={'request_id'} and isinstance(body['request_id'],str) and
+                 re.fullmatch(r'[0-9a-f]{32}',body['request_id'])) or
+                ((method,path)==('POST','/v1/admin/devices/trash/empty') and body=={'confirm':'EMPTY_TRASH'}) or
+                ((method,path)==('PATCH','/v1/admin/policies') and
+                 set(body)=={'remove_trash_after_30_days'} and type(body['remove_trash_after_30_days']) is bool) or
+                (method=='POST' and re.fullmatch(r'/v1/admin/devices/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}/remove',path)
+                 and body=={'confirm':'REMOVE_DEVICE'}) or
+                (method=='POST' and path.endswith(('/revoke','/reactivate','/deny')) and body=={}) or
+                (method=='PATCH' and path.startswith('/v1/admin/devices/') and
+                 set(body)=={'name'} and isinstance(body['name'],str))
+            )
+            if not allowed_body:raise WorkerBridgeError('OPERATION_NOT_ADMITTED',403)
         try:
             cfg = read_config(self.state_dir)
             if not cfg["enabled"] or not cfg["configured"]:
@@ -101,7 +124,7 @@ class OrganizationWorkerClient:
                 result = json.loads(data)
                 if not isinstance(result, dict):
                     raise WorkerBridgeError("ORG_RESPONSE_INVALID", 502)
-                if reply.status != 200:
+                if reply.status not in (200,201):
                     error = result.get("error") if isinstance(result.get("error"), dict) else {}
                     code = error.get("code", "ORG_REQUEST_REFUSED")
                     if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{3,64}", code):

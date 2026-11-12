@@ -16,7 +16,7 @@ EXPECTED_REGION_ZONES = {
     'task-manager': {
         'query': 'controls', 'processes': 'workspace', 'all': 'workspace',
         'connections': 'workspace', 'hardware': 'workspace',
-        'selected': 'tools', 'schedules': 'tools', 'assistant': 'tools',
+        'selected': 'details', 'schedules': 'tools', 'assistant': 'tools',
         'operations': 'tools', 'status': 'status',
     },
     'code-editor': {
@@ -30,7 +30,7 @@ TASK_VIEWS = {
     'connections': 'connections', 'cpu-gpu': 'hardware',
 }
 TOOL_TABS = {
-    'task-manager': ('selected', 'schedules', 'assistant', 'operations'),
+    'task-manager': ('schedules', 'assistant', 'operations'),
     'code-editor': ('aider', 'review', 'documentation', 'studio'),
 }
 
@@ -49,23 +49,34 @@ DOM_OBSERVATION = r'''() => {
     rect:rect(el),visible:!!el.getClientRects().length&&!el.hidden}]));
  const tabs=[...document.querySelectorAll('[data-mcel-tool-tabs] [role="tab"]')];
  const named=id=>root?.querySelector('[data-mcel-zone="'+id+'"]');
- const nav=named('navigator'),work=named('workspace'),tools=named('tools');
+ const nav=named('navigator'),work=named('workspace'),tools=named('tools'),details=named('details');
  const tree=root?.querySelector('[data-mcel-explorer-navigation]');
  const listings=root?.querySelector('[data-mcel-explorer-view]');
  const contents=root?.querySelector('[data-mcel-directory-contents]');
  const collection=listings?.closest('[data-collection]');
  const inspector=root?.querySelector('[data-mcel-purpose="inspection"]');
+ const activity=root?.querySelector('[data-mcel-region$=".status"]');
  const scroll=el=>el?getComputedStyle(el).overflowY:null;
+ const taskManager={detailsInRail:!!(details&&inspector&&details.contains(inspector)),
+   activityInDetails:!!(details&&activity&&details.contains(activity)),
+   rightAtDesktop:innerWidth<980||!!(details&&work&&rect(details).x>=rect(work).x+rect(work).w-2),
+   inspectorScrollOwner:scroll(details)==='auto',
+   workspaceNotCollapsed:!!(work&&rect(work).h>=80)};
  const fileExplorer={treeInNavigator:!!(nav&&tree&&nav.contains(tree)),
    listingInWorkspace:!!(work&&listings&&work.contains(listings)),
    inspectorInTools:!!(tools&&inspector&&tools.contains(inspector)),
+   activityInInspectorRail:!!(tools&&activity&&tools.contains(activity)),
+   activityAfterDetails:!!(inspector&&activity&&
+     rect(activity).y>=rect(inspector).y+rect(inspector).h-2),
+   activityNotDesktopFooter:innerWidth<980||!!(tools&&activity&&
+     rect(activity).w<innerWidth*.5&&rect(activity).x>=rect(tools).x-2),
    navigationScrollOwner:scroll(nav)==='auto',workspaceScrollOwner:scroll(work)==='auto',
    inspectorScrollOwner:scroll(tools)==='auto',
    treeDoesNotScroll:!!tree&&scroll(tree)!=='auto'&&scroll(tree.querySelector('[data-mcel-folder-tree]'))!=='auto',
    listDoesNotScroll:!!contents&&scroll(contents)!=='auto'&&scroll(collection)!=='auto',
    outerFrameBounded:!!layout&&getComputedStyle(layout).overflowY==='hidden'&&
      document.documentElement.scrollHeight<=innerHeight+1};
- return {layout:!!layout,rung:layout?.dataset.mcelLayoutRung||null,fileExplorer,
+ return {layout:!!layout,rung:layout?.dataset.mcelLayoutRung||null,fileExplorer,taskManager,
    zone,regions,tabCount:tabs.length,
    selectedTabs:tabs.filter(el=>el.getAttribute('aria-selected')==='true').length,
    visiblePanels:[...document.querySelectorAll('[data-mcel-tool-panel]')].filter(el=>!el.hidden).length,
@@ -99,7 +110,7 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
         if (region_map.get(region) or {}).get('zone') != zone_id:
             errors.append('region-not-in-expected-zone:'+region)
         if zone_id not in zones:errors.append('missing-zone:'+zone_id)
-    active={key:zones[key] for key in {'controls','navigator','workspace','tools','status'} if key in zones}
+    active={key:zones[key] for key in {'controls','navigator','workspace','tools','details','status'} if key in zones}
     for key,r in active.items():
         if not isinstance(r,dict) or min(r.get('w',0),r.get('h',0))<=0:
             errors.append('collapsed-zone:'+key)
@@ -114,9 +125,9 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
     if work and work['y']>=observed.get('height',900):errors.append('anchor-below-fold')
     if work and work['w'] < width*(.50 if rung=='wide' else .46 if rung=='medium' else .82):
         errors.append('anchor-insufficient-width')
-    if status and work and status['y'] < work['y']+work['h']-2:
+    if app not in ('file-manager','task-manager') and status and work and status['y'] < work['y']+work['h']-2:
         errors.append('status-before-workspace-end')
-    if status and tools and status['y'] < tools['y']+tools['h']-2:
+    if app not in ('file-manager','task-manager') and status and tools and status['y'] < tools['y']+tools['h']-2:
         errors.append('status-before-tools-end')
     if app=='task-manager':
         if controls and work and not (controls['y']+controls['h']<=work['y']+2):
@@ -144,12 +155,25 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
         for second in ('controls','navigator','workspace','tools')[i+1:]:
             if first in active and second in active and _overlap(active[first],active[second])>1:
                 errors.append('zones-overlap:'+first+':'+second)
+    if app=='task-manager':
+        task=observed.get('taskManager') or {}
+        for fact,reason in {
+          'detailsInRail':'selected-process-not-in-details-rail',
+          'activityInDetails':'activity-not-in-task-details',
+          'rightAtDesktop':'task-details-not-right-of-workspace',
+          'inspectorScrollOwner':'task-details-lacks-scroll-ownership',
+          'workspaceNotCollapsed':'task-primary-workspace-collapsed',
+        }.items():
+            if task.get(fact) is not True:errors.append(reason)
     if app=='file-manager':
         explorer=observed.get('fileExplorer') or {}
         requirements={
             'treeInNavigator':'folder-hierarchy-not-under-locations',
             'listingInWorkspace':'directory-list-not-in-primary-workspace',
             'inspectorInTools':'selected-entry-not-in-inspector',
+            'activityInInspectorRail':'activity-not-in-inspector-rail',
+            'activityAfterDetails':'activity-before-selected-entry-end',
+            'activityNotDesktopFooter':'activity-full-width-desktop-footer',
             'navigationScrollOwner':'navigation-lacks-scroll-ownership',
             'workspaceScrollOwner':'workspace-lacks-scroll-ownership',
             'inspectorScrollOwner':'inspector-lacks-scroll-ownership',
@@ -239,7 +263,7 @@ def governed_multifield_workflow_oracle(browser_page, width: int) -> dict:
     try:
         region=browser_page.locator('[data-mcel-region$=".schedules"]')
         tabs=browser_page.locator('[data-mcel-tool-tabs] [role="tab"]')
-        if tabs.count()!=4:
+        if tabs.count()!=3:
             failures.append('governed-workflow-missing-tool-tabs')
         else:
             panel_id=region.locator('xpath=..').get_attribute('id')

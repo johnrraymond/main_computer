@@ -15,6 +15,43 @@
     "intent:refresh-identity-status": ["identity-status", "observeSlhIdentityStatus", "identityStatus"],
     "intent:refresh-lifecycle": ["lifecycle", "observeSlhLifecycle", "lifecycle"]
   });
+  const notebookRead=Object.freeze({
+    "read-organization-pending":"read-pending",
+    "read-organization-enrolled":"read-enrolled",
+    "read-organization-trash":"read-trash",
+    "read-organization-retention":"read-retention"
+  });
+  const notebookAction=Object.freeze({
+    "organization-accept":"accept", "organization-reject":"reject",
+    "organization-delete":"delete", "organization-reactivate":"reactivate",
+    "organization-remove":"remove", "set-organization-trash-retention":"set-retention",
+    "empty-organization-trash":"empty-trash"
+  });
+  function notebookOperation(req){
+    if(!plain(req)||req.appId!=="slh"||!plain(req.arguments))return null;
+    const suffix=req.intentId?.startsWith("intent:")?req.intentId.slice(7):"";
+    const read=notebookRead[suffix],action=notebookAction[suffix];
+    const operation=read||action;
+    if(!operation || req.capabilityId!==(read?"capability:organization-identity-observer":
+      "capability:organization-identity-administration") ||
+      req.risk!==(read?"external-read":"consequential") ||
+      req.effectId!=="effect:"+suffix+".request" || req.operation!==operation)return null;
+    const methods={"read-pending":"observeOrganizationPending","read-enrolled":"observeOrganizationEnrolled",
+      "read-trash":"observeOrganizationTrash","read-retention":"observeOrganizationRetention",
+      accept:"acceptOrganizationEnrollment",reject:"rejectOrganizationEnrollment",
+      delete:"deleteOrganizationDevice",reactivate:"reactivateOrganizationDevice",
+      remove:"removeOrganizationDevice","set-retention":"setOrganizationTrashRetention",
+      "empty-trash":"emptyOrganizationTrash"};
+    if(req.runtimeMethod!==methods[operation])return null;
+    const keys=Object.keys(req.arguments).sort().join(",");
+    if(["accept","reject","delete","reactivate","remove"].includes(operation)){
+      if(keys!=="recordId" || typeof req.arguments.recordId!=="string" ||
+         !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(req.arguments.recordId))return null;
+    }else if(operation==="set-retention"){
+      if(keys!=="enabled" || typeof req.arguments.enabled!=="boolean")return null;
+    }else if(keys!=="")return null;
+    return operation;
+  }
   const rename = "intent:rename-worker";
   const firstRun = Object.freeze({
     "intent:start-local": ["start", "startSlhLocal", []],
@@ -32,6 +69,7 @@
   function plain(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
   function permitted(req) {
     if(!req || req.appId!=="slh" || !plain(req.arguments))return false;
+    if(notebookOperation(req))return true;
     const spec=admitted[req.intentId];
     if(spec)return req.risk==="external-read" && req.effectId==="effect:"+req.intentId.slice(7)+".request" &&
       req.capabilityId==="capability:slh-observer" && req.operation===spec[0] &&
@@ -67,6 +105,23 @@
         data.view!=="workers" || data.workerSummary?.observationState!=="AUTHENTICATED")
         throw Error("MCEL_SLH_PORT:admin-session-not-verified");
     }
+    async function notebook(req){
+      const operation=notebookOperation(req);
+      if(!operation)throw Error("MCEL_SLH_NOTEBOOK:UNDECLARED_OPERATION");
+      if(!accessToken)throw Error("MCEL_SLH_NOTEBOOK:ADMIN_SESSION_REQUIRED");
+      const response=await fetcher("/api/applications/slh/identity-notebook",{
+        method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
+          "X-MCEL-SLH-Operation":"identity-notebook"}),
+        body:JSON.stringify({target:"local",operation,arguments:req.arguments,sessionTicket:""})
+      });
+      const data=await response?.json?.().catch(()=>null);
+      if(!response?.ok || data?.ok!==true){
+        const code=data?.error?.code;
+        throw Error("MCEL_SLH_NOTEBOOK:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
+      }
+      if(!plain(data) || data.ok!==true)throw Error("MCEL_SLH_NOTEBOOK:INVALID_RESPONSE");
+      return data.result;
+    }
     return Object.freeze({
       connect: async value=>{
         if(typeof value!=="string" || value.length<24 || value.length>256 || !/^[\x21-\x7e]+$/.test(value))
@@ -80,9 +135,11 @@
       onAuthenticationChanged: callback=>{if(typeof callback==="function")authenticationChanged=callback;},
       onSetupChanged: callback=>{if(typeof callback==="function")setupChanged=callback;},
       preferredIdentity: ()=>identitySnapshot?.state==="AVAILABLE"?identitySnapshot.defaultDeviceId:"",
-      authorize: async req=>permitted(req) && ((req.intentId!==rename && req.intentId!=="intent:logout-administrator") || !!accessToken),
+      authorize: async req=>permitted(req) && (notebookOperation(req)?!!accessToken:
+        ((req.intentId!==rename && req.intentId!=="intent:logout-administrator") || !!accessToken)),
       invoke: async req=>{
         if(!permitted(req))throw Error("MCEL_SLH_PORT:undeclared-operation");
+        if(notebookOperation(req))return notebook(req);
         if(firstRun[req.intentId]){
           const action=firstRun[req.intentId][0];
           if(action!=="start" && action!=="logout"){

@@ -37,6 +37,8 @@ DOM_OBSERVATION = r'''() => {
       '[data-mcel-content-kind="document"]'),
     rect:measure(e)});
   const panels=nonroot.filter(e=>e.parentElement===root).map(leaf);
+  const leadingZones=zones.filter(e=>['navigator','controls'].includes(e.dataset.mcelZone) &&
+    primary && e.getBoundingClientRect().bottom <= primary.getBoundingClientRect().top+2).map(leaf);
   const scrollRegions=[...new Set([...nonroot,...zones])].map(leaf);
   // Semantic navigation is more than an element named navigator. Verify that
   // authored navigation/mode regions actually occupy the navigation scroll
@@ -94,19 +96,26 @@ DOM_OBSERVATION = r'''() => {
     const rect=pad.getBoundingClientRect();
     const keys=[...pad.querySelectorAll('button')].filter(visible);
     const r=keys.map(b=>b.getBoundingClientRect());
-    const submit=pad.closest('form')?.querySelector(':scope > button[type="submit"]');
+    const form=pad.closest('form');
+    const submit=form?.querySelector(':scope > button[type="submit"]');
     const submitRect=submit?.getBoundingClientRect();
+    const expressionRect=form?.querySelector('input[name="expression"]')?.getBoundingClientRect();
+    const formRect=form?.getBoundingClientRect();
+    const compact=pad.closest('[data-mcel-density="compact"]')?.dataset.mcelDensity==='compact';
     const first=r.slice(0,4);
-    return {width:rect.width,keyCount:r.length,
+    return {width:rect.width,keyCount:r.length,compact,
       fourColumns:first.length===4&&first.every((b,i)=>i===0||
         Math.abs(b.top-first[0].top)<=2&&b.left>first[i-1].left),
       maxKeyWidth:r.length?Math.max(...r.slice(0,20).map(b=>b.width)):0,
       minKeyHeight:r.length?Math.min(...r.map(b=>b.height)):0,
       submitWidth:submitRect?.width??null,
-      submitAligned:!!submitRect&&Math.abs(submitRect.left-rect.left)<=2};
+      submitAligned:!!submitRect&&Math.abs(submitRect.left-rect.left)<=2,
+      submitBesideExpression:!!(compact&&submitRect&&expressionRect&&formRect&&
+        Math.abs(submitRect.bottom-expressionRect.bottom)<=2&&
+        submitRect.left>=expressionRect.right-2&&submitRect.right<=formRect.right+2)};
   });
   return {app:measure(app),root:measure(root),primary:primary?leaf(primary):null,
-    navigation:nav?leaf(nav):null,panels,scrollRegions,navigationSemantics,
+    navigation:nav?leaf(nav):null,leadingZones,panels,scrollRegions,navigationSemantics,
     applicationChrome:chrome,controlComposition:{actionGroups,keypads},
     viewport:{width:innerWidth,height:innerHeight}};
 }'''
@@ -159,6 +168,7 @@ def assess(observation: dict) -> dict:
     nav = observation.get('navigation')
     panels = observation.get('panels') or []
     scroll_regions = observation.get('scrollRegions') or []
+    leading_zones = observation.get('leadingZones') or []
     viewport = observation.get('viewport') or {}
     width = viewport.get('width', 0)
     failures: list[str] = []
@@ -172,6 +182,9 @@ def assess(observation: dict) -> dict:
     if not app.get('w') or not app.get('h') or not width:
         return {'status': 'FAIL', 'failures': ['invalid-application-geometry'], 'checks': {}}
     compact = width < 680
+    top_navigation = bool(nav and (nav.get('rect') or {}).get('w', 0) >= app['w'] * .75 and
+                          (nav.get('rect') or {}).get('y', app['y']) <
+                          (primary or {}).get('rect', {}).get('y', app['y']))
     main_rect = (primary or {}).get('rect') or {}
     require('primary-workspace-present', bool(primary and main_rect.get('w', 0) > 0 and main_rect.get('h', 0) > 0))
     # An explicitly composed inspector can consume a dedicated height track
@@ -184,9 +197,15 @@ def assess(observation: dict) -> dict:
     if checks['primary-workspace-present']:
         require('primary-workspace-dominant-width',
                 main_rect['w'] >= app['w'] * (.80 if compact else .45))
-        require('primary-workspace-usable-height',
-                main_rect['h'] >= app['h'] * (.30 if compact and stacked_inspector else .45 if compact else
-                                           .48 if stacked_inspector else .60))
+        # When full-width navigation and query controls precede the anchor,
+        # compare the usable workspace with the remaining viewport allocation;
+        # it must not collapse merely because another semantic zone consumes
+        # height above it. Tall side-navigation layouts keep the stricter gate.
+        available_height=app['h'] - max(0, main_rect['y']-app['y'])
+        usable_min=(available_height * (.45 if compact else .50) if top_navigation else
+                    app['h'] * (.30 if compact and stacked_inspector else .45 if compact else
+                                .48 if stacked_inspector else .60))
+        require('primary-workspace-usable-height', main_rect['h'] >= usable_min)
         require('primary-workspace-bounded',
                 main_rect['y'] >= app['y']-2 and
                 main_rect['y']+main_rect['h'] <= app['y']+app['h']+2)
@@ -208,6 +227,14 @@ def assess(observation: dict) -> dict:
         top_limit=(max(min(152,app['h']*.3), min(app['h']*.4,nav_rect.get('h',0)+24))
                    if compact and nav and nav.get('zonePlacement')=='disclosure-before-anchor'
                    else min(152,app['h']*.3) if compact else max(30, app['h']*.15))
+        # A genuine preceding, full-width navigation or control zone is not
+        # dead whitespace. Use its actual bottom edge to bound the permissible
+        # anchor start, rather than requiring the workspace to overlap it.
+        preceding=[item['rect'] for item in leading_zones if
+                   item.get('rect', {}).get('w', 0) >= app['w'] * .75]
+        if top_navigation and preceding:
+            top_limit=max(top_limit, max(rect['y']+rect['h']-app['y']
+                                         for rect in preceding)+24)
         require('workspace-starts-near-application-top',
                 chrome.get('workspaceTopGap') is not None and
                 -2 <= chrome['workspaceTopGap'] <= top_limit)
@@ -237,13 +264,16 @@ def assess(observation: dict) -> dict:
         require('keypad-bounded-width', 0 < pad.get('width', 0) <= 422)
         require('keypad-four-regular-columns',
                 pad.get('keyCount') == 21 and bool(pad.get('fourColumns')) and
-                44 <= pad.get('minKeyHeight', 0) and 0 < pad.get('maxKeyWidth', 0) <= 121)
+                (32 if pad.get('compact') else 44) <= pad.get('minKeyHeight', 0) and
+                0 < pad.get('maxKeyWidth', 0) <= 121)
         require('keypad-submit-bounded', pad.get('submitWidth') is not None and
-                0 < pad['submitWidth'] <= 422 and bool(pad.get('submitAligned')))
+                0 < pad['submitWidth'] <= 422 and
+                (bool(pad.get('submitAligned')) or bool(pad.get('submitBesideExpression'))))
 
     if nav and not compact:
         nav_rect = nav['rect']
         require('navigation-uses-allocated-height',
+                nav_rect['h'] > 0 if top_navigation else
                 nav_rect['h'] >= app['h']*(.50 if stacked_inspector else .65))
         require('navigation-bounded',
                 nav_rect['y'] >= app['y']-2 and
@@ -276,8 +306,11 @@ def assess(observation: dict) -> dict:
         # arbitrary cards granted overflow:auto. The kind must agree with the
         # declared zone role and a concrete planner placement.
         planned_owner=(
-            kind=='tools' and panel.get('zoneKind') in ('inspector','tab-group') and
+            kind in ('tools','details') and panel.get('zoneKind') in ('inspector','tab-group') and
             panel.get('zonePlacement') in ('dock-end','dock-bottom','disclosure-after-anchor')
+        ) or (
+            kind=='controls' and panel.get('zoneKind')=='toolbar' and
+            panel.get('zonePlacement')=='top'
         ) or (
             kind=='status' and panel.get('zoneKind')=='pinned-compact' and
             panel.get('zonePlacement')=='bottom'

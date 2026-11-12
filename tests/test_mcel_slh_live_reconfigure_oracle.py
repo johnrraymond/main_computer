@@ -151,6 +151,9 @@ def test_mcel_shows_actual_backend_error_code_instead_of_generic_refusal():
             page.set_content(render_slh_page())
             page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
             page.get_by_role('button', name='Configure ORG-SLH').click()
-            page.get_by_text('ORGANIZATION_RECONFIGURE_FAILED_RESTORED', exact=False).wait_for(timeout=10000)
+            # The same refusal is now visible in the task feedback, the inspector's
+            # latest-request summary, and retained Activity receipts.
+            page.locator('[data-mcel-natural-scroller="inspection"] [data-mcel-request-result]').get_by_text(
+                'ORGANIZATION_RECONFIGURE_FAILED_RESTORED', exact=False).wait_for(timeout=10000)
         finally:
             browser.close()

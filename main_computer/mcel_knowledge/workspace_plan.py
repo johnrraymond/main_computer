@@ -203,17 +203,40 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
         selected_states = set().union(*(set(f["selectionTargets"]) for f in facts.values()))
         selection_hints = [rid for rid in tools if by_id[rid].get("purpose") == "inspection"
                            and set(facts[rid]["displays"]) & selected_states]
-        zones.append({"id": "tools", "kind": "tab-group" if len(tools) > 1 else "inspector",
-                      "members": tools, "default": tools[0],
-                      "hintUntilSelected": selection_hints,
+        # A selected-object inspector is not a consequential form. Split their
+        # placement only when both actually exist: the inspector keeps the
+        # right rail and the wide forms retain a full-width bottom work area.
+        inspections = [rid for rid in tools if by_id[rid].get("purpose") == "inspection"]
+        workflows = [rid for rid in tools if rid not in inspections]
+        split_inspector = bool(inspections and workflows and wide_tool_workflow)
+        tool_members = workflows if split_inspector else tools
+        zones.append({"id": "tools", "kind": "tab-group" if len(tool_members) > 1 else "inspector",
+                      "members": tool_members, "default": tool_members[0],
+                      "hintUntilSelected": [] if split_inspector else selection_hints,
                       "ladder": {"wide": "dock-bottom" if wide_tool_workflow else "dock-end",
                                  "medium": "dock-bottom", "narrow": "disclosure-after-anchor"},
                       "reasons": ["supporting-or-unassigned", "fallback-preserves-bound-region",
                                   *(["consequential-multifield-workflow-needs-width"] if wide_tool_workflow else [])]})
+        if split_inspector:
+            zones.append({"id": "details", "kind": "inspector", "members": inspections,
+                          "hintUntilSelected": selection_hints,
+                          "ladder": {"wide": "dock-end", "medium": "dock-bottom",
+                                     "narrow": "disclosure-after-anchor"},
+                          "reasons": ["purpose:inspection", "independent-of-consequential-workflows"]})
     if status:
+        # Activity is evidence about a selected object or operation. It follows
+        # the supporting inspector by default; it is not an application footer.
+        # Without an inspector, give activity its own responsive side rail.
+        attached = bool(tools)
+        status_target = "details" if any(zone["id"] == "details" for zone in zones) else "tools"
         zones.append({"id": "status", "kind": "pinned-compact", "members": status,
-                      "ladder": {"wide": "bottom", "medium": "bottom", "narrow": "bottom"},
-                      "reasons": ["purpose:status"]})
+                      "ladder": ({"wide": "inspector-after-" + status_target,
+                                  "medium": "inspector-after-" + status_target,
+                                  "narrow": "inspector-after-" + status_target} if attached else
+                                 {"wide": "dock-end", "medium": "dock-bottom",
+                                  "narrow": "disclosure-after-anchor"}),
+                      "reasons": ["purpose:status", "evidence-follows-inspector" if attached
+                                  else "evidence-owns-responsive-rail"]})
     assigned = [r for zone in zones for r in zone["members"]]
     if len(assigned) != len(set(assigned)) or set(assigned) != set(ids) - {root_id}:
         raise ValueError("Workspace plan must cover each nonroot region exactly once")

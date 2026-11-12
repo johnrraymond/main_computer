@@ -129,19 +129,20 @@ _CAPTURE = r'''() => {
   const r=grid.getBoundingClientRect();
   return {rect:{left:r.left,top:r.top,width:r.width,height:r.height},
     gap:getComputedStyle(grid).gap, columns:getComputedStyle(grid).gridTemplateColumns,
-    captionFont:getComputedStyle(grid.querySelector('.desktop-caption')).font,
-    captionColor:getComputedStyle(grid.querySelector('.desktop-caption')).color,
+    captionFont:grid.querySelector('.desktop-caption')?getComputedStyle(grid.querySelector('.desktop-caption')).font:null,
+    captionColor:grid.querySelector('.desktop-caption')?getComputedStyle(grid.querySelector('.desktop-caption')).color:null,
     icons:[...grid.querySelectorAll('.desktop-icon')].map(el=>{
       const b=el.getBoundingClientRect(), style=getComputedStyle(el);
       const glyph=el.querySelector('.desktop-glyph'), gs=glyph&&getComputedStyle(glyph);
       const gb=glyph&&glyph.getBoundingClientRect();
+      const summaryEl=[...el.children].find(x=>x.tagName==='SPAN'&&!x.classList.contains('desktop-glyph'));
       return {id:el.dataset.app,title:el.querySelector('strong')?.textContent,
-        summary:[...el.children].filter(x=>x.tagName==='SPAN'&&!x.classList.contains('desktop-glyph'))[0]?.textContent,
+        summary:summaryEl?.textContent??null,
         svg:el.querySelector('svg')?.innerHTML.trim()||null,
         accent:style.getPropertyValue('--desktop-icon-accent').trim(),
         background:style.backgroundImage, border:style.borderColor, borderRadius:style.borderRadius,
         titleFont:getComputedStyle(el.querySelector('strong')).font,
-        summaryFont:getComputedStyle([...el.children].filter(x=>x.tagName==='SPAN'&&!x.classList.contains('desktop-glyph'))[0]).font,
+        summaryFont:summaryEl?getComputedStyle(summaryEl).font:null,
         glyphBackground:gs?.backgroundImage, glyphColor:gs?.color,
         glyphSize:gb?{w:gb.width,h:gb.height}:null,
         rect:{x:b.x-r.x,y:b.y-r.y,w:b.width,h:b.height}};
@@ -195,9 +196,13 @@ def compare_grouped_desktop(reference: dict, actual: dict, clusters: list[dict])
     if len(actual.get("icons", [])) != len(expected) or set(observed) != set(expected):
         return ["desktop-grouped-icon-inventory-mismatch"]
     for slug, source in expected.items():
-        for key in ("title", "summary", "svg"):
+        for key in ("title", "svg"):
             if source[key] != observed[slug][key]:
                 errors.append(f"desktop-grouped-{slug}-{key}-drift")
+        # Grouped icons deliberately omit visible descriptions. The aria-label
+        # on the cluster retains its semantic identity without extra text.
+        if observed[slug]["summary"] is not None:
+            errors.append(f"desktop-grouped-{slug}-unwanted-caption")
     if len(clusters) != len(DESKTOP_GROUPS):
         return errors + ["desktop-group-count-mismatch"]
     colors = []
@@ -225,7 +230,7 @@ _CLUSTER_CAPTURE = r'''() => [...document.querySelectorAll('#mcel-shell-desktop-
     const icons = [...group.querySelectorAll('.desktop-icon')];
     return {
       id:group.dataset.desktopGroup,
-      title:group.querySelector('h3')?.textContent,
+      title:group.getAttribute('aria-label'),
       apps:icons.map(icon=>icon.dataset.app),
       overflows:group.scrollWidth > group.clientWidth + 1,
       escapes:icons.some(icon=>{

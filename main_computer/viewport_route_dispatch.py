@@ -2452,6 +2452,14 @@ def _chat_console_native_execution_allowed(self) -> bool:
 
 def dispatch_post(self) -> None:
     # mcel.slh.target-tabs.v2: strictly local bridge, read-only remote TLS probe.
+    if urlsplit(self.path).path == "/api/applications/slh/identity-notebook":
+        from main_computer.mcel_slh_identity_notebook_route import handle_identity_notebook
+        handle_identity_notebook(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/slh/network/connect":
+        from main_computer.mcel_slh_network_route import handle_network_slh_connect
+        handle_network_slh_connect(self)
+        return
     if urlsplit(self.path).path == "/api/applications/slh/network/inspect":
         from main_computer.mcel_slh_network_route import handle_network_slh_inspect
         handle_network_slh_inspect(self)

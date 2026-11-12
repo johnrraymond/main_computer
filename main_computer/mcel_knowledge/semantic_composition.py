@@ -15,9 +15,9 @@ from .interface_intent import PURPOSES, interface_intent_errors
 SCHEMA = "mcel.generated-composition.v1"
 POLICY = "mcel.semantic-structure.p1"
 P3_POLICY = "mcel.semantic-structure.p3"
-RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "operations", "document", "navigation", "task", "commands"})
+RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "operations", "document", "navigation", "task", "commands", "inspection"})
 TAGS = {"root": "main", "queries": "section", "collection": "section", "selection-echo": "aside",
-        "evidence": "footer", "results": "section", "controls": "section", "operations": "section", "document": "section", "navigation": "nav", "task": "section", "commands": "section"}
+        "evidence": "footer", "results": "section", "controls": "section", "operations": "section", "document": "section", "navigation": "nav", "task": "section", "commands": "section", "inspection": "aside"}
 ROLE_META = {
     "queries": ("query-controls", "secondary"),
     "collection": ("workspace", "primary"),
@@ -30,6 +30,7 @@ ROLE_META = {
     "navigation": ("navigation", "secondary"),
     "task": ("task", "primary"),
     "commands": ("commands", "supporting"),
+    "inspection": ("inspection", "supporting"),
 }
 
 
@@ -131,6 +132,8 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     navigation_owners = {}
     task_owners = {}
     command_owners = {}
+    inspector_owners = {}
+    status_owners = {}
     by_node = {n["id"]: n for n in nodes}
     for authored in declared_intent.get("regions", []):
         role = authored.get("role")
@@ -150,6 +153,24 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                 raise ValueError("Task requires one consequential form and one selected reference")
             for member in members:
                 task_owners[member["id"]] = authored
+        elif role == "inspector":
+            # An inspector is authored, and each member must present a real
+            # derived observation. A renderer-local selected key is not a
+            # verified service or selected-record inspector.
+            members = [by_node[m["ref"]] for m in authored["members"]]
+            if (policy != P3_POLICY or not members or any(
+                    n["nodeKind"] != "state-value" or
+                    states.get(_ref((n.get("value") or {}).get("state")), {}).get("authority") != "derived"
+                    for n in members)):
+                raise ValueError("Inspector requires derived observed values")
+            for member in members:
+                inspector_owners[member["id"]] = authored
+        elif role == "status":
+            members = [by_node[m["ref"]] for m in authored["members"]]
+            if not members or any(n["nodeKind"] != "operation-evidence" for n in members):
+                raise ValueError("Activity region requires operation evidence")
+            for member in members:
+                status_owners[member["id"]] = authored
         elif role == "commands":
             members = [by_node[m["ref"]] for m in authored["members"]]
             if not members or any(n["nodeKind"] != "control" or
@@ -170,7 +191,7 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                 collection_targets[_ref(contract["target"])] = n["id"]
     for n in sorted(nodes, key=lambda x: x["id"]):
         kind = n.get("nodeKind")
-        if kind == "collection": recipe = "collection"
+        if kind in {"collection", "record-notebook"}: recipe = "collection"
         elif kind == "form": recipe = "queries"
         elif kind == "control": recipe = "controls"
         elif kind == "operation-evidence": recipe = "evidence"
@@ -196,6 +217,12 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
         elif n["id"] in command_owners:
             recipe = "commands"
             reason = "authored-commands:" + command_owners[n["id"]]["id"]
+        elif n["id"] in inspector_owners:
+            recipe = "inspection"
+            reason = "authored-inspector:" + inspector_owners[n["id"]]["id"]
+        elif n["id"] in status_owners:
+            recipe = "evidence"
+            reason = "authored-status:" + status_owners[n["id"]]["id"]
         else:
             reason = "node-kind:" + str(kind)
         groups[recipe].append(n["id"])
@@ -216,11 +243,17 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     order_in_rail = {"form":0,"collection":1,"control":2,"state-value":3}
     groups["navigation"].sort(key=lambda identifier:(
         order_in_rail.get(navigation_kinds.get(identifier),4),identifier))
-    if not any(n.get("nodeKind") == "collection" for n in nodes):
+    if not any(n.get("nodeKind") in {"collection", "record-notebook"} for n in nodes):
         raise ValueError("P1 vertical slice requires an authentic keyed collection")
     # Application purpose controls organization, but cannot create reads, timers, or actions.
-    order = ("navigation", "controls", "queries", "collection", "selection-echo", "operations", "task", "commands", "results", "evidence") if purpose == "monitor" else (
-        "navigation", "controls", "queries", "selection-echo", "collection", "operations", "task", "commands", "results", "evidence")
+    order = ("navigation", "controls", "queries", "collection", "selection-echo", "operations", "task", "commands", "inspection", "results", "evidence") if purpose == "monitor" else (
+        "navigation", "controls", "queries", "selection-echo", "collection", "operations", "task", "commands", "inspection", "results", "evidence")
+    # A compound record notebook is downstream of service configuration/commands.
+    # Other collections retain their previous synthesized order.
+    if groups["collection"] and all(by_node[id]["nodeKind"]=="record-notebook" for id in groups["collection"]):
+        order=tuple(x for x in order if x!="collection")
+        insert_after=order.index("commands") if "commands" in order else order.index("task")
+        order=order[:insert_after+1]+("collection",)+order[insert_after+1:]
     root = "interface-region:generated-root"
     regions = [{"id": root, "parentId": None, "ordinal": 0, "recipe": "root", "nativeTag": "main",
                 "members": [], "priority": "primary", "purpose": "application", "tasks": [],
@@ -251,12 +284,12 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                        "members":[{"ref":ident} for ident in member_ids],
                        "reasons":["authored-semantic-navigation:"+authored["id"]]})
                 continue
-        if recipe in {"task", "commands"}:
+        if recipe in {"task", "commands", "inspection"}:
             # Like navigation disclosures, task and command groups preserve
             # authored semantic ownership. Separate tasks must not merge into
             # one giant card merely because their nodes share a node kind.
             for authored in declared_intent.get("regions", []):
-                if authored.get("role") != recipe:
+                if authored.get("role") != ("inspector" if recipe == "inspection" else recipe):
                     continue
                 member_ids = [m["ref"] for m in authored["members"] if m["ref"] in groups[recipe]]
                 if not member_ids:
@@ -280,7 +313,8 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                         recipe in {"collection", "results"} else [],
              "members": [{"ref": ident} for ident in groups[recipe]],
              "reasons": ["purpose:" + purpose, "verified-node-kinds", *sorted(set(source_reasons[i] for i in groups[recipe]))]})
-    # No generated 'inspection' role: a selected key is not a verified selected record.
+    # Inspector membership is explicit and validated against derived states;
+    # a renderer-local selected key alone never manufactures an inspector.
     result = {"schema": SCHEMA, "policy": policy,
         "sourceIrHash": ir.get("fingerprints", {}).get("semantic"),
         "purpose": purpose, "rootId": root, "regions": regions,
