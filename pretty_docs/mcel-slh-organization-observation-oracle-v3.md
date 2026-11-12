@@ -1,5 +1,8 @@
 # MCEL SLH Organization Observation and Administration — Oracle V3
 
+> **Historical milestone, not the current SLH administration oracle.** The separate-app and remote-no-login requirements in this document are superseded by `mcel-slh-unified-admin-oracle-v4.md`. The existing network TLS, origin, target, and authority-isolation safety constraints remain in force.
+
+
 Source baseline: `main_computer_test-20261108-160444.zip` (November 8, 2026, 16:04:44).
 
 ## Purpose

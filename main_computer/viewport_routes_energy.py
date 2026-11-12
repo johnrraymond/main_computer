@@ -3236,7 +3236,8 @@ class ViewportEnergyRoutesMixin:
 
     def _normalize_worker_network_key(self, value: Any, *, allow_none: bool = True) -> str:
         key = str(value or "none").strip().lower()
-        allowed = set(self._worker_network_order())
+        # SLH is a destination, not a blockchain Hub registry profile.
+        allowed = set(self._worker_network_order()) | {"slh"}
         if allow_none:
             allowed.add("none")
         if key not in allowed:
@@ -3296,7 +3297,22 @@ class ViewportEnergyRoutesMixin:
             "hub_status": None,
         }
 
-        if selected != "none":
+        if selected == "slh":
+            # Selecting SLH is not equivalent to authenticated Worker enrollment.
+            # Never probe its managed Worker gateway as a Stable Hub or advertise
+            # a connected Worker from a cached marketplace session.
+            managed_url = str(settings.get("managedSLHUrl") or "").strip().rstrip("/")
+            session["profile"] = {"network": "slh", "network_key": "slh",
+                                  "display_name": "Secure Local Hub (SLH)",
+                                  "kind": "managed-slh", "hub_url": managed_url}
+            session["connected_hub_url"] = managed_url
+            setup = self._worker_runtime_setup_state(settings)
+            session["connection_status"] = "setup" if setup.get("missing") else "stale"
+            session["connection_error"] = (
+                "SLH Worker device setup is incomplete: " + ", ".join(setup["missing"])
+                if setup.get("missing") else "Verify Worker enrollment and connection in the SLH Worker Bank."
+            )
+        elif selected != "none":
             profile = profiles_by_key.get(selected)
             if not profile:
                 session["connection_status"] = "failed"

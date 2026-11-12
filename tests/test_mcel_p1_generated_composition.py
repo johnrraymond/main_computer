@@ -116,8 +116,9 @@ def test_generated_runtime_authentic_contract_and_responsive_browser(browser,wid
         page.set_content(render_generated_page())
         assert page.locator('#mcel-workbench-status').inner_text()=='P2 generated monitor ready'
         assert page.locator('[data-mcel-region]').count()==7
-        assert page.locator('#mcel-workbench[data-mcel-layout-authority="inferred"]').count()==1
-        assert page.locator('#mcel-workbench').get_attribute('data-mcel-layout-mode')=='monitor'
+        assert page.locator('[data-mcel-natural-layout]').count()==1
+        assert page.locator('[data-mcel-natural-scroller="navigation"]').count()==1
+        assert page.locator('[data-mcel-natural-scroller="workspace"]').count()==1
         assert page.locator('[data-mcel-purpose="workspace"] [data-collection]').count()==3
         assert page.locator('[data-mcel-purpose="inspection"]').count()==0
         assert page.locator('[data-mcel-auto-refresh]').count()==0
@@ -141,7 +142,7 @@ def test_generated_runtime_authentic_contract_and_responsive_browser(browser,wid
             page.wait_for_function('document.documentElement.scrollWidth <= innerWidth+2')
             assert page.evaluate('window.__mcelP1.composition.fingerprint')==before
             assert page.evaluate('window.__mcelP1.app.readState("state:selected")')=='130:2026-10-31T22:00:00Z'
-            assert page.locator('#mcel-workbench[data-mcel-layout-authority="inferred"]').count()==1
+            assert page.locator('[data-mcel-natural-layout]').count()==1
         # No authority via a forged consequential effect.
         assert page.evaluate('''async()=>McelSemanticReadPorts.create({appId:'semantic-task-monitor-generated'}).authorize({
             appId:'semantic-task-monitor-generated',intentId:'intent:terminate-process',

@@ -45,7 +45,11 @@ def test_root_change_discards_in_flight_old_root_listing_and_inspection():
             page.locator('[data-record-key="secondary"] button').click()
             page.evaluate('window.__releaseWorkspace()')
             assert page.evaluate('async () => (await window.__inFlight).disposition') == 'superseded'
-            assert page.evaluate('window.__mcelWorkbench.app.readState("state:entries")') is None
+            entries = page.evaluate('window.__mcelWorkbench.app.readState("state:entries")')
+            # The new root may have completed its authorized read already.
+            # Neither an empty transition nor fresh secondary evidence can
+            # ever expose stale workspace entries.
+            assert entries is None or [entry['id'] for entry in entries] == ['public.txt']
             assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-entry")') == ''
             assert page.locator('[data-record-key="secret.txt"]').count() == 0
             assert page.locator('[data-mcel-current-directory]').inner_text() == '/'
@@ -135,14 +139,47 @@ def test_cached_branch_file_selection_reopens_authorized_parent():
             page.locator('[data-record-key="src/nested"] button').click()
             page.locator('[data-record-key="src/nested/hi.js"]').wait_for()
             root_file=page.locator('[data-mcel-tree-branch=""] [data-record-key="README.md"] button')
+            reads_before=page.evaluate("() => window.__calls.filter(c=>c.path.endsWith('/file-explorer/list') && c.body.relative_path==='').length")
             assert root_file.is_enabled()
             root_file.click()
             page.wait_for_function('window.__mcelWorkbench.app.readState("state:selected-entry")==="README.md"')
             assert page.locator('[data-mcel-current-directory]').inner_text() == '/'
             # The click must re-list the parent and may not select from cache.
-            assert page.evaluate("() => window.__calls.filter(c=>c.path.endsWith('/file-explorer/list') && c.body.relative_path==='').length") == 2
+            assert page.evaluate("() => window.__calls.filter(c=>c.path.endsWith('/file-explorer/list') && c.body.relative_path==='').length") == reads_before + 1
             page.get_by_role('button', name='Preview Entry').click()
             page.locator('[data-state="state:preview"]').get_by_text('const a=1;').wait_for()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        finally:
+            browser.close()
+
+
+def test_explorer_tree_has_independent_cached_collapse_and_compact_directory_list():
+    from tests.test_mcel_semantic_parity_recovery import page_for
+    with sync_playwright() as p:
+        browser, _ = launch_semantic_browser(p)
+        try:
+            page = page_for(browser, 'file-manager', width=1100)
+            page.locator('[data-record-key="src"] button').click()
+            page.locator('[data-record-key="src/nested"] button').click()
+            page.locator('[data-record-key="src/nested/hi.js"]').wait_for()
+            assert page.locator('[data-mcel-explorer-view]').count() == 1
+            assert page.locator('[data-mcel-directory-columns]').inner_text().split() == ['Name', 'Type', 'Size']
+            assert page.locator('[data-mcel-directory-path]').inner_text() == '/src/nested'
+            assert page.locator('[data-mcel-directory-entry="src/nested/hi.js"]').count() == 1
+            assert page.locator('[data-mcel-tree-branch="src/nested"]').count() == 1
+            before = len(page.evaluate('window.__calls'))
+            page.locator('[data-mcel-tree-toggle="src"]').click()
+            assert page.locator('[data-mcel-tree-branch="src"]').count() == 0
+            assert page.locator('[data-mcel-directory-path]').inner_text() == '/src/nested'
+            assert len(page.evaluate('window.__calls')) == before
+            page.locator('[data-mcel-tree-toggle="src"]').click()
+            assert page.locator('[data-mcel-tree-branch="src/nested"]').count() == 1
+            assert len(page.evaluate('window.__calls')) == before
+            # Native tree arrows traverse visible entries without navigating.
+            page.locator('[data-select-key="src"]').focus()
+            page.keyboard.press('ArrowDown')
+            assert page.evaluate('document.activeElement.getAttribute("data-select-key")') == 'src/nested'
+            assert len(page.evaluate('window.__calls')) == before
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         finally:
             browser.close()

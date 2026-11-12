@@ -5,6 +5,7 @@ Usage:
  python tools/mcel_layout_frob.py --mode sweep --widths 320,390,768,1440 --fixtures normal,long_text,stale
  python tools/mcel_layout_frob.py --mode sweep --no-browser   # planning only; no browser PASS
  python tools/mcel_layout_frob.py --mode paired-workspace  # test the built-in isolated compositor candidate
+ python tools/mcel_layout_frob.py --mode viewport-composition   # MCEL-wide normal-content + scroll-ownership oracle
 
 Runs production MCEL workspace inference, canonical layout tree and adaptive control
 contract where appropriate. New graded-hint / bounded-constraint planners consume
@@ -666,6 +667,8 @@ def _paired_observe(browser, markup, width, output=None):
         if page.evaluate('window.__mcelWorkbench?.appId === "semantic-task-manager"'):
             page.wait_for_function("""() => Array.isArray(window.__mcelWorkbench?.app?.readState("state:processes")) &&
               window.__mcelWorkbench.app.readState("state:processes").length > 0""",timeout=6000)
+        if page.evaluate('window.__mcelWorkbench?.appId === "semantic-file-manager"'):
+            page.locator('[data-mcel-explorer-navigation] [data-mcel-folder-tree]').wait_for(timeout=6000)
         observed=page.evaluate(_PAIRED_MEASURE)
         if output is not None:
             page.screenshot(path=str(output), full_page=True, timeout=12000)
@@ -1128,7 +1131,7 @@ def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=['smoke','sweep','plan','semantic','semantic-compare','design-review','design-quality','design-quality-stress','paired-workspace'],default='smoke')
+    parser.add_argument('--mode',choices=['smoke','sweep','plan','semantic','semantic-compare','design-review','design-quality','design-quality-stress','paired-workspace','viewport-scroll','viewport-composition'],default='smoke')
     parser.add_argument('--candidate-zip',type=Path,help='Optional alternate isolated archive; by default use the bundled Frob compositor candidate')
     parser.add_argument('--apps',default=','.join(PAIRED_APPS),help='Paired applications to inspect')
     parser.add_argument('--design',type=Path,default=DESIGN)
@@ -1141,6 +1144,13 @@ def main(argv=None):
     parser.add_argument('--chromium-executable')
     parser.add_argument('--max-cases',type=int,default=128,help='Sweep scenarios (0 = entire cross product; smoke ignores budget)')
     args=parser.parse_args(argv)
+    if args.mode in ('viewport-scroll','viewport-composition'):
+        if args.no_browser:parser.error('viewport composition requires an actual browser')
+        from tools.mcel_viewport_scroll_frob import main as viewport_scroll_main
+        argv=['--output',str(args.output/'viewport-scroll')]
+        if args.widths:argv.extend(['--widths',args.widths])
+        if args.chromium_executable:argv.extend(['--chromium-executable',args.chromium_executable])
+        return viewport_scroll_main(argv)
     if args.mode=='paired-workspace':
         if args.no_browser:parser.error('paired-workspace cannot claim a PASS with --no-browser')
         widths=tuple(int(w) for w in (args.widths or ','.join(map(str,PAIRED_WIDTHS))).split(','))
@@ -1177,6 +1187,13 @@ def main(argv=None):
         from tools import mcel_semantic_generate
         return mcel_semantic_generate.run(args.design.resolve(),
                                           (args.output/'semantic-generation').resolve(),verify=True,chromium_executable=args.chromium_executable)
+    if args.mode=='smoke' and not args.no_browser:
+        from tools.mcel_viewport_scroll_frob import run as run_viewport_scroll
+        scroll_status=run_viewport_scroll(output=args.output/'viewport-scroll',
+                                         chromium_executable=args.chromium_executable)
+        if scroll_status:
+            print('MCEL_LAYOUT_FROB_REFUSED: viewport composition/scroll-ownership invariant failed',file=sys.stderr)
+            return 1
     output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
     try:
         from tools import mcel_layout_frob_crosscheck as contract_module

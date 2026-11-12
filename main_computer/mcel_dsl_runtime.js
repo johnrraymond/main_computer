@@ -924,7 +924,7 @@ function createDsl(metadata, source) {
   // public DSL deliberately closed so a typo cannot silently discard intent.
   const INTERFACE_ROLES = new Set([
     "main-workarea", "navigation", "collection", "document", "inspector",
-    "commands", "results", "status", "auxiliary-workarea", "mode-selector",
+    "commands", "task", "results", "status", "auxiliary-workarea", "mode-selector",
   ]);
   const INTERFACE_PURPOSES = new Set(["monitor", "compare", "inspect", "navigate", "manage"]);
   const INTERFACE_RELATIONSHIPS = new Set([
@@ -995,7 +995,12 @@ function createDsl(metadata, source) {
   }
   const surface = {
     form(name, options = {}) {
-      knownOptions(options, ["id", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit"], `surface.form:${name}`);
+      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "submitLabel"], `surface.form:${name}`);
+      if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
+        "MCEL_DSL_FORM_LABEL_INVALID", "Form label must be nonempty semantic text.");
+      if(options.submitLabel!==undefined)assert(typeof options.submitLabel==="string" &&
+        options.submitLabel.trim().length>0 && options.submitLabel.length<=120,
+        "MCEL_DSL_FORM_SUBMIT_LABEL_INVALID", "Form submit label must be nonempty semantic text.");
       assert(options.fields && typeof options.fields === "object", "MCEL_DSL_FORM_FIELDS_REQUIRED", "Form requires fields.");
       const fields = {};
       for (const [fieldName, schema] of Object.entries(options.fields)) {
@@ -1050,7 +1055,8 @@ function createDsl(metadata, source) {
         options.clearIntent.record.input.length===0,"MCEL_DSL_FORM_CLEAR_INVALID","Clear intent must be a no-input capability operation.");
       if(options.resetAndSubmit!==undefined)assert(typeof options.resetAndSubmit==="boolean","MCEL_DSL_FORM_RESET_INVALID","Reset-and-submit must be boolean.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
-        sourceName: name, fields, ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
+        sourceName: name, fields, ...(options.label?{label:options.label}:{}),
+        ...(options.submitLabel!==undefined?{submitLabel:options.submitLabel}:{}), ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
         ...(Object.keys(fieldState).length?{fieldState}:{}),...(Object.keys(acceptResult).length?{acceptResult}:{}),
         ...(editor?{editor}:{}),...(options.clearIntent?{clearIntent:ref(options.clearIntent)}:{}),
         ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...modeCondition(options, `surface.form:${name}`)};
@@ -1082,16 +1088,18 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     text(name, options = {}) {
-      knownOptions(options, ["id", "value", "when"], `surface.text:${name}`);
+      knownOptions(options, ["id", "label", "value", "when"], `surface.text:${name}`);
+      if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
+        "MCEL_DSL_TEXT_LABEL_INVALID", "Text label must be nonempty semantic text.");
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "state-value",
-        value: expression(options.value),
+        value: expression(options.value), ...(options.label?{label:options.label}:{}),
         ...modeCondition(options, `surface.text:${name}`),
       };
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent", "resetOutputs", "when"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const resetOutputs=[];
       for(const item of options.resetOutputs||[]){
@@ -1105,6 +1113,7 @@ function createDsl(metadata, source) {
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
         ...(resetOutputs.length?{resetOutputs}:{}),...modeCondition(options, `surface.action:${name}`),
+        ...(options.enabledWhen===undefined?{}:{enabledWhen:visibilityCondition(options.enabledWhen, `surface.action:${name}.enabledWhen`)}),
       };
       return surfaceNode(name, record);
     },

@@ -7,6 +7,9 @@ from __future__ import annotations
 from http.client import HTTPConnection, HTTPSConnection
 import json
 import os
+import subprocess
+import sys
+import psutil
 import re
 from pathlib import Path
 import socket
@@ -148,6 +151,22 @@ def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path, dis
             code,starting=request(lport,'POST','/v1/local/organization/enable',{},token=admin)
             assert code==200 and starting['enabled'],starting
             wait_until(lambda: local.organization_controller.status()['listening'])
+            # ORG-SLH itself publishes the record; it is not merely the
+            # Local Service's volatile Popen.pid.
+            from main_computer.slh.organization_process import read_record
+            first_record = read_record(state)
+            assert first_record is not None
+            assert first_record['pid'] == local.organization_controller.status()['pid']
+            assert first_record['state_dir'] == str(state.resolve())
+            code, restarted = request(lport, 'POST', '/v1/local/organization/restart',
+                                      {}, token=admin)
+            assert code == 200 and restarted['enabled'], restarted
+            wait_until(lambda: local.organization_controller.status()['listening'])
+            second_record = read_record(state)
+            assert second_record is not None
+            assert second_record['pid'] != first_record['pid']
+            assert second_record['pid'] == local.organization_controller.status()['pid']
+            assert not psutil.pid_exists(first_record['pid'])
             assert_public_tls_identity_without_organization_id(api_port)
             assert request(api_port,'GET','/v1/org/status',tls=True)[1]['worker_serving_enabled'] is False
             assert request(api_port,'GET','/v1/local/status',tls=True)[0]==404
@@ -157,8 +176,23 @@ def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path, dis
             assert request(api_port,'GET','/v1/org/admin/services',token=org_admin,tls=True)[0]==200
             assert request(api_port,'GET','/v1/admin/enrollments',token=org_admin,tls=True)[0]==200
             assert request(lport,'GET','/v1/local/services',token=admin)[1]['organization_service']['state']=='running'
+            # Simulate ./stop after disabling the parent's automatic restart
+            # loop: the separate Python stop command must read and terminate
+            # the child's OWN PID record even without our Popen handle.
+            local.organization_controller._stop.set()
+            local.organization_controller._monitor.join(timeout=3)
+            cli = subprocess.run([sys.executable, '-m', 'main_computer.slh.organization_process',
+                                  'stop', '--state-dir', str(state)],
+                                 capture_output=True, text=True, check=True)
+            assert json.loads(cli.stdout) == {'state': 'terminated', 'pid': second_record['pid']}
+            assert read_record(state) is None
+            # The still-alive test parent must reap its exited child on POSIX.
+            local.organization_controller._process.poll()
+            assert not psutil.pid_exists(second_record['pid'])
             code,disabled=request(lport,'POST','/v1/local/organization/disable',{},token=admin)
             assert code==200 and not disabled['enabled'] and not disabled['listening']
+            assert read_record(state) is None
+            assert not psutil.pid_exists(second_record['pid'])
             assert request(lport,'GET','/v1/local/status')[1]['local_service']['state']=='running'
             assert request(lport,'PATCH','/v1/local/organization/config',
                            {'workers_enabled':True},token=admin)[0]==200

@@ -112,24 +112,43 @@
         Array.isArray(composition.unresolved) && composition.unresolved.length === 0,
         "generated-composition-invalid");
       const tags={root:"main",queries:"section",collection:"section","selection-echo":"aside",
-        evidence:"footer",results:"section",controls:"section",operations:"section",document:"section"};
+        evidence:"footer",results:"section",controls:"section",operations:"section",document:"section",navigation:"nav",
+        task:"section",commands:"section"};
       const allowedPurposes=new Set(["monitor","compare","inspect","navigate","manage"]);
       assert(allowedPurposes.has(composition.purpose),"generated-purpose-invalid");
       const usedRecipes=new Set();
+      const usedRegionIds=new Set();
+      const authoredNavigationIds=new Set((surface.interfaceIntent?.regions||[])
+        .filter(r=>["navigation","mode-selector"].includes(r.role))
+        .map(r=>"interface-region:generated-navigation-"+r.id.split(".").pop()));
+      const authoredTaskIds=new Set((surface.interfaceIntent?.regions||[])
+        .filter(r=>["task","commands"].includes(r.role))
+        .map(r=>"interface-region:generated-"+r.role+"-"+r.id.split(".").pop()));
       const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
         .map(i=>ref(i.viewTransition.target)));
-      for (const n of surface.nodes || []) if (n.visibleWhen)
-        validateVisibility(n.visibleWhen,states,modeStates);
+      for (const n of surface.nodes || []) {
+        if(n.visibleWhen)validateVisibility(n.visibleWhen,states,modeStates);
+        if(n.enabledWhen){
+          assert(n.nodeKind === "control", "enablement-control-required");
+          validateVisibility(n.enabledWhen,states,modeStates);
+        }
+      }
       for (const r of composition.regions) {
         const expectedTasks=composition.policy==="mcel.semantic-structure.p3" &&
           composition.purpose==="monitor" && ["collection","results"].includes(r.recipe)
           ? ["monitor"] : [];
-        assert(r && tags[r.recipe] === r.nativeTag &&
-          (!usedRecipes.has(r.recipe)) && Array.isArray(r.members) &&
-          Array.isArray(r.tasks) && JSON.stringify(r.tasks)===JSON.stringify(expectedTasks) &&
+        if(["task","commands"].includes(r.recipe))assert(typeof r.semanticTitle==="string" &&
+          /^[a-z][a-z0-9-]*$/.test(r.semanticTitle),"generated-task-title-invalid");
+        const namedNavigation=r?.recipe==="navigation" && authoredNavigationIds.has(r.id);
+        const namedTask=["task","commands"].includes(r?.recipe) && authoredTaskIds.has(r.id);
+        assert(r && tags[r.recipe] === r.nativeTag && !usedRegionIds.has(r.id) &&
+          (["navigation","task","commands"].includes(r.recipe) || !usedRecipes.has(r.recipe)) &&
+          Array.isArray(r.members) && Array.isArray(r.tasks) &&
+          JSON.stringify(r.tasks)===JSON.stringify(expectedTasks) &&
           Array.isArray(r.reasons) && r.reasons.length > 0 &&
-          r.id === "interface-region:generated-" + r.recipe,
+          (r.id === "interface-region:generated-" + r.recipe || namedNavigation || namedTask),
           "generated-region-invalid");
+        usedRegionIds.add(r.id);
         usedRecipes.add(r.recipe);
       }
       assert(usedRecipes.has("root") && usedRecipes.has("collection") &&
@@ -149,6 +168,11 @@
     if (generated) {
       const expected={form:"queries",collection:"collection",control:"controls",
         "operation-evidence":"evidence","document-editor":"document"};
+      const navigationMembers=new Set();
+      for(const authored of surface.interfaceIntent?.regions || []) {
+        if(["navigation","mode-selector"].includes(authored.role))
+          for(const member of authored.members || [])navigationMembers.add(ref(member));
+      }
       const selected=new Set();
       for(const n of nodes.values())if(n.nodeKind === "collection" && n.selectionIntent){
         const i=intents.get(ref(n.selectionIntent));
@@ -159,7 +183,11 @@
         const n=nodes.get(ref(binding));
         assert(n,"generated-member-unknown");
         const referenced=n.intent && intents.get(ref(n.intent));
-        const recipe=composition.policy==="mcel.semantic-structure.p3" &&
+        const declared=(surface.interfaceIntent?.regions||[]).find(a=>
+          (a.members||[]).some(m=>ref(m)===n.id));
+        const recipe=navigationMembers.has(n.id) ? "navigation" :
+          declared?.role==="task" ? "task" : declared?.role==="commands" ? "commands" :
+          composition.policy==="mcel.semantic-structure.p3" &&
           ["form","control"].includes(n.nodeKind) && referenced?.risk==="consequential"
           ? "operations" : n.nodeKind==="state-value"
           ? (selected.has(ref(n.value?.state)) ? "selection-echo" : "results") : expected[n.nodeKind];
@@ -367,6 +395,7 @@
     // never by app IDs, labels, selectors or fixed root names.
     const navigationRoots = [];
     const guardedFormButtons = [];
+    const navigationHistoryListeners = [];
     const refreshers = [];
     const taskRefreshPeriodMs = 5000;
     const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
@@ -411,6 +440,7 @@
       return value!==undefined && value===when.equals;
     }
     const applicable = n => !n?.visibleWhen || conditionSatisfied(n.visibleWhen);
+    const enabled = n => !n?.enabledWhen || conditionSatisfied(n.enabledWhen);
     function notify() {
       for (const [r,el] of regionHosts) {
         if (r.visibleWhen) el.hidden = read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
@@ -458,10 +488,11 @@
       for (const [n, host] of collectionHosts) updateCollection(n,host);
       for (const [n, host] of plotHosts) updatePlot(n, host);
       for (const [n, session] of documentHosts) updateDocument(n,session);
-      for(const {button,intent} of [...actionButtons,...guardedFormButtons]){
-        button.disabled=(intent.requestArguments||[]).some(arg=>{
+      for(const {button,intent,node} of [...actionButtons,...guardedFormButtons]){
+        button.disabled=!enabled(node) || (intent.requestArguments||[]).some(arg=>{
           const value=read(ref(arg.state));return value===undefined || value===null || value==="";
         });
+        if(node?.enabledWhen)button.setAttribute("aria-disabled",String(button.disabled));
       }
       for (const host of receiptHosts) {
         const recent = expert ? receipts.filter(r => c.intents.get(r.intentId)?.operationKind === "capability").slice(-6).reverse() : receipts;
@@ -508,7 +539,8 @@
         // The same declarative applicability gate governs the generated
         // control and programmatic execute(). This is NOT backend authority.
         const controls=[...c.nodes.values()].filter(n=>ref(n.intent)===id);
-        if(controls.length && !controls.some(applicable))fail("operational-condition-not-satisfied");
+        if(controls.length && !controls.some(n=>applicable(n) && enabled(n)))
+          fail("operational-condition-not-satisfied");
         const input = {};
         for (const parameter of intent.input || []) {
           assert(own(given,parameter.sourceName),"missing-input:"+parameter.sourceName);
@@ -530,7 +562,7 @@
             // Do not leave selectable stale rows while a new root loads.
             for(const [node,tree] of folderTrees){
               if(ref(sel.target)===tree.rootState && tree.root!==String(selected)){
-                tree.root=String(selected);tree.paths.clear();tree.current="";tree.searchResults=false;
+                tree.root=String(selected);tree.paths.clear();tree.collapsed.clear();tree.current="";tree.searchResults=false;
                 const invalidated=new Set();
                 for(const dependent of c.intents.values()){
                   if(dependent.operationKind!=="capability" ||
@@ -752,6 +784,10 @@
               if(cached===path || cached.startsWith(path+"/"))tree.paths.delete(cached);
           }
           tree.paths.set(entered,clone(value));tree.current=entered;
+          // A directory explicitly opened by the operator must remain visible
+          // in the retained hierarchy even after a previous local collapse.
+          for(let path=entered;path;path=path.includes("/")?path.slice(0,path.lastIndexOf("/")):"")
+            tree.collapsed.delete(path);
           enteredDirectory=entered;
         }
         if(enteredDirectory!==null)for(const item of directoryForms){
@@ -812,7 +848,7 @@
             state.set(navigation.rootState,"");
             for(const [node,tree] of folderTrees){
               if(tree.rootState!==navigation.rootState)continue;
-              tree.root="";tree.paths.clear();tree.current="";tree.searchResults=false;
+              tree.root="";tree.paths.clear();tree.collapsed.clear();tree.current="";tree.searchResults=false;
               state.delete(ref(node.state));
             }
             for(const dependent of c.intents.values()){
@@ -911,7 +947,7 @@
             !(i.input||[]).length && !i.requestArguments?.length &&
             i.resultBindings?.some(b=>ref(b.target)===ref(n.state)));
           if(directoryIntent && pathParameter)
-            folderTrees.set(n,{paths:new Map(),current:"",root:"",searchResults:false,
+            folderTrees.set(n,{paths:new Map(),collapsed:new Set(),current:"",root:"",searchResults:false,
               rootState:rootArg?ref(rootArg.state):null,intent:directoryIntent,pathParameter,
               rootListingIntent:rootListing?.id||null});
         }
@@ -999,13 +1035,14 @@
         const plot=elt("div", {"data-mcel-plot":n.id, role:"img", "aria-label":fmt(n.sourceName || n.id) + " function plot"});
         holder.append(plot); plotHosts.set(n,plot);
       } else if (n.nodeKind === "form") {
-        const intent=c.intents.get(ref(n.intent)),form=elt("form",{"data-intent":intent.id});
+        const intent=n.intent ? c.intents.get(ref(n.intent)) : null;
+        const form=elt("form",intent ? {"data-intent":intent.id} : {"data-mcel-draft-only":""});
         const controls={};
         // An edited compute input makes the previous derived answer obsolete.
         // Supersede an in-flight result as well, so a late response cannot
         // present a calculation for an expression the user has since changed.
         // This is driven by semantic compute tasks, never by an app identity.
-        const isComputeInput=!!region?.tasks?.includes("compute");
+        const isComputeInput=!!intent && !!region?.tasks?.includes("compute");
         function supersedeComputeRequest(clearResult=false) {
           if (!isComputeInput) return;
           // Editing supersedes an in-flight response without discarding the
@@ -1087,9 +1124,20 @@
           if(!resultReceivers.has(key))resultReceivers.set(key,[]);
           resultReceivers.get(key).push(receiver);
         }
-        const button=elt("button",{type:"submit"},fmt(intent.sourceName || intent.id));form.append(button);
-        guardedFormButtons.push({button,intent});
-        if (n.defaults && Object.keys(n.defaults).length) form.append(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
+        if (intent) {
+          const button=elt("button",{type:"submit"},n.submitLabel || fmt(intent.sourceName || intent.id));
+          form.append(button);guardedFormButtons.push({button,intent});
+        } else {
+          // An unbound form is a configuration draft, never an executable
+          // operation. No capability may be invoked until semantic authorship
+          // explicitly supplies an intent in a later revision.
+          form.append(elt("button",{type:"button",disabled:true,"aria-disabled":"true"},
+            n.submitLabel || fmt(n.sourceName || n.id)));
+        }
+        const operationStatus=(intent?.risk==="consequential")
+          ? elt("p",{role:"status","data-mcel-form-result":n.id},"") : null;
+        if(operationStatus)form.append(operationStatus);
+        if (intent && n.defaults && Object.keys(n.defaults).length) form.append(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
         if(n.clearIntent){
           const button=elt("button",{type:"button","data-mcel-clear-intent":ref(n.clearIntent)},"Clear expression and result");
           button.addEventListener("click",()=>{
@@ -1118,7 +1166,7 @@
         // The host port must still authorize the target directory.
         const directoryParameter=Object.keys(n.fields||{}).length===1 &&
           (own(n.fields||{},"relativePath")?"relativePath":own(n.fields||{},"path")?"path":null);
-        if(directoryParameter && (region?.tasks?.includes("browse") || region?.purpose==="navigation")) {
+        if(intent && directoryParameter && (region?.tasks?.includes("browse") || region?.purpose==="navigation")) {
           const input=controls[directoryParameter], path=elt("span",{"data-mcel-current-directory":""},"/");
           const up=elt("button",{type:"button","data-mcel-parent-directory":""},"Parent directory");up.disabled=true;
           const nav={input,path,up,current:""};directoryForms.add(nav);
@@ -1130,7 +1178,7 @@
         // A general compute task with a single textual expression gets a
         // generated arithmetic entry surface. This uses only semantic tasks
         // and field schema; no application names or backend evaluations.
-        if (expert && region.tasks?.includes("compute") && region.priority === "primary" &&
+        if (intent && expert && region.tasks?.includes("compute") && region.priority === "primary" &&
             Object.keys(n.fields || {}).length === 1 && n.fields.expression?.kind === "string") {
           const field=controls.expression;
           form.dataset.mcelComposition="expression-workbench";
@@ -1157,6 +1205,7 @@
         }
         form.addEventListener("submit",e=>{
           e.preventDefault();
+          if (!intent) return; // An intentless form can never dispatch work.
           const input={};for(const [k,schema] of Object.entries(n.fields || {}))input[k]=parseInput(schema,controls[k]);
           if(intent.confirmationRequired !== false &&
              (intent.risk==="consequential" || intent.risk==="source-write") &&
@@ -1169,33 +1218,70 @@
               const node=c.nodes.get(ref(m));
               return ref(node?.state)===ref(b.target) || ref(node?.value?.state)===ref(b.target);
             }))))rememberedInputs.set(intent.id,input);
-          void execute(intent.id,input);});
+          if(operationStatus)operationStatus.textContent="Applying…";
+          void execute(intent.id,input).then(receipt=>{
+            if(!operationStatus)return;
+            const result=(intent.resultBindings||[]).length
+              ? read(ref(intent.resultBindings[0].target)):null;
+            operationStatus.textContent=receipt.disposition==="completed"
+              ? (typeof result?.message==="string"?result.message:"Operation completed")
+              : "Operation refused: "+String(receipt.reason||receipt.disposition);
+          });});
         holder.append(form);
       } else if (n.nodeKind === "control") {
         const intent=c.intents.get(ref(n.intent));
         const params=intent.input || [];
         if (intent.viewTransition && params.length===1 && Array.isArray(params[0].schema?.enum)) {
-          const item=renderInput(params[0].sourceName,params[0].schema,"Mode");
+          const item=renderInput(params[0].sourceName,params[0].schema,fmt(ref(intent.viewTransition.target)));
           item.input.setAttribute("data-intent",intent.id);
           item.input.addEventListener("change",()=>void execute(intent.id,{[params[0].sourceName]:item.input.value}));
           holder.append(item.wrap);
           if (expert && params[0].schema.enum.length <= 6) {
-            const bar=elt("div",{"role":"group","aria-label":"Application modes","data-mcel-mode-tabs":""});
+            const bar=elt("div",{"role":"group","aria-label":"Application "+fmt(ref(intent.viewTransition.target))+"s","data-mcel-mode-tabs":""});
             const buttons=[];
             for (const value of params[0].schema.enum) {
-              const tab=elt("button",{type:"button","data-value":value,"aria-pressed":"false"},fmt(value));
-              tab.addEventListener("click",()=>{
+              // A host may supply canonical browser addresses for semantic
+              // destinations. The same view intent still owns the transition;
+              // URLs are navigation metadata, never authorization or state.
+              const route=options.navigationRoutes?.[value];
+              assert(!route || (typeof route==="string" && /^\/(?!\/)[A-Za-z0-9/_-]*$/.test(route)),
+                "invalid-canonical-navigation-route");
+              const tab=route ? elt("a",{href:route,role:"button","data-value":value,
+                "aria-pressed":"false"},fmt(value)) :
+                elt("button",{type:"button","data-value":value,"aria-pressed":"false"},fmt(value));
+              tab.addEventListener("click",event=>{
+                if(route) {
+                  // Native modified clicks, window-opening and copy-link remain
+                  // browser-owned. Only the ordinary in-page transition is intercepted.
+                  if(event.defaultPrevented || event.button!==0 || event.metaKey || event.ctrlKey ||
+                     event.shiftKey || event.altKey)return;
+                  event.preventDefault();
+                  if(global.location?.protocol?.startsWith("http") && global.history?.pushState &&
+                     global.location.pathname!==route)global.history.pushState(null,"",route);
+                }
                 item.input.value=value;
                 item.input.dispatchEvent(new Event("change",{bubbles:true}));
               });
               buttons.push(tab);bar.append(tab);
             }
             holder.append(bar);tabSwitchers.push({stateId:ref(intent.viewTransition.target),select:item.input,buttons});
+            if(options.navigationRoutes && global.addEventListener) {
+              const syncHistory=()=>{
+                const value=Object.keys(options.navigationRoutes).find(key=>
+                  options.navigationRoutes[key]===global.location?.pathname);
+                if(value && item.input.value!==value) {
+                  item.input.value=value;
+                  item.input.dispatchEvent(new Event("change",{bubbles:true}));
+                }
+              };
+              global.addEventListener("popstate",syncHistory);
+              navigationHistoryListeners.push(syncHistory);
+            }
           }
         } else {
           const button=elt("button",{type:"button","data-intent":intent.id},fmt(intent.sourceName || intent.id));
           if (params.length) {button.disabled=true;button.title="Requires selected record or form input";}
-          if(intent.requestArguments?.length)actionButtons.push({button,intent});
+          if(intent.requestArguments?.length || n.enabledWhen)actionButtons.push({button,intent,node:n});
           button.addEventListener("click",()=>{
             if(intent.confirmationRequired !== false &&
                (intent.risk==="source-write" || intent.risk==="consequential")){
@@ -1351,65 +1437,219 @@
         traceOperation("editor.monaco.mount","settled","failed");
       });
     }
+    // Use the source-proven roots -> directory dependency to attach the
+    // hierarchy to its authored navigation region. Do not synthesize another
+    // location list or infer ownership from the application name.
+    function directoryNavigationHost(n){
+      const chain=navigationRoots.find(nav=>nav.entriesState===ref(n.state));
+      if(!chain)return null;
+      const region=[...c.regions.values()].find(r=>r.purpose==="navigation" &&
+        (r.members||[]).some(member=>{
+          const node=c.nodes.get(ref(member));
+          return node?.nodeKind==="collection" && ref(node.state)===chain.rootsState;
+        }));
+      return region ? regionHosts.get(region) : null;
+    }
     function updateFolderTree(n,holder,tree){
-      const layer=elt("div",{"data-mcel-folder-tree":"","role":"tree","aria-label":"Folder hierarchy"});
+      const navigationHost=directoryNavigationHost(n);
+      const previousTree=navigationHost?.querySelector("[data-mcel-folder-tree]") ||
+        holder.querySelector("[data-mcel-folder-tree]");
+      const previousScroll=previousTree?.scrollTop||0;
+      const previousDetailsScroll=holder.querySelector("[data-mcel-directory-contents]")?.scrollTop||0;
+      const previousFocus=(holder.contains(document.activeElement) ||
+        navigationHost?.contains(document.activeElement))
+        ?document.activeElement.getAttribute("data-select-key") ||
+         document.activeElement.getAttribute("data-mcel-tree-toggle"):null;
+      const layer=elt("div",{"data-mcel-folder-tree":"",role:"tree","aria-label":"Folder hierarchy"});
       const selectedRoot=tree.rootState?read(tree.rootState):"";
-      if(tree.root!==selectedRoot){tree.root=selectedRoot;tree.paths.clear();tree.current="";}
+      if(tree.root!==selectedRoot){tree.root=selectedRoot;tree.paths.clear();tree.collapsed.clear();tree.current="";}
       const select=n.selectionIntent && c.intents.get(ref(n.selectionIntent));
       const parameter=select?.input?.find(p=>p.id===ref(select.collectionSelection?.input));
+      const explorer=Array.isArray(n.fields) && n.fields.includes("bytes") && n.fields.includes("pathDisplay");
       const visited=new Set();
+      function selectObservedFile(item,parent){
+        if(!select || !parameter)return;
+        const id=String(item[n.key]);
+        if(parent===tree.current)return void execute(select.id,{[parameter.sourceName]:item[n.key]});
+        // A retained branch is a navigation hint. Re-fetch before selecting.
+        void (async()=>{
+          const reopened=await execute(tree.intent.id,{[tree.pathParameter]:parent});
+          const fresh=read(ref(n.state));
+          if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
+             !fresh.some(row=>row && String(row[n.key])===id))return;
+          await execute(select.id,{[parameter.sourceName]:item[n.key]});
+        })();
+      }
+      async function inspectObservedFolder(item,parent){
+        if(!select || !parameter)return;
+        const id=String(item[n.key]);
+        if(parent!==tree.current){
+          const reopened=await execute(tree.intent.id,{[tree.pathParameter]:parent});
+          const fresh=read(ref(n.state));
+          if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
+              !fresh.some(row=>row && String(row[n.key])===id))return;
+        }
+        await execute(select.id,{[parameter.sourceName]:item[n.key]});
+      }
       function branch(path,depth){
         if(depth>32 || visited.has(path))return;
         visited.add(path);
         const entries=tree.paths.get(path);if(!Array.isArray(entries))return;
-        const group=elt("div",{"role":"group","data-mcel-tree-branch":path});
-        for(const item of entries){
+        const group=elt("div",{role:"group","data-mcel-tree-branch":path});
+        const ordered=explorer?[...entries].sort((a,b)=>{
+          const ad=a.kind==="directory"||a.kind==="dir",bd=b.kind==="directory"||b.kind==="dir";
+          return Number(bd)-Number(ad) || String(a.name||"").localeCompare(String(b.name||""));
+        }):entries;
+        for(const item of ordered){
           const id=String(item[n.key]);
           const directory=item.kind==="directory" || item.kind==="dir";
-          const row=elt("div",{"data-record-key":id,"data-mcel-tree-depth":depth,"role":"treeitem",
-            "aria-expanded":directory?String(tree.paths.has(id)):"false"});
+          const loaded=tree.paths.has(id),expanded=loaded&&!tree.collapsed.has(id);
+          const row=elt("div",{"data-mcel-tree-depth":depth,role:"treeitem",
+            "aria-level":depth+1,"aria-selected":String(id===tree.current)});
+          if(directory)row.setAttribute("aria-expanded",String(expanded));
+          if(explorer){
+            if(directory){
+              const toggle=elt("button",{type:"button","data-mcel-tree-toggle":id,
+                "aria-label":(expanded?"Collapse ":"Expand ")+String(item.name||id),
+                "aria-expanded":String(expanded),title:expanded?"Collapse folder":"Expand folder"},expanded?"▾":"▸");
+              toggle.addEventListener("click",()=>{
+                if(!loaded){void execute(tree.intent.id,{[tree.pathParameter]:id});return;}
+                if(expanded)tree.collapsed.add(id);else tree.collapsed.delete(id);
+                updateFolderTree(n,holder,tree);
+              });row.append(toggle);
+            }else row.append(elt("span",{"data-mcel-tree-leaf":"","aria-hidden":"true"},"·"));
+            row.append(elt("span",{"data-mcel-tree-icon":"","aria-hidden":"true"},directory?"▣":"▤"));
+          }
           const label=elt("span",{"data-record-field":"name"},String(item.name||id));
-          const button=elt("button",{type:"button","data-select-key":id},directory?"Open folder":"Select");
+          const button=elt("button",{type:"button","data-select-key":id},
+            explorer?String(item.name||id):directory?"Open folder":"Select");
           if(directory){
             button.addEventListener("click",()=>void execute(tree.intent.id,{[tree.pathParameter]:id}));
-            // Inspection is a local semantic selection of an observed folder,
-            // not filesystem read authority or a navigation action.
             if(select && parameter){
-              const inspect=elt("button",{type:"button","data-mcel-inspect-folder":id},"Inspect folder");
-              inspect.addEventListener("click",async()=>{
-                if(path!==tree.current){
-                  const reopened=await execute(tree.intent.id,{[tree.pathParameter]:path});
-                  const fresh=read(ref(n.state));
-                  if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
-                      !fresh.some(row=>row && String(row[n.key])===id))return;
-                }
-                await execute(select.id,{[parameter.sourceName]:item[n.key]});
-              });
+              const inspect=elt("button",{type:"button","data-mcel-inspect-folder":id,
+                "aria-label":"Inspect folder "+String(item.name||id),title:"Inspect folder"},explorer?"ⓘ":"Inspect folder");
+              inspect.addEventListener("click",()=>void inspectObservedFolder(item,path));
               row.append(inspect);
             }
-          }else if(path===tree.current && select && parameter){
-            button.addEventListener("click",()=>void execute(select.id,{[parameter.sourceName]:item[n.key]}));
           }else if(select && parameter){
-            // A cached branch is a navigation affordance, not current file
-            // authority. Reopen its parent through the declared capability;
-            // select only if the fresh listing still contains this exact key.
-            button.title="Reopen this folder and select the file";
-            button.addEventListener("click",async()=>{
-              const reopened=await execute(tree.intent.id,{[tree.pathParameter]:path});
-              const fresh=read(ref(n.state));
-              if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
-                  !fresh.some(row=>row && String(row[n.key])===id))return;
-              await execute(select.id,{[parameter.sourceName]:item[n.key]});
-            });
-          }else{button.disabled=true;}
-          row.append(label,button);group.append(row);
-          if(directory && tree.paths.has(id))branchInto(id,depth+1,group);
+            button.addEventListener("click",()=>selectObservedFile(item,path));
+          }else button.disabled=true;
+          if(explorer){
+            // The name is the navigation control; don't repeat the same text
+            // next to a second oversized button on every tree row.
+            label.hidden=true;
+            const nameCell=elt("span",{"data-record-key":id,"data-mcel-tree-depth":depth,
+              "data-mcel-tree-name-cell":""});
+            nameCell.append(button);
+            row.insertBefore(nameCell,row.querySelector("[data-mcel-inspect-folder]"));
+          }else{
+            const nameCell=elt("span",{"data-record-key":id,"data-mcel-tree-depth":depth});
+            nameCell.append(button);row.append(label,nameCell);
+          }
+          group.append(row);
+          if(directory && expanded){const child=branch(id,depth+1);if(child)group.append(child);}
         }
         return group;
       }
-      function branchInto(path,depth,parent){const child=branch(path,depth);if(child)parent.append(child);}
       const top=branch("",0);if(top)layer.append(top);
-      holder.replaceChildren(layer);
+      if(explorer)layer.addEventListener("keydown",event=>{
+        if(!["ArrowDown","ArrowUp","ArrowRight","ArrowLeft","Home","End"].includes(event.key))return;
+        const names=[...layer.querySelectorAll("[data-select-key]")];
+        if(!names.length)return;
+        const currentRow=event.target.closest?.('[role="treeitem"]');
+        const name=currentRow?.querySelector("[data-select-key]");
+        const index=names.indexOf(name);
+        const focus=target=>target?.focus({preventScroll:false});
+        if(event.key==="ArrowDown"||event.key==="ArrowUp"){
+          event.preventDefault();focus(names[Math.max(0,Math.min(names.length-1,index+(event.key==="ArrowDown"?1:-1)))]);return;
+        }
+        if(event.key==="Home"||event.key==="End"){
+          event.preventDefault();focus(event.key==="Home"?names[0]:names[names.length-1]);return;
+        }
+        const toggle=currentRow?.querySelector("[data-mcel-tree-toggle]");
+        if(event.key==="ArrowRight"){
+          if(toggle && toggle.getAttribute("aria-expanded")==="false"){
+            event.preventDefault();toggle.click();return;
+          }
+          const sibling=currentRow?.nextElementSibling;
+          if(sibling?.getAttribute("role")==="group"){
+            event.preventDefault();focus(sibling.querySelector("[data-select-key]"));
+          }
+        }else if(event.key==="ArrowLeft"){
+          if(toggle && toggle.getAttribute("aria-expanded")==="true"){
+            event.preventDefault();toggle.click();return;
+          }
+          const parentPath=currentRow?.closest("[data-mcel-tree-branch]")?.getAttribute("data-mcel-tree-branch");
+          if(parentPath){
+            const parent=names.find(node=>node.getAttribute("data-select-key")===parentPath);
+            if(parent){event.preventDefault();focus(parent);}
+          }
+        }
+      });
+      if(!explorer){holder.replaceChildren(layer);return;}
+      // The same authorized directory evidence projects into two semantic
+      // owners: navigable hierarchy beneath Locations, and current entries in
+      // the primary workspace. Selection/inspection bindings are unchanged.
+      const view=elt("div",{"data-mcel-explorer-view":""});
+      holder.setAttribute("data-mcel-explorer-list","");
+      const treePane=elt("section",{"data-mcel-explorer-tree-pane":"",
+        "data-mcel-explorer-navigation":"","aria-label":"Folders"});
+      treePane.append(elt("h3",{},"Folders"),layer);
+      const contentPane=elt("section",{"data-mcel-explorer-content-pane":"","aria-label":"Directory entries"});
+      const heading=elt("div",{"data-mcel-directory-head":""});
+      heading.append(elt("h3",{},tree.searchResults?"Search results":"Current directory"),
+        elt("span",{"data-mcel-directory-path":""},tree.current?"/"+tree.current:"/"));
+      contentPane.append(heading);
+      const columns=elt("div",{"data-mcel-directory-columns":"",role:"presentation"});
+      columns.append(elt("span",{},"Name"),elt("span",{},"Type"),elt("span",{},"Size"));
+      contentPane.append(columns);
+      const list=elt("div",{"data-mcel-directory-contents":"","aria-label":"Current directory contents"});
+      const currentEntries=tree.searchResults?read(ref(n.state)):(tree.paths.get(tree.current)||[]);
+      const visibleTreeKeys=new Set([...layer.querySelectorAll("[data-record-key]")]
+        .map(row=>row.getAttribute("data-record-key")));
+      const sorted=[...(Array.isArray(currentEntries)?currentEntries:[])].sort((a,b)=>{
+        const ad=a.kind==="directory"||a.kind==="dir",bd=b.kind==="directory"||b.kind==="dir";
+        return Number(bd)-Number(ad) || String(a.name||"").localeCompare(String(b.name||""));
+      });
+      function sizeOf(item){
+        if(item.kind==="directory"||item.kind==="dir")return "—";
+        const bytes=item.bytes;
+        if(!Number.isFinite(bytes)||bytes<0)return "—";
+        if(bytes<1024)return bytes+" B";
+        if(bytes<1048576)return (bytes/1024).toFixed(bytes<10240?1:0)+" KB";
+        return (bytes/1048576).toFixed(bytes<10485760?1:0)+" MB";
+      }
+      for(const item of sorted){
+        const id=String(item[n.key]),directory=item.kind==="directory"||item.kind==="dir";
+        const row=elt("div",{"data-mcel-directory-entry":id,"data-mcel-directory-kind":directory?"folder":"file",
+          ...(tree.searchResults&&!visibleTreeKeys.has(id)?{"data-record-key":id}:{})});
+        const open=elt("button",{type:"button","data-mcel-directory-open":id,
+          title:(directory?"Open folder: ":"Select file: ")+String(item.name||id)},String(item.name||id));
+        open.prepend(elt("span",{"aria-hidden":"true","data-mcel-directory-icon":""},directory?"▣":"▤"));
+        if(directory)open.addEventListener("click",()=>void execute(tree.intent.id,{[tree.pathParameter]:id}));
+        else if(select&&parameter)open.addEventListener("click",()=>void execute(select.id,{[parameter.sourceName]:item[n.key]}));
+        else open.disabled=true;
+        row.append(open,elt("span",{"data-mcel-directory-type":""},directory?"Folder":
+          String(item.category && item.category!=="other"?item.category:"File")),
+          elt("span",{"data-mcel-directory-size":""},sizeOf(item)));
+        list.append(row);
+      }
+      if(!sorted.length)list.append(elt("p",{role:"status"},"This directory is empty."));
+      contentPane.append(list);view.append(contentPane);
+      holder.replaceChildren(view);
+      if(navigationHost){
+        const existing=navigationHost.querySelector("[data-mcel-explorer-navigation]");
+        if(existing)existing.replaceWith(treePane);
+        else navigationHost.append(treePane);
+      }else view.prepend(treePane); // Non-planned semantic host fallback.
+      layer.scrollTop=previousScroll;list.scrollTop=previousDetailsScroll;
+      if(previousFocus){
+        const focused=[...(navigationHost||holder).querySelectorAll("[data-select-key],[data-mcel-tree-toggle]"),
+          ...holder.querySelectorAll("[data-select-key],[data-mcel-tree-toggle]")]
+          .find(element=>element.getAttribute("data-select-key")===previousFocus ||
+            element.getAttribute("data-mcel-tree-toggle")===previousFocus);
+        focused?.focus({preventScroll:true});
+      }
     }
     // The generated runtime owns ordinary collection presentation mechanics.
     // Reconcile DOM by declared stable record key; never re-create every row on
@@ -1523,6 +1763,16 @@
       }
       if(!record){host.append(elt("p",{"data-mcel-selection-stale":"true"},
         "Selected identity is no longer present in this observation: "+selected));return;}
+      // Task-owned selected references are parameter context, not a second
+      // full inspection panel. Their original identity and binding remain in
+      // the persistent navigation; a task shows the selected label only.
+      if(host.closest('[data-mcel-purpose="task"]')) {
+        const compact=elt("div",{"data-mcel-reference":"selected","role":"note"});
+        compact.append(elt("span",{"data-mcel-reference-caption":""},n.label || "Selected reference"),
+          elt("strong",{"data-mcel-reference-label":""},plainValue(record.label ?? record.name ?? selected)));
+        host.append(compact);
+        return;
+      }
       const list=elt("dl",{"data-mcel-selected-details":selected});
       for(const [key,value] of Object.entries(record)) {
         list.append(elt("dt",{},fmt(key)),elt("dd",{},plainValue(value)));
@@ -1551,7 +1801,9 @@
         let row=existing.get(key);
         if(!row) {
           row=elt("div",{"data-record-key":key,"data-mcel-record-row":""});
-          for(const field of n.fields || [])row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)}));
+          const navList=!!holder.closest('[data-mcel-purpose="navigation"]');
+          for(const field of n.fields || [])if(!(navList && field===n.fields[0]))
+            row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)}));
           if(selection?.collectionSelection){
             const parameter=selection.input.find(p=>p.id===ref(selection.collectionSelection.input));
             const choose=elt("button",{type:"button","data-select-key":key},"Select");
@@ -1573,6 +1825,10 @@
         if(expanded.open || !detail.childElementCount){
           detail.replaceChildren(...more.flatMap(([key,val])=>[elt("dt",{},fmt(key)),elt("dd",{},plainValue(val))]));
         }
+        const inNavigation=!!holder.closest('[data-mcel-purpose="navigation"]');
+        const chooseButton=row.querySelector("button[data-select-key]");
+        if(chooseButton && inNavigation)chooseButton.textContent=
+          plainValue(record[n.fields?.[0]] ?? key);
         row.setAttribute("aria-selected",String(selectionValue!==undefined && selectionValue!=="" && key===String(selectionValue)));
         next.set(key,row);ordered.push(row);
       }
@@ -1599,11 +1855,13 @@
       if(c.generated){updateGeneratedCollection(n,holder,list);return;}
       holder.replaceChildren();
       if (!Array.isArray(list)) {
+        if(folderTrees.has(n))directoryNavigationHost(n)
+          ?.querySelector("[data-mcel-explorer-navigation]")?.remove();
         const location=navigationRoots.some(nav=>ref(n.state)===nav.entriesState);
         holder.append(elt("p",{role:"status"},location?"Loading directory or waiting for an accessible location…":"No records loaded"));return;
       }
       const tree=folderTrees.get(n);
-      if(tree?.paths.size && !tree.searchResults){updateFolderTree(n,holder,tree);return;}
+      if(tree?.paths.size){updateFolderTree(n,holder,tree);return;}
       const select = n.selectionIntent && c.intents.get(ref(n.selectionIntent));
       for (const item of list) {
         const row=elt("div",{"data-record-key":String(item[n.key])});
@@ -1647,18 +1905,88 @@
       const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":inferredContent});
       regionHosts.set(r,el);
       if(c.generated && r.recipe!=="root") {
-        const titles={queries:"Observation query",collection:"Observed records",
+        const titles={navigation:"Navigation",queries:"Observation query",collection:"Observed records",
           "selection-echo":"Selected record",evidence:"Operation evidence",
-          results:"Measurements and results",controls:"Available controls",document:"Document"};
+          results:"Measurements and results",controls:"Available controls",operations:"Operations",document:"Document",
+          task:"Task",commands:"Commands"};
+        if(["task","commands"].includes(r.recipe))titles[r.recipe]=fmt(r.semanticTitle);
+        if(r.recipe==="operations" && r.members.some(m=>c.nodes.get(ref(m))?.nodeKind==="form"))
+          titles.operations="Configuration";
+        if(r.recipe==="results" && r.members.length===1){
+          const node=c.nodes.get(ref(r.members[0]));
+          if(typeof node?.label==="string" && node.label)titles.results=node.label;
+        }
         if(r.recipe==="controls" && r.members.every(m=>c.intents.get(ref(c.nodes.get(ref(m))?.intent))?.viewTransition))
           titles.controls="Monitoring views";
+        if(r.recipe==="queries" && r.members.every(m=>{
+          const node=c.nodes.get(ref(m));return node?.nodeKind==="form" && !node.intent;
+        })) titles.queries="Configuration";
+        if(r.recipe==="selection-echo" && r.members.length===1){
+          const selected=c.nodes.get(ref(r.members[0]));
+          if(typeof selected?.label==="string") titles["selection-echo"]=selected.label;
+        }
+        if(r.recipe==="navigation") {
+          const source=(ir.surfaces[0]?.interfaceIntent?.regions || []).find(a=>
+            a.role==="navigation" && (a.members || []).some(m=>r.members.some(b=>ref(b)===ref(m))));
+          if(source)titles.navigation=fmt(source.id);
+        }
         el.append(elt("h2",{},titles[r.recipe]));
       }
       for (const annotation of r.staticContent || []) {
         if (["h1","h2","h3","h4","h5","h6","p","span","strong","em","small","label"].includes(annotation.tag))
           el.append(elt(annotation.tag, {}, annotation.text));
       }
-      for (const m of r.members || []) el.append(renderNode(c.nodes.get(ref(m))));
+      // Only consecutive, zero-input read capabilities are ordinary action
+      // peers. Keep view selectors, parameter forms and consequential commands
+      // outside the flow, in their authored order. The control nodes, intents,
+      // guards and effect handlers remain identical to the ungrouped version.
+      // A verified semantic task groups the consequential form and its chosen
+      // reference in one form. This is the only DOM nesting policy added here:
+      // no names, app IDs, layout coordinates, handlers or authority change.
+      if(c.generated && r.recipe==="task") {
+        const members=(r.members||[]).map(m=>c.nodes.get(ref(m)));
+        const formNode=members.find(n=>n.nodeKind==="form");
+        const referenceNode=members.find(n=>n.nodeKind==="state-value");
+        assert(members.length===2 && formNode && referenceNode,"generated-task-members-invalid");
+        const formHolder=renderNode(formNode),form=formHolder.querySelector('form');
+        // A paired text/numeric parameter set has a wide identifier/address and
+        // a compact numeric parameter. Derive this from validated field types,
+        // never an application name or the authored field identifiers.
+        const fields=Object.values(formNode.fields||{});
+        const paired=fields.length===2 && fields[0]?.kind==="string" &&
+          ["integer","number"].includes(fields[1]?.kind);
+        form.setAttribute("data-mcel-task-fields",paired?"text-number":"stacked");
+        const reference=renderNode(referenceNode);
+        form.insertBefore(reference,form.querySelector('button[type="submit"]'));
+        // Primary and reset buttons are a footer; a consequential result is
+        // feedback below that footer, never a flex peer competing with it.
+        const actions=elt("div",{"data-mcel-task-actions":"",role:"group","aria-label":"Task actions"});
+        for(const child of [...form.children])if(child.matches('button'))actions.append(child);
+        form.append(actions);
+        for(const child of [...form.children])if(child.matches('[data-mcel-form-result]'))form.append(child);
+        el.append(formHolder);
+        for(const child of c.children.get(id))el.append(renderRegion(child.id));
+        return el;
+      }
+      let actionFlow=null;
+      for (const m of r.members || []) {
+        const node=c.nodes.get(ref(m));
+        const intent=c.intents.get(ref(node?.intent));
+        const plainReadAction=c.generated && r.recipe==="controls" &&
+          node?.nodeKind==="control" && intent?.operationKind==="capability" &&
+          intent.risk==="external-read" && !intent.viewTransition &&
+          !(intent.input||[]).length && !(intent.requestArguments||[]).length;
+        if(plainReadAction) {
+          if(!actionFlow) {
+            actionFlow=elt("div",{"data-mcel-action-flow":"",role:"group","aria-label":"Available actions"});
+            el.append(actionFlow);
+          }
+          actionFlow.append(renderNode(node));
+        } else {
+          actionFlow=null;
+          el.append(renderNode(node));
+        }
+      }
       for (const child of c.children.get(id)) el.append(renderRegion(child.id));
       return el;
     }
@@ -1698,7 +2026,12 @@
         button.textContent=refreshEnabled?"Pause automatic refresh":"Resume automatic refresh";
         status.textContent=refreshEnabled?"Refresh every 5 seconds when visible":"Automatic refresh paused";
       });
-      controls.append(button,status);root.prepend(controls);
+      controls.append(button,status);
+      // Automatic monitoring is a navigation-side capability, not a new
+      // full-width header that consumes workspace height.
+      const rail=expert && root.querySelector('[data-mcel-zone="navigator"]');
+      if(rail)rail.append(controls);
+      else root.prepend(controls);
       const pollMonitor=async()=>{
         if(disposed||!refreshEnabled||refreshBusy||document.visibilityState==="hidden")return;
         const intent=selectedMonitorIntent();if(!intent)return;
@@ -1748,6 +2081,47 @@
     }
     if(workspacePlan) plannedLayout=global.McelSemanticLayoutInference.mountWorkspacePlan(
       tree, workspacePlan, new Map([...regionHosts].map(([region,el])=>[region.id,el])));
+    else if (expert) {
+      // Assemble scroll owners from semantic roles, not app names or CSS
+      // fractions. Ordinary regions remain the same live DOM nodes so their
+      // actions, focus, state, and result bindings retain their authority.
+      const children=[...tree.children];
+      const navigation=elt("div",{"data-mcel-zone":"navigator", "data-mcel-natural-scroller":"navigation", role:"navigation", "aria-label":"Application navigation"});
+      const workspace=elt("div",{"data-mcel-zone":"workspace", "data-mcel-natural-scroller":"workspace", role:"main", "aria-label":"Application workspace"});
+      // Explicit navigation semantics win over the legacy generic-control
+      // fallback. A refresh or query button is not a navigation destination.
+      const hasAuthoredNavigation=children.some(child=>
+        ["navigation","mode-control"].includes(child.getAttribute("data-mcel-purpose")));
+      for (const child of children) {
+        const purpose=child.getAttribute("data-mcel-purpose")||"";
+        if (["navigation","mode-control"].includes(purpose) ||
+            (!hasAuthoredNavigation && purpose==="query-controls"))navigation.append(child);
+        else workspace.append(child);
+      }
+      if(!hasAuthoredNavigation)navigation.setAttribute("data-mcel-navigation-legacy-fallback","");
+      // Even an application with no authored navigation needs a stable
+      // identity-bearing rail. Empty navigation is not an excuse to create a
+      // separate, full-width application header.
+      tree.setAttribute("data-mcel-natural-layout", "");
+      tree.replaceChildren(navigation,workspace);
+    }
+    if(expert) {
+      const rail=tree.querySelector('[data-mcel-zone="navigator"]');
+      assert(rail,"application-navigation-missing");
+      const title=ir.application?.title;
+      assert(typeof title==="string" && title.trim().length>0,"application-title-missing");
+      const chrome=elt("div",{"data-mcel-navigation-chrome":""});
+      chrome.append(elt("h1",{"data-mcel-application-title":""},title.trim()));
+      if(typeof options.navigationContextLabel==="string" && options.navigationContextLabel.trim())
+        chrome.append(elt("small",{"data-mcel-application-context":""},options.navigationContextLabel.trim()));
+      if(options.navigationChrome!==undefined) {
+        const template=options.navigationChrome;
+        assert(template?.tagName==="TEMPLATE" && template.ownerDocument===root.ownerDocument,
+          "navigation-chrome-must-be-same-document-template");
+        chrome.append(template.content.cloneNode(true));
+      }
+      rail.prepend(chrome);
+    }
     root.replaceChildren(tree);
     for(const {host,node} of pendingChatMounts){
       const controller=port.mountEmbeddedChat(host,node,read);
@@ -1769,6 +2143,13 @@
       let layoutScheduled=false;
       const updateGeometry=()=>{
         if(disposed)return;
+        // A viewport-owned natural workspace replaces the old per-card grid.
+        // Do not apply an inferred grid to the root (its regions are now
+        // composed under navigator/workspace scroll owners).
+        if (layoutHost.hasAttribute("data-mcel-natural-layout")) {
+          engine.reflowAdaptiveControlGrids?.(root);
+          return;
+        }
         const width=Math.max(1,layoutHost.getBoundingClientRect().width);
         const visible=[...c.regions.values()].filter(r=>!regionHosts.get(r)?.hidden);
         const visibleIds=new Set(visible.map(r=>r.id));
@@ -1813,6 +2194,8 @@
         plannedLayout?.unmount();
         generatedResizeObserver?.disconnect();
         if(generatedResizeListener)global.removeEventListener?.("resize",generatedResizeListener);
+        for(const listener of navigationHistoryListeners)
+          global.removeEventListener?.("popstate",listener);
         if(inferredLayout)global.McelSemanticLayoutInference?.clearWorkspaceLayout?.(root,inferredLayout);
         current.clear();targetRuns.clear();
         port.closeDocument?.();

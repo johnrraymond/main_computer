@@ -1982,12 +1982,20 @@ def dispatch_get(self) -> None:
     # registered with the existing 21-app launcher until its acceptance phase.
     if route_path in {"/applications/slh", "/applications/slh/local",
                       "/applications/slh/workers", "/applications/slh/local/workers",
-                      "/applications/slh/network"}:
+                      "/applications/slh/network", "/applications/slh/network/workers"}:
         if not _hard_halt_client_is_local(self):
             self._send_json({"ok": False, "error": "SLH application is local-only."}, HTTPStatus.FORBIDDEN)
             return
-        from main_computer.mcel_slh_application import ROUTES, render_slh_page
-        self._send_text(render_slh_page(ROUTES[route_path]), "text/html; charset=utf-8")
+        from main_computer.mcel_slh_application import ROUTES, SlhApplicationError, render_slh_page
+        try:
+            page = render_slh_page(ROUTES[route_path])
+        except SlhApplicationError as exc:
+            # A broken semantic source must not terminate an HTTP request with
+            # an empty response. No SLH startup or configuration is attempted.
+            self.server.signal("mcel-slh-render-failed", path=route_path, error=str(exc))
+            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "SLH semantic application unavailable")
+            return
+        self._send_text(page, "text/html; charset=utf-8")
         return
     if route_path == "/api/applications/slh/identities":
         # This is identity metadata, not an authorization or signing endpoint.

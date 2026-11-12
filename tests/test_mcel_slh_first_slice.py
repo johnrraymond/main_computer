@@ -55,16 +55,17 @@ def test_semantic_source_is_authority_not_html_or_compatibility_scaffold():
     assert not ir["layouts"]
     assert plan["schema"] == "mcel.generated-composition.v1"
     assert plan["policy"] == "mcel.semantic-structure.p3"
-    assert sorted(e["risk"] for e in ir["effects"]) == ["consequential"] * 7 + ["external-read"] * 6
+    assert sorted(e["risk"] for e in ir["effects"]) == ["consequential"] * 7 + ["external-read"] * 7
     assert {i["id"] for i in ir["intents"]} == {
         "intent:refresh-overview", "intent:refresh-health", "intent:refresh-workers",
         "intent:refresh-worker-summary", "intent:select-view", "intent:choose-worker", "intent:rename-worker",
         "intent:start-local", "intent:bootstrap-administrator", "intent:configure-organization",
         "intent:activate-organization", "intent:login-administrator", "intent:logout-administrator",
-        "intent:refresh-identities", "intent:refresh-identity-status", "intent:choose-identity"
+        "intent:refresh-identities", "intent:refresh-identity-status", "intent:choose-identity",
+        "intent:select-target", "intent:inspect-network-slh"
     }
-    assert 'href="/applications/slh/workers"' in render_slh_page()
-    assert 'href="/applications/slh"' in render_slh_page("worker-bank")
+    assert '"worker-bank":"/applications/slh/local/workers"' in render_slh_page()
+    assert 'overview:"/applications/slh/local"' in render_slh_page("worker-bank")
     assert "mcel.generated-composition.v1" in render_slh_page()
     assert 'data-mcel-slh-initial-view="worker-bank"' in render_slh_page("worker-bank")
     assert "mcel-workbench" in render_slh_page()
@@ -106,7 +107,7 @@ def test_native_routes_and_fixed_read_api_are_reachable(host):
         with urlopen(host + route, timeout=20) as response:
             document = response.read().decode()
         assert f'data-mcel-slh-initial-view="{expected}"' in document
-        assert 'href="/applications/slh/workers"' in document
+        assert '"worker-bank":"/applications/slh/local/workers"' in document
         assert 'mcel-generated-data' in document
     with patch("main_computer.mcel_slh_application.observe_slh", side_effect=lambda view, **kw: observe_slh(view, probe=_fake_status, **kw)):
         for view in ("overview", "workers"):
@@ -127,62 +128,55 @@ def test_remote_cannot_open_slh_or_its_observation_api(host):
             assert exc.value.code == 403
 
 
-@pytest.mark.parametrize("route,expected_view,requested_view", [
-    ("/applications/slh", "overview", "overview"),
-    ("/applications/slh/workers", "worker-bank", "workers"),
-])
-def test_browser_synthesizes_semantic_app_with_exact_read_adapter(route, expected_view, requested_view):
-    # Chromium in this environment cannot navigate loopback (ERR_BLOCKED_BY_ADMINISTRATOR).
-    # The real viewport HTTP routes are verified separately above; this isolated
-    # browser test verifies authored source, JS port behavior and MCEL mounting.
+@pytest.mark.parametrize("view", ["overview", "worker-bank"])
+def test_browser_local_configuration_route_reads_only_local_identities(view):
+    # Both canonical deep-links now mount the same configuration-only workspace.
     from playwright.sync_api import sync_playwright
-    observation = observe_slh(requested_view, probe=_fake_status)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, executable_path=shutil.which("chromium") or None)
+        browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
         try:
-            page = browser.new_page(viewport={"width": 1040, "height": 800})
-            errors = []
-            page.on("pageerror", lambda error: errors.append(str(error)))
-            page.evaluate("""data => {
-              window.__slhRequests=[];
-              window.fetch=async (url, options)=> {
-                window.__slhRequests.push({url,method:options.method});
-                if(url==='/api/applications/slh/identities' && options.method==='GET')
-                   return {ok:true,json:async()=>({schema:'mcel.slh.identities.v4b',state:'UNAVAILABLE',
-                     defaultDeviceId:'',identities:[],explanation:'LMS-SLH not running'})};
-                if(url !== '/api/applications/slh/observe?view=' + data.view || options.method !== 'GET')
-                   throw Error('Unexpected SLH request');
-                return {ok:true,json:async()=>data};
-              };
-            }""", observation)
-            page.set_content(render_slh_page(expected_view), wait_until="load")
-            page.get_by_text("SLH observation complete", exact=False).wait_for(timeout=20000)
-            assert page.evaluate("window.__mcelSlh.composition.policy") == "mcel.semantic-structure.p3"
-            assert page.evaluate("window.__mcelSlh.app.receipts().filter(x=>x.disposition==='completed').length") >= 2
-            assert page.locator('a[href="/applications/slh/workers"]').count() == 1
-            assert page.locator("body").get_attribute("data-mcel-slh-initial-view") == expected_view
-            calls = page.evaluate("window.__slhRequests")
-            assert len(calls) == 4
-            assert sum(x == {"url": "/api/applications/slh/observe?view=" + requested_view,
-                             "method": "GET"} for x in calls) == 2
-            assert sum(x == {"url": "/api/applications/slh/identities", "method": "GET"}
-                       for x in calls) == 2
-            assert errors == []
-        finally:
-            browser.close()
+            page=browser.new_page(viewport={'width':1040,'height':800})
+            errors=[]
+            page.on('pageerror',lambda error: errors.append(str(error)))
+            page.evaluate("""()=>{
+                window.calls=[];
+                window.fetch=async(url,opts={})=>{
+                    window.calls.push({url,method:opts.method});
+                    if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>({
+                        schema:'mcel.slh.identities.v4b',state:'UNAVAILABLE',defaultDeviceId:'',
+                        identities:[],explanation:'Identity service unavailable'})};
+                    throw Error('Unexpected lifecycle or observation call: '+url);
+                };
+            }""")
+            page.set_content(render_slh_page(view))
+            page.get_by_text('ORG-SLH configuration draft',exact=False).wait_for(timeout=15000)
+            assert page.locator('form[data-mcel-draft-only]').count()==1
+            assert page.locator('button[data-mcel-draft-submit]').is_disabled()
+            assert not page.locator('button[data-intent="intent:login-administrator"]').count()
+            assert page.evaluate('window.calls')==[
+                {'url':'/api/applications/slh/identities','method':'GET'},
+                {'url':'/api/applications/slh/identities','method':'GET'}]
+            assert errors==[],errors
+        finally:browser.close()
 
 
-def test_browser_rejects_mismatched_worker_view_without_false_success():
+def test_worker_deep_link_does_not_enter_organization_administration():
+    # An obsolete Worker Bank URL is not permission to observe inventory,
+    # bootstrap an organization, or expose administrator login.
     from playwright.sync_api import sync_playwright
-    bad = observe_slh("overview", probe=_fake_status)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, executable_path=shutil.which("chromium") or None)
+        browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
         try:
-            page = browser.new_page()
-            page.evaluate("data=>{window.fetch=async()=>({ok:true,json:async()=>data})}", bad)
-            page.set_content(render_slh_page("worker-bank"), wait_until="load")
-            page.get_by_text("SLH observation refused", exact=False).wait_for(timeout=20000)
-            assert page.evaluate("window.__mcelSlh.app.receipts().some(r=>r.disposition!=='completed')")
-            assert not page.get_by_text("SLH observation complete", exact=False).count()
-        finally:
-            browser.close()
+            page=browser.new_page()
+            page.evaluate("""()=>{window.calls=[];window.fetch=async(url,opts={})=>{
+                window.calls.push(url);
+                if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>({
+                    schema:'mcel.slh.identities.v4b',state:'UNAVAILABLE',defaultDeviceId:'',
+                    identities:[],explanation:'No identities'})};
+                throw Error('No authorization for '+url);
+            }}""")
+            page.set_content(render_slh_page('worker-bank'))
+            page.get_by_text('ORG-SLH configuration draft',exact=False).wait_for(timeout=15000)
+            assert not page.locator('button[data-intent="intent:login-administrator"]').count()
+            assert all(x=='/api/applications/slh/identities' for x in page.evaluate('window.calls'))
+        finally:browser.close()

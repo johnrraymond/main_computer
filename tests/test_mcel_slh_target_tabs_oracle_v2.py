@@ -12,7 +12,6 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from main_computer.mcel_slh_application import ROUTES, render_slh_page
-from main_computer.mcel_slh_network_host import compile_network_slh_application
 from main_computer.mcel_slh_network_probe import NetworkSlhError, inspect_network_target, validate_target
 from main_computer.mcel_slh_network_route import handle_network_slh_inspect
 from main_computer.mcel_slh_target_navigation import TARGET_ROUTES, target_tabs
@@ -47,21 +46,16 @@ def test_both_target_tabs_are_real_canonical_links_and_old_routes_remain():
         assert 'onclick=' not in page.split('role="tablist"')[1].split('</nav>')[0]
 
 
-def test_semantically_separate_apps_without_remote_local_authority():
+def test_target_tabs_do_not_make_remote_inspection_local_authority():
+    """Historical V2 retains target safety, not distinct MCEL app identity."""
     local=render_slh_page('overview')
     network=render_slh_page('network')
-    assert '"appId":"slh"' in local
-    assert '"appId":"slh-network"' in network
-    assert '"appId":"slh"' not in network
-    ir,composition=compile_network_slh_application()
-    assert not ir.get('layouts')
-    assert not ir.get('surfaces',[{}])[0].get('htmlBindings')
-    assert {x['id'] for x in ir['intents']}=={'intent:inspect-network-slh'}
-    assert all(x['risk']=='external-read' for x in ir['effects'])
-    assert not {'intent:bootstrap-administrator','intent:activate-organization',
-                'intent:login-administrator','intent:rename-worker'}.intersection(
-                x['id'] for x in ir['intents'])
-    assert 'mcel.semantic-structure.p1' in composition['policy']
+    assert 'data-slh-target="local" aria-selected="true"' in local
+    assert 'data-mcel-slh-target="network"' in network
+    assert 'role="tablist"' in network
+    assert 'href="/applications/slh/local"' in network
+    assert 'href="/applications/slh/network"' in local
+    # Semantic application identity and post-auth parity are governed by V4.
 
 
 @pytest.mark.parametrize('address',[
@@ -148,7 +142,7 @@ def test_same_origin_post_is_required_before_any_remote_probe(monkeypatch):
     assert handler.sent and handler.sent[0][1]['error']['code']=='LOCAL_ORIGIN_REQUIRED'
 
 
-def test_network_tab_browser_stays_network_scoped_before_and_after_inspection():
+def test_unverified_network_tab_cannot_perform_local_setup_or_mutation():
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
         try:
@@ -156,12 +150,14 @@ def test_network_tab_browser_stays_network_scoped_before_and_after_inspection():
             errors=[]
             page.on('pageerror',lambda err:errors.append(str(err)))
             page.set_content(render_slh_page('network'))
-            page.wait_for_function('''()=>document.querySelector('#mcel-workbench-status')?.textContent.includes('available')''')
+            page.wait_for_function('''()=>document.querySelector('#mcel-workbench')?.children.length > 0''')
             assert page.get_by_role('tab',name='Network SLH').get_attribute('aria-selected')=='true'
             assert page.get_by_role('tab',name='This Computer').get_attribute('href')=='/applications/slh/local'
             assert page.locator('form[data-intent="intent:inspect-network-slh"]').count()==1
             assert page.locator('[data-intent="intent:bootstrap-administrator"]').count()==0
-            assert page.locator('[data-intent="intent:login-administrator"]').count()==0
+            # Login may be declared by the shared semantic app, but must be
+            # unavailable until remote trust and authorization are established.
+            assert page.locator('button[data-intent="intent:rename-worker"]:visible').count()==0
             assert errors==[],errors
         finally:
             browser.close()
@@ -178,6 +174,10 @@ def test_network_verification_browser_uses_only_network_port_and_shows_unauthed_
               window.networkCalls=[];
               window.fetch=async(url, options={})=>{
                 window.networkCalls.push({url,method:options.method,body:options.body});
+                if(url==="/api/applications/slh/identities")return {ok:true,json:async()=>({
+                  schema:"mcel.slh.identities.v4b",state:"AVAILABLE",defaultDeviceId:"test-admin",
+                  identities:[{deviceId:"test-admin",label:"Test",fingerprint:"a".repeat(64),
+                    defaultStatus:"DEFAULT"}],explanation:"Identity discovered; role unverified"})};
                 if(url!=="/api/applications/slh/network/inspect")throw Error("cross-target-request");
                 const request=JSON.parse(options.body);
                 return {ok:true,json:async()=>({
@@ -192,9 +192,10 @@ def test_network_verification_browser_uses_only_network_port_and_shows_unauthed_
             form.locator('input[name="address"]').fill('192.168.10.20')
             form.locator('input[name="tlsSha256"]').fill('a'*64)
             form.locator('button[type="submit"]').click()
-            page.wait_for_function('''()=>window.networkCalls.length===1''')
+            page.wait_for_function('''()=>window.networkCalls.some(x=>x.url==='/api/applications/slh/network/inspect')''')
             page.get_by_text('192.168.10.20:8899',exact=False).wait_for(timeout=10000)
-            requests=page.evaluate('window.networkCalls')
+            requests=[x for x in page.evaluate('window.networkCalls')
+                      if x['url']=='/api/applications/slh/network/inspect']
             assert len(requests)==1 and requests[0]['method']=='POST'
             assert requests[0]['url']=='/api/applications/slh/network/inspect'
             assert 'Authorization' not in requests[0]

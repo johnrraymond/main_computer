@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 ROLES = frozenset({
     'main-workarea', 'navigation', 'collection', 'document', 'inspector',
-    'commands', 'results', 'status', 'auxiliary-workarea', 'mode-selector',
+    'commands', 'task', 'results', 'status', 'auxiliary-workarea', 'mode-selector',
 })
 PRIORITIES = frozenset({'primary', 'secondary', 'supporting'})
 SIDES = frozenset({'start', 'end', 'top', 'bottom'})

@@ -12,7 +12,8 @@
     "intent:refresh-workers": ["workers", "observeSlhWorkers", "workers"],
     "intent:refresh-worker-summary": ["worker-summary", "observeSlhWorkerSummary", "workerSummary"],
     "intent:refresh-identities": ["identities", "observeSlhIdentities", "identities"],
-    "intent:refresh-identity-status": ["identity-status", "observeSlhIdentityStatus", "identityStatus"]
+    "intent:refresh-identity-status": ["identity-status", "observeSlhIdentityStatus", "identityStatus"],
+    "intent:refresh-lifecycle": ["lifecycle", "observeSlhLifecycle", "lifecycle"]
   });
   const rename = "intent:rename-worker";
   const firstRun = Object.freeze({
@@ -21,6 +22,9 @@
       ["adminId", "adminName", "deviceId", "acknowledgeP256Only"]],
     "intent:configure-organization": ["configure", "configureSlhOrganization",
       ["adminDeviceId", "host", "apiPort", "workerPort"]],
+    "intent:configure-and-enable-organization": ["configure-and-enable", "configureAndEnableSlhOrganization",
+      ["adminDeviceId", "bindAddress", "port"]],
+    "intent:disable-organization": ["disable", "disableSlhOrganization", ["adminDeviceId"]],
     "intent:activate-organization": ["activate", "activateSlhOrganization", ["adminDeviceId"]],
     "intent:login-administrator": ["login", "loginSlhAdministrator", ["adminDeviceId"]],
     "intent:logout-administrator": ["logout", "logoutSlhAdministrator", []]
@@ -36,7 +40,8 @@
     if(setup)return req.risk==="consequential" && req.effectId==="effect:"+req.intentId.slice(7)+".request" &&
       req.capabilityId==="capability:slh-first-run" && req.operation===setup[0] &&
       req.runtimeMethod===setup[1] && Object.keys(req.arguments).sort().join(",")===setup[2].slice().sort().join(",") &&
-      Object.entries(req.arguments).every(([k,v])=> k==="acknowledgeP256Only" ? typeof v==="boolean" : typeof v==="string");
+      Object.entries(req.arguments).every(([k,v])=> k==="acknowledgeP256Only" ? typeof v==="boolean" :
+        k==="port" ? Number.isSafeInteger(v) && v>=1 && v<=65535 : typeof v==="string");
     if(req.intentId===rename)return req.risk==="consequential" && req.effectId==="effect:rename-worker.request" &&
       req.capabilityId==="capability:slh-worker-admin" && req.operation==="rename" &&
       req.runtimeMethod==="renameSlhWorker" && Object.keys(req.arguments).sort().join(",")==="deviceId,label" &&
@@ -94,6 +99,10 @@
             action==="start" ? "Start the local SLH control service on demand (not at Windows boot)?" :
             action==="configure" ? "Apply SLH configuration for "+req.arguments.host+
               "? Worker listener will require explicit activation; SEH remains off." :
+            action==="configure-and-enable" ? "Configure or RESTART ORG-SLH on "+
+              req.arguments.bindAddress+":"+req.arguments.port+
+              " using the selected identity as administrator? The service will auto-start with LMS-SLH until disabled." :
+            action==="disable" ? "Disable and stop ORG-SLH? Its configuration and administrator identity will be retained, and it will NOT auto-start until re-enabled." :
             action==="activate" ? "Enable the configured Organization Service and Worker listener?" :
             "Sign out and revoke this Organization Service session?")))
             throw Error("MCEL_SLH_PORT:administrator-canceled");
@@ -105,7 +114,7 @@
           });
           if(!response?.ok){
             const rejected=await response?.json?.().catch(()=>null);
-            const code=rejected?.error?.code;
+            const code=typeof rejected?.error==="string" ? rejected.error : rejected?.error?.code;
             throw Error("MCEL_SLH_PORT:setup-"+action+"-refused"+
               (typeof code==="string" && /^[A-Z_]{3,64}$/.test(code) ? ":"+code : ""));
           }
@@ -128,7 +137,7 @@
             setupChanged("login");
             return {outcome:"AUTHENTICATED",message:"Organization administrator session verified",deviceId:req.arguments.adminDeviceId};
           }
-          if(!["STARTED","ALREADY_RUNNING","INITIALIZED","CONFIGURED","RUNNING"].includes(result.outcome) ||
+          if(!["STARTED","ALREADY_RUNNING","INITIALIZED","CONFIGURED","RUNNING","DISABLED"].includes(result.outcome) ||
              typeof result.message!=="string" || result.message.length>512)
             throw Error("MCEL_SLH_PORT:invalid-setup-receipt");
           workerViewOverview=null;
@@ -167,6 +176,25 @@
         if(req.intentId==="intent:refresh-overview" && options.initialView==="worker-bank" &&
             workerViewOverview && Date.now()-workerViewOverview.received<10000){
           return {...workerViewOverview.overview};
+        }
+        if(req.intentId==="intent:refresh-lifecycle"){
+          const response=await fetcher("/api/applications/slh/observe?view=overview",
+            {method:"GET",credentials:"same-origin",headers:{Accept:"application/json"}});
+          if(!response?.ok)throw Error("MCEL_SLH_PORT:lifecycle-unavailable");
+          const result=await response.json();
+          if(!plain(result) || result.ok!==true || result.schema!=="mcel.slh.first-slice-observation.v1" ||
+              result.view!=="overview" || !plain(result.overview))
+            throw Error("MCEL_SLH_PORT:invalid-lifecycle-observation");
+          const state=result.overview.organizationState;
+          const endpoint=result.overview.organizationEndpoint;
+          if(typeof state!=="string" || state.length>80 || typeof endpoint!=="string" || endpoint.length>120)
+            throw Error("MCEL_SLH_PORT:invalid-lifecycle-state");
+          const match=/^((?:[0-9]{1,3}\.){3}[0-9]{1,3}):([0-9]{1,5})$/.exec(endpoint);
+          const bindAddress=match?match[1]:"0.0.0.0";
+          const port=match?Number(match[2]):8899;
+          if(!Number.isSafeInteger(port)||port<1||port>65535)
+            throw Error("MCEL_SLH_PORT:invalid-lifecycle-port");
+          return {state,bindAddress,port};
         }
         if(req.intentId==="intent:refresh-identities" || req.intentId==="intent:refresh-identity-status"){
           const response=await fetcher("/api/applications/slh/identities",

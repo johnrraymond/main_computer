@@ -6,6 +6,83 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ExportMainComputerTestTests(unittest.TestCase):
+    def test_nanojev_research_tree_is_separate_from_main_but_runtime_service_is_retained(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+        main_items = script.split("$mainExportItems = @(", 1)[1].split("\n)", 1)[0]
+        game_items = script.split("$gameExportItems = @(", 1)[1].split("\n)", 1)[0]
+        nanojev_items = script.split("$nanojevExportItems = @(", 1)[1].split("\n)", 1)[0]
+        self.assertNotIn('"nanojev"', main_items)
+        self.assertNotIn('"nanojev"', game_items)
+        self.assertIn('"nanojev"', nanojev_items)
+        self.assertIn('"docker-compose.nanojev.yml"', main_items)
+        self.assertIn('"docker"', main_items)
+        self.assertIn('"tools"', main_items)
+        self.assertIn('"scripts"', main_items)
+        self.assertIn('"tests"', main_items)
+
+        policy = script.split("function Test-NanoJevExportPathAllowed {", 1)[1].split(
+            "function Test-RepoPathAllowed {", 1
+        )[0]
+        self.assertIn('$repoPath -eq "nanojev"', policy)
+        self.assertIn('$repoPath.StartsWith("nanojev/"', policy)
+        self.assertIn('if ($ComponentName -eq "nanojev")', policy)
+        self.assertIn('return $inNanoJevTree', policy)
+        self.assertIn('if ($inNanoJevTree)', policy)
+        self.assertIn("$retainedNanoJevToolPaths -contains $repoPath", policy)
+        self.assertIn("$retainedNanoJevTestPaths -contains $repoPath", policy)
+        self.assertIn("$excludedNanoJevResearchToolPaths -contains $repoPath", policy)
+        for subdir in ("tools/", "tests/", "scripts/", "pretty_docs/"):
+            self.assertIn(f'"{subdir}"', policy)
+
+        copy_policy = script.split("function Test-RepoPathAllowed {", 1)[1].split(
+            "function Copy-ExportFile {", 1
+        )[0]
+        stage_policy = script.split("function Assert-CleanExportStage {", 1)[1].split(
+            "$sourceFull =", 1
+        )[0]
+        self.assertIn("Test-NanoJevExportPathAllowed -RepoPath $repoPath", copy_policy)
+        self.assertIn("Test-NanoJevExportPathAllowed -RepoPath $repoPath", stage_policy)
+        self.assertIn("-ComponentName $ComponentName", copy_policy)
+        self.assertIn("-ComponentName $ComponentName", stage_policy)
+
+        # The running service and Docker build still have their required sources.
+        for filename in (
+            "tools/nanojev_image_bootstrap.py",
+            "tools/nanojev_lifecycle_service.py",
+            "tools/nanojev_hub_request.py",
+            "tools/nanojev_objective_api.py",
+            "tools/nanojev_three_backbone_clef_sized_live_train_smoke.py",
+            "tools/nanojev_three_backbone_clef_sized_live_train.py",
+            "tools/nanojev_three_backbone_clef_tinystories_structured_supervision_train.py",
+            "docker/nanojev/Dockerfile",
+            "docker/nanojev/clef_service.py",
+            "docker/nanojev/entrypoint.py",
+        ):
+            self.assertTrue((ROOT / filename).is_file(), filename)
+            if filename.startswith("tools/"):
+                self.assertIn(f'"{filename}"', script)
+
+    def test_nanojev_is_third_component_with_independent_follow_and_rehome(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+        self.assertIn('$nanojevExportItems = @(\n  "nanojev"\n)', script)
+        self.assertIn('@($nanojevExportItems)', script)
+        self.assertIn('return "nanojev"', script)
+        self.assertIn('-ComponentName "nanojev"', script)
+        self.assertIn('-Items $nanojevExportItems', script)
+        self.assertIn('("{0}-nanojev" -f $ProjectName)', script)
+        self.assertIn('Invoke-ExportSnapshot -ExportMain -ExportGame -ExportNanoJev', script)
+        self.assertIn('if ($eventComponents -contains "nanojev")', script)
+        self.assertIn('$pendingNanoJevExport = $true', script)
+        self.assertIn('-ExportNanoJev:$pendingNanoJevExport', script)
+        self.assertIn('$pendingMainExport -or $pendingGameExport -or $pendingNanoJevExport', script)
+        self.assertIn('nanojev/** => nanojev', script)
+        self.assertIn('Expand-Archive -LiteralPath $nanojevResult.ZipPath', script)
+        self.assertIn('Join-Path $installerReHomeRepoRoot "nanojev"', script)
+        self.assertIn('Assert-CleanExportStage -StageRoot $stageRoot -ComponentName $ComponentName', script)
+        self.assertIn('-RepoPath $repoPath -IsDirectory:$isDirectory -ComponentName $component', script)
+        self.assertIn('-RepoPath $childRepoPath -IsDirectory:$child.PSIsContainer -ComponentName $ComponentName', script)
+        self.assertIn('-RepoPath $relativePath -IsDirectory:$item.PSIsContainer -ComponentName $ComponentName', script)
+
     def test_export_script_includes_pretty_docs_and_excludes_generated_files(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 

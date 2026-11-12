@@ -6,9 +6,6 @@
 *,*::before,*::after{box-sizing:border-box;}
 
 body.mcel-expert-page { max-width:1180px; margin:0 auto; padding:clamp(12px,3vw,30px); min-height:100vh; background:#10171d; color:#e8f1f4; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
-body.mcel-expert-page > header { margin:0 0 1.4rem; }
-body.mcel-expert-page > header h1 {font-size:clamp(1.5rem,3vw,2.1rem);font-weight:740;letter-spacing:-.035em;}
-body.mcel-expert-page > header p {color:#9faeb9;max-width:70ch;font-size:.9rem;}
 body.mcel-expert-page button,body.mcel-expert-page input,body.mcel-expert-page select {font:inherit;}
 [data-mcel-presentation="expert"] {--mcel-panel:#18232b;--mcel-edge:#344854;--mcel-ink:#eef5f6;--mcel-muted:#a4b6c0;--mcel-action:#70c5d4;--mcel-highlight:#d5b76f;color:var(--mcel-ink);}
 [data-mcel-presentation="expert"] [data-mcel-region] {min-width:0;}
@@ -33,8 +30,11 @@ body.mcel-expert-page button,body.mcel-expert-page input,body.mcel-expert-page s
 [data-mcel-presentation="expert"] form button[type="submit"] {background:#b5cbd1;color:#0e1b22;font-weight:750;}
 [data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > label {grid-column:1 / -1;}
 [data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > label input {min-height:66px;font:600 clamp(1.3rem,2.8vw,2rem) ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right;font-variant-numeric:tabular-nums;padding:12px 16px;}
-[data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > button[type="submit"] {grid-column:1 / -1;grid-row:3;justify-self:stretch;min-height:44px;}
-[data-mcel-presentation="expert"] [data-mcel-expression-pad] {grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;}
+[data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > button[type="submit"] {grid-column:1 / -1;grid-row:3;justify-self:start;width:100%;max-width:420px;min-height:44px;}
+/* The compute task has a four-column keypad, not a workspace-spanning
+ * toolbar. Preserve its key order and minimum target size, but stop viewport
+ * growth from being converted into giant single-symbol buttons. */
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] {grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;width:100%;max-width:420px;justify-self:start;}
 [data-mcel-presentation="expert"] [data-mcel-expression-pad] button {min-width:0;min-height:53px;padding:.4rem;font-size:1.12rem;font-variant-numeric:tabular-nums;font-weight:720;}
 [data-mcel-presentation="expert"] [data-mcel-expression-pad] button[data-pad-action="submit"] {grid-column:1 / -1;background:#4aa69b;color:#081d1c;min-height:52px;font-size:1.4rem;}
 [data-mcel-presentation="expert"] [data-mcel-expression-pad] button:is([data-pad-action="clear"],[data-pad-action="backspace"]) {color:#ffd79c;}
@@ -70,4 +70,77 @@ body.mcel-expert-page > [role="status"][aria-live] {color:#90b9b9;font-size:.76r
 @media(max-width:680px) {
   [data-mcel-embedded-chat] .chat-cell-tabs {position:static;top:auto;left:auto;flex-wrap:wrap;max-width:100%;min-width:0;gap:3px;}
   [data-mcel-embedded-chat] .chat-cell-tab {max-width:100%;}
+}
+
+/* Same bounded app contract for the semantic calculator host. */
+html:has(> body.mcel-expert-page) {height:100%;overflow:hidden;overscroll-behavior:none}
+body.mcel-expert-page {
+  height:100vh;height:100dvh;min-height:0;width:100%;max-width:none;
+  margin:0;padding:clamp(6px,1vw,14px);display:grid;
+  grid-template-rows:minmax(0,1fr) minmax(0,max-content);
+  overflow:hidden;overscroll-behavior:none;
+}
+body.mcel-expert-page > [data-mcel-presentation="expert"] {
+  min-height:0;height:100%;overflow:hidden;
+}
+body.mcel-expert-page > [data-mcel-presentation="expert"] > [data-mcel-region] {
+  min-height:0;height:100%;max-height:100%;overflow:hidden;
+  grid-auto-rows:minmax(0,1fr);align-items:stretch;
+}
+body.mcel-expert-page > [data-mcel-presentation="expert"] > [data-mcel-region] > [data-mcel-region] {
+  min-width:0;min-height:0;height:100%;overflow:auto;overscroll-behavior:contain;
+}
+
+/* Standalone Calculator uses the same semantic scroll-owner composition as
+ * other MCEL applications. Only the root's two regions scroll; inputs and
+ * result cards remain naturally sized inside the workspace. */
+body.mcel-expert-page #mcel-expanded-root {
+  min-height:0;height:100%;max-height:100%;overflow:hidden;
+}
+body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout] {
+  display:grid!important;height:100%;min-height:0;max-height:100%;overflow:hidden;
+  grid-template-columns:clamp(180px,23%,300px) minmax(0,1fr)!important;
+  grid-template-rows:minmax(0,1fr)!important;gap:12px;align-items:stretch;
+}
+body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mcel-natural-scroller] {
+  grid-column:auto!important;grid-row:auto!important;grid-area:auto!important;
+  min-width:0;min-height:0;max-height:100%;height:100%;
+  overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain;
+  scrollbar-gutter:stable;display:flex;flex-direction:column;gap:12px;
+}
+body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mcel-natural-scroller] > [data-mcel-region] {
+  grid-column:auto!important;grid-row:auto!important;grid-area:auto!important;
+  min-height:0;height:auto!important;max-height:none!important;
+  flex:0 0 auto;overflow:visible!important;
+}
+@media(max-width:679px) {
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout] {
+    grid-template-columns:minmax(0,1fr)!important;
+    grid-template-rows:minmax(0,min(24%,120px)) minmax(0,1fr)!important;
+    gap:8px;
+  }
+}
+
+/* A semantic mode-selector is a vertical left navigation, never a wrapping
+ * toolbar. The bound select remains the state-changing control, driven by
+ * visible semantic navigation buttons at every viewport size. */
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="navigation"] [data-mcel-mode-tabs] {
+  display:grid!important;grid-template-columns:minmax(0,1fr);gap:7px;width:100%;
+}
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="navigation"] [data-mcel-mode-tabs] button {
+  width:100%;min-width:0;text-align:left;white-space:normal;
+}
+
+/* Generated mode/view buttons are the visible navigation mechanism. The
+ * select continues to carry the same state and change event, without a
+ * duplicated selector visible beside the buttons. */
+[data-mcel-presentation="expert"] [data-mcel-natural-scroller="navigation"] label:has(> select[data-intent]) {
+  display:none;
+}
+
+/* Semantic application identity shares the Calculator mode navigation rail. */
+body.mcel-expert-page [data-mcel-navigation-chrome] {padding:0 0 10px;border-bottom:1px solid var(--mcel-edge,#355062);}
+body.mcel-expert-page [data-mcel-application-title] {
+  font-size:clamp(.96rem,1.35vw,1.15rem);font-weight:730;line-height:1.25;
+  margin:0;overflow-wrap:anywhere;
 }

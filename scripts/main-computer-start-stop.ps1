@@ -2978,34 +2978,36 @@ function Invoke-MainComputerOnlyOfficeControl {
   }
 }
 
-# The optional Windows boot task owns the same 127.0.0.1:8897 SLH API as
-# the supervisor child. A child started with --attach-existing only follows it;
-# restarting the supervisor alone does not reload a boot-task-owned API.
+# The optional Windows boot task can own the same 127.0.0.1:8897 SLH API
+# as a supervised gateway.  Shutdown must stop the task before its child;
+# explicit startup uses the supervisor, not a dormant task registration.
 function Get-MainComputerSLHBootTask([string]$RootPath) {
   if ($env:OS -ne "Windows_NT") {
     return $null
   }
   $taskName = "MainComputer-SLH-Local"
   $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if ($null -eq $task) {
+  if ($null -eq $task -or [string]$task.State -ne "Running") {
+    # No independently running SLH to stop.  In particular, an installed but
+    # disabled/stopped boot task must never be started by ordinary ./start.
     return $null
   }
 
   $actions = @($task.Actions)
   if ($actions.Count -ne 1) {
-    throw "SLH boot task has an unexpected action count. Refusing to restart an unverified task."
+    throw "SLH boot task has an unexpected action count. Refusing to stop an unverified task."
   }
   $action = $actions[0]
   $executable = [System.IO.Path]::GetFileName([string]$action.Execute)
   if ($executable -notin @("powershell.exe", "pwsh.exe")) {
-    throw "SLH boot task uses an unexpected executable; refusing to alter it."
+    throw "SLH boot task uses an unexpected executable; refusing to stop it."
   }
   $arguments = [string]$action.Arguments
   $rootMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-Root\s+"([^"]+)"(?:\s|$)')
   $scriptMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-File\s+"([^"]+)"(?:\s|$)')
   $pythonMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-Python\s+"([^"]+)"(?:\s|$)')
   if (-not $rootMatch.Success -or -not $scriptMatch.Success -or -not $pythonMatch.Success) {
-    throw "SLH boot task arguments do not match the registered SLH boot launcher; refusing to alter it."
+    throw "SLH boot task arguments do not match the registered SLH boot launcher; refusing to stop it."
   }
   $expectedScript = Join-Path $RootPath "scripts\slh-local-service-boot.ps1"
   $taskRoot = [System.IO.Path]::GetFullPath($rootMatch.Groups[1].Value).TrimEnd([char[]]@('\', '/'))
@@ -3015,9 +3017,6 @@ function Get-MainComputerSLHBootTask([string]$RootPath) {
   if (-not [string]::Equals($taskRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase) -or
       -not [string]::Equals($taskScript, $expectedScript, [StringComparison]::OrdinalIgnoreCase)) {
     throw "SLH boot task belongs to a different installation; refusing to stop or adopt its listener."
-  }
-  if (-not (Test-Path -LiteralPath $pythonMatch.Groups[1].Value -PathType Leaf)) {
-    throw "SLH boot task Python executable is missing; update its registration before starting."
   }
   return $task
 }
@@ -3034,89 +3033,225 @@ function Get-MainComputerSLHListenerPid {
   return 0
 }
 
-function Restart-MainComputerSLHBootTask([string]$RootPath, [object]$VerifiedTask) {
-  $taskName = "MainComputer-SLH-Local"
-  $oldPid = Get-MainComputerSLHListenerPid
+# Task Scheduler can be an alternative SLH launcher.  Stopping only its
+# listener first races the launcher, which may immediately recreate it.
+# Once the task is stopped, an existing task-owned local_service child may
+# need explicit cleanup (Task Scheduler need not kill an orphaned child).
+function Get-MainComputerVerifiedBootSLHListener([string]$RootPath, [object]$VerifiedTask) {
   if ($null -eq $VerifiedTask) {
-    if ($oldPid -gt 0) {
-      throw "SLH port 8897 is occupied (PID $oldPid) without a verified local boot task. Refusing to attach stale or foreign code."
-    }
-    return [ordered]@{ state = "supervisor-will-own-listener"; port = 8897 }
+    return $null
   }
-
-  # Stop the separately owned boot instance *after* the main supervisor's
-  # children have stopped, and before the new supervisor can attach to it.
-  if ([string]$VerifiedTask.State -eq "Running" -or $oldPid -gt 0) {
-    try {
-      Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    } catch {
-      throw "Cannot stop the installed SLH boot task. Restart requires Task Scheduler permission (run start.bat in an elevated terminal if necessary). Original error: $($_.Exception.Message)"
-    }
+  $listenerPid = Get-MainComputerSLHListenerPid
+  if ($listenerPid -le 0) {
+    return $null
   }
-  $released = $false
-  for ($attempt = 0; $attempt -lt 80; $attempt++) {
-    if ((Get-MainComputerSLHListenerPid) -eq 0) {
-      $released = $true
-      break
-    }
-    Start-Sleep -Milliseconds 250
-  }
-  if (-not $released) {
-    throw "SLH boot-task restart refused: old listener on 8897 did not release its port."
-  }
-
   try {
-    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $listenerPid) -ErrorAction Stop
+    if ($null -eq $proc) { return $null }
+    $commandLine = [string]$proc.CommandLine
+    if (-not $commandLine.ToLowerInvariant().Contains("main_computer.slh.local_service")) {
+      return $null
+    }
+    $parent = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [int]$proc.ParentProcessId) -ErrorAction Stop
+    if ($null -eq $parent) { return $null }
+    $parentCommand = [string]$parent.CommandLine
+    $expectedScript = [System.IO.Path]::GetFullPath((Join-Path $RootPath "scripts\slh-local-service-boot.ps1"))
+    $expectedRoot = [System.IO.Path]::GetFullPath($RootPath)
+    # The task's PowerShell process, rather than the child module string,
+    # establishes ownership by this checkout.
+    if (-not ($parentCommand.IndexOf($expectedScript, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+              $parentCommand.IndexOf($expectedRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+      return $null
+    }
+    $pythonMatch = [regex]::Match([string]$VerifiedTask.Actions[0].Arguments, '(?i)(?:^|\s)-Python\s+"([^"]+)"(?:\s|$)')
+    if (-not $pythonMatch.Success) { return $null }
+    $expectedPython = [System.IO.Path]::GetFullPath($pythonMatch.Groups[1].Value)
+    $actualPython = [System.IO.Path]::GetFullPath([string]$proc.ExecutablePath)
+    if (-not [string]::Equals($expectedPython, $actualPython, [StringComparison]::OrdinalIgnoreCase)) {
+      return $null
+    }
+    return [ordered]@{
+      pid = $listenerPid
+      creation_date = [string]$proc.CreationDate
+      role = "slh-boot-child"
+      sources = @("verified SLH boot-task PowerShell child")
+      order = 11
+      allow_foreign_main_computer = $true
+    }
   } catch {
-    throw "Cannot restart the installed SLH boot task. The old listener was stopped; Task Scheduler permission may be required. Original error: $($_.Exception.Message)"
+    return $null
   }
-  for ($attempt = 0; $attempt -lt 120; $attempt++) {
-    $newPid = Get-MainComputerSLHListenerPid
-    if ($newPid -gt 0 -and ($oldPid -eq 0 -or $newPid -ne $oldPid)) {
-      try {
-        $status = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8897/v1/local/status" -TimeoutSec 2 -ErrorAction Stop
-        if ($status.schema -eq "main-computer.slh-local-status.v1" -and
-            $status.local_service.binding -eq "loopback") {
-          return [ordered]@{ state = "boot-task-restarted"; port = 8897; old_pid = $oldPid; new_pid = $newPid }
-        }
-      } catch {
-        # The new process may not yet have finished loading its API.
-      }
+}
+
+function Stop-MainComputerSLHBootLauncher([string]$RootPath) {
+  $task = Get-MainComputerSLHBootTask $RootPath
+  if ($null -eq $task) {
+    return [ordered]@{ state = "not-running"; owned_listener = $null }
+  }
+  $ownedListener = Get-MainComputerVerifiedBootSLHListener $RootPath $task
+  try {
+    Stop-ScheduledTask -TaskName "MainComputer-SLH-Local" -ErrorAction Stop
+  } catch {
+    # The service can exit between our first task-state query and stop.
+    $currentTask = Get-ScheduledTask -TaskName "MainComputer-SLH-Local" -ErrorAction SilentlyContinue
+    if ($null -eq $currentTask -or [string]$currentTask.State -eq "Running") {
+      throw "Could not stop the verified SLH boot launcher: $($_.Exception.Message)"
+    }
+  }
+  for ($attempt = 0; $attempt -lt 80; $attempt++) {
+    $state = Get-ScheduledTask -TaskName "MainComputer-SLH-Local" -ErrorAction Stop
+    if ([string]$state.State -ne "Running") {
+      return [ordered]@{ state = "launcher-stopped"; owned_listener = $ownedListener }
     }
     Start-Sleep -Milliseconds 250
   }
-  throw "SLH boot task did not start a fresh, verified localhost API on port 8897."
+  throw "SLH boot launcher did not stop; refusing to kill its child while it can restart it."
+}
+
+# Only a gateway launched with an exact --root pointing at this checkout can
+# be recovered without supervisor state.  A recognizable module name alone
+# never establishes process ownership.
+function Test-MainComputerOwnedSLHGateway([string]$CommandLine, [string]$RootPath) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine) -or
+      -not $CommandLine.ToLowerInvariant().Contains("main_computer.slh.gateway_service")) {
+    return $false
+  }
+  $rootMatch = [regex]::Match($CommandLine, '(?i)(?:^|\s)--root\s+(?:"([^"]+)"|''([^'']+)''|(\S+))')
+  if (-not $rootMatch.Success) { return $false }
+  $actualRoot = ""
+  foreach ($group in @($rootMatch.Groups[1], $rootMatch.Groups[2], $rootMatch.Groups[3])) {
+    if ($group.Success) { $actualRoot = $group.Value; break }
+  }
+  try {
+    $actualRoot = [System.IO.Path]::GetFullPath($actualRoot).TrimEnd([char[]]@('\', '/'))
+    $expectedRoot = [System.IO.Path]::GetFullPath($RootPath).TrimEnd([char[]]@('\', '/'))
+    return [string]::Equals($actualRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+# A boot task can exit while its child remains.  When that PowerShell
+# parent is already gone, the checkout's *own* virtualenv interpreter plus
+# the local_service module and port ownership can still identify the child.
+function Test-MainComputerOwnedSLHLocalService([int]$ProcessId, [string]$RootPath) {
+  try {
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $ProcessId) -ErrorAction Stop
+    if ($null -eq $proc) { return $false }
+    $commandLine = [string]$proc.CommandLine
+    if ($commandLine -notmatch '(?i)(?:^|\s)-m\s+main_computer\.slh\.local_service(?:\s|$)') {
+      return $false
+    }
+    $exe = [System.IO.Path]::GetFullPath([string]$proc.ExecutablePath)
+    $venvRoot = [System.IO.Path]::GetFullPath((Join-Path $RootPath ".venv"))
+    $venvPrefix = $venvRoot.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+    return $exe.StartsWith($venvPrefix, [StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+function Stop-MainComputerSLHListenerAfterLaunchers([string]$RootPath, [object]$BootListener) {
+  $listenerPid = Get-MainComputerSLHListenerPid
+  if ($listenerPid -le 0) {
+    return [ordered]@{ state = "not-running"; pid = 0 }
+  }
+  $commandLine = Get-ProcessCommandLine $listenerPid
+  if (Test-MainComputerOwnedSLHGateway $commandLine $RootPath) {
+    $candidate = [ordered]@{
+      pid = $listenerPid
+      role = "slh-supervised-orphan"
+      sources = @("verified gateway --root and port 8897")
+      order = 20
+      allow_foreign_main_computer = $false
+    }
+    return Stop-OnePid $candidate $RootPath
+  }
+  if ($null -ne $BootListener -and $listenerPid -eq [int]$BootListener.pid) {
+    # Recheck the task-owned PID's creation time and module identity before
+    # terminating it.  A recycled PID is not authority to kill its new owner.
+    try {
+      $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $listenerPid) -ErrorAction Stop
+      if ($null -ne $proc -and
+          [string]$proc.CreationDate -eq [string]$BootListener.creation_date -and
+          ([string]$proc.CommandLine).ToLowerInvariant().Contains("main_computer.slh.local_service")) {
+        return Stop-OnePid $BootListener $RootPath
+      }
+    } catch {}
+  }
+  if (Test-MainComputerOwnedSLHLocalService $listenerPid $RootPath) {
+    $candidate = [ordered]@{
+      pid = $listenerPid
+      role = "slh-local-orphan"
+      sources = @("port 8897 and verified checkout virtualenv local_service")
+      order = 20
+      allow_foreign_main_computer = $true
+    }
+    return Stop-OnePid $candidate $RootPath
+  }
+  return [ordered]@{ state = "not-owned"; pid = $listenerPid; command_line = $commandLine }
+}
+
+function Stop-MainComputerORGService([string]$RootPath, [object]$LaunchContext) {
+  $stateDir = Join-Path $RootPath "runtime\state\slh"
+  $pidPath = Join-Path $stateDir "organization-service.pid"
+  if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
+    return [ordered]@{ state = "not-running"; pid = $null }
+  }
+  $pythonCommand = [string]$LaunchContext.python
+  try {
+    # The child, UI controller and launcher all use the same validated record:
+    # creation timestamp + exact organization_service module and state dir.
+    $output = & $pythonCommand -m main_computer.slh.organization_process stop --state-dir $stateDir 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw ("ORG-SLH stop helper exited {0}: {1}" -f $LASTEXITCODE, (($output | Out-String).Trim()))
+    }
+    $result = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop
+    if ([string]$result.state -notin @("not-running", "terminated")) {
+      throw "ORG-SLH stop helper did not verify termination"
+    }
+    return $result
+  } catch {
+    # Do not erase the PID file or claim successful teardown on failure.
+    return [ordered]@{ state = "failed"; error = $_.Exception.Message }
+  }
+}
+
+function Assert-MainComputerSLHListenerReleased {
+  for ($attempt = 0; $attempt -lt 80; $attempt++) {
+    $listenerPid = Get-MainComputerSLHListenerPid
+    if ($listenerPid -eq 0) {
+      return [ordered]@{ state = "supervisor-will-own-listener"; port = 8897 }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  $listenerPid = Get-MainComputerSLHListenerPid
+  throw "SLH port 8897 is still occupied (PID $listenerPid) after launcher shutdown. Refusing to attach an unverified listener."
 }
 
 function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NoSLHHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
 
-  # SLH and Dev-Test Hub have independent startup policies. --no-slh-hub
-  # skips both the Windows task handoff and the supervisor's SLH child, but
-  # does not affect Dev-Test Hub startup. Do not register an SLH boot task.
-  $slhBootTask = $null
-  if (-not $NoSLHHubRequested) {
-    # Check ownership BEFORE stopping Main Computer processes. Never take over
-    # a Windows task registered by a different checkout.
-    $slhBootTask = Get-MainComputerSLHBootTask $RootPath
-  }
+  # SLH and Dev-Test Hub have independent startup policies.  A restart stops
+  # all verified local SLH launchers; --no-slh-hub prevents the new supervisor
+  # from relaunching SLH.  Never start a dormant Windows SLH boot task.
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
   $slhStart = [ordered]@{
     ok = $true
     requested = (-not $NoSLHHubRequested)
     state = "skipped-disabled"
-    message = "SLH startup disabled by --no-slh-hub; separately owned SLH services are untouched."
+    message = "SLH startup disabled by --no-slh-hub; verified local SLH launchers were stopped."
   }
   if (-not $NoSLHHubRequested) {
-    $slhBootRestart = Restart-MainComputerSLHBootTask $RootPath $slhBootTask
+    $slhRelease = Assert-MainComputerSLHListenerReleased
     $slhStart = [ordered]@{
       ok = $true
       requested = $true
-      state = [string]$slhBootRestart.state
+      state = [string]$slhRelease.state
       message = "SLH supervision requested; check supervisor state for listener readiness."
     }
-    Write-Host ("SLH local listener: " + [string]$slhBootRestart.state)
+    Write-Host ("SLH local listener: " + [string]$slhRelease.state)
   } else {
     Write-Host ([string]$slhStart.message)
   }
@@ -3512,7 +3647,7 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
   }
 }
 
-function Add-PidCandidate([hashtable]$Candidates, [object]$PidValue, [string]$Role, [string]$Source, [int]$Order, [bool]$AllowForeignMainComputer = $false) {
+function Add-PidCandidate([hashtable]$Candidates, [object]$PidValue, [string]$Role, [string]$Source, [int]$Order, [bool]$AllowForeignMainComputer = $false, [string]$VerifiedCommandLine = "", [object]$VerifiedCreationDate = $null) {
   if ($null -eq $PidValue) {
     return
   }
@@ -3533,11 +3668,17 @@ function Add-PidCandidate([hashtable]$Candidates, [object]$PidValue, [string]$Ro
       sources = @($Source)
       order = $Order
       allow_foreign_main_computer = $AllowForeignMainComputer
+      verified_command_line = $VerifiedCommandLine
+      verified_creation_date = $VerifiedCreationDate
     }
     return
   }
 
   $existing = $Candidates[$key]
+  if (-not [string]::IsNullOrWhiteSpace($VerifiedCommandLine) -and $null -ne $VerifiedCreationDate) {
+    $existing.verified_command_line = $VerifiedCommandLine
+    $existing.verified_creation_date = $VerifiedCreationDate
+  }
   $existing.sources = @($existing.sources + $Source | Select-Object -Unique)
   if ($AllowForeignMainComputer) {
     $existing.allow_foreign_main_computer = $true
@@ -3751,15 +3892,25 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
 
   foreach ($process in $processes) {
     $commandLine = [string]$process.CommandLine
-    # SLH is stopped by its known supervisor child PID only. Never infer
-    # ownership of a separately launched SLH from its command line.
+    # A gateway carrying the exact checkout --root is ours even when the
+    # supervisor state is gone.  Do not adopt local_service merely by name:
+    # it has no --root marker and requires a separate owner proof.
     if (Test-MainComputerSeparatelyOwnedSLH $commandLine) {
+      if (Test-MainComputerOwnedSLHGateway $commandLine $RootPath) {
+        Add-PidCandidate $Candidates $process.ProcessId "slh" "verified live gateway for this checkout" 20
+      }
       continue
     }
     if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -and (Test-OwnedMainComputerPid ([int]$process.ProcessId) $RootPath $commandLine)) {
       $processName = [string]$process.Name
       if ($processName -match '^(python|pythonw)\.exe$') {
-        Add-PidCandidate $Candidates $process.ProcessId "current-main-computer-service" "live Main Computer service command line for this tree" 10 $true
+        $isSupervisor = ($commandLine.ToLowerInvariant().Contains("main_computer.app_control") -and
+                         $commandLine -match '(?i)(?:^|\s)bootstrap(?:\s|$)')
+        if ($isSupervisor) {
+          Add-PidCandidate $Candidates $process.ProcessId "supervisor" "verified live supervisor bootstrap for this tree" 90 $false $commandLine $process.CreationDate
+        } else {
+          Add-PidCandidate $Candidates $process.ProcessId "current-main-computer-service" "live Main Computer service command line for this tree" 10 $true
+        }
       }
     }
   }
@@ -3787,13 +3938,17 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
 }
 
 function Get-ProcessCommandLine([int]$ProcessId) {
-  try {
-    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $ProcessId) -ErrorAction Stop
-    if ($null -ne $proc) {
-      return [string]$proc.CommandLine
-    }
-  } catch {
-    return $null
+  # A transient CIM failure/empty CommandLine is not proof that the process
+  # changed owners. Retry before falling back to a verified prior identity.
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    try {
+      $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $ProcessId) -ErrorAction Stop
+      if ($null -ne $proc -and -not [string]::IsNullOrWhiteSpace([string]$proc.CommandLine)) {
+        return [string]$proc.CommandLine
+      }
+    } catch {}
+    if (-not (Test-ProcessStillRunning $ProcessId)) { return $null }
+    if ($attempt -lt 2) { Start-Sleep -Milliseconds 150 }
   }
   return $null
 }
@@ -3836,13 +3991,18 @@ function Wait-ProcessGone([int]$ProcessId, [int]$TimeoutSeconds = 5) {
   return (-not (Test-ProcessStillRunning $ProcessId))
 }
 
-function Invoke-ProcessKill([int]$ProcessId) {
+function Invoke-ProcessKill([int]$ProcessId, [bool]$StopTree = $true) {
   $output = ""
   $exitCode = $null
 
   if (($IsWindows) -or ($env:OS -eq "Windows_NT")) {
     try {
-      $output = (& taskkill.exe /PID $ProcessId /T /F 2>&1 | Out-String).Trim()
+      # Stop the supervisor process alone; its child services must be handled
+      # only after its restart loop is gone.  Keep /T for normal child trees.
+      $killArgs = @("/PID", [string]$ProcessId)
+      if ($StopTree) { $killArgs += "/T" }
+      $killArgs += "/F"
+      $output = (& taskkill.exe @killArgs 2>&1 | Out-String).Trim()
       $exitCode = $LASTEXITCODE
     } catch {
       $output = $_.Exception.Message
@@ -3881,6 +4041,25 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
   }
 
   $commandLine = Get-ProcessCommandLine $processId
+  if ($role -in @("slh", "slh-supervised-orphan") -and
+      -not (Test-MainComputerOwnedSLHGateway $commandLine $RootPath)) {
+    return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+  }
+  if ($role -eq "slh-local-orphan" -and
+      -not (Test-MainComputerOwnedSLHLocalService $processId $RootPath)) {
+    return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+  }
+  if ($role -eq "slh-boot-child") {
+    try {
+      $live = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $processId) -ErrorAction Stop
+      if ($null -eq $live -or [string]$live.CreationDate -ne [string]$Candidate.creation_date -or
+          -not ([string]$live.CommandLine).ToLowerInvariant().Contains("main_computer.slh.local_service")) {
+        return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+      }
+    } catch {
+      return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+    }
+  }
   $allowForeignMainComputer = $false
   try {
     $allowForeignMainComputer = [bool]$Candidate.allow_foreign_main_computer
@@ -3888,12 +4067,39 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
     $allowForeignMainComputer = $false
   }
 
-  if (-not $allowForeignMainComputer -and -not (Test-OwnedMainComputerPid $processId $RootPath $commandLine)) {
+  $verifiedSupervisor = $true
+  if ($role -eq "supervisor") {
+    # The initial live supervisor scan already proved ownership. A second CIM
+    # query can return an empty command line; reuse the proof ONLY if the live
+    # process creation time still matches, so a recycled PID is never killed.
+    $cachedCommand = [string](Get-ObjectPropertyValue $Candidate "verified_command_line" "")
+    $cachedCreated = Get-ObjectPropertyValue $Candidate "verified_creation_date" $null
+    if (-not [string]::IsNullOrWhiteSpace($cachedCommand) -and $null -ne $cachedCreated) {
+      $sameProcess = $false
+      try {
+        $liveStarted = (Get-Process -Id $processId -ErrorAction Stop).StartTime
+        $sameProcess = ([math]::Abs((([datetime]$liveStarted).ToUniversalTime() -
+                         ([datetime]$cachedCreated).ToUniversalTime()).TotalMilliseconds) -lt 1000)
+      } catch {}
+      if (-not $sameProcess) {
+        Write-Warning "Supervisor PID $processId changed or its identity could not be reverified; refusing to kill it."
+        return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
+      }
+      if ([string]::IsNullOrWhiteSpace($commandLine)) { $commandLine = $cachedCommand }
+    }
+    $normalizedCommand = ([string]$commandLine).ToLowerInvariant()
+    $verifiedSupervisor = ((Test-OwnedMainComputerPid $processId $RootPath $commandLine) -and
+      -not [string]::IsNullOrWhiteSpace($commandLine) -and
+      ($normalizedCommand.Contains("main_computer.service_supervisor") -or
+       ($normalizedCommand.Contains("main_computer.app_control") -and
+        $commandLine -match '(?i)(?:^|\s)bootstrap(?:\s|$)')))
+  }
+  if (-not $verifiedSupervisor -or (-not $allowForeignMainComputer -and -not (Test-OwnedMainComputerPid $processId $RootPath $commandLine))) {
     Write-Warning "Skipping PID $processId for ${role}; it no longer looks like this Main Computer tree. Source: $sourceText"
     return [ordered]@{
       pid = $processId
       role = $role
-      state = "skipped-not-owned"
+      state = $(if ($role -eq "supervisor" -and [string]::IsNullOrWhiteSpace($commandLine)) { "skipped-unverified" } else { "skipped-not-owned" })
       sources = $Candidate.sources
       command_line = $commandLine
     }
@@ -3903,7 +4109,7 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
   $lastResult = $null
 
   for ($attempt = 1; $attempt -le 2; $attempt++) {
-    $lastResult = Invoke-ProcessKill $processId
+    $lastResult = Invoke-ProcessKill $processId ($role -ne "supervisor")
     $gone = Wait-ProcessGone $processId 5
     $attempts += [ordered]@{
       attempt = $attempt
@@ -4261,9 +4467,32 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   Add-CurrentMainComputerProcessCandidates $candidates $RootPath $launchContext
 
   $processResults = @()
-  foreach ($candidate in ($candidates.Values | Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })) {
+  # Stop both potential SLH launchers *before* their processes.  In particular,
+  # a live supervisor can otherwise respawn a child between kill and port check.
+  # A missing/stopped Windows task is a successful no-op.
+  $slhBootStop = Stop-MainComputerSLHBootLauncher $RootPath
+  foreach ($candidate in @($candidates.Values | Where-Object { [string]$_.role -eq "supervisor" })) {
     $processResults += Stop-OnePid $candidate $RootPath
   }
+  # Do not kill any SLH child until the launcher is confirmed absent.
+  $supervisorFailures = @($processResults | Where-Object {
+    [string]$_.role -eq "supervisor" -and [string]$_.state -in @("termination-attempted", "skipped-unverified")
+  })
+  if ($supervisorFailures.Count -gt 0) {
+    throw "Supervisor shutdown was not verified; refusing to terminate an SLH child while its launcher may still restart it."
+  }
+  foreach ($candidate in ($candidates.Values | Where-Object { [string]$_.role -ne "supervisor" } |
+      Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })) {
+    $processResults += Stop-OnePid $candidate $RootPath
+  }
+  # The supervisor is now dead (or was not a verified local launcher).
+  $slhChildStop = Stop-MainComputerSLHListenerAfterLaunchers $RootPath $slhBootStop.owned_listener
+  if ([string]$slhChildStop.state -notin @("not-running", "not-owned")) {
+    $processResults += $slhChildStop
+  }
+  # ORG-SLH may have survived its Local Service. Never report a clean stop
+  # until the recorded child is independently verified dead.
+  $orgChildStop = Stop-MainComputerORGService $RootPath $launchContext
 
   Start-Sleep -Milliseconds 500
 
@@ -4281,7 +4510,21 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
     }
   }
 
-  $removedPidFiles = Remove-ManagedRuntimeFiles $RootPath $session $controlRoot
+  $slhListenerStillRunning = (Get-MainComputerSLHListenerPid) -gt 0
+  $slhFailedResults = @($processResults | Where-Object {
+    [string]$_.role -in @("slh", "slh-supervised-orphan", "slh-boot-child", "slh-local-orphan") -and
+    [string]$_.state -eq "termination-attempted"
+  })
+  $slhFailure = $slhFailedResults.Count -gt 0 -or
+    [string]$slhChildStop.state -in @("termination-attempted", "skipped-not-owned") -or
+    [string]$orgChildStop.state -eq "failed"
+  # A foreign listener does not make an otherwise successful stop fail; start
+  # will refuse to take it over.  Do not erase owned-process PID evidence when
+  # an owned SLH process resisted shutdown.
+  $removedPidFiles = @()
+  if (-not $slhFailure) {
+    $removedPidFiles = Remove-ManagedRuntimeFiles $RootPath $session $controlRoot
+  }
 
   $report = [ordered]@{
     schema_version = 1
@@ -4291,6 +4534,10 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
     session_path = $sessionPath
     had_start_session = ($null -ne $session)
     process_results = $processResults
+    slh_boot_launcher_stop = $slhBootStop
+    slh_listener_stop = $slhChildStop
+    org_service_stop = $orgChildStop
+    slh_listener_still_running = $slhListenerStillRunning
     nanojev_manager_stop = $nanoJevManagerStop
     docker_results = $dockerResults
     removed_pid_files = $removedPidFiles
@@ -4300,6 +4547,9 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   Write-JsonFile $reportPath $report
 
   Write-Host ""
+  if ($slhFailure) {
+    throw "Verified SLH process did not terminate. Stop report: $reportPath"
+  }
   Write-Host "Main Computer stop completed."
   Write-Host ("Stop report: " + $reportPath)
   return $report

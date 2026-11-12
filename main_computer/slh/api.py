@@ -31,6 +31,7 @@ ENDPOINTS = (
     Endpoint('GET','/v1/local/services','local_services','admin'),
     Endpoint('GET','/v1/local/organization/config','local_org_config','admin'),
     Endpoint('PATCH','/v1/local/organization/config','local_org_configure','admin'),
+    Endpoint('POST','/v1/local/organization/configure-and-enable','local_org_reconfigure_enable','admin'),
     Endpoint('POST','/v1/local/organization/enable','local_org_enable','admin'),
     Endpoint('POST','/v1/local/organization/admin/identities','local_root_register_admin','local_root'),
     Endpoint('POST','/v1/local/organization/disable','local_org_disable','admin'),
@@ -254,6 +255,7 @@ class SLHAPI:
             if op=='local_services':return {'organization_service':c.status(),'local_service':'running'}
             if op=='local_org_config':return c.config()
             if op=='local_org_configure':return c.configure(b)
+            if op=='local_org_reconfigure_enable':return c.reconfigure_and_enable(b)
             if op=='local_org_enable':return c.enable()
             if op=='local_org_disable':return c.disable()
             if op=='local_org_restart':return c.restart()

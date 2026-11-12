@@ -1,0 +1,306 @@
+{
+  "schema": "mcel.slh.unified-administration-oracle.v4",
+  "supersedes": [
+    "mcel.slh.target-selection-oracle.v2: separate semantic apps",
+    "mcel.slh.organization-observation-oracle.v3: network has no administrator login"
+  ],
+  "retained_oracles": [
+    "tests/fixtures/mcel_oracles/operational-workflows/oracle.v1.json",
+    "tests/fixtures/mcel_oracles/target-selection/oracle.v2.json",
+    "tests/fixtures/mcel_oracles/organization-observation/oracle.v3.json"
+  ],
+  "governing_invariant": "For equivalent verified organization state, capabilities, and authenticated role, local and remote targets render the same MCEL administrative surface and execute the same authorization-scoped operations; target transport and preauthentication lifecycle remain distinct.",
+  "application": {
+    "shared_app_id": "slh",
+    "target_kinds": [
+      "local",
+      "network"
+    ],
+    "canonical_target_urls": {
+      "local": "/applications/slh/local",
+      "network": "/applications/slh/network"
+    },
+    "legacy_local_aliases": [
+      "/applications/slh",
+      "/applications/slh/workers"
+    ],
+    "admin_views": [
+      "overview",
+      "worker-bank"
+    ],
+    "required_admin_intents": [
+      "intent:refresh-overview",
+      "intent:refresh-workers",
+      "intent:refresh-worker-summary",
+      "intent:rename-worker",
+      "intent:login-administrator",
+      "intent:logout-administrator"
+    ],
+    "shared_domain_state_ids": [
+      "state:overview",
+      "state:workers",
+      "state:worker-summary"
+    ],
+    "requires_native_links": true,
+    "no_authored_html_layout": true,
+    "same_surface_composition_after_authentication": true,
+    "viewport_composition_contract": {
+      "gate": "mcel.viewport-composition-frob.v2",
+      "local_remote_identical_post_auth_scroll_ownership": true,
+      "application_root_scrollable": false,
+      "navigation_and_workspace_scrolling_independent": true,
+      "ordinary_control_and_status_cards_scrollable": false,
+      "normal_content_must_pass_not_only_synthetic_overflow": true
+    }
+  },
+  "preauthentication": {
+    "local": [
+      "discover LMS-SLH identity",
+      "start local service on deliberate action if stopped",
+      "show Login Administrator",
+      "existing authorized first-run bootstrap on login only",
+      "explicit recovery only when required"
+    ],
+    "network": [
+      "select remote private-network target",
+      "verify supplied out-of-band TLS SHA-256 pin",
+      "discover local LMS-SLH signing identity",
+      "show Login Administrator after trust established",
+      "offer authorized remote enrollment if identity not enrolled"
+    ],
+    "never": [
+      "infer admin role from TLS verification",
+      "assume an empty identity inventory when LMS-SLH is unreachable",
+      "prompt unsolicited bootstrap form",
+      "reuse local administrator bearer on remote target",
+      "trigger local organization bootstrap or activation when remote is selected"
+    ]
+  },
+  "authority": {
+    "signer": "LMS-SLH local P-256 identity challenge signer; private key never leaves its host",
+    "challenge_source": "selected verified Organization Service",
+    "challenge_audience": "bound to selected verified service identity",
+    "role_source": "selected Organization Service, not local identity store",
+    "remote_enrollment": "signed request and authorization by an already authorized target administrator; never remote auto-bootstrap",
+    "remote_transport": "private-IP-literal allowlist, independently verified TLS pin checked on each privileged connection before any HTTP or bearer",
+    "api_allowlist": "bounded fixed Org management operations; no arbitrary URL proxy",
+    "session": "short-lived, target-bound, role-verified, not persisted in URL or browser durable storage",
+    "target_switch": "never transfer session or mutation destination; no silent local fallback",
+    "refresh": "canonical target URL/deep links survive refresh; reauthentication if ephemeral session expired",
+    "unknown_inventory": "NOT_OBSERVED, never zero workers"
+  },
+  "states": {
+    "connection": [
+      "UNREACHABLE",
+      "CONNECTED",
+      "UNVERIFIED"
+    ],
+    "trust": [
+      "UNVERIFIED",
+      "VERIFIED",
+      "MISMATCH"
+    ],
+    "enrollment": [
+      "UNKNOWN",
+      "NOT_ENROLLED",
+      "PENDING",
+      "AUTHORIZED",
+      "REJECTED"
+    ],
+    "session": [
+      "UNAUTHENTICATED",
+      "AUTHENTICATED",
+      "EXPIRED",
+      "REVOKED"
+    ],
+    "workers": [
+      "NOT_OBSERVED",
+      "OBSERVED_EMPTY",
+      "OBSERVED_NONEMPTY"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "local-stopped",
+      "target": "local",
+      "condition": "LMS-SLH unavailable",
+      "primary": "intent:start-local",
+      "administration": false,
+      "forbidden": [
+        "intent:rename-worker",
+        "intent:bootstrap-administrator"
+      ]
+    },
+    {
+      "id": "local-fresh",
+      "target": "local",
+      "condition": "LMS-SLH running, fresh local organization",
+      "primary": "intent:login-administrator",
+      "administration": false,
+      "forbidden": [
+        "unsolicited-bootstrap-questionnaire"
+      ]
+    },
+    {
+      "id": "local-existing",
+      "target": "local",
+      "condition": "established organization, valid local key, no session",
+      "primary": "intent:login-administrator",
+      "administration": false,
+      "forbidden": [
+        "intent:bootstrap-administrator"
+      ]
+    },
+    {
+      "id": "local-recovery",
+      "target": "local",
+      "condition": "enrollment absent from previously established organization",
+      "primary": "explicit-recovery",
+      "administration": false,
+      "forbidden": [
+        "implicit-bootstrap"
+      ]
+    },
+    {
+      "id": "network-unselected",
+      "target": "network",
+      "condition": "no remote target selected",
+      "primary": "select-network-target",
+      "administration": false,
+      "forbidden": [
+        "intent:start-local",
+        "intent:rename-worker"
+      ]
+    },
+    {
+      "id": "network-unverified",
+      "target": "network",
+      "condition": "remote pin supplied but not verified",
+      "primary": "intent:inspect-network-slh",
+      "administration": false,
+      "forbidden": [
+        "intent:login-administrator",
+        "intent:rename-worker",
+        "intent:bootstrap-administrator"
+      ]
+    },
+    {
+      "id": "network-verified",
+      "target": "network",
+      "condition": "remote TLS pin verified, admin not authenticated",
+      "primary": "intent:login-administrator",
+      "administration": false,
+      "forbidden": [
+        "intent:rename-worker",
+        "intent:bootstrap-administrator"
+      ]
+    },
+    {
+      "id": "network-unenrolled",
+      "target": "network",
+      "condition": "remote trusted but signing key not enrolled",
+      "primary": "request-remote-enrollment",
+      "administration": false,
+      "forbidden": [
+        "automatic-admin-grant",
+        "intent:rename-worker"
+      ]
+    },
+    {
+      "id": "network-enrollment-pending",
+      "target": "network",
+      "condition": "enrollment request pending approval",
+      "primary": "view-enrollment-status",
+      "administration": false,
+      "forbidden": [
+        "intent:rename-worker",
+        "implicit-bootstrap"
+      ]
+    },
+    {
+      "id": "network-pin-mismatch",
+      "target": "network",
+      "condition": "peer certificate mismatches pin",
+      "primary": "report-trust-failure",
+      "administration": false,
+      "forbidden": [
+        "any-HTTP-request-to-target",
+        "intent:login-administrator"
+      ]
+    },
+    {
+      "id": "network-public-address",
+      "target": "network",
+      "condition": "public or loopback remote address",
+      "primary": "reject-address",
+      "administration": false,
+      "forbidden": [
+        "any-connection-to-target"
+      ]
+    },
+    {
+      "id": "local-authenticated",
+      "target": "local",
+      "condition": "role verified against local Organization Service",
+      "primary": "intent:refresh-workers",
+      "administration": true,
+      "surface": "shared-admin"
+    },
+    {
+      "id": "network-authenticated",
+      "target": "network",
+      "condition": "role verified against pinned remote Organization Service",
+      "primary": "intent:refresh-workers",
+      "administration": true,
+      "surface": "shared-admin"
+    },
+    {
+      "id": "network-expired",
+      "target": "network",
+      "condition": "previously authenticated session expired",
+      "primary": "intent:login-administrator",
+      "administration": false,
+      "forbidden": [
+        "intent:rename-worker",
+        "silent-local-fallback"
+      ]
+    },
+    {
+      "id": "switch-target",
+      "target": "network",
+      "condition": "switch from authenticated local SLH to different network SLH",
+      "primary": "resolve-network-target",
+      "administration": false,
+      "forbidden": [
+        "reuse-local-bearer",
+        "send-mutation-to-local"
+      ]
+    },
+    {
+      "id": "inventory-unobserved",
+      "target": "network",
+      "condition": "Worker inventory request failed",
+      "primary": "retry-observation",
+      "administration": true,
+      "worker_state": "NOT_OBSERVED",
+      "forbidden": [
+        "report-zero-workers"
+      ]
+    },
+    {
+      "id": "inventory-empty",
+      "target": "network",
+      "condition": "authorized inventory succeeded and returned no Workers",
+      "primary": "intent:refresh-workers",
+      "administration": true,
+      "worker_state": "OBSERVED_EMPTY"
+    }
+  ],
+  "acceptance": {
+    "contract_consistency": "must PASS before refactor",
+    "current_implementation": "must FAIL unified-app/parity gates until shared transport and app are implemented",
+    "security_regressions": "V1/V2/V3 remain binding except superseded assertions",
+    "no_live_mutation": "oracle tests must use isolated fake targets or read-only checks",
+    "layout_gate": "Both local and network SLH must satisfy the MCEL viewport composition oracle; CSS containment alone is insufficient."
+  }
+}

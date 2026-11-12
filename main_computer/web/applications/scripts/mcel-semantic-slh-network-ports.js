@@ -7,7 +7,7 @@
     runtimeMethod:"inspectPinnedNetworkSlh"
   });
   function plain(v){return v!==null&&typeof v==="object"&&!Array.isArray(v);}
-  function permitted(req){return plain(req)&&req.appId==="slh-network"&&req.risk==="external-read"&&
+  function permitted(req){return plain(req)&&["slh-network","slh"].includes(req.appId)&&req.risk==="external-read"&&
     Object.keys(admitted).every(k=>req[k]===admitted[k])&&plain(req.arguments)&&
     Object.keys(req.arguments).sort().join(",")==="address,port,tlsSha256"&&
     typeof req.arguments.address==="string"&&req.arguments.address.length<=60&&
@@ -15,7 +15,7 @@
     /^[a-fA-F0-9]{64}$/.test(req.arguments.tlsSha256);
   }
   function create(options={}){
-    if(options.appId!=="slh-network")throw Error("NETWORK_SLH_PORT_APP_REFUSED");
+    if(!["slh-network","slh"].includes(options.appId))throw Error("NETWORK_SLH_PORT_APP_REFUSED");
     const fetcher=options.fetcher||global.fetch?.bind(global);
     if(typeof fetcher!=="function")throw Error("NETWORK_SLH_PORT_FETCH_UNAVAILABLE");
     return Object.freeze({

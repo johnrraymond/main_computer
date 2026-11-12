@@ -21,6 +21,7 @@ from .api import SLHAPI
 from .authority import SLHAuthority, SLHError
 from .managed_gateway import SLHManagedGateway, SLHMarketplaceProxy, transport_identity
 from .organization_state import read_config
+from .organization_process import registered_process
 from .storage import slh_state_dir
 from .marketplace_auto import AutomaticMarketplace, read_settings
 from .organization_wallet import OrganizationWallet
@@ -301,6 +302,14 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     config = read_config(state_dir)
     if not config['configured'] or not config['enabled'] or not config['activation_confirmed']:
         raise RuntimeError('Organization Service is not explicitly enabled')
+    # Every launch path publishes this child's PID and creation time before
+    # announcing a listener, and removes only its own record on exit.
+    with registered_process(state_dir, parent_pid=parent_pid, parent_created=parent_created):
+        return _run_ready_service(state_dir, parent_pid, parent_created, authority, config)
+
+
+def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
+                       authority: SLHAuthority, config: dict) -> int:
     # ORG-SLH, not LMS-SLH, creates and owns the durable bearer root.
     authority.ensure_local_auth_key()
     tls_context, fingerprint = transport_identity(state_dir)

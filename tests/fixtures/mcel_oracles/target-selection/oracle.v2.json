@@ -1,39 +1,98 @@
 {
-  "schema":"mcel.slh.target-selection-oracle.v2",
-  "scope":"first-target-selection-before-local-or-network-organization-workflow",
-  "frozen_v1":"mcel_oracles/operational-workflows/oracle.v1.json",
+  "schema": "mcel.slh.target-selection-oracle.v2",
+  "scope": "legacy target-selection and preauthentication network safety regression; unified administration governed by oracle.v4",
+  "frozen_v1": "mcel_oracles/operational-workflows/oracle.v1.json",
   "targets": [
-    {"id":"local","label":"This Computer","canonical_url":"/applications/slh/local","authority":"Local Management Service, then local Organization Service","requires_remote_tls_pin":false},
-    {"id":"network","label":"Network SLH","canonical_url":"/applications/slh/network","authority":"Existing remote Organization Service","requires_remote_tls_pin":true}
+    {
+      "id": "local",
+      "label": "This Computer",
+      "canonical_url": "/applications/slh/local",
+      "authority": "Local Management Service, then local Organization Service",
+      "requires_remote_tls_pin": false
+    },
+    {
+      "id": "network",
+      "label": "Network SLH",
+      "canonical_url": "/applications/slh/network",
+      "authority": "Existing remote Organization Service",
+      "requires_remote_tls_pin": true
+    }
   ],
   "legacy_routes": {
-    "/applications/slh":"local",
-    "/applications/slh/workers":"local"
+    "/applications/slh": "local",
+    "/applications/slh/workers": "local"
   },
   "scenarios": [
-    {"id":"first-visit-local","path":"/applications/slh","selected_target":"local","local_setup_allowed_when_authorized":true,"network_requests":0},
-    {"id":"explicit-local","path":"/applications/slh/local","selected_target":"local","local_setup_allowed_when_authorized":true,"network_requests":0},
-    {"id":"local-worker-bank","path":"/applications/slh/local/workers","selected_target":"local","local_setup_allowed_when_authorized":true,"network_requests":0},
-    {"id":"network-before-identity","path":"/applications/slh/network","selected_target":"network","local_setup_allowed_when_authorized":false,"local_status_requests":0,"admin_authorized":false},
-    {"id":"network-verified-not-admin","path":"/applications/slh/network","selected_target":"network","tls_verified":true,"local_setup_allowed_when_authorized":false,"admin_authorized":false},
-    {"id":"network-invalid-pin","path":"/applications/slh/network","selected_target":"network","tls_verified":false,"http_requests_before_pin":0,"admin_authorized":false},
-    {"id":"network-unsafe-address","path":"/applications/slh/network","selected_target":"network","connection_attempts":0,"admin_authorized":false}
+    {
+      "id": "first-visit-local",
+      "path": "/applications/slh",
+      "selected_target": "local",
+      "local_setup_allowed_when_authorized": true,
+      "network_requests": 0
+    },
+    {
+      "id": "explicit-local",
+      "path": "/applications/slh/local",
+      "selected_target": "local",
+      "local_setup_allowed_when_authorized": true,
+      "network_requests": 0
+    },
+    {
+      "id": "local-worker-bank",
+      "path": "/applications/slh/local/workers",
+      "selected_target": "local",
+      "local_setup_allowed_when_authorized": true,
+      "network_requests": 0
+    },
+    {
+      "id": "network-before-identity",
+      "path": "/applications/slh/network",
+      "selected_target": "network",
+      "local_setup_allowed_when_authorized": false,
+      "local_status_requests": 0,
+      "admin_authorized": false
+    },
+    {
+      "id": "network-verified-not-admin",
+      "path": "/applications/slh/network",
+      "selected_target": "network",
+      "tls_verified": true,
+      "local_setup_allowed_when_authorized": false,
+      "admin_authorized": false
+    },
+    {
+      "id": "network-invalid-pin",
+      "path": "/applications/slh/network",
+      "selected_target": "network",
+      "tls_verified": false,
+      "http_requests_before_pin": 0,
+      "admin_authorized": false
+    },
+    {
+      "id": "network-unsafe-address",
+      "path": "/applications/slh/network",
+      "selected_target": "network",
+      "connection_attempts": 0,
+      "admin_authorized": false
+    }
   ],
   "requirements": {
-    "target_selection_precedes_service_lifecycle":true,
-    "browser_native_tabs_with_real_href":true,
-    "browser_refresh_restores_target":true,
-    "modified_clicks_are_native":true,
-    "separate_semantic_application_id_per_target":true,
-    "no_local_access_token_reused_for_network":true,
-    "network_verification_requires_explicit_pin":true,
-    "network_pin_checked_before_http":true,
-    "network_targets_restricted_to_private_ip_literals":true,
-    "network_observation_is_read_only":true,
-    "remote_administrator_session_not_yet_implemented":true,
-    "local_management_service_does_not_prove_administrator_enrollment":true,
-    "no_windows_boot_startup_mutation":true,
-    "no_layout_authored_in_semantic_js":true
+    "target_selection_precedes_service_lifecycle": true,
+    "browser_native_tabs_with_real_href": true,
+    "browser_refresh_restores_target": true,
+    "modified_clicks_are_native": true,
+    "no_local_access_token_reused_for_network": true,
+    "network_verification_requires_explicit_pin": true,
+    "network_pin_checked_before_http": true,
+    "network_targets_restricted_to_private_ip_literals": true,
+    "network_observation_is_read_only": true,
+    "local_management_service_does_not_prove_administrator_enrollment": true,
+    "no_windows_boot_startup_mutation": true,
+    "no_layout_authored_in_semantic_js": true,
+    "distinct_target_authority_without_separate_administration_application": true,
+    "network_inspection_cannot_grant_administration": true,
+    "remote_signed_login_requires_target_authorization": true
   },
-  "acceptance":"V2 oracle and existing V1 oracle must both pass unchanged after application update"
+  "acceptance": "V2 safety and target-navigation regressions remain binding; V4 defines the current unified-administration product and application contract.",
+  "superseded_by": "tests/fixtures/mcel_oracles/unified-administration/oracle.v4.json"
 }

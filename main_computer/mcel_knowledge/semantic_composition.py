@@ -10,14 +10,14 @@ from collections.abc import Mapping
 import hashlib
 import json
 
-from .interface_intent import PURPOSES
+from .interface_intent import PURPOSES, interface_intent_errors
 
 SCHEMA = "mcel.generated-composition.v1"
 POLICY = "mcel.semantic-structure.p1"
 P3_POLICY = "mcel.semantic-structure.p3"
-RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "operations", "document"})
+RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "operations", "document", "navigation", "task", "commands"})
 TAGS = {"root": "main", "queries": "section", "collection": "section", "selection-echo": "aside",
-        "evidence": "footer", "results": "section", "controls": "section", "operations": "section", "document": "section"}
+        "evidence": "footer", "results": "section", "controls": "section", "operations": "section", "document": "section", "navigation": "nav", "task": "section", "commands": "section"}
 ROLE_META = {
     "queries": ("query-controls", "secondary"),
     "collection": ("workspace", "primary"),
@@ -27,6 +27,9 @@ ROLE_META = {
     "controls": ("query-controls", "secondary"),
     "operations": ("commands", "secondary"),
     "document": ("workspace", "primary"),
+    "navigation": ("navigation", "secondary"),
+    "task": ("task", "primary"),
+    "commands": ("commands", "supporting"),
 }
 
 
@@ -118,6 +121,43 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
            (i.get("operationKind") == "capability" and i.get("risk") != "external-read")
            for i in intents.values()):
         raise ValueError("P1 read-only slice refuses any consequential or source-write effect")
+    # A role-authored, non-HTML semantic region is the authority for which
+    # nodes belong in navigation. Generic control/collection types are not.
+    declared_intent = surface.get("interfaceIntent") or {}
+    if declared_intent:
+        problems = interface_intent_errors(surface)
+        if problems:
+            raise ValueError("Invalid authored semantic regions: " + "; ".join(problems))
+    navigation_owners = {}
+    task_owners = {}
+    command_owners = {}
+    by_node = {n["id"]: n for n in nodes}
+    for authored in declared_intent.get("regions", []):
+        role = authored.get("role")
+        if role in {"navigation", "mode-selector"}:
+            for member in authored["members"]:
+                navigation_owners[member["ref"]] = authored
+        elif role == "task":
+            # A task is an actionable form with its selected identity/reference.
+            # It must be semantically declared and structurally verified; it is
+            # not inferred from names, labels, or display geometry.
+            members = [by_node[m["ref"]] for m in authored["members"]]
+            forms = [n for n in members if n["nodeKind"] == "form"]
+            echoes = [n for n in members if n["nodeKind"] == "state-value"]
+            if (len(forms) != 1 or len(echoes) != 1 or len(members) != 2 or
+                policy != P3_POLICY or
+                intents.get(_ref(forms[0].get("intent")), {}).get("risk") != "consequential"):
+                raise ValueError("Task requires one consequential form and one selected reference")
+            for member in members:
+                task_owners[member["id"]] = authored
+        elif role == "commands":
+            members = [by_node[m["ref"]] for m in authored["members"]]
+            if not members or any(n["nodeKind"] != "control" or
+                    intents.get(_ref(n.get("intent")), {}).get("risk") != "consequential"
+                    for n in members):
+                raise ValueError("Commands require explicit consequential controls")
+            for member in members:
+                command_owners[member["id"]] = authored
     groups = {k: [] for k in ROLE_META}
     source_reasons = {}
     collection_targets = {}
@@ -147,19 +187,89 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
         if policy == P3_POLICY and kind in {"form", "control"} and (
                 intents.get(_ref(n.get("intent")), {}).get("risk") == "consequential"):
             recipe = "operations"
+        if n["id"] in navigation_owners:
+            recipe = "navigation"
+            reason = "authored-navigation:" + navigation_owners[n["id"]]["id"]
+        elif n["id"] in task_owners:
+            recipe = "task"
+            reason = "authored-task:" + task_owners[n["id"]]["id"]
+        elif n["id"] in command_owners:
+            recipe = "commands"
+            reason = "authored-commands:" + command_owners[n["id"]]["id"]
+        else:
+            reason = "node-kind:" + str(kind)
         groups[recipe].append(n["id"])
-        source_reasons[n["id"]] = "node-kind:" + str(kind)
-    if not groups["collection"]:
+        source_reasons[n["id"]] = reason
+    # A task reference must resolve to an actual typed selection, not an
+    # arbitrary string presented as an administrator or an entity identity.
+    for authored in declared_intent.get("regions", []):
+        if authored.get("role") != "task":
+            continue
+        echoed = next(by_node[m["ref"]] for m in authored["members"]
+                      if by_node[m["ref"]]["nodeKind"] == "state-value")
+        if _ref((echoed.get("value") or {}).get("state")) not in collection_targets:
+            raise ValueError("Task reference requires verified collection selection")
+    # Navigation is a semantic hierarchy, not alphabetical source-node order.
+    # Target-dependent forms are contextual disclosures before the shared
+    # directory, followed by view controls. No app-specific names are used.
+    navigation_kinds = {node["id"]:node["nodeKind"] for node in nodes}
+    order_in_rail = {"form":0,"collection":1,"control":2,"state-value":3}
+    groups["navigation"].sort(key=lambda identifier:(
+        order_in_rail.get(navigation_kinds.get(identifier),4),identifier))
+    if not any(n.get("nodeKind") == "collection" for n in nodes):
         raise ValueError("P1 vertical slice requires an authentic keyed collection")
     # Application purpose controls organization, but cannot create reads, timers, or actions.
-    order = ("controls", "queries", "collection", "selection-echo", "operations", "results", "evidence") if purpose == "monitor" else (
-        "controls", "queries", "selection-echo", "collection", "operations", "results", "evidence")
+    order = ("navigation", "controls", "queries", "collection", "selection-echo", "operations", "task", "commands", "results", "evidence") if purpose == "monitor" else (
+        "navigation", "controls", "queries", "selection-echo", "collection", "operations", "task", "commands", "results", "evidence")
     root = "interface-region:generated-root"
     regions = [{"id": root, "parentId": None, "ordinal": 0, "recipe": "root", "nativeTag": "main",
                 "members": [], "priority": "primary", "purpose": "application", "tasks": [],
                 "reasons": ["whole-application-synthesis", "purpose:" + purpose]}]
     for recipe in order:
         if not groups[recipe]: continue
+        if recipe == "navigation":
+            authored_nav = [r for r in declared_intent.get("regions", [])
+                            if r.get("role") in {"navigation", "mode-selector"}]
+            if len(authored_nav) > 1:
+                # A target-specific disclosure must never be swallowed by a
+                # persistent identity collection heading. Each authored semantic
+                # navigation region retains its own generated region, while
+                # scroll ownership still belongs to the shared left rail.
+                rank = {"form":0, "collection":1, "control":2, "state-value":3}
+                kinds = {n["id"]:n["nodeKind"] for n in nodes}
+                def region_priority(r):
+                    return (min((rank.get(kinds.get(m["ref"]),4) for m in r["members"]),default=4),r["id"])
+                for authored in sorted(authored_nav,key=region_priority):
+                    member_ids = [ident for ident in groups[recipe]
+                                  if navigation_owners[ident]["id"] == authored["id"]]
+                    if not member_ids: continue
+                    regions.append({"id":"interface-region:generated-navigation-"+
+                                    authored["id"].rsplit(".",1)[-1],
+                       "parentId":root,"ordinal":len(regions)-1,
+                       "recipe":"navigation","nativeTag":"nav","purpose":"navigation",
+                       "priority":authored.get("priority","secondary"),"tasks":[],
+                       "members":[{"ref":ident} for ident in member_ids],
+                       "reasons":["authored-semantic-navigation:"+authored["id"]]})
+                continue
+        if recipe in {"task", "commands"}:
+            # Like navigation disclosures, task and command groups preserve
+            # authored semantic ownership. Separate tasks must not merge into
+            # one giant card merely because their nodes share a node kind.
+            for authored in declared_intent.get("regions", []):
+                if authored.get("role") != recipe:
+                    continue
+                member_ids = [m["ref"] for m in authored["members"] if m["ref"] in groups[recipe]]
+                if not member_ids:
+                    continue
+                meaning, priority = ROLE_META[recipe]
+                regions.append({"id":"interface-region:generated-" + recipe + "-" + authored["id"].rsplit(".",1)[-1],
+                    "parentId":root,"ordinal":len(regions)-1,"recipe":recipe,
+                    "nativeTag":TAGS[recipe],"purpose":meaning,
+                    "priority":authored.get("priority",priority),
+                    "semanticTitle":authored["id"].rsplit(".",1)[-1],"tasks":[],
+                    "members":[{"ref":ident} for ident in member_ids],
+                    "reasons":["authored-semantic-" + recipe + ":" + authored["id"]]})
+            continue
         meaning, priority = ROLE_META[recipe]
         regions.append({"id": "interface-region:generated-" + recipe, "parentId": root,
              "ordinal": len(regions) - 1, "recipe": recipe, "nativeTag": TAGS[recipe],

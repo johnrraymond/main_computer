@@ -141,10 +141,9 @@ def test_v4b_local_route_is_bounded(tmp_path):
         server.shutdown();server.server_close();thread.join(timeout=5)
 
 
-def test_v4b_browser_selects_default_and_rejects_unenrolled_login():
+def test_v4b_browser_reflects_selected_identity_without_exposing_login():
     from playwright.sync_api import sync_playwright
     import shutil
-    overview=observe_slh('overview',probe=_status)
     identities=_identity_response()
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
@@ -152,47 +151,35 @@ def test_v4b_browser_selects_default_and_rejects_unenrolled_login():
             page=browser.new_page()
             errors=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
-            dialogs=[]
-            page.on('dialog',lambda dialog:(dialogs.append(dialog.message),dialog.dismiss()))
-            page.evaluate('''({overview,identities})=>{
+            page.evaluate("""identities=>{
                 window.v4bCalls=[];
-                window.fetch=async (url,opts={})=>{
-                  window.v4bCalls.push({url,method:opts.method,body:opts.body||null});
-                  if(url==="/api/applications/slh/identities")return {ok:true,json:async()=>identities};
-                  if(url==="/api/applications/slh/observe?view=overview")return {ok:true,json:async()=>overview};
-                  if(url==="/api/applications/slh/observe?view=workers")return {ok:true,json:async()=>({
-                    ...overview,view:"workers",workers:[],workerSummary:{observationState:"AUTH_REQUIRED",
-                    explanation:"Not authenticated",observedAt:"2026-11-08T00:00:00Z",source:"Oracle",
-                    enrolledCount:"NOT_OBSERVED",connectedCount:"NOT_OBSERVED"}})};
-                  if(url==="/api/applications/slh/setup/action")return {ok:false,json:async()=>({error:"IDENTITY_NOT_ENROLLED"})};
-                  throw Error("Unexpected request: "+url);
+                window.fetch=async(url,opts={})=>{
+                    window.v4bCalls.push({url,method:opts.method,body:opts.body||null});
+                    if(url==='/api/applications/slh/identities')return {ok:true,json:async()=>identities};
+                    throw Error('No lifecycle operation allowed: '+url);
                 };
-            }''',{'overview':overview,'identities':identities})
+            }""",identities)
             page.set_content(render_slh_page(),wait_until='load')
-            page.get_by_text('SLH observation complete',exact=False).wait_for(timeout=15000)
+            page.wait_for_function("()=>window.__mcelSlh?.app.readState('state:selected-local-identity')==='identity-default'")
             assert not errors,errors
             assert page.locator('input[name="adminDeviceId"]').count()==0
             assert page.locator('input[name="deviceId"]').count()==0
-            # The generated selector chooses the LMS-SLH designated default.
-            page.wait_for_function('''()=>document.body.textContent.includes('identity-default')''',timeout=15000)
             assert page.locator('[data-record-key="identity-default"]').count()==1
             assert page.locator('[data-record-key="identity-second"]').count()==1
-            page.locator('button[data-intent="intent:login-administrator"]').click(timeout=5000)
-            page.wait_for_function('''()=>window.v4bCalls.some(x=>x.url.endsWith("setup/action"))''',timeout=15000)
-            sent=page.evaluate('''()=>window.v4bCalls.filter(x=>x.url.endsWith("setup/action"))''')
-            assert json.loads(sent[-1]['body'])['arguments']['adminDeviceId']=='identity-default'
-            assert page.get_by_text('Organization session not established',exact=True).count()==1
-            # Selecting a second ordinary identity changes the authentication argument.
+            assert page.locator('[data-mcel-selected-details="identity-default"]').count()==1
+            assert not page.locator('button[data-intent="intent:login-administrator"]').count()
+            assert page.locator('button[data-mcel-draft-submit]').is_disabled()
             page.locator('[data-record-key="identity-second"] button[data-select-key="identity-second"]').click()
-            page.locator('button[data-intent="intent:login-administrator"]').click()
-            page.wait_for_function('''()=>window.v4bCalls.filter(x=>x.url.endsWith("setup/action")).length===2''',timeout=15000)
-            sent=page.evaluate('''()=>window.v4bCalls.filter(x=>x.url.endsWith("setup/action"))''')
-            assert json.loads(sent[-1]['body'])['arguments']['adminDeviceId']=='identity-second'
-            assert dialogs==[],f"Login Administrator must not ask for confirmation: {dialogs}"
+            page.wait_for_function("()=>window.__mcelSlh.app.readState('state:selected-local-identity')==='identity-second'")
+            assert page.locator('[data-mcel-selected-details="identity-second"]').count()==1
+            result=page.evaluate("""async()=>{
+                return (await window.__mcelSlh.app.execute('intent:login-administrator')).disposition;
+            }""")
+            assert result in {'failed','refused-before-attempt'}
+            assert all(x['url']=='/api/applications/slh/identities' and x['method']=='GET'
+                       for x in page.evaluate('window.v4bCalls'))
             assert not errors,errors
-        finally:
-            browser.close()
-
+        finally:browser.close()
 
 def test_login_confirmation_fix_preserves_service_start_confirmation():
     """Only authentication loses the prompt; service operations keep their gate."""

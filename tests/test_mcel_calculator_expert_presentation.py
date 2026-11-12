@@ -87,13 +87,17 @@ def test_responsive_semantic_workbench_no_horizontal_overflow(browser,width):
         assert p.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert p.locator('form[data-mcel-composition="expression-workbench"]').is_visible()
         assert p.locator('[data-mcel-purpose="results"]:visible').count()==1
-        if width<=680:
-            assert p.locator('select[data-intent="intent:switch-mode"]').is_visible()
-            assert p.locator('[data-mcel-mode-tabs]').is_hidden()
-            p.locator('select[data-intent="intent:switch-mode"]').select_option('graphing')
-        else:
-            assert p.locator('[data-mcel-mode-tabs]').is_visible()
-            p.locator('[data-mcel-mode-tabs] button[data-value="graphing"]').click()
+        # Mode choices are actual left-navigation destinations at every width,
+        # not a wrapping toolbar or an unrelated dropdown above the workspace.
+        nav=p.locator('[data-mcel-natural-scroller="navigation"]')
+        choices=nav.locator('[data-mcel-mode-tabs] button')
+        assert choices.all_inner_texts()==['Basic','Graphing','Symbolic','Help']
+        assert choices.first.is_visible()
+        bounds=choices.evaluate_all('''els=>els.map(e=>{const r=e.getBoundingClientRect();
+            return [r.x,r.top,r.bottom]})''')
+        assert all(bounds[i][1]>=bounds[i-1][2]-1 and abs(bounds[i][0]-bounds[0][0])<2
+                   for i in range(1,len(bounds)))
+        nav.locator('[data-mcel-mode-tabs] button[data-value="graphing"]').click()
         f=p.locator('form[data-intent="intent:draw-graph"]')
         f.locator('input[name="expression"]').fill('sin(x)')
         f.locator('button[type="submit"]').click()
@@ -104,8 +108,12 @@ def test_responsive_semantic_workbench_no_horizontal_overflow(browser,width):
 def test_generic_expert_layout_policy_has_no_app_specific_branches():
     css=(ROOT/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text()
     js=(ROOT/'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js').read_text()
+    # Source comments may describe a named fixture; selectors must remain
+    # generic and must never branch on a particular application identity.
+    import re
+    executable_css=re.sub(r'/\*.*?\*/', '', css, flags=re.S).lower()
     for text in ('calculator','file-manager','task-manager','code-editor','semantic-calculator-expanded'):
-        assert text not in css.lower()
+        assert text not in executable_css
     assert 'semantic-calculator-expanded' not in js
     assert 'region.tasks?.includes("compute")' in js
     assert 'region.priority === "primary"' in js

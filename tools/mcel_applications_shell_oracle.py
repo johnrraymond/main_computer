@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from main_computer.mcel_applications_shell_host import (
     ROOT, ROUTE, LEGACY_HTML, LEGACY_BASE, compile_applications_shell, legacy_desktop_reference,
-    render_applications_shell_candidate,
+    render_applications_shell_candidate, DESKTOP_GROUPS,
 )
 
 SIZES = [390, 500, 1040, 1440]
@@ -181,6 +181,62 @@ def compare(reference: dict, actual: dict) -> list[str]:
     return errors
 
 
+
+def compare_grouped_desktop(reference: dict, actual: dict, clusters: list[dict]) -> list[str]:
+    """Grouped desktop acceptance: preserve the source identity and SVGs
+    while intentionally changing the rainbow palette, order and geometry.
+    Strict compare() is retained for historical negative controls.
+    """
+    errors = []
+    if "error" in actual:
+        return [actual["error"]]
+    expected = {item["id"]: item for item in reference["icons"]}
+    observed = {item["id"]: item for item in actual.get("icons", [])}
+    if len(actual.get("icons", [])) != len(expected) or set(observed) != set(expected):
+        return ["desktop-grouped-icon-inventory-mismatch"]
+    for slug, source in expected.items():
+        for key in ("title", "summary", "svg"):
+            if source[key] != observed[slug][key]:
+                errors.append(f"desktop-grouped-{slug}-{key}-drift")
+    if len(clusters) != len(DESKTOP_GROUPS):
+        return errors + ["desktop-group-count-mismatch"]
+    colors = []
+    for actual_group, (slug, title, ids) in zip(clusters, DESKTOP_GROUPS):
+        if actual_group["id"] != slug or actual_group["title"] != title:
+            errors.append("desktop-group-label-or-order-drift:" + slug)
+        if actual_group["apps"] != list(ids):
+            errors.append("desktop-group-membership-or-order-drift:" + slug)
+        accents = {observed[app]["accent"] for app in ids if app in observed}
+        if len(accents) != 1:
+            errors.append("desktop-group-palette-not-uniform:" + slug)
+        colors.extend(accents)
+        if actual_group["overflows"]:
+            errors.append("desktop-group-horizontal-overflow:" + slug)
+        if actual_group["escapes"]:
+            errors.append("desktop-icon-escapes-group:" + slug)
+    if len(colors) != len(set(colors)):
+        errors.append("desktop-group-palette-not-distinct")
+    return errors
+
+
+_CLUSTER_CAPTURE = r'''() => [...document.querySelectorAll('#mcel-shell-desktop-overlay .desktop-cluster')]
+  .map(group => {
+    const bounds = group.getBoundingClientRect();
+    const icons = [...group.querySelectorAll('.desktop-icon')];
+    return {
+      id:group.dataset.desktopGroup,
+      title:group.querySelector('h3')?.textContent,
+      apps:icons.map(icon=>icon.dataset.app),
+      overflows:group.scrollWidth > group.clientWidth + 1,
+      escapes:icons.some(icon=>{
+        const rect=icon.getBoundingClientRect();
+        return rect.left < bounds.left - 1 || rect.right > bounds.right + 1 ||
+               rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1;
+      })
+    };
+  })'''
+
+
 def navigation_link_errors(links: dict, registry: dict, icon_ids: set[str]) -> list[str]:
     """A semantic destination requires a real canonical href in both launchers.
 
@@ -274,7 +330,8 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                     candidate_page.set_content(render_applications_shell_candidate(),wait_until="load")
                 reference = capture(reference_page)
                 actual = capture(candidate_page)
-                failures.extend(compare(reference, actual))
+                failures.extend(compare_grouped_desktop(
+                    reference, actual, candidate_page.evaluate(_CLUSTER_CAPTURE)))
                 # A browser-native URL is part of the semantic destination
                 # contract, not an optional JavaScript click effect.
                 navigation_links = candidate_page.evaluate("""() => ({

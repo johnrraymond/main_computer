@@ -5,6 +5,17 @@
       min-height: 0;
       height: 100%;
     }
+    /* Marketplace panels use author display rules; hidden must take precedence. */
+    .worker-app [hidden] {
+      display: none !important;
+    }
+    .worker-slh-card {
+      border-color: rgba(167, 216, 109, 0.44);
+      background: rgba(17, 22, 15, 0.98);
+    }
+    .worker-slh-card .worker-network-status-grid dd {
+      overflow-wrap: anywhere;
+    }
     .worker-shell {
       gap: 14px;
       color: var(--ink);

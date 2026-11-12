@@ -172,3 +172,15 @@
 .mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-density="readable"] .mcel-application-shell__table-scroll td {
   overflow-wrap:anywhere;
 }
+
+/* Shared MCEL application shell: the root never owns scroll. */
+.mcel-application-shell {
+  display:grid;grid-template-rows:minmax(0,max-content) minmax(0,1fr);
+  overflow:hidden;overscroll-behavior:none;
+}
+.mcel-application-shell__heading {min-height:0;max-height:30%;overflow:auto;overscroll-behavior:contain}
+.mcel-application-shell__layout {height:100%;min-height:0;overflow:hidden;align-items:stretch}
+.mcel-application-shell__sidebar,.mcel-application-shell__main {
+  min-height:0;max-height:100%;overflow:auto;overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}

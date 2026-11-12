@@ -1,5 +1,8 @@
 # SLH target selection: local versus network (Oracle V2)
 
+> **Historical milestone, not the current SLH administration oracle.** The separate-app and remote-no-login requirements in this document are superseded by `mcel-slh-unified-admin-oracle-v4.md`. The existing network TLS, origin, target, and authority-isolation safety constraints remain in force.
+
+
 The first question at `/applications/slh` is **which SLH the user intends to
 administer**. SLH's always-installable Local Management Service and the
 organization's operational Service are distinct authorities. Neither the

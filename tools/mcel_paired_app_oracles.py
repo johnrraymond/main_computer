@@ -48,7 +48,24 @@ DOM_OBSERVATION = r'''() => {
    {zone:el.closest('[data-mcel-zone]')?.dataset.mcelZone||null,
     rect:rect(el),visible:!!el.getClientRects().length&&!el.hidden}]));
  const tabs=[...document.querySelectorAll('[data-mcel-tool-tabs] [role="tab"]')];
- return {layout:!!layout,rung:layout?.dataset.mcelLayoutRung||null,
+ const named=id=>root?.querySelector('[data-mcel-zone="'+id+'"]');
+ const nav=named('navigator'),work=named('workspace'),tools=named('tools');
+ const tree=root?.querySelector('[data-mcel-explorer-navigation]');
+ const listings=root?.querySelector('[data-mcel-explorer-view]');
+ const contents=root?.querySelector('[data-mcel-directory-contents]');
+ const collection=listings?.closest('[data-collection]');
+ const inspector=root?.querySelector('[data-mcel-purpose="inspection"]');
+ const scroll=el=>el?getComputedStyle(el).overflowY:null;
+ const fileExplorer={treeInNavigator:!!(nav&&tree&&nav.contains(tree)),
+   listingInWorkspace:!!(work&&listings&&work.contains(listings)),
+   inspectorInTools:!!(tools&&inspector&&tools.contains(inspector)),
+   navigationScrollOwner:scroll(nav)==='auto',workspaceScrollOwner:scroll(work)==='auto',
+   inspectorScrollOwner:scroll(tools)==='auto',
+   treeDoesNotScroll:!!tree&&scroll(tree)!=='auto'&&scroll(tree.querySelector('[data-mcel-folder-tree]'))!=='auto',
+   listDoesNotScroll:!!contents&&scroll(contents)!=='auto'&&scroll(collection)!=='auto',
+   outerFrameBounded:!!layout&&getComputedStyle(layout).overflowY==='hidden'&&
+     document.documentElement.scrollHeight<=innerHeight+1};
+ return {layout:!!layout,rung:layout?.dataset.mcelLayoutRung||null,fileExplorer,
    zone,regions,tabCount:tabs.length,
    selectedTabs:tabs.filter(el=>el.getAttribute('aria-selected')==='true').length,
    visiblePanels:[...document.querySelectorAll('[data-mcel-tool-panel]')].filter(el=>!el.hidden).length,
@@ -127,6 +144,20 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
         for second in ('controls','navigator','workspace','tools')[i+1:]:
             if first in active and second in active and _overlap(active[first],active[second])>1:
                 errors.append('zones-overlap:'+first+':'+second)
+    if app=='file-manager':
+        explorer=observed.get('fileExplorer') or {}
+        requirements={
+            'treeInNavigator':'folder-hierarchy-not-under-locations',
+            'listingInWorkspace':'directory-list-not-in-primary-workspace',
+            'inspectorInTools':'selected-entry-not-in-inspector',
+            'navigationScrollOwner':'navigation-lacks-scroll-ownership',
+            'workspaceScrollOwner':'workspace-lacks-scroll-ownership',
+            'inspectorScrollOwner':'inspector-lacks-scroll-ownership',
+            'treeDoesNotScroll':'nested-folder-tree-scrollbar',
+            'listDoesNotScroll':'nested-directory-list-scrollbar',
+            'outerFrameBounded':'outer-frame-scrollbar',
+        }
+        errors.extend(failure for fact,failure in requirements.items() if explorer.get(fact) is not True)
     if app in TOOL_TABS:
         expected_count=len(TOOL_TABS[app])
         if observed.get('tabCount') != expected_count:
@@ -271,6 +302,15 @@ def governed_multifield_workflow_oracle(browser_page, width: int) -> dict:
 
 def browser_oracle(browser_page, app: str, width: int) -> dict:
     """Read the real rendered DOM and exercise only nonconsequential mode/tab UI."""
+    if app=='file-manager':
+        # Staged parity pages start with no filesystem authority. Reach an
+        # observed hierarchy through the authored read-only UI, exactly as an
+        # operator would. Never fabricate a tree in the DOM for measurement.
+        if not browser_page.locator('[data-mcel-explorer-navigation] [data-mcel-folder-tree]').count():
+            browser_page.get_by_role('button',name='Load Roots').click(timeout=6000)
+            browser_page.locator('[data-record-key="workspace"] button').click(timeout=6000)
+            browser_page.get_by_role('button',name='Browse',exact=True).click(timeout=6000)
+        # Missing hierarchy is a semantic-oracle failure, not a browser timeout.
     observed=browser_page.evaluate(DOM_OBSERVATION)
     failures=[]
     interaction={'status':'PASS','failures':failures}
@@ -326,4 +366,16 @@ def browser_oracle(browser_page, app: str, width: int) -> dict:
     except Exception as exc:
         failures.append(type(exc).__name__+':'+str(exc)[:180])
     if failures:interaction['status']='FAIL'
-    return check_layout(app,observed,width,interactions=interaction)
+    result=check_layout(app,observed,width,interactions=interaction)
+    # A semantically correct region placement does not excuse cramped card
+    # scrollbars or a workspace that occupies a thin strip of the viewport.
+    # Judge actual normal DOM before synthetic overflow is introduced.
+    from tools import mcel_viewport_composition_oracle as composition
+    viewport_composition=composition.assess(browser_page.evaluate(composition.DOM_OBSERVATION))
+    result['viewportComposition']=viewport_composition
+    if viewport_composition['status']!='PASS':
+        result['failures']=sorted(set(result['failures']+["viewport-composition:"+x
+                           for x in viewport_composition['failures']]))
+        result['status']='FAIL'
+        result['reason']='Independent viewport composition oracle mismatch'
+    return result

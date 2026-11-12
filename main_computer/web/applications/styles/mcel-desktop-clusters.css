@@ -1,0 +1,140 @@
+/* Canonical desktop only. Keep the five semantic color groups, but let
+ * their icons form compact, unboxed runs without labels or filler columns.
+ * Legacy desktop source, navigation and SVG artwork remain unchanged. */
+#mcel-shell-desktop-overlay.desktop-overlay.desktop-home {
+  display: block;
+  padding: 18px 20px 22px;
+  background: #020403;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+#mcel-shell-desktop-overlay .desktop-caption { display: none; }
+#mcel-shell-desktop-overlay .desktop-clusters {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 22px 26px;
+  width: 100%;
+  max-width: 1700px;
+  margin: 0;
+}
+#mcel-shell-desktop-overlay .desktop-cluster {
+  --cluster-accent: #46d48e;
+  --cluster-bright: #aaf3c6;
+  --cluster-ink: #06170e;
+  --cluster-rgb: 70, 212, 142;
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+}
+#mcel-shell-desktop-overlay .desktop-cluster[data-desktop-group="productivity"] {
+  --cluster-accent: #47d68e;
+  --cluster-bright: #b1f6ce;
+  --cluster-ink: #06190d;
+  --cluster-rgb: 71, 214, 142;
+}
+#mcel-shell-desktop-overlay .desktop-cluster[data-desktop-group="development"] {
+  --cluster-accent: #ad83f3;
+  --cluster-bright: #ddc5ff;
+  --cluster-ink: #190e2d;
+  --cluster-rgb: 173, 131, 243;
+}
+#mcel-shell-desktop-overlay .desktop-cluster[data-desktop-group="compute"] {
+  --cluster-accent: #efbf4f;
+  --cluster-bright: #ffe394;
+  --cluster-ink: #261803;
+  --cluster-rgb: 239, 191, 79;
+}
+#mcel-shell-desktop-overlay .desktop-cluster[data-desktop-group="creative"] {
+  --cluster-accent: #f17b90;
+  --cluster-bright: #ffbbc5;
+  --cluster-ink: #2a0812;
+  --cluster-rgb: 241, 123, 144;
+}
+#mcel-shell-desktop-overlay .desktop-cluster[data-desktop-group="system"] {
+  --cluster-accent: #69baff;
+  --cluster-bright: #b6e0ff;
+  --cluster-ink: #071a2d;
+  --cluster-rgb: 105, 186, 255;
+}
+#mcel-shell-desktop-overlay .desktop-cluster-apps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 10px;
+  width: max-content;
+  max-width: 100%;
+}
+/* Fixed footprint: the icons never expand into leftover row space. */
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon {
+  --desktop-icon-accent: var(--cluster-accent);
+  --desktop-icon-accent-bright: var(--cluster-bright);
+  --desktop-icon-border: rgba(var(--cluster-rgb), .53);
+  --desktop-icon-glow: rgba(var(--cluster-rgb), .26);
+  --desktop-icon-panel: rgba(var(--cluster-rgb), .13);
+  --desktop-icon-ink: var(--cluster-ink);
+  flex: 0 0 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-content: flex-start;
+  justify-content: flex-start;
+  position: relative;
+  left: auto;
+  top: auto;
+  box-sizing: border-box;
+  width: 100px;
+  min-width: 0;
+  max-width: 100px;
+  min-height: 88px;
+  height: auto;
+  gap: 8px;
+  padding: 6px 3px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  text-align: center;
+  text-decoration: none;
+  transform: none !important;
+}
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon .desktop-glyph {
+  width: 43px;
+  height: 43px;
+  flex: none;
+  border-radius: 11px;
+}
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon .desktop-glyph-svg {
+  width: 29px;
+  height: 29px;
+}
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon strong {
+  font: 700 12px/1.25 Arial, Helvetica, sans-serif;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon:hover {
+  background: rgba(var(--cluster-rgb), .09);
+  box-shadow: none;
+}
+#mcel-shell-desktop-overlay .desktop-cluster .desktop-icon:focus-visible {
+  background: rgba(var(--cluster-rgb), .09);
+  outline: 2px solid var(--cluster-accent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+@media (max-width: 480px) {
+  #mcel-shell-desktop-overlay.desktop-overlay.desktop-home {
+    padding: 12px 10px 18px;
+  }
+  #mcel-shell-desktop-overlay .desktop-clusters { gap: 18px 16px; }
+}

@@ -1,194 +1,149 @@
 "use strict";
 
-// SLH's first semantic application. It declares observations and user actions,
-// not HTML, widget hierarchy, CSS geometry, or implicit administrator authority.
-// See pretty_docs/secure-local-hub-administrator-manual.md for user intentions.
+// MCEL SLH: explicit configure-and-enable / disable lifecycle, persistent
+// signing identity and separately pinned remote inspection. Opening this
+// application is always observation-only; lifecycle changes require an action.
 const mcel = require("@mcel/app");
 
 module.exports = mcel.defineApp(
-  {id: "slh", title: "Secure Local Hub", semanticVersion: "1"},
+  {id:"slh",title:"Secure Local Hub",semanticVersion:"1"},
   dsl => {
-    const text = dsl.field.text();
-    const acknowledgement = dsl.field.boolean();
-    const healthRow = dsl.field.record({id: text, subject: text, state: text, source: text});
-    const workerRow = dsl.field.record({id: text, label: text, state: text, models: text,
-      assignment: text, marketplace: text, source: text});
-    const overviewShape = dsl.field.record({
-      serviceState: text, initializationState: text, organizationState: text,
-      administratorEnrollmentState: text, organizationEstablishedState: text,
-      organizationEndpoint: text, organizationNetworkState: text,
-      organizationTlsState: text, localCredentialState: text, managementEndpoint: text,
-      nextStep: text, networkGuidance: text,
-      observationState: text, observedAt: text, source: text, explanation: text
+    const text=dsl.field.text();
+    const identityRow=dsl.field.record({
+      deviceId:text,label:text,fingerprint:text,defaultStatus:text
     });
-    const workerSummaryShape = dsl.field.record({
-      observationState: text, explanation: text, observedAt: text, source: text,
-      enrolledCount: text, connectedCount: text
+    const identityRows=dsl.field.list(identityRow,{key:"deviceId"});
+    const identitySummaryShape=dsl.field.record({
+      state:text,defaultDeviceId:text,explanation:text
     });
-    const healthRows = dsl.field.list(healthRow, {key: "id"});
-    const workerRows = dsl.field.list(workerRow, {key: "id"});
-    const overview = dsl.state.derived("overview", overviewShape);
-    const checks = dsl.state.derived("health-checks", healthRows);
-    const workers = dsl.state.derived("workers", workerRows);
-    const workerSummary = dsl.state.derived("worker-summary", workerSummaryShape);
-    const selectedWorker = dsl.state.rendererLocal("selected-worker", text, {initial: ""});
-    // Identities are ordinary LMS-SLH keys. Their selection grants no organization role.
-    const identityRow = dsl.field.record({deviceId:text,label:text,fingerprint:text,defaultStatus:text});
-    const identityRows = dsl.field.list(identityRow,{key:"deviceId"});
-    const identitySummaryShape = dsl.field.record({state:text,defaultDeviceId:text,explanation:text});
-    const identities = dsl.state.derived("local-identities",identityRows);
-    const identitySummary = dsl.state.derived("local-identity-status",identitySummaryShape);
-    const adminDevice = dsl.state.rendererLocal("selected-local-identity", text, {initial: ""});
-    const mutationShape = dsl.field.record({outcome: text, message: text, deviceId: text});
-    const mutationResult = dsl.state.derived("worker-operation-result", mutationShape);
-    const setupShape = dsl.field.record({outcome: text, message: text, deviceId: text});
-    const setupResult = dsl.state.derived("first-run-result", setupShape);
-    const view = dsl.state.rendererLocal("view", text.oneOf(["overview", "worker-bank"]), {initial: "overview"});
-
-    // Only the fixed, bounded same-origin observation adapter is admitted.
-    // Device enrollment, capacity policy writes and SEH activation are NOT
-    // declared, so they cannot be invoked through this generated application.
-    const observer = dsl.capability.external("slh-observer", {
-      risk: "external-read",
-      description: "Read already-running SLH loopback service state without starting or modifying it"
+    const identities=dsl.state.derived("local-identities",identityRows);
+    const identitySummary=dsl.state.derived("local-identity-status",identitySummaryShape);
+    // Local keys are independent of the selected Organization Service target.
+    // The device ID is not a bearer or administrator authorization.
+    const adminDevice=dsl.state.rendererLocal("selected-local-identity",text,{initial:""});
+    const target=dsl.state.rendererLocal("selected-target",
+      text.oneOf(["local","network"]),{initial:"local"});
+    const selectTarget=dsl.intent.selectView("select-target",target);
+    const chooseIdentity=dsl.intent.selectFromCollection("choose-identity",identities,adminDevice);
+    const observer=dsl.capability.external("slh-observer",{
+      risk:"external-read",
+      description:"Read the existing LMS-SLH identity directory without starting an Organization Service"
     });
-    observer.operation("overview", "observeSlhOverview", {result: overviewShape});
-    observer.operation("health", "observeSlhHealth", {result: healthRows});
-    observer.operation("workers", "observeSlhWorkers", {result: workerRows});
-    observer.operation("worker-summary", "observeSlhWorkerSummary", {result: workerSummaryShape});
-    observer.operation("identities", "observeSlhIdentities", {result: identityRows});
-    observer.operation("identity-status", "observeSlhIdentityStatus", {result: identitySummaryShape});
-
-    const refreshOverview = dsl.intent.capabilityRequest("refresh-overview", observer,
-      {operation: "overview", resultTo: overview});
-    const refreshHealth = dsl.intent.capabilityRequest("refresh-health", observer,
-      {operation: "health", resultTo: checks});
-    const refreshWorkers = dsl.intent.capabilityRequest("refresh-workers", observer,
-      {operation: "workers", resultTo: workers});
-    const refreshWorkerSummary = dsl.intent.capabilityRequest("refresh-worker-summary", observer,
-      {operation: "worker-summary", resultTo: workerSummary});
-    const refreshIdentities = dsl.intent.capabilityRequest("refresh-identities", observer,
+    observer.operation("identities","observeSlhIdentities",{result:identityRows});
+    observer.operation("identity-status","observeSlhIdentityStatus",{result:identitySummaryShape});
+    const lifecycleShape=dsl.field.record({state:text,bindAddress:text,port:dsl.field.integer()});
+    const lifecycle=dsl.state.derived("organization-lifecycle",lifecycleShape);
+    observer.operation("lifecycle","observeSlhLifecycle",{result:lifecycleShape});
+    const refreshLifecycle=dsl.intent.capabilityRequest("refresh-lifecycle",observer,
+      {operation:"lifecycle",resultTo:lifecycle});
+    const refreshIdentities=dsl.intent.capabilityRequest("refresh-identities",observer,
       {operation:"identities",resultTo:identities});
-    const refreshIdentityStatus = dsl.intent.capabilityRequest("refresh-identity-status", observer,
+    const refreshIdentityStatus=dsl.intent.capabilityRequest("refresh-identity-status",observer,
       {operation:"identity-status",resultTo:identitySummary});
-    const chooseIdentity = dsl.intent.selectFromCollection("choose-identity",identities,adminDevice);
-    const admin = dsl.capability.external("slh-worker-admin", {
-      risk: "consequential", description: "Authenticated, audited Worker identity management"
+    const setupShape=dsl.field.record({outcome:text,message:text,deviceId:text});
+    const setupResult=dsl.state.derived("organization-setup-result",setupShape);
+    const setup=dsl.capability.external("slh-first-run",{
+      risk:"consequential",description:"Explicitly configure/start or disable the local Organization Service"
     });
-    admin.operation("rename", "renameSlhWorker", {inputs: {label: text, deviceId: text},
-      result: mutationShape, risk: "consequential"});
-    // First-run capabilities are explicitly consequential; the viewport never
-    // simulates success or writes the SLH authority directly.
-    const setup = dsl.capability.external("slh-first-run", {
-      risk: "consequential", description: "Local operator-authorized SLH startup, bootstrap and organization activation"
+    setup.operation("configure-and-enable","configureAndEnableSlhOrganization",{
+      inputs:{adminDeviceId:text,bindAddress:text,port:dsl.field.integer()},
+      result:setupShape,risk:"consequential"
     });
-    setup.operation("start", "startSlhLocal", {result: setupShape, risk: "consequential"});
-    setup.operation("bootstrap", "bootstrapSlhAdministrator", {
-      inputs: {adminId: text, adminName: text, deviceId: text, acknowledgeP256Only: acknowledgement},
-      result: setupShape, risk: "consequential"
+    setup.operation("disable","disableSlhOrganization",{
+      inputs:{adminDeviceId:text},result:setupShape,risk:"consequential"
     });
-    setup.operation("configure", "configureSlhOrganization", {
-      inputs: {adminDeviceId: text, host: text, apiPort: text, workerPort: text},
-      result: setupShape, risk: "consequential"
+    const configureAndEnable=dsl.intent.capabilityRequest("configure-and-enable-organization",setup,{
+      operation:"configure-and-enable",inputs:{bindAddress:text,port:dsl.field.integer()},
+      arguments:{adminDeviceId:adminDevice},resultTo:setupResult,
+      confirmationRequired:false
     });
-    setup.operation("activate", "activateSlhOrganization", {
-      inputs: {adminDeviceId: text}, result: setupShape, risk: "consequential"
+    const disableOrganization=dsl.intent.capabilityRequest("disable-organization",setup,{
+      operation:"disable",arguments:{adminDeviceId:adminDevice},
+      resultTo:setupResult,confirmationRequired:false
     });
-    setup.operation("logout", "logoutSlhAdministrator", {
-      result: setupShape, risk: "consequential"
+    const networkRows=dsl.field.list(dsl.field.record({
+      id:text,endpoint:text,tlsSha256:text,organizationState:text,
+      authenticationState:text,observedAt:text,explanation:text
+    }),{key:"id"});
+    const networkObservation=dsl.state.derived("network-observations",networkRows);
+    const networkIdentity=dsl.capability.external("network-slh-identity",{
+      risk:"external-read",
+      description:"Read-only inspection of an independently pinned remote Organization Service TLS identity"
     });
-    setup.operation("login", "loginSlhAdministrator", {
-      inputs: {adminDeviceId: text}, result: setupShape, risk: "consequential"
+    networkIdentity.operation("inspect","inspectPinnedNetworkSlh",{
+      inputs:{address:text,port:dsl.field.integer(),tlsSha256:text},result:networkRows
     });
-    const startLocal = dsl.intent.capabilityRequest("start-local", setup,
-      {operation: "start", resultTo: setupResult});
-    const bootstrap = dsl.intent.capabilityRequest("bootstrap-administrator", setup,
-      {operation: "bootstrap", inputs: {adminId: text, adminName: text, acknowledgeP256Only: acknowledgement},
-        arguments: {deviceId:adminDevice}, resultTo: setupResult});
-    const configure = dsl.intent.capabilityRequest("configure-organization", setup,
-      {operation: "configure", inputs: {host: text, apiPort: text, workerPort: text},
-       arguments: {adminDeviceId:adminDevice}, resultTo: setupResult});
-    const activate = dsl.intent.capabilityRequest("activate-organization", setup,
-      {operation: "activate", arguments: {adminDeviceId:adminDevice}, resultTo: setupResult});
-    const login = dsl.intent.capabilityRequest("login-administrator", setup,
-      {operation: "login", arguments: {adminDeviceId:adminDevice},
-        confirmationRequired: false, resultTo: setupResult});
-    const logout = dsl.intent.capabilityRequest("logout-administrator", setup,
-      {operation: "logout", resultTo: setupResult});
-    const chooseWorker = dsl.intent.selectFromCollection("choose-worker", workers, selectedWorker);
-    const renameWorker = dsl.intent.capabilityRequest("rename-worker", admin, {
-      operation: "rename", inputs: {label: text}, arguments: {deviceId: selectedWorker},
-      resultTo: mutationResult
+    const inspectNetwork=dsl.intent.capabilityRequest("inspect-network-slh",networkIdentity,{
+      operation:"inspect",inputs:{address:text,port:dsl.field.integer(),tlsSha256:text},
+      resultTo:networkObservation
     });
-    const selectView = dsl.intent.selectView("select-view", view);
-    const isView = equals => ({state: view, equals});
-    // Backend observations, not click history, establish the next valid step.
-    const observed = (path, equals, fresh=false) =>
-      ({state: overview, path, equals, ...(fresh?{maxAgeSeconds:60}:{})});
-    const whenAll = (...clauses) => ({all:clauses});
-    const currentLocal = observed("serviceState","RUNNING",true);
-    const initialized = observed("initializationState","INITIALIZED");
-    const orgRunning = observed("organizationState","running");
-    const administratorEnrolled = observed("administratorEnrollmentState","ENROLLED");
-    const established = observed("organizationEstablishedState","ESTABLISHED");
-    const localTls = observed("organizationTlsState","VERIFIED_LOCAL");
-    const authenticated = {state:workerSummary,path:"observationState",equals:"AUTHENTICATED"};
-    const authRequired = {state:workerSummary,path:"observationState",equals:"AUTH_REQUIRED"};
-    const haveIdentity = {state:identitySummary,path:"state",equals:"AVAILABLE"};
-    // Login Administrator is the single entry for both an unestablished local
-    // organization and an already enrolled one. The backend, not this UI,
-    // decides whether initial enrollment is permitted.
-    const canLogin = whenAll(currentLocal,authRequired,haveIdentity);
-    const canOperate = whenAll(currentLocal,initialized,orgRunning,established,
-      administratorEnrolled,localTls,authenticated);
-    const surface = dsl.surface.define("slh", {purpose: "monitor", root:
-      dsl.surface.region("semantic-source", {children: [
-        dsl.surface.action("select-view", {intent: selectView}),
-        dsl.surface.action("refresh-overview", {intent: refreshOverview}),
-        dsl.surface.action("refresh-identities", {intent:refreshIdentities}),
-        dsl.surface.text("local-identity-status",{value:identitySummary,when:isView("overview")}),
+    const isTarget=choice=>({state:target,equals:choice});
+    const networkContext=dsl.surface.region("observation-query",{
+      role:"navigation",priority:"secondary",prefer:{side:"start"},children:[
+        dsl.surface.form("network-slh-target",{
+          fields:{address:text,port:dsl.field.integer(),tlsSha256:text},
+          defaults:{port:8899},intent:inspectNetwork,when:isTarget("network")
+        })
+      ]
+    });
+    const identityNavigation=dsl.surface.region("identities",{
+      role:"navigation",priority:"secondary",prefer:{side:"start"},children:[
         dsl.surface.collection("available-local-identities",{
-          key:"deviceId",fields:["label","deviceId","defaultStatus"],state:identities,
-          select:chooseIdentity,when:isView("overview")}),
-        dsl.surface.text("selected-local-identity",{value:adminDevice,when:isView("overview")}),
-        dsl.surface.action("start-local", {intent: startLocal,
-          when: whenAll(observed("serviceState","UNREACHABLE",true),
-            observed("observationState","UNAVAILABLE"))}),
-        dsl.surface.form("configure-organization", {fields: {host: text,
-          apiPort: text, workerPort: text}, defaults: {host: "127.0.0.1", apiPort: "8899",
-          workerPort: "8898"}, intent: configure,
-          when: whenAll(isView("overview"),currentLocal,haveIdentity,initialized,established,
-            administratorEnrolled,observed("organizationState","not_configured"))}),
-        dsl.surface.action("activate-organization", {intent: activate,
-          when: whenAll(isView("overview"),currentLocal,haveIdentity,initialized,established,
-            administratorEnrolled,observed("organizationState","disabled"))}),
-        dsl.surface.action("login-administrator", {intent: login,when:canLogin}),
-        dsl.surface.action("logout-administrator", {intent: logout,when:authenticated}),
-        dsl.surface.text("first-run-result", {value: setupResult, when: isView("overview")}),
-        dsl.surface.action("refresh-health", {intent: refreshHealth}),
-        dsl.surface.text("service-status", {value: overview, when: isView("overview")}),
-        dsl.surface.collection("health-checks", {
-          key: "id", fields: ["subject", "state", "source"], state: checks, when: isView("overview")
-        }),
-        dsl.surface.action("refresh-workers", {intent: refreshWorkers}),
-        dsl.surface.action("refresh-worker-summary", {intent: refreshWorkerSummary}),
-        dsl.surface.text("worker-inventory-availability", {value: workerSummary, when: isView("worker-bank")}),
-        dsl.surface.collection("worker-bank", {
-          key: "id", fields: ["label", "state", "models", "assignment", "marketplace"],
-          state: workers, select: chooseWorker, when: isView("worker-bank")
-        }),
-        dsl.surface.text("selected-worker", {value: selectedWorker, when: isView("worker-bank")}),
-        dsl.surface.form("rename-worker", {fields: {label: text}, intent: renameWorker,
-          when: whenAll(isView("worker-bank"),canOperate)}),
-        dsl.surface.text("worker-operation-result", {value: mutationResult, when: isView("worker-bank")}),
-        dsl.surface.receipt("observation-evidence")
-      ]})
+          key:"deviceId",fields:["label","deviceId","defaultStatus"],
+          state:identities,select:chooseIdentity
+        })
+      ]
     });
-    return {states: [overview, checks, workers, workerSummary, identities, identitySummary, view, selectedWorker, adminDevice, mutationResult, setupResult],
-      capabilities: [observer, admin, setup],
-      intents: [refreshOverview, refreshHealth, refreshWorkers, refreshWorkerSummary,
-        refreshIdentities,refreshIdentityStatus,chooseIdentity,
-        selectView, chooseWorker, renameWorker, startLocal, bootstrap, configure, activate, login, logout],
-      surfaces: [surface]};
+    const configurationTask=dsl.surface.region("configuration",{
+      role:"task",priority:"primary",children:[
+        dsl.surface.form("configure-org-slh",{
+          fields:{bindAddress:text,port:dsl.field.integer()},
+          defaults:{bindAddress:"0.0.0.0",port:8899},
+          submitLabel:"Configure ORG-SLH",intent:configureAndEnable,
+          acceptResult:{
+            bindAddress:{state:lifecycle,field:"bindAddress",pick:"bindAddress",whenIntent:refreshLifecycle},
+            port:{state:lifecycle,field:"port",pick:"port",whenIntent:refreshLifecycle}
+          },when:isTarget("local")
+        }),
+        dsl.surface.text("first-administrator-identity",{
+          value:adminDevice,label:"Proposed first administrator",when:isTarget("local")
+        })
+      ]
+    });
+    const serviceLifecycle=dsl.surface.region("service-lifecycle",{
+      role:"commands",priority:"supporting",children:[
+        dsl.surface.action("disable-org-slh",{
+          intent:disableOrganization,
+          // A persisted enabled service may be starting or recovering from a
+          // crash. Disable must remain available to stop its auto-restart.
+          when:isTarget("local"),
+          enabledWhen:{any:["running","starting","failed","stopped_unexpectedly"]
+            .map(status=>({state:lifecycle,path:"state",equals:status}))}
+        })
+      ]
+    });
+    const networkResults=dsl.surface.region("network-results",{
+      role:"results",priority:"secondary",children:[
+        dsl.surface.collection("verified-network-target",{
+          key:"id",fields:["endpoint","organizationState","authenticationState","tlsSha256"],
+          state:networkObservation,when:isTarget("network")
+        })
+      ]
+    });
+    const surface=dsl.surface.define("slh",{
+      purpose:"manage",
+      root:dsl.surface.region("semantic-source",{
+        children:[networkContext,identityNavigation,configurationTask,serviceLifecycle,networkResults]
+      }),
+      relations:[dsl.surface.relate(identityNavigation,"selects",configurationTask),
+        dsl.surface.relate(serviceLifecycle,"acts-on",configurationTask)]
+    });
+    return {
+      states:[identities,identitySummary,adminDevice,target,lifecycle,setupResult,networkObservation],
+      capabilities:[observer,setup,networkIdentity],
+      intents:[refreshIdentities,refreshIdentityStatus,refreshLifecycle,chooseIdentity,
+        selectTarget,inspectNetwork,configureAndEnable,disableOrganization],
+      surfaces:[surface]
+    };
   }
 );

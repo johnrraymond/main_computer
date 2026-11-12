@@ -80,9 +80,9 @@ def compile_semantic_app(name: str, repo: Path = ROOT) -> dict:
 def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False, initial_view: str | None = None) -> str:
     ir = compile_semantic_app(name, repo)
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    # Opt-in hosted acceptance for the Task Manager; the other routes retain
-    # their previously accepted presentation until individually certified.
-    workspace_enabled = name == "task-manager"
+    # The Task Manager and File Manager use verified semantic workspace plans.
+    # Other candidates retain their previously accepted presentation.
+    workspace_enabled = name in {"task-manager", "file-manager"}
     plan = plan_workspace(ir) if workspace_enabled else None
     if plan is not None:
         verify_workspace_plan(ir, plan)
@@ -102,13 +102,12 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
     if initial_view not in (None, "server-processes", "all-processes", "connections", "cpu-gpu") or (name != "task-manager" and initial_view is not None):
         raise CandidateHostError("Invalid canonical initial view")
     initial_view_payload = json.dumps(initial_view)
-    route_label = "Semantic application · Canonical route" if promoted else "Semantic candidate · Original application unchanged"
     ready_label = "Semantic application ready" if promoted else "Semantic candidate ready"
+    context_label = "MCEL application" if promoted else "Candidate · Original application unchanged"
     assets = (*DIAGNOSTIC_ASSETS, *((WORKSPACE_LAYOUT_ASSET,) if workspace_enabled else ()), *ASSETS, *(("main_computer/web/applications/scripts/mcel-scm.js", "main_computer/web/applications/scripts/code-editor-scm-manifest.js", "main_computer/web/applications/scripts/mcel-sandboxed-viewport.js") if name == "code-editor" else ()))
     scripts = "\n".join(script(x) for x in assets)
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic {title}</title><style>{style}</style></head><body class="mcel-workbench-page">
-<header><h1>Semantic {title}</h1><p>{route_label}</p></header>
 <div id="mcel-workbench" aria-label="Generated semantic {title}"></div>
 <div id="mcel-workbench-status" role="status" aria-live="polite"></div>
 <script type="application/json" id="mcel-workbench-ir">{payload}</script>
@@ -119,7 +118,8 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
  try{{const ir=JSON.parse(document.getElementById("mcel-workbench-ir").textContent);
  const port=McelSemanticReadPorts.create({{appId:ir.application.appId}});
  const workspacePlan=document.getElementById("mcel-workbench-plan") ? JSON.parse(document.getElementById("mcel-workbench-plan").textContent) : undefined;
- const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined}});
+ const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined,
+    navigationContextLabel:"{context_label}"}});
  window.__mcelWorkbench=Object.freeze({{app,appId:ir.application.appId}});
  const initialView={initial_view_payload};
  if(initialView && initialView!=="server-processes") app.execute("intent:switch-view",{{choice:initialView}}).catch(e=>{{status.dataset.error="true";status.textContent="Initial view refused: "+String(e?.message||e);}});

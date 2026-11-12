@@ -1299,3 +1299,36 @@
       }
     }
 
+
+/* Standalone canonical Chat Console is an MCEL viewport application. The
+ * embedded console retains its parent-assigned dimensions and layout. */
+html:has(>body.mcel-chat-page),body.mcel-chat-page {
+  height:100%;overflow:hidden;overscroll-behavior:none;
+}
+body.mcel-chat-page #chat-console-app {
+  height:100dvh;min-height:0;max-height:100dvh;width:100%;overflow:hidden;
+  display:grid;grid-template-rows:minmax(0,1fr);
+}
+body.mcel-chat-page #chat-console-app > .chat-console-shell {
+  height:100%;min-height:0;max-height:100%;overflow:hidden;
+}
+body.mcel-chat-page .chat-console-thread-layout {
+  min-width:0;min-height:0;height:100%;overflow:hidden;
+  grid-template-columns:clamp(180px,23%,300px) minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);align-items:stretch;
+}
+body.mcel-chat-page .chat-thread-rail,
+body.mcel-chat-page .chat-thread-workspace {
+  height:100%;min-height:0;max-height:100%;overflow-y:auto;overflow-x:hidden;
+  overscroll-behavior:contain;scrollbar-gutter:stable;
+}
+body.mcel-chat-page .chat-console-notebook {
+  min-height:0;height:auto;overflow:visible;
+}
+@media(max-width:679px) {
+ body.mcel-chat-page .chat-console-thread-layout {
+   grid-template-columns:minmax(0,1fr);
+   grid-template-rows:minmax(0,min(24%,120px)) minmax(0,1fr);
+   gap:8px;
+ }
+}

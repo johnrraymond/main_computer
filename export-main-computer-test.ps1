@@ -99,15 +99,178 @@ function Convert-ToRepoPath {
   return $repoPath
 }
 
+# NanoJev development is exported separately as the nanojev component.
+# Main Computer and game archives must not contain the nanojev/ tree. The
+# allowlists below preserve the existing Main Computer runtime dependencies
+# under tools/ and tests/, without reintroducing experiment-only files left
+# behind during an interrupted relocation. Keep these lists explicit.
+$retainedNanoJevToolPaths = @(
+  "tools/nanojev_game_native_objectives_v6.py",
+  "tools/nanojev_game_transformation_library.py",
+  "tools/nanojev_gamer_v1_balanced_repair.py",
+  "tools/nanojev_gamer_v1_boundary_isolation_v12.py",
+  "tools/nanojev_gamer_v1_c0_boundary.py",
+  "tools/nanojev_gamer_v1_c0_information_preservation.py",
+  "tools/nanojev_gamer_v1_c0_sign_causality.py",
+  "tools/nanojev_gamer_v1_c0_sign_head.py",
+  "tools/nanojev_gamer_v1_candidate_span_causality_v27.py",
+  "tools/nanojev_gamer_v1_capacity_retention_v11.py",
+  "tools/nanojev_gamer_v1_catalog_extensions.py",
+  "tools/nanojev_gamer_v1_causal_path.py",
+  "tools/nanojev_gamer_v1_compositional_belief_lab.py",
+  "tools/nanojev_gamer_v1_conflict_projection_v10.py",
+  "tools/nanojev_gamer_v1_corrected_margin_v14.py",
+  "tools/nanojev_gamer_v1_deconfounded_operand_audit.py",
+  "tools/nanojev_gamer_v1_dual_sign_head.py",
+  "tools/nanojev_gamer_v1_encoder_bypass.py",
+  "tools/nanojev_gamer_v1_exact_belief_lab.py",
+  "tools/nanojev_gamer_v1_expanded_head.py",
+  "tools/nanojev_gamer_v1_generalization.py",
+  "tools/nanojev_gamer_v1_gradient_sign_audit_v17.py",
+  "tools/nanojev_gamer_v1_handoff.py",
+  "tools/nanojev_gamer_v1_head_only_lab.py",
+  "tools/nanojev_gamer_v1_information_localization.py",
+  "tools/nanojev_gamer_v1_joint_constraint_v18.py",
+  "tools/nanojev_gamer_v1_joint_head_repair.py",
+  "tools/nanojev_gamer_v1_joint_sign_magnitude_lab.py",
+  "tools/nanojev_gamer_v1_lora_sign_stress.py",
+  "tools/nanojev_gamer_v1_margin_consolidation_v13.py",
+  "tools/nanojev_gamer_v1_margin_feasibility_v15.py",
+  "tools/nanojev_gamer_v1_math_retention_v9.py",
+  "tools/nanojev_gamer_v1_math_transition_v8.py",
+  "tools/nanojev_gamer_v1_mathematical_acquisition_v22.py",
+  "tools/nanojev_gamer_v1_nonlinear_feasibility_v16.py",
+  "tools/nanojev_gamer_v1_number_distance.py",
+  "tools/nanojev_gamer_v1_operand_causality_v23.py",
+  "tools/nanojev_gamer_v1_operand_span_causality_v26.py",
+  "tools/nanojev_gamer_v1_operand_sufficiency_audit.py",
+  "tools/nanojev_gamer_v1_operand_token_causality_v24.py",
+  "tools/nanojev_gamer_v1_ordered_token_causality_v25.py",
+  "tools/nanojev_gamer_v1_pairs.py",
+  "tools/nanojev_gamer_v1_payoff_precision_lab.py",
+  "tools/nanojev_gamer_v1_polarity_magnitude_repair.py",
+  "tools/nanojev_gamer_v1_polarity_magnitude_v2.py",
+  "tools/nanojev_gamer_v1_positional_digit_audit.py",
+  "tools/nanojev_gamer_v1_precision_continuation_v19.py",
+  "tools/nanojev_gamer_v1_precision_resolution_v20.py",
+  "tools/nanojev_gamer_v1_protected_alignment_lab.py",
+  "tools/nanojev_gamer_v1_protected_math_repair_v7.py",
+  "tools/nanojev_gamer_v1_radius_activations.py",
+  "tools/nanojev_gamer_v1_representation_transfer_audit.py",
+  "tools/nanojev_gamer_v1_role_reversal_retention_v29.py",
+  "tools/nanojev_gamer_v1_s_payoff_operational_acceptance.py",
+  "tools/nanojev_gamer_v1_selector_retention_training_v28.py",
+  "tools/nanojev_gamer_v1_separability.py",
+  "tools/nanojev_gamer_v1_shadow_precision_v21.py",
+  "tools/nanojev_gamer_v1_shared_digit_repair_lab.py",
+  "tools/nanojev_gamer_v1_sign_information_probe.py",
+  "tools/nanojev_gamer_v1_sign_only.py",
+  "tools/nanojev_gamer_v1_structured_head_lab.py",
+  "tools/nanojev_gamer_v1_sufficiency.py",
+  "tools/nanojev_gamer_v1_threshold_calibration.py",
+  "tools/nanojev_gamer_v1_to_numerical_shadow.py",
+  "tools/nanojev_gamer_v1_token_localization_lab.py",
+  "tools/nanojev_gamer_v1_transition_games.py",
+  "tools/nanojev_gamer_v1_upstream_path.py",
+  "tools/nanojev_gamer_v1_v30_live_inference.py",
+  "tools/nanojev_gamer_v1_v31_live_regression.py",
+  "tools/nanojev_gamer_v1_v33_game_learning.py",
+  "tools/nanojev_gamer_v1_v34_grounded_game_learning.py",
+  "tools/nanojev_gamer_v1_zero_line_decoder_v30.py",
+  "tools/nanojev_gamer_v1_zero_sign_frob.py",
+  "tools/nanojev_hub_request.py",
+  "tools/nanojev_image_bootstrap.py",
+  "tools/nanojev_lifecycle_service.py",
+  "tools/nanojev_objective_api.py",
+  "tools/nanojev_three_backbone_clef_sized_live_train.py",
+  "tools/nanojev_three_backbone_clef_sized_live_train_smoke.py",
+  "tools/nanojev_three_backbone_clef_tinystories_structured_supervision_train.py",
+  "tools/nanojev_two_game_spine_smoke.py"
+)
+
+$retainedNanoJevTestPaths = @(
+  "tests/test_bridge_boarding_nanojev_choices.py",
+  "tests/test_bridge_nanojev_captain_decisions.py",
+  "tests/test_bridge_nanojev_live_endpoint_smoke.py",
+  "tests/test_nanojev_clef_service.py",
+  "tests/test_nanojev_gamer_v1_v30_live_inference.py",
+  "tests/test_nanojev_gamer_v1_v31_live_regression.py",
+  "tests/test_nanojev_hub_integration.py",
+  "tests/test_nanojev_image_bootstrap.py",
+  "tests/test_nanojev_managed_startup.py",
+  "tests/test_nanojev_provider_local.py",
+  "tests/test_nanojev_shared_head_patch2.py",
+  "tests/test_nanojev_source_image_refresh.py",
+  "tests/test_nanojev_startup.py"
+)
+
+$excludedNanoJevResearchToolPaths = @(
+  "tools/clef_flash_joint_head_train_smoke.py",
+  "tools/hawk_dove_continuation_head.py",
+  "tools/hawk_dove_head_smoke.py"
+)
+
+function Test-NanoJevExportPathAllowed {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$RepoPath,
+
+    [ValidateSet("main", "game", "nanojev")]
+    [string]$ComponentName = "main"
+  )
+
+  $repoPath = Convert-ToRepoPath $RepoPath
+  $inNanoJevTree = ($repoPath -eq "nanojev" -or $repoPath.StartsWith("nanojev/", [System.StringComparison]::OrdinalIgnoreCase))
+  if ($ComponentName -eq "nanojev") {
+    # Only the NanoJev component may stage its development tree.
+    return $inNanoJevTree
+  }
+  if ($inNanoJevTree) {
+    return $false
+  }
+
+  if ($repoPath.StartsWith("tools/", [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($excludedNanoJevResearchToolPaths -contains $repoPath) {
+      return $false
+    }
+    if ($repoPath.IndexOf("nanojev", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return ($retainedNanoJevToolPaths -contains $repoPath)
+    }
+  }
+
+  if ($repoPath.StartsWith("tests/", [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($repoPath.IndexOf("nanojev", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return ($retainedNanoJevTestPaths -contains $repoPath)
+    }
+  }
+
+  if (
+    $repoPath.StartsWith("pretty_docs/", [System.StringComparison]::OrdinalIgnoreCase) -or
+    $repoPath.StartsWith("scripts/", [System.StringComparison]::OrdinalIgnoreCase)
+  ) {
+    if ($repoPath.IndexOf("nanojev", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return $false
+    }
+  }
+
+  return $true
+}
+
 function Test-RepoPathAllowed {
   param(
     [Parameter(Mandatory = $true)]
     [string]$RepoPath,
-    [bool]$IsDirectory = $false
+    [bool]$IsDirectory = $false,
+    [ValidateSet("main", "game", "nanojev")]
+    [string]$ComponentName = "main"
   )
 
   $repoPath = Convert-ToRepoPath $RepoPath
   $name = Split-Path -Leaf $repoPath
+
+  if (-not (Test-NanoJevExportPathAllowed -RepoPath $repoPath -ComponentName $ComponentName)) {
+    return $false
+  }
 
   if (-not $repoPath) {
     return $true
@@ -329,13 +492,16 @@ function Copy-ExportDirectoryPruned {
     [string]$StageRoot,
 
     [Parameter(Mandatory = $true)]
-    [string]$RepoRelativePath
+    [string]$RepoRelativePath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ComponentName
   )
 
   foreach ($child in Get-ChildItem -LiteralPath $DirectoryPath -Force) {
     $childRepoPath = Convert-ToRepoPath (Join-Path $RepoRelativePath $child.Name)
 
-    if (-not (Test-RepoPathAllowed -RepoPath $childRepoPath -IsDirectory:$child.PSIsContainer)) {
+    if (-not (Test-RepoPathAllowed -RepoPath $childRepoPath -IsDirectory:$child.PSIsContainer -ComponentName $ComponentName)) {
       continue
     }
 
@@ -343,7 +509,8 @@ function Copy-ExportDirectoryPruned {
       Copy-ExportDirectoryPruned `
         -DirectoryPath $child.FullName `
         -StageRoot $StageRoot `
-        -RepoRelativePath $childRepoPath
+        -RepoRelativePath $childRepoPath `
+        -ComponentName $ComponentName
     } else {
       $destination = Join-Path $StageRoot $childRepoPath
       Copy-ExportFile -FilePath $child.FullName -DestinationPath $destination
@@ -360,13 +527,16 @@ function Copy-ExportItem {
     [string]$StageRoot,
 
     [Parameter(Mandatory = $true)]
-    [string]$RelativePath
+    [string]$RelativePath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ComponentName
   )
 
   $item = Get-Item -LiteralPath $SourcePath -Force
   $relativePath = Convert-ToRepoPath $RelativePath
 
-  if (-not (Test-RepoPathAllowed -RepoPath $relativePath -IsDirectory:$item.PSIsContainer)) {
+  if (-not (Test-RepoPathAllowed -RepoPath $relativePath -IsDirectory:$item.PSIsContainer -ComponentName $ComponentName)) {
     return
   }
 
@@ -374,7 +544,8 @@ function Copy-ExportItem {
     Copy-ExportDirectoryPruned `
       -DirectoryPath $item.FullName `
       -StageRoot $StageRoot `
-      -RepoRelativePath $relativePath
+      -RepoRelativePath $relativePath `
+      -ComponentName $ComponentName
 
     return
   }
@@ -386,7 +557,10 @@ function Copy-ExportItem {
 function Assert-CleanExportStage {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$StageRoot
+    [string]$StageRoot,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ComponentName
   )
 
   $badDirectoryNames = @(
@@ -485,6 +659,12 @@ function Assert-CleanExportStage {
   Get-ChildItem -LiteralPath $StageRoot -Recurse -Force | ForEach-Object {
     $relative = $_.FullName.Substring($StageRoot.Length).TrimStart("\", "/")
     $repoPath = Convert-ToRepoPath $relative
+
+    # Defense in depth: reject NanoJev research files if staging rules change.
+    if (-not (Test-NanoJevExportPathAllowed -RepoPath $repoPath -ComponentName $ComponentName)) {
+      $bad.Add($repoPath)
+      return
+    }
 
     if ($allowedGeneratedExactPaths -contains $repoPath) {
       return
@@ -590,6 +770,8 @@ if ((-not $InstallerReHome) -and [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
   $ArchiveRoot = Join-Path (Split-Path -Parent $SourceRoot) "archive"
 }
 
+# Main and game remain separate payloads. The NanoJev research tree gets its
+# own development ZIP, while runtime-required NanoJev tools/docker stay in main.
 $mainExportItems = @(
   "main_computer",
   "tests",
@@ -683,9 +865,14 @@ $gameExportItems = @(
   "game_projects"
 )
 
+$nanojevExportItems = @(
+  "nanojev"
+)
+
 $allExportItems = @(
   @($mainExportItems)
   @($gameExportItems)
+  @($nanojevExportItems)
 ) | Select-Object -Unique
 
 function Get-ExportComponentForRepoPath {
@@ -701,6 +888,13 @@ function Get-ExportComponentForRepoPath {
     $repoPath.StartsWith("game_projects/", [System.StringComparison]::OrdinalIgnoreCase)
   ) {
     return "game"
+  }
+
+  if (
+    $repoPath -eq "nanojev" -or
+    $repoPath.StartsWith("nanojev/", [System.StringComparison]::OrdinalIgnoreCase)
+  ) {
+    return "nanojev"
   }
 
   return "main"
@@ -788,12 +982,11 @@ function Get-FollowEventComponents {
       continue
     }
 
+    $component = Get-ExportComponentForRepoPath -RepoPath $repoPath
     $isDirectory = Test-Path -LiteralPath $eventPath -PathType Container
-    if (-not (Test-RepoPathAllowed -RepoPath $repoPath -IsDirectory:$isDirectory)) {
+    if (-not (Test-RepoPathAllowed -RepoPath $repoPath -IsDirectory:$isDirectory -ComponentName $component)) {
       continue
     }
-
-    $component = Get-ExportComponentForRepoPath -RepoPath $repoPath
     if (-not [string]::IsNullOrWhiteSpace($component)) {
       $components.Add($component) | Out-Null
     }
@@ -935,11 +1128,12 @@ function Start-FollowExportLoop {
     Write-Host ("following export inputs under {0}" -f $sourceFull)
     Write-Host ("watchers: {0}" -f $watchers.Count)
     Write-Host ("quiet window: {0} second(s)" -f $FollowCalmSeconds)
-    Write-Host "component ownership: game_projects/** => game; everything else => main"
+    Write-Host "component ownership: game_projects/** => game; nanojev/** => nanojev; everything else => main"
     Write-Host "press Ctrl+C to stop following"
 
     $pendingMainExport = $false
     $pendingGameExport = $false
+    $pendingNanoJevExport = $false
     $quietUntilUtc = [DateTime]::MinValue
 
     while ($true) {
@@ -965,6 +1159,11 @@ function Start-FollowExportLoop {
               $sawRelevantEvent = $true
             }
 
+            if ($eventComponents -contains "nanojev") {
+              $pendingNanoJevExport = $true
+              $sawRelevantEvent = $true
+            }
+
             Remove-Event -EventIdentifier $eventRecord.EventIdentifier -ErrorAction SilentlyContinue
           }
 
@@ -981,25 +1180,29 @@ function Start-FollowExportLoop {
           $pendingNames = @()
           if ($pendingMainExport) { $pendingNames += "main" }
           if ($pendingGameExport) { $pendingNames += "game" }
+          if ($pendingNanoJevExport) { $pendingNames += "nanojev" }
           Write-Host ("detected {0} export input changes; exporting after {1} quiet second(s)" -f ($pendingNames -join "+"), $FollowCalmSeconds)
         }
       }
 
       if (
-        ($pendingMainExport -or $pendingGameExport) -and
+        ($pendingMainExport -or $pendingGameExport -or $pendingNanoJevExport) -and
         ([DateTime]::UtcNow -ge $quietUntilUtc)
       ) {
         $pendingNames = @()
         if ($pendingMainExport) { $pendingNames += "main" }
         if ($pendingGameExport) { $pendingNames += "game" }
+        if ($pendingNanoJevExport) { $pendingNames += "nanojev" }
         Write-Host ("quiet window elapsed; creating {0} export(s)" -f ($pendingNames -join "+"))
 
         Invoke-ExportSnapshot `
           -ExportMain:$pendingMainExport `
-          -ExportGame:$pendingGameExport
+          -ExportGame:$pendingGameExport `
+          -ExportNanoJev:$pendingNanoJevExport
 
         $pendingMainExport = $false
         $pendingGameExport = $false
+        $pendingNanoJevExport = $false
       }
     }
   } finally {
@@ -1069,7 +1272,7 @@ function New-ComponentExportArchive {
     $path = Join-Path $sourceFull $relative
 
     if (Test-Path -LiteralPath $path) {
-      Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative
+      Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative -ComponentName $ComponentName
       $stagedSourceCount += 1
     }
   }
@@ -1078,7 +1281,7 @@ function New-ComponentExportArchive {
     throw "The $ComponentName export has no source inputs available under: $sourceFull"
   }
 
-  Assert-CleanExportStage -StageRoot $stageRoot
+  Assert-CleanExportStage -StageRoot $stageRoot -ComponentName $ComponentName
 
   if ($ComponentName -eq "main") {
     foreach ($required in @("deploy/seh/Dockerfile", "deploy/seh/target.example.json")) {
@@ -1111,11 +1314,12 @@ function New-ComponentExportArchive {
 function Invoke-ExportSnapshot {
   param(
     [switch]$ExportMain,
-    [switch]$ExportGame
+    [switch]$ExportGame,
+    [switch]$ExportNanoJev
   )
 
-  if (-not $ExportMain -and -not $ExportGame) {
-    throw "Invoke-ExportSnapshot requires at least one component: main or game."
+  if (-not $ExportMain -and -not $ExportGame -and -not $ExportNanoJev) {
+    throw "Invoke-ExportSnapshot requires at least one component: main, game, or nanojev."
   }
 
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -1126,8 +1330,8 @@ function Invoke-ExportSnapshot {
   $installerReHomeRepoRoot = ""
 
   if ($InstallerReHome) {
-    if (-not $ExportMain -or -not $ExportGame) {
-      throw "Installer rehome requires both the main and game exports."
+    if (-not $ExportMain -or -not $ExportGame -or -not $ExportNanoJev) {
+      throw "Installer rehome requires the main, game, and nanojev exports."
     }
 
     $installerReHomeBaseRoot = Resolve-InstallerReHomeBaseRoot
@@ -1158,6 +1362,7 @@ function Invoke-ExportSnapshot {
 
   $mainResult = $null
   $gameResult = $null
+  $nanojevResult = $null
 
   try {
     if ($ExportMain) {
@@ -1180,6 +1385,16 @@ function Invoke-ExportSnapshot {
         -TempRoot $tempRoot
     }
 
+    if ($ExportNanoJev) {
+      $nanojevResult = New-ComponentExportArchive `
+        -ComponentName "nanojev" `
+        -Items $nanojevExportItems `
+        -ArchiveBaseName ("{0}-nanojev" -f $ProjectName) `
+        -Timestamp $timestamp `
+        -RunArchiveRoot $runArchiveRoot `
+        -TempRoot $tempRoot
+    }
+
     if ($InstallerReHome) {
       if (Test-Path -LiteralPath $installerReHomeExtractRoot) {
         Remove-Item -LiteralPath $installerReHomeExtractRoot -Recurse -Force
@@ -1189,6 +1404,7 @@ function Invoke-ExportSnapshot {
 
       Expand-Archive -LiteralPath $mainResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force
       Expand-Archive -LiteralPath $gameResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force
+      Expand-Archive -LiteralPath $nanojevResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force
 
       if (-not (Test-Path -LiteralPath $installerReHomeRepoRoot -PathType Container)) {
         throw "Installer rehome export did not extract the expected repository root: $installerReHomeRepoRoot"
@@ -1204,6 +1420,11 @@ function Invoke-ExportSnapshot {
         throw "Installer rehome export is missing the game project payload: $gameRoot"
       }
 
+      $nanojevRoot = Join-Path $installerReHomeRepoRoot "nanojev"
+      if (-not (Test-Path -LiteralPath $nanojevRoot -PathType Container)) {
+        throw "Installer rehome export is missing the NanoJev development payload: $nanojevRoot"
+      }
+
       Write-Host ("extracted {0}" -f $installerReHomeRepoRoot)
       Write-Host "installer rehome export ready"
       Write-Output $installerReHomeRepoRoot
@@ -1213,9 +1434,9 @@ function Invoke-ExportSnapshot {
   }
 }
 
-# Every invocation starts with a complete pair. In -Follow mode, later exports are
-# component-selective based on which ownership domains changed during the quiet window.
-Invoke-ExportSnapshot -ExportMain -ExportGame
+# Every invocation starts with all three components. In -Follow mode, subsequent
+# exports are selective: only the ownership domains that changed are rebuilt.
+Invoke-ExportSnapshot -ExportMain -ExportGame -ExportNanoJev
 
 if ($Follow) {
   Start-FollowExportLoop

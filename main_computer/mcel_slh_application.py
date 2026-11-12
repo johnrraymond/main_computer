@@ -1,7 +1,8 @@
-"""MCEL semantic SLH: local status and explicitly authenticated Worker Bank.
+"""MCEL semantic SLH: explicit local configure/start/disable and persistent identity.
 
-No SLH auto-start, database bypass, arbitrary proxy or hand-authored dashboard.
-The host owns only the authorization affordance; MCEL synthesizes the workspace.
+Page mount observes only. Mutations require a local, same-origin explicit
+consequential action, the selected LMS signer, and the existing SLH authority.
+Remote TLS observation remains isolated from local lifecycle authority.
 """
 from __future__ import annotations
 
@@ -26,13 +27,15 @@ ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
     "main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-ports.js",
+    "main_computer/web/applications/scripts/mcel-semantic-slh-network-ports.js",
 )
 STYLE = "main_computer/web/applications/styles/mcel-semantic-workbench.css"
 ROUTES = {
     "/applications/slh": "overview", "/applications/slh/local": "overview",
     "/applications/slh/workers": "worker-bank",
     "/applications/slh/local/workers": "worker-bank",
-    "/applications/slh/network": "network"
+    "/applications/slh/network": "network",
+    "/applications/slh/network/workers": "network-worker-bank"
 }
 SCHEMA = "mcel.slh.first-slice-observation.v1"
 IDENTITIES_SCHEMA = "mcel.slh.identities.v4b"
@@ -54,37 +57,60 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
     ir = compiled.normalized_ir
     surface, = ir.get("surfaces") or [None]
     if (ir.get("application", {}).get("appId") != "slh" or ir.get("layouts") or
-            surface is None or surface.get("purpose") != "monitor" or
-            surface.get("interfaceIntent") or surface.get("htmlBindings")):
+            surface is None or surface.get("purpose") != "manage" or
+            surface.get("interfaceIntent", {}).get("hierarchy") or surface.get("htmlBindings")):
         raise SlhApplicationError("SLH source cannot prescribe presentation or host authority")
+    # An authored semantic navigation membership is permitted. It prescribes
+    # neither HTML hierarchy nor CSS geometry nor any administrator authority.
+    authored = surface.get("interfaceIntent") or {}
+    navigation = [x for x in authored.get("regions", []) if x.get("role") == "navigation"]
+    identities_nav = [x for x in navigation if x["id"] == "interface-region:slh.identities"]
+    network_nav = [x for x in navigation if x["id"] == "interface-region:slh.observation-query"]
+    workspaces = [x for x in authored.get("regions", []) if x.get("role") == "task"]
+    lifecycle_regions = [x for x in authored.get("regions", []) if x.get("role") == "commands"]
+    expected_navigation = {"surface-node:slh.available-local-identities"}
+    if (len(navigation) != 2 or len(identities_nav) != 1 or len(network_nav) != 1 or
+        len(workspaces) != 1 or len(lifecycle_regions) != 1 or
+        {m["ref"] for m in workspaces[0]["members"]} != {
+            "surface-node:slh.configure-org-slh", "surface-node:slh.first-administrator-identity"} or
+        {m["ref"] for m in lifecycle_regions[0]["members"]} != {"surface-node:slh.disable-org-slh"} or
+        {member["ref"] for member in identities_nav[0]["members"]} != expected_navigation or
+        {member["ref"] for member in network_nav[0]["members"]} != {"surface-node:slh.network-slh-target"} or
+        any(item.get("prefer") != {"side": "start"} for item in navigation) or
+        not any(relation.get("kind") == "selects" and
+                relation.get("from", {}).get("ref") == identities_nav[0]["id"] and
+                relation.get("to", {}).get("ref") == workspaces[0]["id"]
+                for relation in authored.get("relations", []))):
+        raise SlhApplicationError("SLH identities must own the left semantic navigation")
+    # Exact semantic action allowlist. Configuration and disable are the only
+    # consequential intents and must remain owned by the existing local port.
+    nodes = {x["id"]: x for x in surface["nodes"]}
+    configure = nodes.get("surface-node:slh.configure-org-slh", {})
+    disabled = nodes.get("surface-node:slh.disable-org-slh", {})
+    if (configure.get("nodeKind") != "form" or
+            configure.get("intent", {}).get("ref") != "intent:configure-and-enable-organization" or
+            disabled.get("intent", {}).get("ref") != "intent:disable-organization" or
+            configure.get("fields") != {"bindAddress": {"kind": "string"}, "port": {"kind": "integer"}} or
+            any(x in nodes for x in ("surface-node:slh.worker-bank",
+                                   "surface-node:slh.login-administrator"))):
+        raise SlhApplicationError("SLH workspace must expose only explicit lifecycle controls")
     if {x["id"] for x in ir.get("intents", ())} != {
-        "intent:refresh-overview", "intent:refresh-health", "intent:refresh-workers",
-        "intent:refresh-worker-summary", "intent:select-view", "intent:choose-worker",
-        "intent:rename-worker", "intent:start-local", "intent:bootstrap-administrator",
-        "intent:configure-organization", "intent:activate-organization", "intent:login-administrator",
-        "intent:logout-administrator", "intent:refresh-identities",
-        "intent:refresh-identity-status", "intent:choose-identity"
-    } or {x["id"] for x in ir.get("capabilities", ())} != {
-        "capability:slh-observer", "capability:slh-worker-admin", "capability:slh-first-run"
-    }:
-        raise SlhApplicationError("SLH operation allowlist changed")
-    if {x["id"]: x.get("risk") for x in ir.get("capabilities", ())} != {
-        "capability:slh-observer": "external-read", "capability:slh-worker-admin": "consequential",
+        "intent:refresh-identities", "intent:refresh-identity-status", "intent:refresh-lifecycle",
+        "intent:choose-identity", "intent:select-target", "intent:inspect-network-slh",
+        "intent:configure-and-enable-organization", "intent:disable-organization"
+    } or {x["id"]: x.get("risk") for x in ir.get("capabilities", ())} != {
+        "capability:slh-observer": "external-read",
+        "capability:network-slh-identity": "external-read",
         "capability:slh-first-run": "consequential"
     } or {x["id"]: x.get("risk") for x in ir.get("effects", ())} != {
-        "effect:refresh-overview.request": "external-read", "effect:refresh-health.request": "external-read",
         "effect:refresh-identities.request": "external-read",
         "effect:refresh-identity-status.request": "external-read",
-        "effect:refresh-workers.request": "external-read", "effect:refresh-worker-summary.request": "external-read",
-        "effect:rename-worker.request": "consequential",
-        "effect:start-local.request": "consequential",
-        "effect:bootstrap-administrator.request": "consequential",
-        "effect:configure-organization.request": "consequential",
-        "effect:activate-organization.request": "consequential",
-        "effect:login-administrator.request": "consequential",
-        "effect:logout-administrator.request": "consequential"
+        "effect:refresh-lifecycle.request": "external-read",
+        "effect:inspect-network-slh.request": "external-read",
+        "effect:configure-and-enable-organization.request": "consequential",
+        "effect:disable-organization.request": "consequential"
     }:
-        raise SlhApplicationError("SLH effects differ from exact Worker Bank allowlist")
+        raise SlhApplicationError("SLH semantic authority boundary refused")
     composition = synthesize_composition(ir, policy="mcel.semantic-structure.p3")
     verify_composition(ir, composition)
     return ir, composition
@@ -98,10 +124,8 @@ def _script(repo: Path, relative: str) -> str:
 
 
 def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
-    # mcel.slh.target-tabs.v2: target selection precedes local service lifecycle.
-    if view == "network":
-        from main_computer.mcel_slh_network_host import render_network_slh_page
-        return render_network_slh_page(repo)
+    # Both canonical targets mount exactly the same semantic SLH application.
+    # The target selects pre-auth context, never a new signing identity.
     if view not in ROUTES.values():
         raise SlhApplicationError("Unknown semantic SLH destination")
     ir, composition = compile_slh_application(repo)
@@ -110,14 +134,14 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
     css = (repo / STYLE).read_text(encoding="utf-8")
     if "</style" in css.lower():
         raise SlhApplicationError("Stylesheet contains an HTML closing tag")
+    target = "network" if view.startswith("network") else "local"
+    initial_view = "worker-bank" if view.endswith("worker-bank") else "overview"
     # Header links are browser-native addresses, not a hand-authored app layout.
     # The entire operational workspace is generated from the semantic IR.
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Secure Local Hub · MCEL</title><style>{css}\n{TAB_STYLE}</style></head>
-<body class="mcel-workbench-page" data-mcel-slh-initial-view="{view}">
-<header><h1>Secure Local Hub</h1>{target_tabs("local")}<p>Start SLH on demand, establish the local administrator and configure the Organization Service. No Windows boot startup.</p>
-<nav aria-label="SLH destinations"><a href="/applications/slh">Overview</a> · <a href="/applications/slh/workers">Worker Bank</a></nav>
-<p id="mcel-slh-auth-status" role="status">Organization session not established</p></header>
+<body class="mcel-workbench-page" data-mcel-slh-initial-view="{initial_view}" data-mcel-slh-target="{target}">
+<template id="mcel-slh-navigation-context">{target_tabs(target)}</template>
 <div id="mcel-workbench" aria-label="MCEL generated Secure Local Hub workspace"></div>
 <p id="mcel-workbench-status" role="status">Compiling SLH semantics</p>
 <script type="application/json" id="mcel-generated-data">{payload}</script>
@@ -125,11 +149,27 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
 <script>(function(){{"use strict";
 const message=document.getElementById("mcel-workbench-status");
 try{{const data=JSON.parse(document.getElementById("mcel-generated-data").textContent);
-const port=McelSemanticSlhPorts.create({{appId:data.ir.application.appId,initialView:"{view}"}});
+const selectedTarget=document.body.dataset.mcelSlhTarget;
+const port=McelSemanticSlhPorts.create({{appId:data.ir.application.appId,initialView:"{initial_view}"}});
+const networkPort=McelSemanticSlhNetworkPorts.create({{appId:data.ir.application.appId}});
+// The shared UI uses one semantic IR, but two independent bounded transports.
+// Network inspection cannot invoke local setup, login, or Worker mutation.
+const adapter=Object.freeze({{
+  authorize:req=>req.capabilityId==="capability:network-slh-identity"
+    ? (selectedTarget==="network" && networkPort.authorize(req))
+    : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
+        "intent:refresh-lifecycle"].includes(req.intentId)) && port.authorize(req)),
+  invoke:req=>req.capabilityId==="capability:network-slh-identity"
+    ? (selectedTarget==="network" ? networkPort.invoke(req) : Promise.reject(Error("NETWORK_TARGET_NOT_SELECTED")))
+    : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
+        "intent:refresh-lifecycle"].includes(req.intentId)) ? port.invoke(req)
+        : Promise.reject(Error("LOCAL_AUTHORITY_NOT_SELECTED")))
+}});
 const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),data.ir,
-  {{capabilities:port,composition:data.composition,presentation:"expert"}});
+  {{capabilities:adapter,composition:data.composition,presentation:"expert",
+    navigationChrome:document.getElementById("mcel-slh-navigation-context")}});
+void app.execute("intent:select-target",{{choice:selectedTarget}});
 window.__mcelSlh=Object.freeze({{app,composition:data.composition}});
-const authStatus=document.getElementById("mcel-slh-auth-status");
 const refreshIdentities=async()=>{{
   const observations=await Promise.all([app.execute("intent:refresh-identities"),
     app.execute("intent:refresh-identity-status")]);
@@ -139,53 +179,37 @@ const refreshIdentities=async()=>{{
   const selected=app.readState("state:selected-local-identity");
   const available=app.readState("state:local-identities")||[];
   if(available.some(row=>row.deviceId===selected))return;
-  const chosen=port.preferredIdentity();
+  // A device ID is nonsecret, unlike its signing key or a bearer. Persist only
+  // the selection for the lifetime of this browser tab across canonical URLs.
+  let remembered="";
+  try{{remembered=globalThis.sessionStorage?.getItem("mcel.slh.selected-identity.v1")||"";}}catch{{}}
+  const chosen=available.some(row=>row.deviceId===remembered)?remembered:port.preferredIdentity();
   if(chosen)await app.execute("intent:choose-identity",{{key:chosen}});
 }};
-port.onSetupChanged(action=>{{
-  Promise.all([app.execute("intent:refresh-overview"),app.execute("intent:refresh-health")]);
-  if(action==="start")void refreshIdentities();
-}});
-// Operational applicability expires after 60 seconds. Keep the read-only
-// evidence for both Login and Logout current (including identity status);
-// a successful logout must not
-// strand the operator without either action.
-const refreshSessionEvidence=()=>Promise.all([
-  app.execute("intent:refresh-overview"),
-  app.execute("intent:refresh-worker-summary"),
-  refreshIdentities()]);
-let authTransition=0;
-port.onAuthenticationChanged(authorized=>{{
-  const transition=++authTransition;
-  Promise.all([refreshSessionEvidence(),app.execute("intent:refresh-workers")])
-    .then(()=>{{if(transition===authTransition)authStatus.textContent=authorized?
-      "Organization administrator authenticated":"Organization session not established";}})
-    .catch(()=>{{if(transition===authTransition)
-      authStatus.textContent="Organization session verification unavailable";}});
-}});
-// Read-only refresh while the browser page is visible. No service lifecycle,
-// identity registration or administrator grant occurs on this timer.
-const refreshVisibleSessionEvidence=()=>{{
-  if(document.visibilityState!=="hidden")void refreshSessionEvidence().catch(()=>{{}});
+// Page navigation performs read-only observations ONLY. Both consequential
+// lifecycle actions require explicit interactions and are never autoplayed.
+const saveSelectedIdentity=()=>{{
+  try{{
+    const value=app.readState("state:selected-local-identity")||"";
+    if(/^[A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}$/.test(value))
+      globalThis.sessionStorage?.setItem("mcel.slh.selected-identity.v1",value);
+    else globalThis.sessionStorage?.removeItem("mcel.slh.selected-identity.v1");
+  }}catch{{}}
 }};
-window.setInterval(refreshVisibleSessionEvidence,30000);
-document.addEventListener("visibilitychange",refreshVisibleSessionEvidence);
-const chosen=document.body.dataset.mcelSlhInitialView;
-const initial=chosen==="worker-bank" ? "worker-bank" : "overview";
-Promise.resolve(initial==="worker-bank" ? app.execute("intent:select-view",{{choice:"worker-bank"}}) : null)
-.then(()=>Promise.all(initial==="worker-bank" ?
- [app.execute("intent:refresh-worker-summary"),app.execute("intent:refresh-workers")] :
- [app.execute("intent:refresh-overview"),app.execute("intent:refresh-health"),
-  app.execute("intent:refresh-worker-summary")]))
-.then(async receipts=>{{if(!receipts.every(r=>r && r.disposition==="completed"))
-  throw Error("observation-not-complete");
-  if(initial==="worker-bank"){{
-    const context=await app.execute("intent:refresh-overview");
-    if(!context || context.disposition!=="completed")throw Error("overview-context-unavailable");
-  }}
-  await refreshIdentities();
-  message.textContent="SLH observation complete · "+initial;}})
-.catch(()=>{{message.textContent="SLH observation refused; inspect operation receipts";}});
+window.addEventListener("pagehide",saveSelectedIdentity);
+const refreshLifecycle=async()=>{{
+  const receipt=await app.execute("intent:refresh-lifecycle");
+  if(selectedTarget!=="local" || receipt?.disposition!=="completed")return;
+  const observed=app.readState("state:organization-lifecycle");
+  if(observed?.state)message.textContent="ORG-SLH "+observed.state+" · "+
+    observed.bindAddress+":"+observed.port;
+}};
+port.onSetupChanged(()=>{{void refreshLifecycle();}});
+const initialIdentityRefresh=refreshIdentities();
+initialIdentityRefresh.then(()=>{{
+  if(selectedTarget==="local")void refreshLifecycle();
+  else message.textContent="Network target inspection available · administrator not authenticated";
+}}).catch(()=>{{message.textContent="Local signing identities unavailable · configuration cannot proceed";}});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''
 

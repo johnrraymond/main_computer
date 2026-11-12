@@ -3,25 +3,25 @@
     <header class="worker-hero">
       <div>
         <strong>Worker</strong>
-        <span>Configure this computer's marketplace role: how others pay this machine for work, and how this machine pays remote workers when local AI is busy.</span>
+        <span>Select where this computer works. Stable Hub destinations use the public marketplace; SLH uses organization-managed computing.</span>
       </div>
       <div class="worker-status-strip" aria-label="Worker status summary">
-        <span id="worker-selected-network-pill">Network: None</span>
+        <span id="worker-selected-network-pill">Destination: None</span>
         <span id="worker-network-connection-pill">Hub session offline</span>
-        <span id="worker-registration-status-pill">Offer: local only</span>
+        <span id="worker-registration-status-pill" data-worker-marketplace>Offer: local only</span>
       </div>
     </header>
 
     <section class="worker-network-surface" aria-label="Worker network selection">
-      <div class="worker-card worker-auto-hub-card" aria-label="Automatic hub connection controls">
+      <div class="worker-card worker-auto-hub-card" aria-label="Worker destination controls">
         <div class="worker-auto-hub-head">
           <div>
-            <h4>Automatic Hub Selection</h4>
-            <p class="worker-card-note">Choose the single Hub this app uses for worker registration and requester overflow.</p>
+            <h4>Worker Destination</h4>
+            <p class="worker-card-note">Choose one destination. Mainnet, Testnet, Test and Dev use marketplace settings; SLH uses organization settings.</p>
           </div>
-          <span class="worker-auto-hub-status" id="worker-auto-hub-status">Auto hub: None</span>
+          <span class="worker-auto-hub-status" id="worker-auto-hub-status">Destination: None</span>
         </div>
-        <div class="worker-auto-hub-row worker-auto-hub-policy" aria-label="Worker availability policy">
+        <div class="worker-auto-hub-row worker-auto-hub-policy" aria-label="Worker availability policy" data-worker-marketplace>
           <span class="worker-auto-hub-label">Worker policy</span>
           <label class="worker-switch">
             <input type="checkbox" id="worker-rental-enabled" checked>
@@ -40,9 +40,9 @@
           </fieldset>
         </div>
         <div class="worker-auto-hub-row">
-          <span class="worker-auto-hub-label">Hub for workers + requesters</span>
-          <fieldset class="worker-auto-hub-network-mode" aria-label="Hub for automatic worker and requester connection">
-            <legend>Automatic hub</legend>
+          <span class="worker-auto-hub-label">Worker destination</span>
+          <fieldset class="worker-auto-hub-network-mode" aria-label="Worker connection destination">
+            <legend>Connection destination</legend>
             <label class="worker-switch">
               <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-mainnet" value="mainnet" data-worker-network="mainnet">
               <span>Mainnet</span>
@@ -59,28 +59,45 @@
               <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-dev" value="dev" data-worker-network="dev">
               <span>Dev</span>
             </label>
+            <label class="worker-switch">
+              <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-slh" value="slh" data-worker-network="slh">
+              <span>Secure Local Hub (SLH)</span>
+            </label>
           </fieldset>
         </div>
       </div>
 
       <div class="worker-card worker-network-card" aria-label="Active worker Hub session">
-        <h4>Active Hub Session</h4>
-        <p class="worker-card-note" id="worker-network-help">No automatic hub selected. Choose Mainnet, Testnet, Test, or Dev above to reach a Hub.</p>
+        <h4 id="worker-connection-title">Active Hub Session</h4>
+        <p class="worker-card-note" id="worker-network-help">No destination selected. Choose Mainnet, Testnet, Test, Dev, or SLH above.</p>
         <dl class="worker-network-status-grid">
           <div><dt>Selected</dt><dd id="worker-network-selected">None</dd></div>
           <div><dt>Hub session</dt><dd id="worker-network-status">Hub session offline</dd></div>
           <div><dt>Hub</dt><dd id="worker-network-hub">—</dd></div>
-          <div><dt>RPC</dt><dd id="worker-network-rpc">—</dd></div>
-          <div><dt>Chain ID</dt><dd id="worker-network-chain-id">—</dd></div>
-          <div><dt>Manifest</dt><dd id="worker-network-manifest">—</dd></div>
+          <div data-worker-marketplace><dt>RPC</dt><dd id="worker-network-rpc">—</dd></div>
+          <div data-worker-marketplace><dt>Chain ID</dt><dd id="worker-network-chain-id">—</dd></div>
+          <div data-worker-marketplace><dt>Manifest</dt><dd id="worker-network-manifest">—</dd></div>
         </dl>
         <div class="worker-inline-actions">
-          <button type="button" id="worker-network-retry" disabled>Retry Hub</button>
+          <button type="button" id="worker-network-retry" data-worker-marketplace disabled>Retry Hub</button>
           <button type="button" id="worker-network-disconnect">Clear auto hub / Disconnect</button>
         </div>
       </div>
 
-      <div class="worker-card worker-fleet-card" aria-label="Worker fleet status">
+      <div class="worker-card worker-slh-card" id="worker-slh-panel" aria-label="SLH Worker information" hidden>
+        <h4>Secure Local Hub</h4>
+        <p class="worker-card-note">This Worker is directed to its organization, not a blockchain marketplace. Enrollment requires an authorized SLH Worker device and is verified in the SLH Worker Bank.</p>
+        <dl class="worker-network-status-grid">
+          <div><dt>Selection</dt><dd id="worker-slh-selection">SLH selected</dd></div>
+          <div><dt>Worker supervisor</dt><dd id="worker-slh-runtime-status">Not verified</dd></div>
+          <div><dt>Enrollment</dt><dd id="worker-slh-enrollment-status">Check SLH Worker Bank</dd></div>
+          <div><dt>Configured model</dt><dd id="worker-slh-models">—</dd></div>
+          <div><dt>Active jobs</dt><dd id="worker-slh-active-jobs">0</dd></div>
+        </dl>
+        <small>SLH selection does not enroll the Worker or establish a Known Device connection. The existing SLH Worker Bank is authoritative for enrolled and connected counts.</small>
+      </div>
+
+      <div class="worker-card worker-fleet-card" aria-label="Worker fleet status" data-worker-marketplace>
         <h4>Worker Fleet</h4>
         <dl class="worker-network-status-grid">
           <div><dt>Mainnet Worker</dt><dd id="worker-fleet-mainnet">Standby</dd></div>
@@ -91,7 +108,7 @@
         <small>The automatic hub above is the only worker/requester target that auto-connects. The other hubs stay on standby.</small>
       </div>
 
-      <div class="worker-runtime-state-card" id="worker-runtime-state-card" role="status" aria-live="polite" aria-label="Worker runtime state">
+      <div class="worker-runtime-state-card" data-worker-marketplace id="worker-runtime-state-card" role="status" aria-live="polite" aria-label="Worker runtime state">
         <div class="worker-runtime-state-corner worker-runtime-state-nw" id="worker-runtime-state-nw">No auto-start</div>
         <div class="worker-runtime-state-corner worker-runtime-state-ne" id="worker-runtime-state-ne">No auto hub</div>
         <div class="worker-runtime-state-center" id="worker-runtime-state-center">OFF</div>
@@ -107,7 +124,7 @@
 
     </section>
 
-    <div class="worker-workspace mc-app-workspace" aria-label="Worker marketplace configuration">
+    <div class="worker-workspace mc-app-workspace" id="worker-marketplace-workspace" aria-label="Worker marketplace configuration" data-worker-marketplace>
       <section class="worker-pane worker-seller mc-app-pane" id="worker-sell-work" aria-label="Sell work payment configuration" data-mc-component-id="worker.seller.panel" data-mc-component-kind="panel" data-mc-component-label="Sell Work" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.local-ai-seller">
         <div class="worker-pane-head">
           <div>
@@ -375,11 +392,11 @@
     </div>
 
     <footer class="worker-actions" aria-label="Worker controls">
-      <output id="worker-save-status" role="status" aria-live="polite">Worker marketplace settings are local-only until their matching backend paths are connected.</output>
+      <output id="worker-save-status" role="status" aria-live="polite">Worker settings are managed by the local backend.</output>
       <div>
-        <button type="button" id="worker-register-offer">Register / Update Offer</button>
+        <button type="button" id="worker-register-offer" data-worker-marketplace>Register / Update Offer</button>
         <button type="button" id="worker-save-settings">Save Worker Settings</button>
-        <button type="button" id="worker-pause-rentals">Pause Selling</button>
+        <button type="button" id="worker-pause-rentals" data-worker-marketplace>Pause Selling</button>
       </div>
     </footer>
   </div>

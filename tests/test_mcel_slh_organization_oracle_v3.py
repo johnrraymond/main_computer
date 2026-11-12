@@ -164,8 +164,10 @@ def test_generated_browser_login_entry_is_not_admin_authority(case):
             browser.close()
 
 
-def test_network_tab_remains_separate_and_does_not_inherit_local_admin():
+def test_network_target_does_not_inherit_local_administrator_authority():
     assert '<a role="tab" href="/applications/slh/network"' in render_slh_page('overview')
     network=render_slh_page('network')
-    assert '"appId":"slh-network"' in network
-    assert 'intent:login-administrator' not in network
+    assert 'data-mcel-slh-target="network"' in network
+    assert 'href="/applications/slh/local"' in network
+    # Both entry routes eventually share the same administration app (V4),
+    # but visiting the network target never inherits a local bearer or grant.

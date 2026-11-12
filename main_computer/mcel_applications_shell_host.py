@@ -55,6 +55,17 @@ PARENTS = {
 }
 SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console"})
 
+# Desktop-only spatial groups. The legacy inventory remains authoritative for
+# each application's title, icon, description, route and canonical identity.
+DESKTOP_GROUPS = (
+    ("productivity", "Productivity & Communication", ("document", "spreadsheet", "onlyoffice", "email", "calculator")),
+    ("development", "Development", ("code-editor", "terminal", "git-tools", "website-builder", "mcel-lab")),
+    ("compute", "AI & Compute", ("chat-console", "ai-control", "worker", "conductor", "wallet")),
+    ("creative", "Creative & Games", ("game-editor", "webgl", "astrometric")),
+    ("system", "System & Files", ("file-explorer", "task-manager")),
+)
+DESKTOP_CLUSTERS_CSS = Path("main_computer/web/applications/styles/mcel-desktop-clusters.css")
+
 
 def _canonical_route_names(repo: Path) -> frozenset[str]:
     """Read the canonical route allowlist as data, without importing the live SPA.
@@ -207,8 +218,9 @@ def legacy_desktop_reference(repo: Path = ROOT) -> dict:
     return {"icons": items, "svg": path_map, "css": icon_css, "launcher": launcher, "launcher_css": launcher_css, "source_sha256": hashes}
 
 
-def legacy_desktop_icon_markup(reference: dict, *, launch: bool) -> str:
+def legacy_desktop_icon_markup(reference: dict, *, launch: bool, grouped: bool = False) -> str:
     result = []
+    cards_by_id = {}
     routes = {app["id"]: app["route"] for app in reference["launcher"]}
     for item in reference["icons"]:
         slug, title, summary = (escape(item[key], quote=True) for key in ("app", "title", "summary"))
@@ -217,22 +229,41 @@ def legacy_desktop_icon_markup(reference: dict, *, launch: bool) -> str:
             drawing = '<svg class="desktop-glyph-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + glyph + '</svg>'
         else:
             drawing = escape(item["glyph"])
+        summary_tail = "" if grouped and launch else f"<span>{summary}</span>"
         if launch:
             # A real anchor is required: Ctrl/Shift-click, context-menu Open in
             # New Window, copy link, and browser history must all use the same
             # canonical route. Plain clicks may still mount within the shell.
             route = escape(make_destination("applications." + item["app"],
                                             routes[item["app"]])["href"], quote=True)
-            result.append(f'<a class="desktop-icon" data-app="{slug}"'
-                          f' data-shell-launch="{slug}" data-mcel-destination-id="applications.{slug}"'
-                          f' href="{route}">'
-                          f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
-                          f'<strong>{title}</strong><span>{summary}</span></a>')
+            markup = (f'<a class="desktop-icon" data-app="{slug}"'
+                      f' data-shell-launch="{slug}" data-mcel-destination-id="applications.{slug}"'
+                      f' href="{route}">'
+                      f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
+                      f'<strong>{title}</strong>{summary_tail}</a>')
         else:
-            result.append(f'<button type="button" class="desktop-icon" data-app="{slug}">'
-                          f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
-                          f'<strong>{title}</strong><span>{summary}</span></button>')
-    return "\n".join(result)
+            markup = (f'<button type="button" class="desktop-icon" data-app="{slug}">'
+                      f'<span class="desktop-glyph" aria-hidden="true">{drawing}</span>'
+                      f'<strong>{title}</strong><span>{summary}</span></button>')
+        result.append(markup)
+        cards_by_id[item["app"]] = markup
+    if not grouped:
+        return "\n".join(result)
+    arranged = [app for _, _, apps in DESKTOP_GROUPS for app in apps]
+    if len(arranged) != len(set(arranged)) or set(arranged) != set(cards_by_id):
+        raise CandidateHostError("Desktop groups must partition the canonical 20-app inventory")
+    clusters = []
+    for slug, title, apps in DESKTOP_GROUPS:
+        # Keep each related run together for wrapping, but no visible group
+        # label or container chrome. The palette and proximity do the work.
+        clusters.append(
+            f'<div class="desktop-cluster" data-desktop-group="{slug}"'
+            f' role="group" aria-label="{escape(title, quote=True)}">'
+            f'<div class="desktop-cluster-apps">'
+            + "\n".join(cards_by_id[app] for app in apps)
+            + '</div></div>'
+        )
+    return '<div class="desktop-clusters">' + "\n".join(clusters) + '</div>'
 
 
 def _static(region: dict, *, title_id: bool = False) -> str:
@@ -280,8 +311,8 @@ def _markup(ir: dict, reference: dict) -> str:
         elif name == "application-mount":
             body = ('''<div class="mcel-shell-overview" id="mcel-shell-overview">
              <div id="mcel-shell-desktop-overlay" class="desktop-overlay desktop-home" aria-label="Desktop application launcher">
-             <div class="desktop-caption">Desktop applications</div>'''
-             + legacy_desktop_icon_markup(reference, launch=True) + "</div></div>"
+             '''
+             + legacy_desktop_icon_markup(reference, launch=True, grouped=True) + "</div></div>"
              + '''<iframe id="mcel-shell-frame" class="mcel-shell-frame" title="MCEL application" referrerpolicy="same-origin"></iframe>''')
         elif name == "status":
             body = "Compiling semantic shell..."
@@ -314,7 +345,8 @@ def render_applications_shell_candidate(
                                 'href="/applications?mcel-shell-child=1">Legacy desktop</a>')
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     apps_json = json.dumps(registry, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    css = _safe_asset(repo, CSS, tag="style") + "\n" + reference["css"]
+    css = (_safe_asset(repo, CSS, tag="style") + "\n" + reference["css"] + "\n"
+           + _safe_asset(repo, DESKTOP_CLUSTERS_CSS, tag="style"))
     if "</style" in css.lower():
         raise CandidateHostError("Legacy desktop icon CSS contains unsafe inline content")
     scripts = "\n".join("<script>\n" + _safe_asset(repo, path, tag="script") + "\n</script>" for path in SCRIPTS)

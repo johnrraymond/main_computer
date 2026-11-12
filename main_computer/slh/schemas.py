@@ -6,6 +6,10 @@ def object_schema(required=(), fields=None):
             'properties': fields or {}, 'additionalProperties': False}
 
 AUTH_REQUESTS = {
+    'local_org_reconfigure_enable': object_schema(('host', 'api_port'), {
+        'host': {'type': 'string', 'minLength': 7, 'maxLength': 15},
+        'api_port': {'type': 'integer', 'minimum': 1, 'maximum': 65535},
+        'worker_port': {'type': 'integer', 'minimum': 1, 'maximum': 65535}}),
     'local_root_register_admin': object_schema(('device_id',),
         {'device_id':S,'bootstrap_only':{'type':'boolean','const':True}}),
     'root_register_admin': object_schema(

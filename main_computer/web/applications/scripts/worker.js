@@ -5,6 +5,7 @@
     const WORKER_RUNTIME_SYNC_INTERVAL_MS = 10000;
     const WORKER_STATUS_MESSAGE_MAX_LENGTH = 260;
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
+    const WORKER_DESTINATIONS = [...WORKER_NETWORK_ORDER, "slh"];
     const WORKER_NETWORK_NONE = "none";
     const WORKER_DEFAULT_RING = "3";
     const WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN = "0.001";
@@ -3354,7 +3355,7 @@
 
     function workerNetworkKey(value) {
       const key = String(value || WORKER_NETWORK_NONE).trim().toLowerCase();
-      return [...WORKER_NETWORK_ORDER, WORKER_NETWORK_NONE].includes(key) ? key : WORKER_NETWORK_NONE;
+      return [...WORKER_DESTINATIONS, WORKER_NETWORK_NONE].includes(key) ? key : WORKER_NETWORK_NONE;
     }
 
     function workerNetworkProfile(key = workerNetworkSession.selected_network) {
@@ -3364,6 +3365,7 @@
     function workerNetworkDisplayName(key = workerNetworkSession.selected_network) {
       const normalized = workerNetworkKey(key);
       if (normalized === WORKER_NETWORK_NONE) return "None";
+      if (normalized === "slh") return "Secure Local Hub (SLH)";
       return workerNetworkProfile(normalized)?.display_name || normalized.charAt(0).toUpperCase() + normalized.slice(1);
     }
 
@@ -3373,6 +3375,7 @@
       if (normalized === "testnet") return "Testnet";
       if (normalized === "test") return "Test";
       if (normalized === "dev") return "Dev";
+      if (normalized === "slh") return "SLH";
       return "No";
     }
 
@@ -3399,8 +3402,8 @@
       });
       if (typeof workerAutoHubStatus !== "undefined" && workerAutoHubStatus) {
         workerAutoHubStatus.textContent = normalized === WORKER_NETWORK_NONE
-          ? "Auto hub: None"
-          : `Auto hub: ${workerNetworkDisplayName(normalized)}`;
+          ? "Destination: None"
+          : `Destination: ${workerNetworkDisplayName(normalized)}`;
       }
       return normalized;
     }
@@ -3443,6 +3446,11 @@
 
     function workerNetworkStatusLabel(status = workerNetworkSession.connection_status) {
       const normalized = String(status || "disconnected");
+      if (workerNetworkKey(workerNetworkSession.selected_network) === "slh") {
+        if (normalized === "setup") return "SLH device setup required";
+        if (normalized === "connected") return "SLH destination reachable (enrollment unverified)";
+        return "SLH Worker connection not verified";
+      }
       if (normalized === "connected") {
         return workerNetworkWalletConnectedToSelected() ? "Hub reachable · wallet ready" : "Hub reachable · wallet required";
       }
@@ -4254,8 +4262,32 @@
       renderWorkerNetworkSurface();
     }
 
+    function workerRenderDestinationMode(selected) {
+      const slhSelected = selected === "slh";
+      if (workerApp) {
+        workerApp.dataset.workerDestination = slhSelected ? "slh" : "marketplace";
+        workerApp.querySelectorAll("[data-worker-marketplace]").forEach((element) => {
+          element.hidden = slhSelected;
+        });
+      }
+      const slhPanel = document.querySelector("#worker-slh-panel");
+      if (slhPanel) slhPanel.hidden = !slhSelected;
+      const connectionTitle = document.querySelector("#worker-connection-title");
+      if (connectionTitle) connectionTitle.textContent = slhSelected ? "SLH Destination" : "Active Hub Session";
+      if (slhSelected) {
+        workerNetworkSetText(document.querySelector("#worker-slh-selection"), "Secure Local Hub selected");
+        workerNetworkSetText(
+          document.querySelector("#worker-slh-runtime-status"),
+          String(workerRuntimeStatus.runtime?.state || workerRuntimeStatus.phase || "Not verified")
+        );
+        workerNetworkSetText(document.querySelector("#worker-slh-models"), workerOfferModels?.value || "Not configured");
+        workerNetworkSetText(document.querySelector("#worker-slh-active-jobs"), String(workerRuntimeStatus.active_jobs || 0));
+      }
+    }
+
     function renderWorkerNetworkSurface() {
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      workerRenderDestinationMode(selected);
       const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
       const signed = workerNetworkSignedConnection();
       const registeredWorker = workerNetworkSignedConnectionWorker();
@@ -4315,7 +4347,7 @@
         }
       });
 
-      workerNetworkSetText(workerSelectedNetworkPill, `Network: ${workerNetworkDisplayName(selected)}`);
+      workerNetworkSetText(workerSelectedNetworkPill, `Destination: ${workerNetworkDisplayName(selected)}`);
       workerNetworkSetText(workerNetworkConnectionPill, workerNetworkStatusLabel());
       workerNetworkSetText(workerNetworkSelected, workerNetworkDisplayName(selected));
       workerNetworkSetText(workerNetworkStatus, workerNetworkStatusLabel());
@@ -4354,8 +4386,10 @@
       workerNetworkSetText(workerRuntimePrimaryNext, primaryStatus.next);
 
       if (workerNetworkHelp) {
-        if (selected === WORKER_NETWORK_NONE) {
-          workerNetworkHelp.textContent = "No active worker Hub selected. Select Mainnet, Testnet, Test, or Dev to reach a Hub.";
+        if (selected === "slh") {
+          workerNetworkHelp.textContent = "SLH is selected. Local Worker enrollment and Known Device connection must be verified through the SLH Worker Bank; blockchain wallet and marketplace settings do not apply here.";
+        } else if (selected === WORKER_NETWORK_NONE) {
+          workerNetworkHelp.textContent = "No Worker destination selected. Select Mainnet, Testnet, Test, Dev, or SLH.";
         } else if (hubConnected && !walletConnectedToSelected) {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet or load an active saved worker multi-session key before completing Worker setup.`;
         } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
@@ -4458,7 +4492,9 @@
         workerApplyNetworkPayload(data);
         if (workerSaveStatus) {
           workerSaveStatus.textContent = selected === WORKER_NETWORK_NONE
-            ? "Worker network fully disconnected."
+            ? "Worker destination cleared."
+            : selected === "slh"
+              ? "SLH selected. Check Worker Bank for device enrollment and connection; no wallet connection was attempted."
             : workerNetworkSession.connection_status === "connected"
               ? `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet, then start working.`
               : `${workerNetworkDisplayName(selected)} selected but not reachable.`;
@@ -4486,6 +4522,8 @@
         await workerDisconnectSelectedNetworkAndWallet(event);
         return;
       }
+      // SLH uses Known Device authentication, never an injected blockchain wallet.
+      if (selected === "slh") return;
       if (workerNetworkSession.connection_status !== "connected") {
         return;
       }
@@ -4967,7 +5005,9 @@
             }
           }
           if (workerSaveStatus) {
-            workerSaveStatus.textContent = "Worker marketplace buy/sell settings saved to the local backend.";
+            workerSaveStatus.textContent = workerAutoConnectNetworkFromForm() === "slh"
+              ? "Worker destination saved. SLH enrollment and connection must be verified in the Worker Bank."
+              : "Worker marketplace buy/sell settings saved to the local backend.";
           }
         })
         .catch((error) => {

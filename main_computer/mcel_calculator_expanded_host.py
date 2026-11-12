@@ -92,7 +92,7 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
         raise CandidateHostError('style termination')
     page = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic Calculator · Expanded</title>
-<style>''' + expert_css + '''</style></head><body class="mcel-expert-page"><header><h1>Semantic Calculator</h1><p>Arithmetic and units · Function graphs · Symbolic mathematics · Optional AI assistance</p></header>
+<style>''' + expert_css + '''</style></head><body class="mcel-expert-page">
 <div id="mcel-expanded-root" aria-label="Generated semantic Calculator"></div><div id="mcel-expanded-diagnostic" role="status" aria-live="polite"></div>
 <script id="mcel-expanded-ir" type="application/json">''' + payload + '''</script><script id="mcel-chat-embedded-ir" type="application/json">''' + chat_layout_payload + '</script>\n' + scripts + '''<script>
 (function(){"use strict";

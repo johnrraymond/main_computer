@@ -15,8 +15,9 @@ import sys
 import threading
 import time
 
+from .organization_process import stop_recorded_process
 from .organization_state import (read_config, save_config, initialize_disabled,
-                                 OrganizationConfigError)
+                                 validate_config, OrganizationConfigError)
 from .authority import SLHError, SLHAuthority
 
 
@@ -53,6 +54,9 @@ class OrganizationController:
             raise SLHError('ORGANIZATION_NOT_READY', 409)
         if self._process is not None and self._process.poll() is None:
             return
+        # Recover an orphan from a prior manager before launching a second
+        # listener. Both UI and CLI teardown use this same identity record.
+        stop_recorded_process(self.directory)
         logfile = self.directory / 'organization-service.log'
         with logfile.open('ab') as stream:
             self._process = self._runner(
@@ -144,6 +148,72 @@ class OrganizationController:
             except OrganizationConfigError as exc:
                 raise SLHError('INVALID_ORGANIZATION_CONFIG', 400) from exc
             return cfg
+
+    def reconfigure_and_enable(self, changes):
+        """One authorized, serialized bind change with bounded recovery.
+
+        Persisted enablement is an operational policy, not a requirement that
+        the administrator must manually disable before reconfiguring. Keep the
+        controller lock across the transition so _watch cannot relaunch the old
+        listener during the intentional restart. Do not alter authority, worker
+        policy, SEH state or identity records.
+        """
+        if not isinstance(changes, dict) or not changes or set(changes) - {'host', 'api_port', 'worker_port'}:
+            raise SLHError('INVALID_ORGANIZATION_CONFIG', 400)
+        with self._lock:
+            original = self.config()
+            if not self.authority.initialized():
+                raise SLHError('ORGANIZATION_NOT_READY', 409)
+            try:
+                desired = validate_config({**original, **changes,
+                                           'configured': True, 'enabled': True,
+                                           'activation_confirmed': True})
+            except OrganizationConfigError as exc:
+                raise SLHError('INVALID_ORGANIZATION_CONFIG', 400) from exc
+            same_listener = all(original[k] == desired[k] for k in
+                                ('host', 'api_port', 'worker_port', 'workers_enabled', 'seh_enabled'))
+            if original['enabled'] and same_listener and self._listening(original):
+                return self.status()
+
+            self._restarts.clear()
+            try:
+                self._terminate()
+                save_config(self.directory, desired)
+                self._launch()
+                if not self._await_listening(desired):
+                    raise SLHError('ORGANIZATION_START_UNVERIFIED', 503)
+                self._last_error = None
+                return self.status()
+            except Exception as exc:
+                # Never leave the requested listener persisted if it did not
+                # become ready. Restore the old policy, including disabled.
+                recovery_failed = False
+                try:
+                    self._terminate()
+                    save_config(self.directory, original)
+                    if original['enabled']:
+                        self._launch()
+                        if not self._await_listening(original):
+                            recovery_failed = True
+                    self._restarts.clear()
+                except Exception:
+                    recovery_failed = True
+                if recovery_failed:
+                    self._last_error = 'Organization reconfiguration failed; old listener recovery failed'
+                    raise SLHError('ORGANIZATION_RECONFIGURE_RECOVERY_FAILED', 503) from exc
+                if not original['enabled']:
+                    self._last_error = None
+                raise SLHError('ORGANIZATION_RECONFIGURE_FAILED_RESTORED', 503) from exc
+
+    def _await_listening(self, config, *, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._listening(config):
+                return True
+            if self._process is None or self._process.poll() is not None:
+                return False
+            time.sleep(0.1)
+        return self._listening(config)
 
     def enable(self):
         with self._lock:
@@ -414,7 +484,10 @@ class OrganizationController:
             return {'status': 'ACTIVATION_STARTED', **result}
 
     def _terminate(self):
-        proc, self._process = self._process, None
+        # The shared PID identity is authoritative. Keep Popen as a fallback
+        # only for a freshly launched child that has not published it yet.
+        proc = self._process
+        stop_recorded_process(self.directory)
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
@@ -422,6 +495,7 @@ class OrganizationController:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+        self._process = None
 
     def _watch(self):
         while not self._stop.wait(2):

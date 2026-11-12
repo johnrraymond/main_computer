@@ -27,7 +27,8 @@ from main_computer.slh.storage import slh_state_dir
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
-_ACTIONS = frozenset(('start', 'bootstrap', 'configure', 'activate', 'login', 'logout'))
+_ACTIONS = frozenset(('start', 'bootstrap', 'configure', 'configure-and-enable',
+                      'disable', 'activate', 'login', 'logout'))
 _START_LOCK = threading.RLock()
 
 
@@ -99,6 +100,8 @@ class SlhFirstRunController:
             ('GET', '/v1/local/status'), ('GET', '/v1/local/organization/config'),
             ('POST', '/v1/auth/challenge'), ('POST', '/v1/auth/verify'),
             ('POST', '/v1/bootstrap/begin'), ('POST', '/v1/local/organization/enable'),
+            ('POST', '/v1/local/organization/disable'),
+            ('POST', '/v1/local/organization/configure-and-enable'),
             ('POST', '/v1/local/organization/admin/identities'),
             ('PATCH', '/v1/local/organization/config'),
         } and not (re.fullmatch(r'/v1/bootstrap/[0-9a-f]{32}/administrator', path) and method == 'PUT') and not (
@@ -106,7 +109,9 @@ class SlhFirstRunController:
             method == 'GET' and re.fullmatch(r'/v1/local/authenticator/identities/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', path)) and not (
             method == 'POST' and re.fullmatch(r'/v1/local/authenticator/identities/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}/sign', path)):
             raise FirstRunError('OPERATION_NOT_ADMITTED', 403)
-        connection = http.client.HTTPConnection('127.0.0.1', self.local_port, timeout=3)
+        # A coordinated reconfiguration may wait for TLS readiness and recovery.
+        request_timeout = 25 if path == '/v1/local/organization/configure-and-enable' else 3
+        connection = http.client.HTTPConnection('127.0.0.1', self.local_port, timeout=request_timeout)
         try:
             payload = None if body is None else json.dumps(body, separators=(',', ':')).encode()
             headers = {'Accept': 'application/json', 'Connection': 'close'}
@@ -264,6 +269,107 @@ class SlhFirstRunController:
         return {'outcome': 'CONFIGURED', 'message': 'Worker service configured but disabled; SEH remains disabled',
                 'deviceId': device_id}
 
+    def configure_and_enable(self, *, device_id: str, bind_address: str, port: object) -> dict:
+        """Configure or reconfigure a running ORG-SLH in one controlled transition.
+
+        The local LMS authority remains the owner of bootstrap, signer
+        verification, persistence, and process creation. Successful enable
+        persists the auto-start policy for subsequent LMS starts. This operation
+        never authenticates an ORG administrator session in the browser.
+        """
+        device_id = _identity_id(device_id)
+        host = '0.0.0.0' if bind_address == '0.0.0.0' else _assigned_private_ip(bind_address)
+        api_port = _port(port)
+        worker_port = DEFAULT_SLH_MANAGED_PORT
+        if api_port == worker_port:
+            worker_port = DEFAULT_SLH_MANAGED_PORT + 1
+        if api_port == worker_port:
+            raise FirstRunError('DUPLICATE_PORT')
+        with _START_LOCK:
+            local = self._request('GET', '/v1/local/status')
+            if (local.get('schema') != 'main-computer.slh-local-status.v1' or
+                local.get('local_service', {}).get('binding') != 'loopback'):
+                raise FirstRunError('LOCAL_STATUS_UNVERIFIED', 503)
+            org, initialization, enrollment = (local.get('organization_service'),
+                local.get('initialization'), local.get('administrator_enrollment'))
+            if not all(isinstance(x, dict) for x in (org, initialization, enrollment)):
+                raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 503)
+            # Check selected signing key before any mutation.
+            identity = self._identity(device_id)
+            if initialization.get('initialized') is False and enrollment.get('state') == 'NOT_ESTABLISHED':
+                if org.get('configured') is not False or org.get('enabled') is not False:
+                    raise FirstRunError('ORGANIZATION_STATE_REQUIRES_RECOVERY', 409)
+                name = identity.get('label') or device_id
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+                    name = device_id
+                self.bootstrap(admin_id=device_id, admin_name=name, device_id=device_id,
+                               acknowledge_p256_only=True)
+            elif initialization.get('initialized') is True and enrollment.get('state') == 'ENROLLED':
+                pass
+            else:
+                raise FirstRunError('ADMINISTRATOR_STATE_REQUIRES_RECOVERY', 409)
+            token = self._local_admin_token(device_id)
+            saved = self._request('GET', '/v1/local/organization/config', token=token)
+            if type(saved.get('enabled')) is not bool:
+                raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 409)
+            # Preserve any existing Worker/SEH policy and Worker port. Only
+            # the listener settings exposed in this form are being changed.
+            existing = saved.get('configured') is True
+            worker_port = saved.get('worker_port') if existing else worker_port
+            if type(worker_port) is not int:
+                raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 409)
+            if api_port == worker_port:
+                if saved.get('workers_enabled') is True:
+                    raise FirstRunError('WORKER_PORT_CONFLICT', 409)
+                worker_port = DEFAULT_SLH_MANAGED_PORT
+                if worker_port == api_port:
+                    worker_port += 1
+                if worker_port == api_port:
+                    raise FirstRunError('DUPLICATE_PORT', 409)
+            unchanged = (saved.get('enabled') is True and saved.get('host') == host and
+                         saved.get('api_port') == api_port and saved.get('worker_port') == worker_port)
+            if unchanged and self.status()['organization'] == 'running':
+                return self._verify_running(device_id, 'ALREADY_RUNNING')
+            self._request('POST', '/v1/local/organization/configure-and-enable', {
+                'host': host, 'api_port': api_port, 'worker_port': worker_port}, token=token)
+            configured = self._request('GET', '/v1/local/organization/config', token=token)
+            if (configured.get('host') != host or configured.get('api_port') != api_port or
+                configured.get('worker_port') != worker_port or
+                configured.get('configured') is not True or configured.get('enabled') is not True or
+                configured.get('workers_enabled') != saved.get('workers_enabled') or
+                configured.get('seh_enabled') != saved.get('seh_enabled')):
+                raise FirstRunError('ORGANIZATION_CONFIGURATION_UNVERIFIED', 503)
+            return self._verify_running(device_id, 'RUNNING')
+
+    def _verify_running(self, device_id: str, outcome: str) -> dict:
+        for _ in range(50):
+            observed = self.status()
+            if observed['organization'] == 'running':
+                return {'outcome': outcome,
+                        'message': 'ORG-SLH is running; auto-start with LMS-SLH is enabled',
+                        'deviceId': device_id}
+            if observed['organization'] in ('failed', 'stopped_unexpectedly', 'configuration_error', 'disabled'):
+                raise FirstRunError('ORGANIZATION_START_UNVERIFIED', 503)
+            time.sleep(0.1)
+        raise FirstRunError('ORGANIZATION_START_UNVERIFIED', 503)
+
+    def disable_organization(self, *, device_id: str) -> dict:
+        """Explicit stop + persist disabled. Keep organization and identities."""
+        device_id = _identity_id(device_id)
+        with _START_LOCK:
+            self._identity(device_id)
+            token = self._local_admin_token(device_id)
+            self._request('POST', '/v1/local/organization/disable', {}, token=token)
+            for _ in range(30):
+                local = self._request('GET', '/v1/local/status')
+                org = local.get('organization_service', {})
+                if org.get('enabled') is False and org.get('state') == 'disabled' and org.get('listening') is False:
+                    return {'outcome': 'DISABLED',
+                            'message': 'ORG-SLH stopped and auto-start disabled; configuration and identities retained',
+                            'deviceId': device_id}
+                time.sleep(0.1)
+            raise FirstRunError('ORGANIZATION_DISABLE_UNVERIFIED', 503)
+
     def activate(self, *, device_id: str) -> dict:
         token = self._local_admin_token(device_id)
         self._request('POST', '/v1/local/organization/enable', {}, token=token)
@@ -279,65 +385,20 @@ class SlhFirstRunController:
         raise FirstRunError('ORGANIZATION_START_UNVERIFIED', 503)
 
     def login(self, *, device_id: str) -> dict:
-        """One click: establish a genuinely fresh organization, then log in.
-
-        An existing initialized organization cannot be re-bootstrapped. An
-        already-enrolled administrator is never replaced or expanded by login.
-        The trusted local service checks its own authority state; no remote
-        enrollment lookup and no browser-managed root/bootstrap material.
-        """
+        """Authenticate only. Login must NEVER bootstrap, configure or activate."""
         device_id = _identity_id(device_id)
-        with _START_LOCK:
-            try:
-                identity = self._identity(device_id)
-                local = self._request('GET', '/v1/local/status')
-                if local.get('schema') != 'main-computer.slh-local-status.v1':
-                    raise FirstRunError('LOCAL_STATUS_UNVERIFIED', 503)
-                enrollment = local.get('administrator_enrollment')
-                state = enrollment.get('state') if isinstance(enrollment, dict) else None
-                initialization = local.get('initialization')
-                initialized = (initialization.get('initialized') if isinstance(initialization, dict) else None)
-                fresh = initialized is False and state == 'NOT_ESTABLISHED'
-                if fresh:
-                    # The existing one-use local bootstrap establishes the
-                    # organization. The selected ordinary identity supplies
-                    # both its device and administrator labels; no form or
-                    # hand-authored role-named key is needed.
-                    name = identity.get('label') or device_id
-                    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
-                        name = device_id
-                    self.bootstrap(admin_id=device_id, admin_name=name,
-                                   device_id=device_id, acknowledge_p256_only=True)
-                    # A new organization must have a TLS listener before it
-                    # can authenticate. Configure only a fresh installation,
-                    # using loopback defaults; preserve any pre-existing
-                    # explicit network configuration when resetting the DB.
-                    current = self._request('GET', '/v1/local/status')
-                    org = current.get('organization_service')
-                    if not isinstance(org, dict):
-                        raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 503)
-                    if org.get('configured') is False and org.get('state') == 'not_configured':
-                        self.configure(device_id=device_id, host='127.0.0.1',
-                                       api_port=DEFAULT_SLH_MANAGED_PORT + 1,
-                                       worker_port=DEFAULT_SLH_MANAGED_PORT)
-                    elif org.get('configured') is not True:
-                        raise FirstRunError('ORGANIZATION_STATE_UNAVAILABLE', 409)
-                    if self.status()['organization'] != 'running':
-                        self.activate(device_id=device_id)
-                elif initialized is True and state in ('MISSING', 'NO_ACTIVE_DEVICE'):
-                    # V6-C conditional root grant: the ORG endpoint atomically
-                    # rechecks that the active administrator set is empty.
-                    self._request('POST', '/v1/local/organization/admin/identities',
-                                  {'device_id': device_id, 'bootstrap_only': True})
-                elif initialized is True and state == 'ENROLLED':
-                    pass  # No grant. Only normal signed authentication.
-                else:
-                    raise FirstRunError('ADMINISTRATOR_STATE_UNAVAILABLE', 409)
-                result = OrganizationWorkerClient(state_dir=self.state_dir).login_with_signer(
-                    device_id, lambda challenge: self._sign(device_id, challenge))
-            except WorkerBridgeError as exc:
-                raise FirstRunError(exc.code, exc.status) from exc
-            return result
+        try:
+            self._identity(device_id)
+            local = self._request('GET', '/v1/local/status')
+            if (local.get('schema') != 'main-computer.slh-local-status.v1' or
+                local.get('initialization', {}).get('initialized') is not True or
+                local.get('administrator_enrollment', {}).get('state') != 'ENROLLED' or
+                local.get('organization_service', {}).get('state') != 'running'):
+                raise FirstRunError('ORGANIZATION_NOT_RUNNING', 409)
+            return OrganizationWorkerClient(state_dir=self.state_dir).login_with_signer(
+                device_id, lambda challenge: self._sign(device_id, challenge))
+        except WorkerBridgeError as exc:
+            raise FirstRunError(exc.code, exc.status) from exc
 
     def logout(self, token: str) -> dict:
         try:
@@ -351,6 +412,8 @@ class SlhFirstRunController:
         signatures = {
             'start': (), 'bootstrap': ('adminId', 'adminName', 'deviceId', 'acknowledgeP256Only'),
             'configure': ('adminDeviceId', 'host', 'apiPort', 'workerPort'),
+            'configure-and-enable': ('adminDeviceId', 'bindAddress', 'port'),
+            'disable': ('adminDeviceId',),
             'activate': ('adminDeviceId',), 'login': ('adminDeviceId',), 'logout': (),
         }
         if set(values) != set(signatures[action]):
@@ -362,6 +425,11 @@ class SlhFirstRunController:
         if action == 'configure':
             return self.configure(device_id=values['adminDeviceId'], host=values['host'],
                 api_port=values['apiPort'], worker_port=values['workerPort'])
+        if action == 'configure-and-enable':
+            return self.configure_and_enable(device_id=values['adminDeviceId'],
+                bind_address=values['bindAddress'], port=values['port'])
+        if action == 'disable':
+            return self.disable_organization(device_id=values['adminDeviceId'])
         if action == 'activate': return self.activate(device_id=values['adminDeviceId'])
         if action == 'login': return self.login(device_id=values['adminDeviceId'])
         return self.logout(token)

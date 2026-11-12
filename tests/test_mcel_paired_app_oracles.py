@@ -11,6 +11,31 @@ from tools import mcel_layout_frob as frob
 from tools import mcel_paired_app_oracles as oracle
 
 
+def current_source_candidate(destination):
+    """Stage current MCEL sources, enabling only the unpromoted editor.
+
+    File Manager and Task Manager are canonical. Code Editor is an isolated
+    candidate and must opt into the planner only in the scratch checkout.
+    Independent oracles still judge actual browser geometry and controls.
+    """
+    for original in frob.PAIRED_CANDIDATE.rglob('*'):
+        if not original.is_file():
+            continue
+        relative=original.relative_to(frob.PAIRED_CANDIDATE)
+        source=frob.ROOT/relative
+        target=destination/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    host=destination/'main_computer/mcel_semantic_other_apps_host.py'
+    content=host.read_text(encoding='utf-8')
+    old='workspace_enabled = name in {"task-manager", "file-manager"}'
+    assert content.count(old)==1
+    host.write_text(content.replace(old,
+        'workspace_enabled = name in {"task-manager", "file-manager", "code-editor"}'),
+        encoding='utf-8')
+    return destination
+
+
 def sample(app, width):
     """Geometry-only neutral synthetic fixture: the oracle never reads plans."""
     narrow = width < 680
@@ -40,6 +65,9 @@ def sample(app, width):
             'height':900,'zone':zones,'regions':{
                **{'application':{'zone':None}},
                **{region:{'zone':zone} for region,zone in oracle.EXPECTED_REGION_ZONES[app].items()}},
+            'fileExplorer':{name:True for name in ('treeInNavigator','listingInWorkspace','inspectorInTools',
+                'navigationScrollOwner','workspaceScrollOwner','inspectorScrollOwner',
+                'treeDoesNotScroll','listDoesNotScroll','outerFrameBounded')} if app=='file-manager' else None,
             'tabCount':4 if app in oracle.TOOL_TABS else 0,
             'selectedTabs':1 if app in oracle.TOOL_TABS else 0,
             'visiblePanels':1 if app in oracle.TOOL_TABS else 0}
@@ -66,6 +94,18 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         fixture=sample('file-manager',1100)
         fixture['regions']['inspection']['zone']='workspace'
         self.assertIn('region-not-in-expected-zone:inspection',oracle.check_layout('file-manager',fixture,1100)['failures'])
+
+    def test_file_manager_semantic_tree_and_scroll_ownership_negative_witnesses(self):
+        for fact,expected in (
+            ('treeInNavigator','folder-hierarchy-not-under-locations'),
+            ('inspectorInTools','selected-entry-not-in-inspector'),
+            ('inspectorScrollOwner','inspector-lacks-scroll-ownership'),
+            ('listDoesNotScroll','nested-directory-list-scrollbar'),
+            ('outerFrameBounded','outer-frame-scrollbar'),
+        ):
+            fixture=sample('file-manager',1100)
+            fixture['fileExplorer'][fact]=False
+            self.assertIn(expected,oracle.check_layout('file-manager',fixture,1100)['failures'])
 
     def test_detached_code_editor_tools_rejected(self):
         fixture=sample('code-editor',1100)
@@ -111,12 +151,13 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         apps=tuple(oracle.EXPECTED_REGION_ZONES)
         with tempfile.TemporaryDirectory() as tmp:
             stage=Path(tmp)/'stage'
-            frob._paired_stage(frob.ROOT,stage,frob.PAIRED_CANDIDATE)
+            current=current_source_candidate(Path(tmp)/'current-source-candidate')
+            frob._paired_stage(frob.ROOT,stage,current)
             baseline=frob._paired_baseline_pages(apps)
             staged=frob._paired_candidate_pages(stage,apps)
             for app in apps:
                 self.assertEqual(baseline[app]['ir'],staged[app]['ir'])
-                self.assertEqual(frob._paired_plan_present(baseline[app]['html']),app=='task-manager')
+                self.assertEqual(frob._paired_plan_present(baseline[app]['html']),app in ('task-manager','file-manager'))
                 self.assertTrue(frob._paired_plan_present(staged[app]['html']))
                 self.assertEqual(frob._paired_plan_contract(staged[app]['html'],staged[app]['ir'])['status'],'PASS')
 
@@ -218,7 +259,8 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp, sync_playwright() as pw:
             stage=Path(tmp)/'stage'
-            frob._paired_stage(frob.ROOT,stage,frob.PAIRED_CANDIDATE)
+            current=current_source_candidate(Path(tmp)/'current-source-candidate')
+            frob._paired_stage(frob.ROOT,stage,current)
             candidate=frob._paired_candidate_pages(stage,tuple(perturb))
             browser=pw.chromium.launch(executable_path=executable,headless=True,args=['--no-sandbox'])
             try:
@@ -238,8 +280,11 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         executable=shutil.which('chromium') or shutil.which('chromium-browser') or os.environ.get('MCEL_CHROMIUM_EXECUTABLE')
         if not executable:self.skipTest('Chromium unavailable')
         with tempfile.TemporaryDirectory() as tmp:
-            result=frob.paired_workspace_frob(apps=('file-manager','task-manager','code-editor'),
-                  widths=(390,1100,1272),output=Path(tmp)/'run',chromium_executable=executable)
+            from unittest.mock import patch
+            current=current_source_candidate(Path(tmp)/'current-source-candidate')
+            with patch.object(frob,'PAIRED_CANDIDATE',current):
+                result=frob.paired_workspace_frob(apps=('file-manager','task-manager','code-editor'),
+                    widths=(390,1100,1272),output=Path(tmp)/'run',chromium_executable=executable)
             self.assertEqual(result,0)
             report=json.loads((Path(tmp)/'run'/'report.json').read_text())
             self.assertEqual(report['status'],'PASS')

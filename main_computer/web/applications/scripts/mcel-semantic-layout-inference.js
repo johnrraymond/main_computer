@@ -1671,6 +1671,18 @@
       zoneHosts.set(zone.id,holder);
       surface.append(holder);
     }
+    // The plan is the placement authority. Do not fold authored inspectors,
+    // controls or status into the primary workspace: that destroys independent
+    // scroll ownership and overrides a verified dock-end instruction.
+    if (!zoneHosts.has("workspace")) fail("workspace-anchor-unassigned");
+    const navigationZone=zoneHosts.get("navigator") ||
+      make("aside",{"data-mcel-zone":"navigator",role:"navigation", "aria-label":"Application navigation"});
+    if (!zoneHosts.has("navigator")){
+      // Identity remains visible for an app with no authored navigator. The
+      // authored controls still occupy their own planned toolbar zone.
+      surface.prepend(navigationZone);
+    }
+    surface.setAttribute("data-mcel-viewport-composed","");
     tree.setAttribute("data-mcel-planned-root", "");
     tree.append(surface);
     const navigator=surface.querySelector("[data-mcel-navigation-disclosure]");
@@ -1695,27 +1707,35 @@
       const after=placement.get("tools")==="dock-bottom" ||
         placement.get("tools")==="disclosure-after-anchor";
       const columns=(navSide?1:0)+1+(toolSide?1:0);
-      const areaRows=[];
+      const areaRows=[], rowTracks=[];
       const row=(name)=>Array(columns).fill(name);
-      if(has("controls"))areaRows.push(row("controls"));
-      if(before)areaRows.push(row("navigator"));
+      const add=(cells,track)=>{areaRows.push(cells);rowTracks.push(track);};
+      if(!has("navigator"))add(row("navigator"),"max-content");
+      if(has("controls"))add(row("controls"),"max-content");
+      if(before)add(row("navigator"),"minmax(0, min(22dvh, 160px))");
       const central=[];
       if(navSide)central.push("navigator");
       central.push("workspace");
       if(toolSide)central.push("tools");
-      areaRows.push(central);
-      if(after)areaRows.push(row("tools"));
-      if(has("status"))areaRows.push(row("status"));
+      add(central,"minmax(0, 1fr)");
+      if(after)add(row("tools"),"minmax(0, min(30dvh, 250px))");
+      if(has("status"))add(row("status"),"minmax(0, min(9dvh, 70px))");
       if(areaRows.some(c=>c.length!==columns))fail("workspace-grid-nonrectangular");
-      // Minimums are semantic scheme constants, never application selectors.
-      // The planner's rung is authoritative; CSS supplies only zone styling.
+      // Viewport geometry is solved once at the layout root. Each semantic
+      // zone owns its own scroll; nested records cannot create an extra rail.
       const tracks=[];
       if(navSide)tracks.push("minmax(165px, .29fr)");
-      tracks.push(columns===1?"minmax(0, 1fr)":"minmax(0, 1fr)");
-      if(toolSide)tracks.push("minmax(220px, .38fr)");
+      tracks.push("minmax(0, 1fr)");
+      if(toolSide)tracks.push("minmax(205px, .38fr)");
       surface.style.gridTemplateColumns=tracks.join(" ");
+      surface.style.gridTemplateRows=rowTracks.join(" ");
       surface.style.gridTemplateAreas=areaRows.map(c=>'"'+c.join(" ")+'"').join(" ");
-      for(const [id,p] of placement) zoneHosts.get(id).setAttribute("data-mcel-placement",p);
+      if(!has("navigator"))navigationZone.style.gridArea="navigator";
+      for(const [id,p] of placement){
+        const zone=zoneHosts.get(id);
+        zone.style.gridArea=id;
+        zone.setAttribute("data-mcel-placement",p);
+      }
     };
     const resolve=()=>{
       if(stopped)return;
