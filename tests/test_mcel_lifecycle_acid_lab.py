@@ -50,7 +50,7 @@ def test_lifecycle_acid_is_first_class_workspace():
     assert html.index('id="mcel-lab-workspace-lifecycle"') < html.index('class="mcel-lab-blueprint-topbar"')
     assert html.index('id="mcel-lifecycle-acid"') < html.index('id="mcel-lab-blueprint-workspace"')
     assert html.index('id="mcel-lifecycle-acid"') < html.index('class="mcel-lab-advanced-legacy"')
-    assert 'data-mcel-workspace-view="blueprint"' in html
+    assert 'data-mcel-workspace-view="presentation"' in html
 
 
 def test_lifecycle_workspace_switch_is_clickable_in_browser():
@@ -68,7 +68,8 @@ def test_lifecycle_workspace_switch_is_clickable_in_browser():
             page.add_style_tag(content=css.read_text('utf-8'))
             page.evaluate("document.getElementById('mcel-lab-app').style.display='block'")
             page.add_script_tag(path=str(JS))
-            assert page.locator('.mcel-lab-blueprint-topbar').is_visible()
+            assert page.locator('#mcel-lab-presentation-workspace').is_visible()
+            assert not page.locator('.mcel-lab-blueprint-topbar').is_visible()
             assert not page.locator('#mcel-lifecycle-acid').is_visible()
             page.locator('#mcel-lab-workspace-lifecycle').click()
             assert page.locator('#mcel-lifecycle-acid').is_visible()
@@ -78,6 +79,9 @@ def test_lifecycle_workspace_switch_is_clickable_in_browser():
             page.locator('#mcel-lab-workspace-blueprint').click()
             assert page.locator('.mcel-lab-blueprint-topbar').is_visible()
             assert not page.locator('#mcel-lifecycle-acid').is_visible()
+            page.locator('#mcel-lab-workspace-presentation').click()
+            assert page.locator('#mcel-lab-presentation-workspace').is_visible()
+            assert not page.locator('.mcel-lab-blueprint-topbar').is_visible()
             assert not errors,errors
             page.close()
         browser.close()

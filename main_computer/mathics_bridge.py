@@ -4,6 +4,7 @@ import base64
 import hashlib
 import importlib.util
 import sys
+import threading
 from typing import Any
 
 
@@ -11,6 +12,7 @@ MAX_MATHICS_EXPRESSION_CHARS = 4000
 
 _mathics_session = None
 _mathics_builtins_loaded = False
+_mathics_session_init_lock = threading.Lock()
 
 
 class MathicsImportFailure(RuntimeError):
@@ -184,23 +186,28 @@ def get_mathics_session():
     if _mathics_session is not None:
         return _mathics_session
 
-    _disable_hanging_windows_platform_wmi_probe()
+    # A Symbolic-page preparation request and an evaluation may arrive
+    # concurrently. Load built-ins and create exactly one shared session.
+    with _mathics_session_init_lock:
+        if _mathics_session is not None:
+            return _mathics_session
+        _disable_hanging_windows_platform_wmi_probe()
 
-    try:
-        from mathics.core.load_builtin import import_and_load_builtins
-        from mathics.session import MathicsSession
-    except Exception as exc:
-        raise MathicsImportFailure(f"Mathics3 import failed. {exc}") from exc
+        try:
+            from mathics.core.load_builtin import import_and_load_builtins
+            from mathics.session import MathicsSession
+        except Exception as exc:
+            raise MathicsImportFailure(f"Mathics3 import failed. {exc}") from exc
 
-    try:
-        if not _mathics_builtins_loaded:
-            import_and_load_builtins()
-            _mathics_builtins_loaded = True
-        _mathics_session = MathicsSession(add_builtin=True, catch_interrupt=True)
-        return _mathics_session
-    except Exception as exc:
-        _mathics_session = None
-        raise MathicsSessionFailure(f"Mathics3 session initialization failed. {exc}") from exc
+        try:
+            if not _mathics_builtins_loaded:
+                import_and_load_builtins()
+                _mathics_builtins_loaded = True
+            _mathics_session = MathicsSession(add_builtin=True, catch_interrupt=True)
+            return _mathics_session
+        except Exception as exc:
+            _mathics_session = None
+            raise MathicsSessionFailure(f"Mathics3 session initialization failed. {exc}") from exc
 
 
 def evaluate_mathics_expression(expression: str, timeout_s: float = 10.0) -> dict[str, Any]:

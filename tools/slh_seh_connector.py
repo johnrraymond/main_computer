@@ -6,7 +6,7 @@ managed-gateway connection supervisor. This CLI is not the deploy workflow.
 
   python -m tools.slh_seh_connector fresh-smoke
   python -m tools.slh_seh_connector identity --state-dir PATH
-  python -m tools.slh_seh_connector run --seh-url wss://hub.secure.company.com --slh-id SLH
+  python -m tools.slh_seh_connector run --seh-url wss://hub.secure.company.com
 
 The SLH private service key never leaves its own state directory. `identity`
 returns ONLY the public key. On a fresh, empty state root it initializes that
@@ -77,7 +77,6 @@ def main(argv=None):
     p.add_argument('command',choices=['identity','run','fresh-smoke'])
     p.add_argument('--state-dir',type=Path,default=default_state())
     p.add_argument('--seh-url',help='Public WSS SEH origin')
-    p.add_argument('--slh-id')
     p.add_argument('--gateway-port',type=int,default=DEFAULT_SLH_MANAGED_PORT)
     p.add_argument('--retry-seconds',type=float,default=3)
     p.add_argument('--allow-loopback-lab',action='store_true',
@@ -101,21 +100,21 @@ def main(argv=None):
                           'public_key_b64':public,'state_dir':str(args.state_dir),
                           'private_key_exposed':False},indent=2))
         return 0
-    if not args.seh_url or not args.slh_id:
-        p.error('run requires --seh-url and --slh-id')
+    if not args.seh_url:
+        p.error('run requires --seh-url')
     if args.retry_seconds < 1 or args.retry_seconds > 60:
         p.error('--retry-seconds must be between 1 and 60')
     from main_computer.slh.seh_transport import _endpoint
     _endpoint(args.seh_url, allow_lab=args.allow_loopback_lab)
     private,_=service_identity(args.state_dir)
     print(json.dumps({'event':'seh_connector_starting',
-                      'slh_id':args.slh_id,'gateway_port':args.gateway_port}),flush=True)
+                      'gateway_port':args.gateway_port}),flush=True)
     try:
         while True:
             conn=None
             try:
                 conn=SLHSEHConnector(seh_url=args.seh_url,
-                                     slh_id=args.slh_id,identity_private_key=private,
+                                     identity_private_key=private,
                                      gateway_port=args.gateway_port,
                                      allow_lab=args.allow_loopback_lab).connect()
                 print(json.dumps({'event':'seh_outbound_authenticated'}),flush=True)

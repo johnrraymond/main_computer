@@ -42,17 +42,22 @@ def _socket_source_port(sock):
 
 class SLHSEHConnector:
     """Authenticates using a dedicated SLH P-256 key, then tunnels to its local TLS service."""
-    def __init__(self, *, seh_url: str, slh_id: str,
+    def __init__(self, *, seh_url: str,
                  identity_private_key, gateway_port: int, allow_lab: bool=False,
+                 admin_target: tuple[str, int] | None = None,
                  lab_id: str | None = None):
         _endpoint(seh_url,allow_lab=allow_lab)
         if lab_id is not None and not LAB_ID.fullmatch(lab_id):
             raise ValueError('Invalid isolated SEH lab identifier')
         self.lab_id = lab_id
         self.seh_url = seh_url.rstrip('/')
-        self.slh_id=slh_id
         self.identity_private_key=identity_private_key
         self.gateway_port=gateway_port
+        if admin_target is not None and (not isinstance(admin_target, tuple) or
+                len(admin_target) != 2 or admin_target[0] != '127.0.0.1' or
+                type(admin_target[1]) is not int or not 1 <= admin_target[1] <= 65535):
+            raise ValueError('SEH identity listener must be loopback only')
+        self.admin_target = admin_target
         self._socket=None
         self._thread=None
         self._send_lock=threading.RLock()
@@ -177,8 +182,16 @@ class SLHSEHConnector:
                 # control tunnel and disconnected the entire organization.
                 self._send({'op':'close','id':sid})
                 return
+            purpose = payload.get('purpose', 'worker')
+            if purpose == 'worker':
+                destination = ('127.0.0.1', self.gateway_port)
+            elif purpose == 'admin' and self.admin_target is not None:
+                destination = self.admin_target
+            else:
+                self._send({'op':'close','id':sid})
+                return
             try:
-                local=socket.create_connection(('127.0.0.1',self.gateway_port),timeout=5)
+                local=socket.create_connection(destination,timeout=5)
                 local.settimeout(None)
             except OSError:
                 self._send({'op':'close','id':sid})
@@ -222,16 +235,17 @@ class SLHSEHConnector:
 
     def connect(self):
         from websockets.sync.client import connect
-        path=(f'{self.seh_url}/v1/seh/lab/{self.slh_id}/slh/id/{self.lab_id}'
-              if self.lab_id else f'{self.seh_url}/v1/seh/slh/{self.slh_id}')
+        path=(f'{self.seh_url}/v1/seh/lab/slh/id/{self.lab_id}'
+              if self.lab_id else f'{self.seh_url}/v1/seh/slh')
         ws=connect(path,open_timeout=8,max_size=MAX_FRAME*2+8192,
                    max_queue=MAX_WS_BUFFERED_MESSAGES,compression=None)
         try:
             request=json.loads(ws.recv(timeout=8))
             statement=request.get('statement') or {}
             if (request.get('type')!='seh.auth.challenge' or
-                statement.get('slh_id')!=self.slh_id or
                 statement.get('lab_id')!=self.lab_id or
+                statement.get('version')!=2 or
+                set(statement) != ({'version','action','nonce','lab_id'} if self.lab_id is not None else {'version','action','nonce'}) or
                 statement.get('action')!='seh.slh.connect' or
                 not isinstance(statement.get('nonce'),str) or len(statement['nonce'])<32):
                 raise RuntimeError('SEH challenge invalid')
@@ -274,8 +288,9 @@ class _LocalAdapterHandler(socketserver.BaseRequestHandler):
     def handle(self):
         adapter=self.server
         from websockets.sync.client import connect
-        uri=(f'{adapter.seh_url}/v1/seh/lab/{adapter.slh_id}/client/id/{adapter.lab_id}'
-             if adapter.lab_id else f'{adapter.seh_url}/v1/seh/client/{adapter.slh_id}')
+        uri=(f'{adapter.seh_url}/v1/seh/lab/client/id/{adapter.lab_id}'
+             if adapter.lab_id else f'{adapter.seh_url}/v1/seh/'
+             f'{"admin" if adapter.purpose == "admin" else "client"}')
         first_lock=threading.Lock()
         first=[None]
         # Port is the Worker side's ephemeral loopback port, and is NOT a
@@ -375,12 +390,17 @@ class SEHLocalClientAdapter(socketserver.ThreadingTCPServer):
     allow_reuse_address=False
     daemon_threads=True
 
-    def __init__(self, seh_url: str, slh_id: str, *, allow_lab=False, lab_id=None):
+    def __init__(self, seh_url: str, *, allow_lab=False, lab_id=None,
+                 purpose: str = 'worker'):
+        if purpose not in ('worker', 'admin'):
+            raise ValueError('Unsupported SEH stream purpose')
+        if purpose == 'admin' and lab_id is not None:
+            raise ValueError('Administrative transport cannot use isolated lab channels')
+        self.purpose = purpose
         _endpoint(seh_url,allow_lab=allow_lab)
         if lab_id is not None and not LAB_ID.fullmatch(lab_id):
             raise ValueError('Invalid isolated SEH lab identifier')
         self.lab_id=lab_id
-        self.slh_id=slh_id
         self.seh_url=seh_url.rstrip('/')
         self.stats_lock=threading.Lock()
         self.bytes_forwarded=0

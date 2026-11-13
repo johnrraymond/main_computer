@@ -207,12 +207,12 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
             lab_id = deployed['lab_id']
         else:
             relay_signer, relay_public = generate_identity()
-            relay = SEHRelay(slh_id=slh_id,
+            relay = SEHRelay(
                              slh_public_key=relay_public, host='127.0.0.1', port=0).start()
             uri=f'ws://127.0.0.1:{relay.port}'
             lab_id=None
         write_seh_settings(auth.directory, SEHConnectionSettings(
-            enabled=True, seh_url=uri, slh_id=slh_id,
+            enabled=True, seh_url=uri, 
             allow_loopback_lab=True, retry_seconds=0.2))
         gateway = SLHManagedGateway(auth, host='127.0.0.1', port=0,
                                     seh_lab_identity=relay_signer, seh_lab_id=lab_id)
@@ -223,7 +223,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
                          gateway.seh_connection is not None and gateway.seh_connection.connected,
                          seconds=8):
                 raise RuntimeError('Configured SLH did not automatically authenticate its SEH tunnel')
-            adapter=SEHLocalClientAdapter(uri, slh_id, allow_lab=True, lab_id=lab_id)
+            adapter=SEHLocalClientAdapter(uri,  allow_lab=True, lab_id=lab_id)
             if not _wait(lambda: relay is None or relay.tunnel_ready):
                 raise RuntimeError('SEH did not observe the configured SLH tunnel')
         except BaseException:
@@ -876,7 +876,7 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
         replay=None
         try:
             replay=SLHSEHConnector(seh_url=f'ws://127.0.0.1:{port}',
-                    slh_id=slh, identity_private_key=identity,
+                     identity_private_key=identity,
                     gateway_port=1, allow_lab=True, lab_id=lab_id).connect()
             recovered=True
             break
@@ -987,7 +987,7 @@ def main(argv=None) -> int:
                         SEHConnectionSettings, write_seh_settings)
                     write_seh_settings(default_state(), SEHConnectionSettings(
                         enabled=True, seh_url=f'ws://127.0.0.1:{a.local_port}',
-                        slh_id=a.slh_id,
+                        
                         allow_loopback_lab=True))
                     report['slh_autoconnect_configured']=True
             else:

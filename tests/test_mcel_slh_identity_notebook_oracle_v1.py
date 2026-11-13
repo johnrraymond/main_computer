@@ -180,7 +180,7 @@ def test_browser_three_tabs_fixed_footer_scope_and_actions(target):
             assert not page.evaluate("window.calls.some(c=>c.url.endsWith('/identity-notebook'))")
             if target=='local':
                 page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
-                page.locator('button[data-intent="intent:login-administrator"]').click()
+                page.evaluate("async () => await window.__mcelSlh.app.execute('intent:login-administrator')")
             else:
                 page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
                 page.locator('form[data-intent="intent:connect-network-slh"] [name="address"]').fill('192.168.1.8')
@@ -234,7 +234,7 @@ def test_browser_three_tabs_fixed_footer_scope_and_actions(target):
             # Leaving the target revokes visibility without triggering more reads.
             before=page.evaluate("window.calls.filter(c=>c.url.endsWith('/identity-notebook')).length")
             if target=='local':
-                page.locator('button[data-intent="intent:logout-administrator"]').click()
+                page.evaluate("async () => await window.__mcelSlh.app.execute('intent:logout-administrator')")
             else:
                 page.locator('button[data-intent="intent:disconnect-network-slh"]').click()
             page.wait_for_function("() => document.querySelector('[data-mcel-notebook-status]').textContent.includes('Administrator login required')")

@@ -1982,7 +1982,8 @@ def dispatch_get(self) -> None:
     # registered with the existing 21-app launcher until its acceptance phase.
     if route_path in {"/applications/slh", "/applications/slh/local",
                       "/applications/slh/workers", "/applications/slh/local/workers",
-                      "/applications/slh/network", "/applications/slh/network/workers"}:
+                      "/applications/slh/network", "/applications/slh/network/workers",
+                      "/applications/slh/remote-seh"}:
         if not _hard_halt_client_is_local(self):
             self._send_json({"ok": False, "error": "SLH application is local-only."}, HTTPStatus.FORBIDDEN)
             return
@@ -2452,6 +2453,18 @@ def _chat_console_native_execution_allowed(self) -> bool:
 
 def dispatch_post(self) -> None:
     # mcel.slh.target-tabs.v2: strictly local bridge, read-only remote TLS probe.
+    if urlsplit(self.path).path == "/api/applications/slh/seh/deployment":
+        from main_computer.mcel_slh_seh_deployment_route import handle_seh_deployment
+        handle_seh_deployment(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/slh/seh/lifecycle":
+        from main_computer.mcel_slh_seh_lifecycle_route import handle_seh_lifecycle
+        handle_seh_lifecycle(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/slh/remote-seh/connect":
+        from main_computer.mcel_slh_remote_seh_route import handle_remote_seh_connect
+        handle_remote_seh_connect(self)
+        return
     if urlsplit(self.path).path == "/api/applications/slh/identity-notebook":
         from main_computer.mcel_slh_identity_notebook_route import handle_identity_notebook
         handle_identity_notebook(self)
@@ -2655,6 +2668,9 @@ def dispatch_post(self) -> None:
         return
     if route_path.startswith("/api/sites/") and "/blog/layers/" in route_path and route_path.endswith("/install"):
         self._handle_blog_layer_install()
+        return
+    if self.path == "/api/applications/calculator/mathics/prepare":
+        self._handle_calculator_mathics_prepare()
         return
     if self.path == "/api/applications/calculator/mathics/evaluate":
         self._handle_calculator_mathics_evaluate()

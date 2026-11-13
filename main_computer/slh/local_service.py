@@ -43,7 +43,7 @@ def local_status(authority: SLHAuthority, port: int, controller=None) -> dict:
 
 def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
                   authority_factory: Callable[[Path], SLHAuthority] = SLHAuthority,
-                  identity_dir: Path | None = None):
+                  identity_dir: Path | None = None, seh_deployment_manager=None):
     """Initialize local-only state then bind; caller owns serve_forever/shutdown."""
     directory = Path(state_dir)
     guard_legacy_state(directory)
@@ -62,10 +62,13 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
     LocalIdentityStore(resolved_identity_dir).ensure_default_identity()
     authority = authority_factory(directory)
     controller = OrganizationController(authority)
+    from .seh_deployment_management import SLHSEHDeploymentManager
+    seh_deployment_manager = seh_deployment_manager or SLHSEHDeploymentManager(state_dir=directory)
     bound_port = [port]
     authenticator = LocalAuthenticatorAPI(resolved_identity_dir)
     api = SLHAPI(authority, local_status_provider=lambda: local_status(authority, bound_port[0], controller),
                  organization_controller=controller,
+                 seh_deployment_manager=seh_deployment_manager,
                  local_authenticator=authenticator,
                  local_root_registration=LocalRootAdministratorRegistration(authority, authenticator))
     try:

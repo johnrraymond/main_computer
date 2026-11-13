@@ -130,10 +130,6 @@ def render_chat_console_page(repo: Path = ROOT, *, promoted: bool = False) -> st
 body.mcel-chat-page {{margin:0;min-width:0;background:#050605;}}
 body.mcel-chat-page #chat-console-app {{display:grid;min-height:100dvh;max-width:100%;}}
 body.mcel-chat-page #chat-console-app .chat-console-shell {{min-height:0;}}
-/* Embedded application identity is owned by the canonical MCEL shell. The
- * save receipt remains visible without repeating the notebook heading. */
-body.mcel-chat-page[data-mcel-shell-embedded="true"] .chat-console-header > div:first-child {{display:none;}}
-body.mcel-chat-page[data-mcel-shell-embedded="true"] .chat-console-header {{justify-content:flex-end;}}
 </style></head><body class="mcel-chat-page">
 {template}
 <div id="mcel-chat-canonical-status" role="status" aria-live="polite" hidden></div>

@@ -5,6 +5,27 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from main_computer.viewport_state import *  # noqa: F401,F403
 
 class ViewportCalculatorRoutesMixin:
+    def _handle_calculator_mathics_prepare(self) -> None:
+        # ThreadingHTTPServer keeps the browser responsive while Mathics3
+        # imports its built-ins. The shared session persists for evaluation.
+        self.server.signal("api-calculator-mathics-prepare")
+        try:
+            get_mathics_session()
+        except (MathicsImportFailure, MathicsSessionFailure) as exc:
+            self._send_json(
+                {"ok": False, "error": "Mathics initialization failed.", "detail": str(exc)},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        except Exception as exc:
+            self.server.signal("api-calculator-mathics-prepare-error", error=exc)
+            self._send_json(
+                {"ok": False, "error": "Mathics initialization failed.", "detail": str(exc)},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json({"ok": True, "status": "ready"})
+
     def _handle_calculator_mathics_evaluate(self) -> None:
         try:
             body = self._read_json()

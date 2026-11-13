@@ -76,8 +76,8 @@ def _records(operation,data):
     return result
 
 
-def execute_notebook(operation, values, *, target, local_token='', remote_ticket='', local_client=None, remote_client=None):
-    if not isinstance(values,dict) or target not in ('local','network'):
+def execute_notebook(operation, values, *, target, local_token='', remote_ticket='', local_client=None, remote_client=None, seh_client=None):
+    if not isinstance(values,dict) or target not in ('local','network','remote-seh'):
         raise IdentityNotebookError('INVALID_NOTEBOOK_REQUEST')
     if operation in _READS:
         if values:
@@ -108,8 +108,11 @@ def execute_notebook(operation, values, *, target, local_token='', remote_ticket
         if target=='local':
             token=validate_admin_bearer(local_token)
             result=(local_client or OrganizationWorkerClient()).request(method,path,token,body)
-        else:
+        elif target=='network':
             result=(remote_client or NetworkSlhClient()).admin_request(remote_ticket,method,path,body)
+        else:
+            from main_computer.mcel_seh_remote_client import RemoteSEHClient
+            result=(seh_client or RemoteSEHClient()).admin_request(remote_ticket,method,path,body)
     except (WorkerBridgeError,NetworkConnectionError) as exc:
         raise IdentityNotebookError(exc.code,exc.status) from exc
     if not isinstance(result,dict):

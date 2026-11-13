@@ -1,0 +1,70 @@
+/* Calculator-local realization of the authored graph + activity inspection
+ * relationship.  No shared MCEL layout or application host rules change. */
+/* The semantic inspection parent holds a graph result and a status peer.
+ * Avoid treating the parent itself as a third decorated card. */
+#mcel-expanded-root [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="inspection"] {
+  display:flex!important;flex-direction:column;gap:10px;align-items:stretch;
+  width:100%;min-height:100%;max-width:100%;
+  background:transparent!important;border:0!important;border-radius:0!important;
+  padding:0!important;box-shadow:none!important;
+}
+#mcel-expanded-root [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="inspection"] > [data-mcel-purpose="results"] {
+  width:100%;max-width:100%;min-height:0;flex:0 0 auto;
+}
+#mcel-expanded-root [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="inspection"] > [data-mcel-purpose="status"] {
+  flex:0 0 auto;margin-top:auto;
+}
+#mcel-expanded-root [data-mcel-natural-scroller="inspection"] [data-mcel-plot] svg {
+  min-height:0;height:auto;max-width:100%;
+}
+/* In Graphing mode the scientific form has bounded, legible inputs; the
+ * available extra horizontal space becomes a real graph/details region. */
+#mcel-expanded-root [data-mcel-region$=".graph-input"] form {
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  align-items:end;gap:9px;
+}
+#mcel-expanded-root [data-mcel-region$=".graph-input"] form > label:has(input[name="expression"]) {
+  grid-column:1 / -1;
+}
+#mcel-expanded-root [data-mcel-region$=".graph-input"] form > label input {
+  min-width:0;min-height:42px;
+}
+#mcel-expanded-root [data-mcel-region$=".graph-input"] form > button[type="submit"],
+#mcel-expanded-root [data-mcel-region$=".graph-input"] form > button[type="reset"] {
+  grid-column:auto;grid-row:auto;justify-self:stretch;
+  width:100%;max-width:100%;min-height:42px;
+}
+#mcel-expanded-root [data-mcel-region$=".graph-input"] [data-mcel-expression-editor] {
+  grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:5px;
+}
+#mcel-expanded-root [data-mcel-region$=".graph-input"] [data-mcel-expression-editor] button {
+  min-height:34px;padding:5px 9px;
+}
+@media (min-width:1000px) {
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) {
+    grid-template-columns:clamp(175px,19%,255px) minmax(310px,.82fr) minmax(340px,1.18fr)!important;
+    grid-template-rows:minmax(0,1fr)!important;
+  }
+}
+/* Below the usable three-column threshold the right-hand output/details
+ * pane moves beneath the controls; both remain separate scroll owners. */
+@media (min-width:680px) and (max-width:999px) {
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) {
+    grid-template-columns:clamp(175px,23%,220px) minmax(0,1fr)!important;
+    grid-template-rows:minmax(0,1fr) minmax(0,1fr)!important;
+  }
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) > [data-mcel-natural-scroller="navigation"] {
+    grid-column:1!important;grid-row:1 / -1!important;
+  }
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) > [data-mcel-natural-scroller="workspace"] {
+    grid-column:2!important;grid-row:1!important;
+  }
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) > [data-mcel-natural-scroller="inspection"] {
+    grid-column:2!important;grid-row:2!important;
+  }
+}
+@media (max-width:679px) {
+  body.mcel-expert-page #mcel-expanded-root > [data-mcel-region][data-mcel-natural-layout]:has(> [data-mcel-natural-scroller="inspection"]):has([data-mcel-region$=".graph-output"]:not([hidden])) {
+    grid-template-rows:minmax(0,100px) minmax(0,1fr) minmax(0,40%)!important;
+  }
+}

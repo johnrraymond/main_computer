@@ -316,6 +316,220 @@ def _canonical_selection(root: Path, network: str) -> tuple[dict, dict, int, str
     return record, ctl, verified.binding.generation, verified.binding.content_hash.digest
 
 
+# A verified undeploy keeps the former UUID as an audit tombstone.  It is
+# deliberately NOT the same as an unexpected Coolify 404: only a persisted
+# removal receipt can certify that this application was intentionally removed.
+_UNDEPLOY_RECEIPT = 'undeploy-receipt-v1-'  # UUID-scoped history survives later deployments
+_UNDEPLOY_DELETE_PATH_SUFFIX = ('?delete_volumes=false&docker_cleanup=false'
+                                '&delete_connected_networks=false')
+
+
+def _undeploy_receipt(root: Path, network: str, uuid: str) -> dict | None:
+    if not isinstance(uuid, str) or not _ID.fullmatch(uuid):
+        raise SEHGitError('Invalid undeploy receipt UUID')
+    path = ds.directory(root, network) / (_UNDEPLOY_RECEIPT + uuid + '.json')
+    if path.is_symlink():
+        raise SEHGitError('SEH undeploy receipt cannot be a symlink')
+    if not path.exists():
+        return None
+    try:
+        if os.name != 'nt' and path.stat().st_mode & 0o077:
+            raise SEHGitError('SEH undeploy receipt has unsafe permissions')
+        receipt = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SEHGitError('SEH undeploy receipt is unreadable: ' + type(exc).__name__) from None
+    if (type(receipt) is not dict or
+            set(receipt) != {'schema', 'application_uuid', 'identity_binding', 'phase', 'requested_utc'} or
+            receipt['schema'] != 'main-computer.seh-undeploy.v1' or
+            type(receipt['application_uuid']) is not str or
+            not _ID.fullmatch(receipt['application_uuid']) or
+            type(receipt['identity_binding']) is not str or
+            not re.fullmatch(r'[0-9a-f]{64}', receipt['identity_binding']) or
+            receipt['phase'] not in ('INTENT', 'VERIFIED') or
+            type(receipt['requested_utc']) is not str):
+        raise SEHGitError('SEH undeploy receipt is invalid')
+    return receipt
+
+
+def _save_undeploy_receipt(root: Path, network: str, receipt: dict) -> None:
+    folder = ds.directory(root, network)
+    from main_computer.slh.storage import secure_machine_state_dir, secure_private_state_file
+    secure_machine_state_dir(folder)
+    destination = folder / (_UNDEPLOY_RECEIPT + receipt['application_uuid'] + '.json')
+    if destination.is_symlink():
+        raise SEHGitError('SEH undeploy receipt cannot be a symlink')
+    descriptor, scratch = tempfile.mkstemp(prefix='.seh-undeploy-', dir=folder)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as out:
+            json.dump(receipt, out, sort_keys=True, separators=(',', ':'))
+            out.write('\n')
+            out.flush()
+            os.fsync(out.fileno())
+        secure_private_state_file(Path(scratch))
+        os.replace(scratch, destination)
+        if os.name != 'nt':
+            handle = os.open(folder, os.O_RDONLY)
+            try:
+                os.fsync(handle)
+            finally:
+                os.close(handle)
+    finally:
+        if os.path.exists(scratch):
+            os.unlink(scratch)
+
+
+def undeploy_canonical_runtime(root: Path, network: str, *, execute: bool = False,
+                               client=None, state_dir: Path | None = None,
+                               probe=None) -> dict:
+    """Delete only the verified canonical SEH application via Coolify.
+
+    No remote DELETE follows an unresolved intent.  Coolify may lose the
+    acknowledgment after accepting DELETE, so subsequent calls reconcile by
+    GET and NEVER issue a speculative second DELETE.  This harness does not
+    itself drain work; executing requires the resident SLH's outbound relay
+    to have been disabled and the public SEH to confirm no SLH connection.
+    """
+    from main_computer.slh.organization_state import read_config
+    from main_computer.slh.storage import slh_state_dir
+    from tools.slh_seh_connector import service_identity
+    from .dns_probe import domain_hosts
+
+    state_dir = Path(state_dir) if state_dir is not None else slh_state_dir()
+    lock = ds.mutation_lock(root, network) if execute else _nullcontext()
+    with lock:
+        record, controller, generation, _ = _canonical_selection(root, network)
+        uuid = record['deployment']['application_uuid']
+        binding = ds.identity_binding(record)
+        remote = client if client is not None else _client(controller)
+        receipt = _undeploy_receipt(root, network, uuid)
+        if receipt and (receipt['application_uuid'] != uuid or
+                        receipt['identity_binding'] != binding):
+            raise SEHGitError('Undeploy receipt belongs to a different SEH identity or UUID')
+        tombstoned = record['deployment'].get('undeployed') is True
+        result = {'network': network, 'application_uuid': uuid,
+                  'mother_generation': generation, 'mother_mutation': 'UNCHANGED',
+                  'remote_mutation': False}
+        if tombstoned and (receipt is None or receipt['phase'] != 'VERIFIED'):
+            raise SEHGitError('Undeployed SEH has no verified removal receipt')
+
+        app = _registered_application(remote, uuid)
+        if app is None:
+            if not receipt:
+                raise SEHGitError('Coolify application missing without intentional undeploy receipt; use recovery inspection')
+            if not execute:
+                return {**result, 'status': 'PLAN_ONLY',
+                        'action': 'VERIFY_PRIOR_UNDEPLOY', 'prior_phase': receipt['phase']}
+            if receipt['phase'] != 'VERIFIED':
+                # The intent was durable before deletion; a confirmed 404
+                # completes the operation even when DELETE acknowledgment was lost.
+                _finish_canonical_undeploy(root, network, record, uuid, receipt)
+            return {**result, 'status': 'ALREADY_UNDEPLOYED',
+                    'application_removed_verified': True}
+        if tombstoned:
+            raise SEHGitError('Application reappeared after verified undeployment; refusing unrelated deletion')
+        if receipt:
+            # A prior DELETE may have succeeded but the Coolify API is not yet
+            # consistent. No second DELETE is safe, even if GET returns the app.
+            return {**result, 'status': 'INCOMPLETE', 'remote_mutation': 'UNKNOWN',
+                    'failed_stage': 'prior_undeploy_still_visible'}
+
+        place = _canonical_placement(remote, record)
+        _verify_application_placement(remote, app, place)
+        _verify_canonical_source(app)
+        if _verify_canonical_metadata(app) != 'CANONICAL':
+            raise SEHGitError('Noncanonical SEH metadata; reconcile before undeploy')
+        expected_url = record['deployment'].get('public_url') or DEFAULT_PUBLIC_URL
+        parsed = urlsplit(expected_url)
+        hosts = domain_hosts(app)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or
+                parsed.password or parsed.path not in ('', '/') or parsed.query or
+                parsed.fragment or len(hosts) != 1 or
+                hosts[0].lower() != parsed.hostname.lower()):
+            raise SEHGitError('SEH public domain does not match owned deployment')
+        _, public_key = service_identity(state_dir, create=False)
+        trust = _trust_snapshot(remote, uuid)
+        if any(row['key'] == 'SEH_ORGANIZATION_ID' for row in trust):
+            raise SEHGitError('Obsolete organization trust field prevents undeploy')
+        key = _diagnostic_env_value(trust, 'SEH_SLH_PUBLIC_KEY_B64')
+        if key != {'state': 'VISIBLE', 'value': public_key}:
+            raise SEHGitError('SEH signing-key ownership cannot be verified')
+
+        cfg = read_config(state_dir)
+        # A policy bit alone is insufficient: the actual public relay must
+        # attest that the SLH tunnel is absent.  A failed probe is not proof
+        # of drained Worker/requester traffic.
+        observer = probe or _public_runtime_probe
+        observed = observer(expected_url)
+        disconnected = (cfg['seh_enabled'] is False and
+                        type(observed) is dict and
+                        observed.get('status') == 'PUBLIC_RUNTIME_PRESENT' and
+                        observed.get('slh_connected') is False)
+        # Refuse concurrent, unfinished build/recovery operations.
+        pending_build = _redeploy_checkpoint(root, network)
+        if pending_build and pending_build['phase'] != 'VERIFIED':
+            raise SEHGitError('Pending redeploy must finish before undeploy')
+        recovery = _recovery_checkpoint(state_dir)
+        recovery_state = _recovery_undeploy_evidence(recovery, uuid, remote, app,
+                                                       public_key) if recovery else None
+        if not execute:
+            return {**result, 'status': 'PLAN_ONLY',
+                    'action': 'DELETE_CANONICAL_SEH_APPLICATION',
+                    'outbound_disconnected_verified': disconnected,
+                    'ready_for_undeploy': disconnected,
+                    'recovery_receipt': recovery_state or 'NONE'}
+        if not disconnected:
+            raise SEHGitError('SEH outbound tunnel must be disabled and disconnected before undeploy')
+        current, _, _, _ = _canonical_selection(root, network)
+        if _operational_binding(current) != _operational_binding(record):
+            raise SEHGitError('SEH deployment identity changed during undeploy preflight')
+        # Durable intent precedes Coolify DELETE. No retry after uncertainty.
+        receipt = {'schema': 'main-computer.seh-undeploy.v1',
+                   'application_uuid': uuid, 'identity_binding': binding,
+                   'phase': 'INTENT',
+                   'requested_utc': datetime.now(timezone.utc).isoformat()}
+        _save_undeploy_receipt(root, network, receipt)
+        try:
+            _api(remote, 'DELETE', f'/api/v1/applications/{uuid}' +
+                 _UNDEPLOY_DELETE_PATH_SUFFIX)
+        except SEHGitError:
+            return {**result, 'status': 'INCOMPLETE', 'remote_mutation': 'UNKNOWN',
+                    'failed_stage': 'coolify_delete_unacknowledged'}
+        try:
+            remaining = _registered_application(remote, uuid)
+        except SEHGitError:
+            return {**result, 'status': 'INCOMPLETE', 'remote_mutation': True,
+                    'failed_stage': 'coolify_delete_readback_unavailable'}
+        if remaining is not None:
+            return {**result, 'status': 'INCOMPLETE', 'remote_mutation': True,
+                    'failed_stage': 'coolify_delete_not_yet_verified'}
+        try:
+            _finish_canonical_undeploy(root, network, record, uuid, receipt)
+        except (SEHGitError, ds.SEHDeploymentStateError, OSError, ValueError):
+            return {**result, 'status': 'INCOMPLETE', 'remote_mutation': True,
+                    'failed_stage': 'undeploy_state_commit'}
+        return {**result, 'status': 'SEH_UNDEPLOYED', 'remote_mutation': True,
+                'application_removed_verified': True}
+
+
+def _finish_canonical_undeploy(root: Path, network: str, record: dict,
+                               uuid: str, receipt: dict) -> None:
+    """Commit a tombstone without erasing Mother's controller or the former UUID."""
+    _, _, doc = st.read(root, network)
+    identity = st.deployment_record(doc, network)
+    if identity is None or ds.identity_binding(identity) != ds.identity_binding(record):
+        raise SEHGitError('Coolify identity changed before undeploy state commit')
+    current = ds.selected(root, network, identity)
+    if current['deployment']['application_uuid'] != uuid:
+        raise SEHGitError('SEH application UUID changed before undeploy state commit')
+    if current['deployment'].get('undeployed') is not True:
+        updated = deepcopy(current['deployment'])
+        updated['enabled'] = False
+        updated['undeployed'] = True
+        updated['undeployed_at'] = receipt['requested_utc']
+        ds.write(root, network, identity, expected_uuid=uuid, deployment=updated)
+    _save_undeploy_receipt(root, network, {**receipt, 'phase': 'VERIFIED'})
+
+
 def _operational_binding(record: dict) -> tuple[str, str]:
     return ds.identity_binding(record), _json_digest(record['deployment'])
 
@@ -478,9 +692,6 @@ def reconcile_metadata(root: Path, network: str, *, execute: bool = False, clien
         if remote_key['state'] != 'VISIBLE' or remote_key['value'] != local_public_key:
             raise SEHGitError('Existing SEH signing trust is unverifiable or differs from local SLH; '
                               'refusing legacy environment deletion')
-        route = _diagnostic_env_value(trust_before, 'SEH_SLH_ID')
-        if route['state'] != 'VISIBLE':
-            raise SEHGitError('Existing SEH route trust cannot be verified; no remote change made')
 
     # Recheck verified controller identity, SEH lifecycle and remote object before
     # the first write. This never creates a Coolify application or key.
@@ -511,7 +722,7 @@ def reconcile_metadata(root: Path, network: str, *, execute: bool = False, clien
 
     if legacy is not None:
         # Delete the one verified obsolete env row; do not perform a bulk
-        # overwrite or touch SEH_SLH_PUBLIC_KEY_B64 and SEH_SLH_ID.
+        # overwrite or touch SEH_SLH_PUBLIC_KEY_B64.
         current_record, _, _, _ = _canonical_selection(root, network)
         if _operational_binding(current_record) != _operational_binding(record):
             raise SEHGitError('SEH identity or deployment changed before env deletion')
@@ -903,10 +1114,7 @@ def _envs(plan):
     result = {'SEH_PUBLIC_ORIGIN':plan['public_url'],
               'SEH_AUDIT_MODE':'metadata_only', 'SEH_PORT':str(plan['internal_port'])}
     if plan.get('slh_public_key_b64'):
-        if not plan.get('slh_id'):
-            raise SEHGitError('Explicit SLH binding requires complete association')
-        result.update(SEH_SLH_ID=plan['slh_id'],
-                      SEH_SLH_PUBLIC_KEY_B64=plan['slh_public_key_b64'])
+        result['SEH_SLH_PUBLIC_KEY_B64'] = plan['slh_public_key_b64']
     return result
 
 
@@ -977,7 +1185,7 @@ def deploy(root: Path, network: str, seh: str, *, operation_id: str,
         raise SEHGitError('Existing SEH application UUID differs from prepared target')
     # Capture the existing remote trust binding to prove an infrastructure
     # redeploy never drops or mutates it. We do not read local SLH state.
-    trust_keys = {'SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64'}
+    trust_keys = {'SEH_SLH_PUBLIC_KEY_B64'}
     original_trust = {}
     if existing and not plan.get('slh_public_key_b64'):
         rows = _items(_api(destination, 'GET', f'/api/v1/applications/{uuid}/envs'), 'envs')
@@ -1114,22 +1322,6 @@ def diagnostic_slh_trust(root: Path, network: str, seh: str, *, slh_id: str | No
 
     fields = {}
     problem_fields = []
-    for var, expected in (('SEH_SLH_ID', slh),):
-        found = _diagnostic_env_value(rows, var)
-        state = found['state']
-        actual = found['value']
-        if state == 'INVALID':
-            status = 'INVALID_REMOTE_VALUE'
-        elif state == 'VISIBLE' and expected is None:
-            status = 'NO_LOCAL_BINDING'
-        elif state == 'VISIBLE':
-            status = 'MATCH' if actual == expected else 'MISMATCH'
-        else:
-            status = state
-        fields[var] = {'status': status, 'expected': expected,
-                       'observed': actual if status in ('MATCH', 'MISMATCH', 'NO_LOCAL_BINDING') else None}
-        if status != 'MATCH':
-            problem_fields.append(var)
     found = _diagnostic_env_value(rows, 'SEH_SLH_PUBLIC_KEY_B64')
     remote_digest = None
     if found['state'] == 'VISIBLE':
@@ -1215,7 +1407,7 @@ def bind_slh(root: Path, network: str, seh: str, *, slh_id: str, public_key_b64:
     hosts = domain_hosts(application)
     public_url = 'https://' + hosts[0] if len(hosts) == 1 else None
 
-    keys = ('SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64')
+    keys = ('SEH_SLH_PUBLIC_KEY_B64',)
     def read_trust():
         rows = _items(_api(host, 'GET', f'/api/v1/applications/{uuid}/envs'), 'envs')
         found = {}
@@ -1241,9 +1433,6 @@ def bind_slh(root: Path, network: str, seh: str, *, slh_id: str, public_key_b64:
     if legacy_env and (not isinstance(legacy_env[0].get('uuid'), str) or
                        not _ID.fullmatch(legacy_env[0]['uuid'])) and execute:
         raise SEHGitError('Legacy identity environment UUID unavailable; refusing deletion')
-    if previous:
-        if previous['SEH_SLH_ID'] != slh_id:
-            raise SEHGitError('Remote SEH SLH identity differs; refusing key replacement')
     old_key = previous.get('SEH_SLH_PUBLIC_KEY_B64')
     changed = old_key != public_key_b64
     replace_required = old_key is not None and changed
@@ -1266,7 +1455,7 @@ def bind_slh(root: Path, network: str, seh: str, *, slh_id: str, public_key_b64:
         if read_trust() != previous:
             raise SEHGitError('SEH trust binding changed during planning; refusing mutation')
         updates = ({'SEH_SLH_PUBLIC_KEY_B64': public_key_b64} if previous else
-                   dict(zip(keys, (slh_id, public_key_b64))))
+                   {'SEH_SLH_PUBLIC_KEY_B64': public_key_b64})
         payload = {'data': [
             {'key': key, 'value': value, 'is_literal': True,
              'is_preview': False, 'is_runtime': True, 'is_buildtime': False,
@@ -1279,7 +1468,7 @@ def bind_slh(root: Path, network: str, seh: str, *, slh_id: str, public_key_b64:
         current = read_trust()
     except SEHGitError:
         raise SEHGitError('SLH trust update did not verify on Coolify readback; deployment not triggered') from None
-    if current != dict(zip(keys, (slh_id, public_key_b64))):
+    if current != {'SEH_SLH_PUBLIC_KEY_B64': public_key_b64}:
         raise SEHGitError('SLH trust update did not verify on Coolify readback; deployment not triggered')
     # Remove the obsolete remote identity variable by its verified Coolify
     # env UUID. This is an authorized, targeted DELETE, never an env-bulk
@@ -1409,6 +1598,41 @@ def _recovery_checkpoint(state_dir: Path) -> dict | None:
                 not _SHA.fullmatch(row['git_revision']) for row in history)):
         raise SEHGitError('SEH previous failed build history is invalid')
     return data
+
+
+
+def _recovery_undeploy_evidence(checkpoint: dict, current_uuid: str, client,
+                                 application: dict, public_key_b64: str) -> str:
+    """Classify a historical recovery receipt without ignoring unfinished work.
+
+    Recovery receipts are retained after successful replacement and remain
+    useful audit records. They are not all outstanding transactions. Allow a
+    completed, independently verified build of this *exact* canonical UUID;
+    ambiguous, pending, failed, and mismatched receipts still prevent DELETE.
+    """
+    if checkpoint['new_uuid'] != current_uuid or checkpoint['old_uuid'] == current_uuid:
+        raise SEHGitError('Recovery receipt refers to another operational UUID; reconcile before undeploy')
+    try:
+        public_der = base64.b64decode(public_key_b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise SEHGitError('SLH public signing identity invalid; refusing undeploy') from None
+    if checkpoint['key_sha256'] != hashlib.sha256(public_der).hexdigest():
+        raise SEHGitError('Recovery receipt signing identity mismatch; refusing undeploy')
+    build_uuid = checkpoint.get('deployment_uuid')
+    if not isinstance(build_uuid, str) or not _ID.fullmatch(build_uuid):
+        raise SEHGitError('Recovery receipt has no verified build UUID; reconcile before undeploy')
+    if checkpoint.get('build_submission') == 'INTENT':
+        raise SEHGitError('Recovery build submission remains unacknowledged; reconcile before undeploy')
+    revision = checkpoint.get('retry_revision') or checkpoint['git_revision']
+    if not _SHA.fullmatch(revision):
+        raise SEHGitError('Recovery receipt Git revision is unverified; refusing undeploy')
+    proof = _verify_seh_build_receipt(client, current_uuid, build_uuid, revision,
+                                     app_id=application.get('id'))
+    if proof.get('status') != 'VERIFIED':
+        raise SEHGitError('Recovery build receipt is not independently verified; reconcile before undeploy')
+    if proof.get('deployment_status', '').lower() not in _REDEPLOY_TERMINAL_OK:
+        raise SEHGitError('Recovery build is not successfully finished; reconcile before undeploy')
+    return 'COMPLETED_VERIFIED'
 
 
 def _save_recovery_checkpoint(state_dir: Path, data: dict) -> None:
@@ -1646,7 +1870,7 @@ def redeploy_canonical_runtime(root: Path, network: str, *, execute: bool = Fals
         public_url = 'https://' + domain[0]
         trust = _trust_snapshot(remote, uuid)
         keys = {row['key'] for row in trust}
-        if not {'SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64'}.issubset(keys):
+        if 'SEH_SLH_PUBLIC_KEY_B64' not in keys:
             raise SEHGitError('Canonical SEH signing-key trust is incomplete')
         binding = ds.identity_binding(record)
         checkpoint = _redeploy_checkpoint(root, network)
@@ -1915,7 +2139,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
             if domain_hosts(candidate) != ['external.greatlibrary.io']:
                 raise SEHGitError('Possible SEH application has unverified public domain')
             actual = _trust_snapshot(remote, new_uuid)
-            expected_trust = {'SEH_SLH_ID': route, 'SEH_SLH_PUBLIC_KEY_B64': public}
+            expected_trust = {'SEH_SLH_PUBLIC_KEY_B64': public}
             missing_trust = []
             for key, expected in expected_trust.items():
                 got = _diagnostic_env_value(actual, key)
@@ -1973,7 +2197,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
         env_data = {
             'SEH_PUBLIC_ORIGIN': DEFAULT_PUBLIC_URL,
             'SEH_AUDIT_MODE': 'metadata_only', 'SEH_PORT': '8080',
-            'SEH_SLH_ID': route, 'SEH_SLH_PUBLIC_KEY_B64': public}
+            'SEH_SLH_PUBLIC_KEY_B64': public}
         existing_rows = _items(_api(remote, 'GET', f'/api/v1/applications/{new_uuid}/envs'), 'envs')
         if not resumed and _trust_snapshot(remote, new_uuid):
             raise SEHGitError('New application has preexisting remote trust; refusing overwrite')
@@ -1987,7 +2211,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
                 raise SEHGitError('Duplicate environment field prevents safe SEH recovery: ' + key)
             if not rows_for_key:
                 absent[key] = value
-            elif key in ('SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64'):
+            elif key in ('SEH_SLH_PUBLIC_KEY_B64',):
                 if _diagnostic_env_value(existing_rows, key) != {'state': 'VISIBLE', 'value': value}:
                     raise SEHGitError('SEH signing trust changed before recovery: ' + key)
             elif value not in (rows_for_key[0].get('real_value'), rows_for_key[0].get('value')):
@@ -2003,7 +2227,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
                for row in rows):
             raise SEHGitError('Unexpected obsolete organization identity in new SEH')
         for key, value in env_data.items():
-            if key in ('SEH_SLH_ID', 'SEH_SLH_PUBLIC_KEY_B64'):
+            if key in ('SEH_SLH_PUBLIC_KEY_B64',):
                 got = _diagnostic_env_value(rows, key)
                 verified = got['state'] == 'VISIBLE' and got['value'] == value
             else:
@@ -2028,6 +2252,10 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
             raise SEHGitError('Verified SEH controller identity changed before adoption')
         successor = deepcopy(newer['deployment'])
         successor['application_uuid'] = new_uuid
+        # A new, explicitly approved deployment ends the prior UUID's tombstone.
+        # The UUID-scoped undeploy receipt remains as independent audit evidence.
+        successor.pop('undeployed', None)
+        successor.pop('undeployed_at', None)
         committed = ds.write(root, network, identity_record,
                              expected_uuid=old_uuid, deployment=successor)
         changed['seh_deployment_revision'] = committed['revision']
@@ -2411,7 +2639,7 @@ def _retry_failed_recovery_build(root: Path, network: str, *, state_dir: Path,
     public_digest = hashlib.sha256(base64.b64decode(public, validate=True)).hexdigest()
     if checkpoint['key_sha256'] != public_digest:
         raise SEHGitError('Retry signing identity changed; refusing build')
-    expected = {'SEH_SLH_PUBLIC_KEY_B64': public, 'SEH_SLH_ID': 'slh-' + public_digest[:32]}
+    expected = {'SEH_SLH_PUBLIC_KEY_B64': public}
     before_trust = _trust_snapshot(remote, uuid)
     for key, value in expected.items():
         if _diagnostic_env_value(before_trust, key) != {'state': 'VISIBLE', 'value': value}:
@@ -2531,7 +2759,7 @@ def reconcile_pending_recovery(root: Path, network: str, *, state_dir: Path,
             raise SEHGitError('Receipt-bound application Git revision changed')
         rows = _trust_snapshot(remote, uuid)
         route = 'slh-' + public_digest[:32]
-        for key, value in (('SEH_SLH_PUBLIC_KEY_B64', public), ('SEH_SLH_ID', route)):
+        for key, value in (('SEH_SLH_PUBLIC_KEY_B64', public),):
             if _diagnostic_env_value(rows, key) != {'state': 'VISIBLE', 'value': value}:
                 raise SEHGitError('Receipt-bound signing trust is not verified: ' + key)
         if checkpoint.get('deployment_uuid'):

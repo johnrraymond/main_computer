@@ -436,6 +436,13 @@ body.mcel-workbench-page {
 [data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-task-actions] > button {
   width:auto;max-width:100%;min-width:0;margin:0;
 }
+[data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-task-actions] > [data-node-kind="control"] {
+  flex:0 0 auto;width:auto;min-width:0;margin:0;padding:0;border:0;
+  background:transparent;
+}
+[data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-task-actions] > [data-node-kind="control"] > button {
+  width:auto;max-width:100%;min-width:0;margin:0;
+}
 [data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-task-actions] > button[type="reset"] {order:0;}
 [data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-task-actions] > button[type="submit"] {order:1;}
 [data-mcel-presentation="expert"] [data-mcel-purpose="task"] [data-mcel-form-result] {
@@ -531,3 +538,16 @@ body.mcel-workbench-page {
 [data-mcel-presentation="expert"] [data-mcel-notebook-footer][hidden]{display:none}
 [data-mcel-presentation="expert"] [data-mcel-notebook-policy]{display:inline-flex;gap:6px;align-items:center}
 [data-mcel-presentation="expert"] [data-mcel-notebook-policy] input{min-height:16px;width:16px}
+
+/* Operational notebooks are generic typed-record views, not app-specific panels. */
+[data-mcel-presentation="expert"] [data-mcel-operation-notebook]{display:flex;flex-direction:column;min-width:0;gap:9px;padding:5px 0 13px;border-bottom:1px solid var(--edge)}
+[data-mcel-presentation="expert"] [data-mcel-operation-notebook] h3{font-size:1rem;margin:0}
+[data-mcel-presentation="expert"] [data-mcel-operation-tabs]{display:flex;gap:5px;flex-wrap:wrap;border-bottom:1px solid var(--edge)}
+[data-mcel-presentation="expert"] [data-mcel-operation-tabs] [role="tab"]{min-height:34px;padding:6px 12px;border-radius:6px 6px 0 0}
+[data-mcel-presentation="expert"] [data-mcel-operation-tabs] [aria-selected="true"]{background:#305e76;color:#fff}
+[data-mcel-presentation="expert"] [data-mcel-operation-fields]{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:5px 16px;margin:8px 0}
+[data-mcel-presentation="expert"] [data-mcel-operation-fields] dt{font-size:.8rem;color:var(--mute)}
+[data-mcel-presentation="expert"] [data-mcel-operation-fields] dd{margin:0;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-operation-actions]{display:flex;gap:8px;flex-wrap:wrap}
+[data-mcel-presentation="expert"] [data-mcel-operation-note]{font-size:.85rem;color:var(--mute)}
+[data-mcel-presentation="expert"] [data-mcel-operation-status]{min-height:1.2em;font-size:.85rem;color:var(--mute);margin:0}

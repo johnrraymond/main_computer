@@ -39,7 +39,6 @@ REGION_CLASSES = {
     "shell": "mcel-shell-content",
     "launcher": "mcel-shell-launcher",
     "workspace": "mcel-shell-workspace",
-    "workspace-header": "mcel-shell-workspace-header",
     "application-mount": "mcel-shell-application-mount",
     "status": "mcel-shell-status",
 }
@@ -49,7 +48,6 @@ PARENTS = {
     "shell": "application",
     "launcher": "shell",
     "workspace": "shell",
-    "workspace-header": "workspace",
     "application-mount": "workspace",
     "status": "application",
 }
@@ -266,14 +264,13 @@ def legacy_desktop_icon_markup(reference: dict, *, launch: bool, grouped: bool =
     return '<div class="desktop-clusters">' + "\n".join(clusters) + '</div>'
 
 
-def _static(region: dict, *, title_id: bool = False) -> str:
+def _static(region: dict) -> str:
     nodes = []
     for part in sorted(region.get("staticContent") or [], key=lambda part: part["ordinal"]):
         tag = part["tag"]
         if tag not in {"h1", "h2", "h3", "p", "small", "span"}:
             raise CandidateHostError("MCEL shell has unsupported static content")
-        extra = ' id="mcel-shell-active-title"' if title_id and tag == "h2" else ""
-        nodes.append(f"<{tag}{extra}>{escape(part['text'])}</{tag}>")
+        nodes.append(f"<{tag}>{escape(part['text'])}</{tag}>")
     return "".join(nodes)
 
 
@@ -302,8 +299,6 @@ def _markup(ir: dict, reference: dict) -> str:
         elif name == "launcher":
             body = '''<div id="mcel-shell-launcher-panel" class="mcel-shell-launcher-panel" data-open="false">''' + _static(region) + '''
               <div class="mcel-shell-launcher-items" id="mcel-shell-launcher-items"></div></div>'''
-        elif name == "workspace-header":
-            body = _static(region, title_id=True)
         elif name == "application-mount":
             body = ('''<div class="mcel-shell-overview" id="mcel-shell-overview">
              <div id="mcel-shell-desktop-overlay" class="desktop-overlay desktop-home" aria-label="Desktop application launcher">

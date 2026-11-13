@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 
-from .organization_process import stop_recorded_process
+from .organization_process import stop_recorded_process, verified_launched_pid
 from .organization_state import (read_config, save_config, initialize_disabled,
                                  validate_config, OrganizationConfigError)
 from .authority import SLHError, SLHAuthority
@@ -30,6 +30,7 @@ class OrganizationController:
         self._lock = threading.RLock()
         self._process = None
         self._last_error = None
+        self._paused = False  # Explicit runtime Stop, distinct from persistent Disable.
         self._stop = threading.Event()
         self._restarts = deque()
         self._python = python_executable or sys.executable
@@ -101,11 +102,24 @@ class OrganizationController:
                         'last_error': 'Invalid organization configuration'}
             proc = self._process
             running = proc is not None and proc.poll() is None
+            # Windows venv python.exe can be a redirector: Popen.pid is then
+            # the launcher, while the child records its real PID. Report only
+            # a verified, controller-owned ORG-SLH process to callers.
+            try:
+                service_pid = (verified_launched_pid(
+                    self.directory, launcher_pid=proc.pid,
+                    controller_pid=os.getpid(),
+                    controller_created=psutil.Process(os.getpid()).create_time())
+                    if running else None)
+            except (OSError, RuntimeError):
+                service_pid = None
             listening = running and self._listening(config)
             if listening:
                 state = 'running'
             elif running:
                 state = 'starting'
+            elif self._paused and config['enabled'] and config['configured']:
+                state = 'stopped'
             elif self._last_error and config['enabled']:
                 state = 'failed'
             elif config['enabled']:
@@ -122,7 +136,7 @@ class OrganizationController:
                     'network_access': ('NOT_CONFIGURED' if not config['configured'] else
                                        'LOOPBACK_ONLY' if config['host'].startswith('127.') else
                                        'BIND_CONFIGURED_REACHABILITY_UNVERIFIED'),
-                    'pid': proc.pid if running else None,
+                    'pid': service_pid,
                     'api_port': config['api_port'] if config['configured'] else None,
                     'worker_port': config['worker_port'] if config['workers_enabled'] else None,
                     'workers_enabled': config['workers_enabled'],
@@ -175,10 +189,12 @@ class OrganizationController:
             if original['enabled'] and same_listener and self._listening(original):
                 return self.status()
 
+            was_paused = self._paused
             self._restarts.clear()
             try:
                 self._terminate()
                 save_config(self.directory, desired)
+                self._paused = False
                 self._launch()
                 if not self._await_listening(desired):
                     raise SLHError('ORGANIZATION_START_UNVERIFIED', 503)
@@ -191,7 +207,8 @@ class OrganizationController:
                 try:
                     self._terminate()
                     save_config(self.directory, original)
-                    if original['enabled']:
+                    self._paused = was_paused
+                    if original['enabled'] and not was_paused:
                         self._launch()
                         if not self._await_listening(original):
                             recovery_failed = True
@@ -220,8 +237,9 @@ class OrganizationController:
             cfg = self.config()
             if not cfg['configured'] or not self.authority.initialized():
                 raise SLHError('ORGANIZATION_NOT_READY', 409)
-            if cfg['enabled'] and self._process and self._process.poll() is None:
+            if cfg['enabled'] and not self._paused and self._process and self._process.poll() is None:
                 return self.status()
+            self._paused = False
             save_config(self.directory, {**cfg, 'enabled': True, 'activation_confirmed': True})
             self._restarts.clear()
             try:
@@ -231,10 +249,26 @@ class OrganizationController:
                 raise SLHError('ORGANIZATION_START_FAILED', 503) from exc
             return self.status()
 
+    def stop(self):
+        """Stop the current child without changing persistent enablement.
+
+        The watchdog must not resurrect an explicitly stopped child. A new
+        manager process may apply the persisted auto-start policy normally.
+        """
+        with self._lock:
+            cfg = self.config()
+            if not cfg['configured'] or not cfg['enabled'] or self.status()['state'] != 'running':
+                raise SLHError('ORGANIZATION_NOT_RUNNING', 409)
+            self._paused = True
+            self._terminate()
+            self._last_error = None
+            return self.status()
+
     def disable(self):
         with self._lock:
             cfg = self.config()
             save_config(self.directory, {**cfg, 'enabled': False})
+            self._paused = False
             self._terminate()
             self._last_error = None
             return self.status()
@@ -243,6 +277,7 @@ class OrganizationController:
         with self._lock:
             if not self.config()['enabled']:
                 raise SLHError('ORGANIZATION_NOT_ENABLED', 409)
+            self._paused = False
             self._terminate()
             self._launch()
             return self.status()
@@ -331,6 +366,24 @@ class OrganizationController:
                                                           if child else None),
                     'resident_outbound_last_http_status': (child.get('seh_outbound_last_http_status')
                                                            if child else None)}
+
+    def disconnect_seh(self) -> dict:
+        """Persistently disable the owned outbound relay, keeping ORG-SLH running.
+
+        The deployed SEH application is not stopped; disabling its sole SLH
+        connection removes administrative and Worker reachability through it.
+        """
+        with self._lock:
+            cfg = self.config()
+            if not cfg['configured']:
+                raise SLHError('ORGANIZATION_NOT_READY', 409)
+            try:
+                save_config(self.directory, {**cfg, 'seh_enabled': False})
+            except (OSError, OrganizationConfigError) as exc:
+                raise SLHError('SEH_CONNECTION_CONFIG_SAVE_FAILED', 503) from exc
+            return {'status': 'DISCONNECTION_REQUESTED',
+                    'connection_enabled': False,
+                    'organization_enabled': cfg['enabled']}
 
     def activate_seh(self, *, execute: bool, expected_generation: int | None = None,
                      token: str | None = None) -> dict:
@@ -504,7 +557,7 @@ class OrganizationController:
                     break
                 try:
                     cfg = read_config(self.directory)
-                    if not cfg['enabled'] or not cfg['activation_confirmed'] or not self.authority.initialized():
+                    if self._paused or not cfg['enabled'] or not cfg['activation_confirmed'] or not self.authority.initialized():
                         continue
                     if self._process is not None and self._process.poll() is None:
                         continue

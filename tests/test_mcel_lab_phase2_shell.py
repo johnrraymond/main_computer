@@ -107,30 +107,45 @@ def test_mcel_lab_default_surface_moves_contract_drilldowns_to_right_rail() -> N
     assert "Static blueprint seed" not in primary_surface
 
 
-def test_mcel_lab_legacy_proof_lab_is_advanced_not_primary() -> None:
+def test_mcel_lab_theme_chrome_is_first_workspace_and_legacy_proofs_remain_advanced() -> None:
     source = MCEL_LAB_HTML.read_text(encoding="utf-8")
-
     advanced_index = source.index("Advanced / Legacy proof lab")
     legacy_title_index = source.index("Semantic Interface Forge")
+    presentation_index = source.index('id="mcel-lab-presentation-workspace"')
     scenario_index = source.index('id="mcel-scenario-select"')
     skeleton_index = source.index("Minimal site acid test")
 
-    assert advanced_index < legacy_title_index
-    assert advanced_index < scenario_index
-    assert advanced_index < skeleton_index
+    assert 'data-mcel-workspace-view="presentation"' in source
+    assert source.index('id="mcel-lab-workspace-presentation"') < source.index('id="mcel-lab-workspace-blueprint"')
+    assert presentation_index < scenario_index < advanced_index
+    assert presentation_index < skeleton_index < advanced_index
+    assert source.index('id="mcel-theme-select"') < advanced_index
+    assert source.index('id="mcel-chrome-select"') < advanced_index
+    assert source.index('id="mcel-presentation-preview-frame"') < advanced_index
+    assert source.count('id="mcel-theme-select"') == 1
+    assert source.count('id="mcel-chrome-select"') == 1
     assert source.index("App Blueprint / Aspect Inspector") < advanced_index
+    assert advanced_index < legacy_title_index
 
     primary_region = source[:advanced_index]
-    forbidden_primary_markers = [
-        "Semantic Interface Forge",
-        'id="mcel-scenario-select"',
-        "Minimal site acid test",
-        'id="mcel-open-editor-modal"',
-        'id="mcel-open-site-modal"',
-        'data-mcel-mode="stress"',
-    ]
-    for marker in forbidden_primary_markers:
+    for marker in ("Semantic Interface Forge", 'data-mcel-mode="stress"'):
         assert marker not in primary_region
+
+
+def test_mcel_lab_theme_and_scroll_use_one_authoritative_projection() -> None:
+    source = MCEL_LAB_HTML.read_text(encoding="utf-8")
+    style = MCEL_LAB_CSS.read_text(encoding="utf-8")
+    core = MCEL_LAB_JS.read_text(encoding="utf-8")
+    lifecycle = (WEB_APP / 'scripts' / 'mcel-lifecycle-acid-lab.js').read_text(encoding="utf-8")
+
+    assert '#mcel-lab-app.mcel-lab-blueprint-shell' in style
+    assert 'grid-auto-rows: max-content;' in style
+    assert 'overflow-y: auto;' in style
+    assert '#mcel-lab-app:not([data-mcel-workspace-view="presentation"]) > #mcel-lab-presentation-workspace' in style
+    assert 'presentation.setAttribute(\'aria-pressed\'' in lifecycle
+    assert 'syncMcelRenderedSiteFrame(reason);' in core
+    assert 'presentationFrame.srcdoc = documentHtml;' in core
+    assert 'id="mcel-presentation-preview-frame"' in source
 
 
 def test_mcel_lab_shell_script_consumes_blueprint_core_with_contained_mounting_but_without_persistence() -> None:

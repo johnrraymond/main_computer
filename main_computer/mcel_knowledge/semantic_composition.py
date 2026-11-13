@@ -147,7 +147,10 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
             members = [by_node[m["ref"]] for m in authored["members"]]
             forms = [n for n in members if n["nodeKind"] == "form"]
             echoes = [n for n in members if n["nodeKind"] == "state-value"]
-            if (len(forms) != 1 or len(echoes) != 1 or len(members) != 2 or
+            actions = [n for n in members if n["nodeKind"] == "control"]
+            if (len(forms) != 1 or len(echoes) != 1 or len(members) != 2+len(actions) or
+                len(actions)>2 or any(intents.get(_ref(n.get("intent")),{}).get("risk")!="consequential"
+                or intents.get(_ref(n.get("intent")),{}).get("input") for n in actions) or
                 policy != P3_POLICY or
                 intents.get(_ref(forms[0].get("intent")), {}).get("risk") != "consequential"):
                 raise ValueError("Task requires one consequential form and one selected reference")
@@ -191,7 +194,7 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                 collection_targets[_ref(contract["target"])] = n["id"]
     for n in sorted(nodes, key=lambda x: x["id"]):
         kind = n.get("nodeKind")
-        if kind in {"collection", "record-notebook"}: recipe = "collection"
+        if kind in {"collection", "record-notebook", "operation-notebook"}: recipe = "collection"
         elif kind == "form": recipe = "queries"
         elif kind == "control": recipe = "controls"
         elif kind == "operation-evidence": recipe = "evidence"
@@ -243,14 +246,14 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     order_in_rail = {"form":0,"collection":1,"control":2,"state-value":3}
     groups["navigation"].sort(key=lambda identifier:(
         order_in_rail.get(navigation_kinds.get(identifier),4),identifier))
-    if not any(n.get("nodeKind") in {"collection", "record-notebook"} for n in nodes):
+    if not any(n.get("nodeKind") in {"collection", "record-notebook", "operation-notebook"} for n in nodes):
         raise ValueError("P1 vertical slice requires an authentic keyed collection")
     # Application purpose controls organization, but cannot create reads, timers, or actions.
     order = ("navigation", "controls", "queries", "collection", "selection-echo", "operations", "task", "commands", "inspection", "results", "evidence") if purpose == "monitor" else (
         "navigation", "controls", "queries", "selection-echo", "collection", "operations", "task", "commands", "inspection", "results", "evidence")
     # A compound record notebook is downstream of service configuration/commands.
     # Other collections retain their previous synthesized order.
-    if groups["collection"] and all(by_node[id]["nodeKind"]=="record-notebook" for id in groups["collection"]):
+    if groups["collection"] and all(by_node[id]["nodeKind"] in {"record-notebook", "operation-notebook"} for id in groups["collection"]):
         order=tuple(x for x in order if x!="collection")
         insert_after=order.index("commands") if "commands" in order else order.index("task")
         order=order[:insert_after+1]+("collection",)+order[insert_after+1:]

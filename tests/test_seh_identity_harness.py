@@ -174,7 +174,7 @@ def test_ambiguous_remote_uuid_recovery_validates_exact_marker(tmp_path):
     configure_complete(c,3)
     fake=_FakeCoolify()
     fake.services.append({'uuid':'trusted-seh','name':'mc-seh-company',
-                          'description':'main-computer-seh:v1 target=company slh=slh'})
+                          'description':'main-computer-seh:v2 target=company'})
     result=c.recover('mainnet','company',generation=4,uuid='trusted-seh',operation_id='recover-ok',transport=fake)
     assert result['generation']==5
     assert c.resolved('mainnet','company').target.service_uuid=='trusted-seh'

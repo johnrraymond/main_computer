@@ -353,6 +353,68 @@ def mutate(root: Path, network: str, expected_generation: int | None, operation_
             'content_sha256':verified.binding.content_hash.digest}
 
 
+
+def register_coolify_controller(document: dict, network: str, name: str,
+                                controller: dict) -> None:
+    """Add a reusable controller to Mother's verified private registry.
+
+    This only registers infrastructure credentials. It neither selects an SEH
+    deployment nor sends any request to Coolify. Existing names are immutable
+    here: rotating a credential must be a separately approved operation.
+    """
+    ident(name, 'Coolify controller')
+    if not name.startswith('coolify-') or '.' in name:
+        raise SEHIdentityError('Coolify controller name must be a plain coolify-* identifier')
+    _validate_controller(controller)
+    body = network_doc(document, network)
+    coolify = body.setdefault('coolify', {})
+    if type(coolify) is not dict:
+        raise SEHIdentityError('Invalid Coolify infrastructure registry')
+    controllers = coolify.setdefault('controllers', {})
+    if type(controllers) is not dict:
+        raise SEHIdentityError('Invalid Coolify controller registry')
+    if name in controllers:
+        raise SEHIdentityError('Coolify controller already registered')
+    controllers[name] = deepcopy(controller)
+
+
+def select_canonical_coolify_controller(document: dict, network: str,
+                                        name: str, generation: int,
+                                        base_dir: Path) -> None:
+    """Bind the sole canonical SEH to one existing verified controller.
+
+    Never retarget a deployed SEH. A new canonical record may be initialized
+    solely from an existing source, not from caller-supplied secret fields.
+    The selection does not deploy, adopt, or delete any remote application.
+    """
+    ident(name, 'Coolify controller')
+    source = f'networks.{network}.coolify.controllers.{name}'
+    body = network_doc(document, network)
+    existing = deployment_record(document, network)
+    if existing is None and single_legacy(document, network) is not None:
+        raise SEHIdentityError('Legacy SEH deployment must be migrated before controller selection')
+    raw = source_controller(document, source)
+    selected = _materialize_controller(raw, base_dir)
+    if existing is not None:
+        if existing['coolify']['source'] == source:
+            # Idempotent selection must not refresh a credential or rotate keys.
+            return
+        if existing['deployment'] != {'enabled': False}:
+            raise SEHIdentityError('Configured or deployed SEH cannot be retargeted to another Coolify controller')
+        deployment = deepcopy(existing['deployment'])
+    else:
+        deployment = {'enabled': False}
+    if body.get('sehs') == {}:
+        body.pop('sehs', None)
+    body[CANONICAL_KEY] = {
+        'schema': CANONICAL_SCHEMA,
+        'coolify': {'controller': selected, 'source': source,
+                    'source_generation': generation, 'copied_at': _now()},
+        'deployment': deployment,
+    }
+    validate_deployment(body[CANONICAL_KEY])
+
+
 def reserve(document: dict, network: str, seh: str, slh_id: str = '') -> None:
     if deployment_record(document, network) is not None:
         raise SEHIdentityError('Named SEH registration refused after canonical migration')
@@ -434,7 +496,7 @@ def resolve(document: dict, network: str, seh: str, generation: int = 0) -> Reso
         return next((ctl[k] for k in (key,) if ctl.get(k)),None)
     if not record.get('slh_id'):
         raise SEHIdentityError('Unbound SEH cannot be resolved for SLH access')
-    data.update({'target_id':seh, 'slh_id':record['slh_id'],
+    data.update({'target_id':seh,
                  'coolify_url':next((ctl[k] for k in ('url','coolify_url','api_url','base_url') if ctl.get(k)),None),
                  'project_uuid':data.get('project_uuid') or present('project_uuid'),
                  'server_uuid':data.get('server_uuid') or present('server_uuid')})

@@ -4069,22 +4069,72 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
 
   $verifiedSupervisor = $true
   if ($role -eq "supervisor") {
-    # The initial live supervisor scan already proved ownership. A second CIM
-    # query can return an empty command line; reuse the proof ONLY if the live
-    # process creation time still matches, so a recycled PID is never killed.
+    # The live scan established supervisor identity using Win32_Process.
+    # Revalidate against the SAME source: Get-Process.StartTime may be denied
+    # or disagree with CIM CreationDate even while the original PID is alive.
+    # Never turn a stale/recycled PID into permission to kill a new process.
     $cachedCommand = [string](Get-ObjectPropertyValue $Candidate "verified_command_line" "")
     $cachedCreated = Get-ObjectPropertyValue $Candidate "verified_creation_date" $null
     if (-not [string]::IsNullOrWhiteSpace($cachedCommand) -and $null -ne $cachedCreated) {
-      $sameProcess = $false
-      try {
-        $liveStarted = (Get-Process -Id $processId -ErrorAction Stop).StartTime
-        $sameProcess = ([math]::Abs((([datetime]$liveStarted).ToUniversalTime() -
-                         ([datetime]$cachedCreated).ToUniversalTime()).TotalMilliseconds) -lt 1000)
-      } catch {}
-      if (-not $sameProcess) {
-        Write-Warning "Supervisor PID $processId changed or its identity could not be reverified; refusing to kill it."
+      $liveIdentity = $null
+      $identityError = ""
+      for ($identityAttempt = 0; $identityAttempt -lt 3; $identityAttempt++) {
+        try {
+          $liveIdentity = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $processId) -ErrorAction Stop
+          if ($null -ne $liveIdentity) { break }
+        } catch {
+          $identityError = $_.Exception.Message
+        }
+        if (-not (Test-ProcessStillRunning $processId)) {
+          return [ordered]@{ pid = $processId; role = $role; state = "not-running"; sources = $Candidate.sources }
+        }
+        if ($identityAttempt -lt 2) { Start-Sleep -Milliseconds 150 }
+      }
+      if ($null -eq $liveIdentity) {
+        if (-not (Test-ProcessStillRunning $processId)) {
+          return [ordered]@{ pid = $processId; role = $role; state = "not-running"; sources = $Candidate.sources }
+        }
+        Write-Warning "Supervisor PID $processId is still present but CIM identity recheck failed ($identityError); refusing to kill it."
         return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
       }
+      # Missing/unparseable creation times are NOT proof of a recycled PID.
+      # Fail closed instead of allowing the child services to be stopped.
+      if ($null -eq $liveIdentity.CreationDate) {
+        Write-Warning "Supervisor PID $processId returned no creation time; refusing to stop its children."
+        return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
+      }
+      $sameProcess = $false
+      try {
+        $sameProcess = ([math]::Abs((([datetime]$liveIdentity.CreationDate).ToUniversalTime() -
+                         ([datetime]$cachedCreated).ToUniversalTime()).TotalMilliseconds) -lt 1000)
+      } catch {
+        Write-Warning "Supervisor PID $processId creation time could not be compared: $($_.Exception.Message)"
+        return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
+      }
+      if (-not $sameProcess) {
+        # The previous supervisor exited and its PID was reused. If the new
+        # owner is not a Main Computer supervisor, this is a successful no-op;
+        # if it is another supervisor, keep the child-shutdown guard engaged.
+        $newCommand = [string]$liveIdentity.CommandLine
+        # A replacement PID with an unreadable command line might still be an
+        # active supervisor. Do not assume foreign ownership from missing data.
+        if ([string]::IsNullOrWhiteSpace($newCommand)) {
+          Write-Warning "Supervisor PID $processId was reused, but the new process command line is unavailable; refusing to stop its children."
+          return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
+        }
+        $newIsSupervisor = ((Test-OwnedMainComputerPid $processId $RootPath $newCommand) -and
+          -not [string]::IsNullOrWhiteSpace($newCommand) -and
+          ($newCommand.ToLowerInvariant().Contains("main_computer.service_supervisor") -or
+           ($newCommand.ToLowerInvariant().Contains("main_computer.app_control") -and
+            $newCommand -match '(?i)(?:^|\s)bootstrap(?:\s|$)')))
+        if (-not $newIsSupervisor) {
+          return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $newCommand }
+        }
+        Write-Warning "Supervisor PID $processId was replaced by a new supervisor since discovery; refusing to stop its children."
+        return [ordered]@{ pid = $processId; role = $role; state = "skipped-unverified"; sources = $Candidate.sources }
+      }
+      # An intermittent empty CommandLine does not invalidate the earlier
+      # owner proof once CreationDate establishes this is the same process.
       if ([string]::IsNullOrWhiteSpace($commandLine)) { $commandLine = $cachedCommand }
     }
     $normalizedCommand = ([string]$commandLine).ToLowerInvariant()

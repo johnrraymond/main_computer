@@ -4,12 +4,20 @@
   <section data-mcel-id="arithmetic" data-mcel-when-state="state:mode" data-mcel-when-value="basic" data-mcel-purpose="input" data-mcel-tasks="compute" data-mcel-priority="primary" data-mcel-prefer-density="compact" data-mcel-prefer-width-group="calculation" data-mcel-prefer-sizing="intrinsic"></section>
   <output data-mcel-id="answer" data-mcel-when-state="state:mode" data-mcel-when-value="basic" data-mcel-purpose="results" data-mcel-priority="primary" data-mcel-prefer-density="compact" data-mcel-prefer-width-group="calculation" data-mcel-prefer-sizing="intrinsic" data-mcel-prefer-align="end"><h2>Calculated Result</h2></output>
   <section data-mcel-id="graph-input" data-mcel-when-state="state:mode" data-mcel-when-value="graphing" data-mcel-purpose="input" data-mcel-tasks="compute" data-mcel-priority="secondary"><h2>Graph a Function</h2></section>
-  <output data-mcel-id="graph-output" data-mcel-when-state="state:mode" data-mcel-when-value="graphing" data-mcel-purpose="results" data-mcel-prefer-representation="graphical"><h2>Function Graph</h2></output>
-  <section data-mcel-id="mathics-input" data-mcel-when-state="state:mode" data-mcel-when-value="symbolic" data-mcel-purpose="input" data-mcel-tasks="compute"><h2>Symbolic Mathematics (Mathics)</h2></section>
-  <output data-mcel-id="mathics-output" data-mcel-when-state="state:mode" data-mcel-when-value="symbolic" data-mcel-purpose="results"><h2>Symbolic Result</h2></output>
-  <section data-mcel-id="helpers" data-mcel-when-state="state:mode" data-mcel-when-value="help" data-mcel-purpose="assistance" data-mcel-tasks="review"><h2>Model Assistance</h2></section>
-  <output data-mcel-id="helper-output" data-mcel-when-state="state:mode" data-mcel-when-value="help" data-mcel-purpose="results"><h2>Suggested Expression</h2></output>
-  <section data-mcel-id="qa" data-mcel-when-state="state:mode" data-mcel-when-value="help" data-mcel-purpose="assistance" data-mcel-tasks="review"><h2>Ask About Your Result</h2></section>
-  <output data-mcel-id="qa-output" data-mcel-when-state="state:mode" data-mcel-when-value="help" data-mcel-purpose="results"><h2>Explanation</h2></output>
-  <section data-mcel-id="status" data-mcel-purpose="status"><h2>Operation History</h2></section>
+  <section data-mcel-id="mathics-input" data-mcel-when-state="state:mode" data-mcel-when-value="symbolic" data-mcel-purpose="input" data-mcel-tasks="compute" data-mcel-prefer-width-group="symbolic-calculation"><h2>Symbolic Mathematics (Mathics)</h2></section>
+  <output data-mcel-id="mathics-output" data-mcel-when-state="state:mode" data-mcel-when-value="symbolic" data-mcel-purpose="results" data-mcel-priority="primary" data-mcel-prefer-density="compact" data-mcel-prefer-width-group="symbolic-calculation" data-mcel-prefer-align="end"><h2>Symbolic Result</h2></output>
+  <!-- A single AI terminus owns all Calculator Help interaction. Calculator
+       evidence is a read-only context source, not an independent assistant. -->
+  <section data-mcel-id="help-workspace" data-mcel-when-state="state:mode" data-mcel-when-value="help" data-mcel-purpose="assistance" data-mcel-tasks="review" data-mcel-priority="primary"><h2>Calculator Help</h2>
+    <p>One assistant for your calculations, graphs, and symbolic mathematics.</p>
+    <section data-mcel-id="calculator-context" data-mcel-purpose="inspection" data-mcel-priority="supporting"><h3>Current Calculator Context</h3></section>
+    <section data-mcel-id="helper-chat" data-mcel-purpose="assistance" data-mcel-tasks="review" data-mcel-priority="primary"><h3>Ask about your calculation</h3></section>
+  </section>
+  <!-- Graph output and operation history are independent semantic peers in
+       the shared inspection region. The graph is visible only in graphing mode;
+       activity remains available in every mode. -->
+  <aside data-mcel-id="output-details" data-mcel-purpose="inspection">
+    <output data-mcel-id="graph-output" data-mcel-when-state="state:mode" data-mcel-when-value="graphing" data-mcel-purpose="results" data-mcel-prefer-representation="graphical"><h2>Function Graph</h2></output>
+    <section data-mcel-id="status" data-mcel-purpose="status"><h2>Operation History</h2></section>
+  </aside>
 </main>

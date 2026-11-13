@@ -13,12 +13,142 @@
   data-mcel-layout="app-aspect-inspector-workbench"
   data-mcel-blueprint-target="mcel-lab"
   style="display: none;"
-  data-mcel-workspace-view="blueprint"
+  data-mcel-workspace-view="presentation"
 >
   <nav class="mcel-lab-workspace-switch" aria-label="MCEL Lab workspaces">
+    <button type="button" id="mcel-lab-workspace-presentation" aria-controls="mcel-lab-presentation-workspace" aria-pressed="true">Theme &amp; Chrome</button>
+    <button type="button" id="mcel-lab-workspace-blueprint" aria-controls="mcel-lab-blueprint-workspace" aria-pressed="false">App Blueprint / Inspector</button>
     <button type="button" id="mcel-lab-workspace-lifecycle" aria-controls="mcel-lifecycle-acid" aria-pressed="false">Lifecycle Acid Test · L18-01</button>
-    <button type="button" id="mcel-lab-workspace-blueprint" aria-controls="mcel-lab-blueprint-workspace" aria-pressed="true">App Blueprint / Inspector</button>
   </nav>
+
+  <section id="mcel-lab-presentation-workspace" class="mcel-lab-presentation-workspace" aria-label="MCEL theme and chrome explorer">
+    <header class="mcel-lab-presentation-head">
+      <div>
+        <p class="eyebrow">MCEL Lab</p>
+        <h3>Theme &amp; Chrome Explorer</h3>
+        <p>Explore presentation choices using the MCEL style and chrome laws. Theme controls appearance; chrome controls structural realization.</p>
+      </div>
+    </header>
+  <section class="mcel-lab-scenarios" aria-label="MCEL Lab scenarios">
+    <label>
+      Scenario
+      <select id="mcel-scenario-select" aria-label="MCEL scenario selector"></select>
+    </label>
+    <button type="button" id="mcel-load-scenario">Load Scenario</button>
+    <span id="mcel-scenario-description">Scenario library is loading.</span>
+  </section>
+
+  <section class="mcel-lab-primary-controls" aria-label="MCEL Lab primary controls">
+    <label>
+      Theme
+      <select id="mcel-theme-select" aria-label="MCEL theme selector">
+        <option value="theme-machine">Original MCEL</option>
+        <option value="theme-local">Local Service</option>
+        <option value="theme-saas">SaaS Launch</option>
+        <option value="theme-editorial">Editorial / Magazine</option>
+        <option value="theme-luxury">Luxury / Portfolio</option>
+        <option value="theme-civic">Civic / Nonprofit</option>
+        <option value="theme-accessible">Accessible High Contrast</option>
+        <option value="theme-debug">Debug Wireframe</option>
+      </select>
+    </label>
+    <label>
+      Chrome
+      <select id="mcel-chrome-select" aria-label="MCEL chrome selector">
+        <option value="chrome-strict-hierarchy">Strict Hierarchy</option>
+        <option value="chrome-editorial-flow">Editorial Flow</option>
+        <option value="chrome-cluster-grid">Cluster Grid</option>
+        <option value="chrome-spotlight">Spotlight</option>
+        <option value="chrome-journey">Journey</option>
+        <option value="chrome-compact-disclosure">Compact Disclosure</option>
+      </select>
+    </label>
+    <span>Theme affects the active preview. Chrome transforms the legacy rendered site only; modern Calculator chrome remains observational.</span>
+    <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
+      <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
+      <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
+      <button type="button" id="mcel-open-smart-css-modal">Open Smart CSS Primitive Tests</button>
+    </div>
+    <output id="mcel-site-frame-mini-status" class="mcel-site-frame-mini-status" aria-live="polite">
+      rendered-site iframe idle
+    </output>
+  </section>
+
+
+  <section class="mcel-lab-presentation-stage" aria-label="MCEL active presentation preview" data-mcel-preview-kind="legacy">
+    <section class="mcel-semantic-theme-experiment" aria-label="Modern MCEL Calculator theme preview">
+      <div class="mcel-semantic-theme-experiment-heading">
+        <div>
+          <p class="eyebrow">Opt-in · Lab only</p>
+          <h4>Calculator semantic theme preview</h4>
+          <p>The Theme selector directly above controls this source-bound Calculator preview when enabled. Chrome is not yet applied to modern MCEL.</p>
+        </div>
+        <div class="mcel-semantic-theme-experiment-actions" role="group" aria-label="Calculator preview actions">
+          <button type="button" id="mcel-semantic-theme-enable">Enable Calculator Preview</button>
+          <button type="button" id="mcel-semantic-theme-disable" disabled>Disable Preview</button>
+        </div>
+      </div>
+      <output id="mcel-semantic-theme-status" role="status" aria-live="polite">Off. The Calculator is not mounted; the legacy site preview is active.</output>
+      <div id="mcel-semantic-theme-evidence" class="mcel-semantic-theme-evidence" hidden aria-live="polite">
+        <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-card-swatch" aria-hidden="true"></div>
+        <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-control-swatch" aria-hidden="true"></div>
+        <span id="mcel-semantic-theme-evidence-text">Waiting for computed Calculator colors.</span>
+        <span class="mcel-semantic-theme-chrome-notice">Chrome: not connected to modern MCEL</span>
+      </div>
+      <iframe id="mcel-semantic-theme-frame" title="Isolated Calculator semantic theme preview"
+        src="about:blank" sandbox="allow-same-origin allow-scripts allow-forms" hidden></iframe>
+    </section>
+    <section class="mcel-lab-presentation-preview" id="mcel-legacy-site-preview" aria-label="Live themed and chromed site">
+      <div class="mcel-lab-presentation-preview-heading">
+        <div>
+          <p class="eyebrow">Live preview</p>
+          <h4>Rendered site · legacy MCEL</h4>
+        </div>
+        <span>Same MCEL renderer as the isolated site view</span>
+      </div>
+      <iframe id="mcel-presentation-preview-frame" title="Live MCEL theme and chrome preview" sandbox="allow-same-origin"></iframe>
+    </section>
+  </section>
+  <section id="mcel-semantic-compatibility" class="mcel-semantic-compatibility" aria-label="Semantic compatibility inspector">
+    <div class="mcel-semantic-compatibility-head">
+      <div>
+        <p class="eyebrow">Read-only diagnostic</p>
+        <h4>Semantic Compatibility</h4>
+        <p>Observe canonical identities and the current presentation contracts. No styles, chrome, or actions are changed.</p>
+      </div>
+      <label>Source
+        <select id="mcel-semantic-compatibility-source" aria-label="Semantic compatibility source">
+          <option value="lab">MCEL Lab — generated preview DOM</option>
+          <option value="blueprint">Selected blueprint — live DOM</option>
+          <option value="candidate">Task Manager — candidate IR / mounted candidate</option>
+        </select>
+      </label>
+      <button type="button" id="mcel-semantic-compatibility-refresh">Inspect</button>
+    </div>
+    <p id="mcel-semantic-compatibility-summary" role="status" aria-live="polite">Awaiting read-only inspection.</p>
+    <div id="mcel-semantic-compatibility-results" class="mcel-semantic-compatibility-results"></div>
+  </section>
+  <section class="mcel-site-skeleton" aria-label="MCEL minimal site skeleton">
+    <div class="mcel-site-skeleton-copy">
+      <p class="eyebrow">Minimal site acid test</p>
+      <h4>Plain semantic source should become a usable site.</h4>
+      <p>
+        The default source is a small neighborhood site: hero, trust cluster, signup form,
+        and command row. Raw HTML would be under-designed; MCEL supplies layout intelligence,
+        proof metadata, and clean serialization.
+      </p>
+    </div>
+    <div id="mcel-ui-skeleton-summary" class="mcel-site-skeleton-cards" aria-live="polite">
+      <article><strong>Hero</strong><span>waiting for compile</span></article>
+      <article><strong>Cluster</strong><span>waiting for compile</span></article>
+      <article><strong>Form</strong><span>waiting for compile</span></article>
+      <article><strong>Command</strong><span>waiting for compile</span></article>
+    </div>
+    <div id="mcel-ui-skeleton-health" class="mcel-site-skeleton-health" data-status="pending">
+      Layout health is waiting for browser observation.
+    </div>
+  </section>
+  </section>
   <header
     class="mcel-lab-blueprint-topbar"
     data-mcel-zone="identity"
@@ -599,71 +729,6 @@
     <button type="button" data-mcel-mode="a11y">A11y</button>
   </nav>
 
-  <section class="mcel-lab-scenarios" aria-label="MCEL Lab scenarios">
-    <label>
-      Scenario
-      <select id="mcel-scenario-select" aria-label="MCEL scenario selector"></select>
-    </label>
-    <button type="button" id="mcel-load-scenario">Load Scenario</button>
-    <span id="mcel-scenario-description">Scenario library is loading.</span>
-  </section>
-
-  <section class="mcel-lab-primary-controls" aria-label="MCEL Lab primary controls">
-    <label>
-      Theme
-      <select id="mcel-theme-select" aria-label="MCEL theme selector">
-        <option value="theme-machine">Original MCEL</option>
-        <option value="theme-local">Local Service</option>
-        <option value="theme-saas">SaaS Launch</option>
-        <option value="theme-editorial">Editorial / Magazine</option>
-        <option value="theme-luxury">Luxury / Portfolio</option>
-        <option value="theme-civic">Civic / Nonprofit</option>
-        <option value="theme-accessible">Accessible High Contrast</option>
-        <option value="theme-debug">Debug Wireframe</option>
-      </select>
-    </label>
-    <label>
-      Chrome
-      <select id="mcel-chrome-select" aria-label="MCEL chrome selector">
-        <option value="chrome-strict-hierarchy">Strict Hierarchy</option>
-        <option value="chrome-editorial-flow">Editorial Flow</option>
-        <option value="chrome-cluster-grid">Cluster Grid</option>
-        <option value="chrome-spotlight">Spotlight</option>
-        <option value="chrome-journey">Journey</option>
-        <option value="chrome-compact-disclosure">Compact Disclosure</option>
-      </select>
-    </label>
-    <span>Primary surface stays product-first: the editor and the rendered site open in isolated modal surfaces instead of fighting the lab chrome. Theme paints the site; chrome decides the structural realization.</span>
-    <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
-      <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
-      <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
-      <button type="button" id="mcel-open-smart-css-modal">Open Smart CSS Primitive Tests</button>
-    </div>
-    <output id="mcel-site-frame-mini-status" class="mcel-site-frame-mini-status" aria-live="polite">
-      rendered-site iframe idle
-    </output>
-  </section>
-
-  <section class="mcel-site-skeleton" aria-label="MCEL minimal site skeleton">
-    <div class="mcel-site-skeleton-copy">
-      <p class="eyebrow">Minimal site acid test</p>
-      <h4>Plain semantic source should become a usable site.</h4>
-      <p>
-        The default source is a small neighborhood site: hero, trust cluster, signup form,
-        and command row. Raw HTML would be under-designed; MCEL supplies layout intelligence,
-        proof metadata, and clean serialization.
-      </p>
-    </div>
-    <div id="mcel-ui-skeleton-summary" class="mcel-site-skeleton-cards" aria-live="polite">
-      <article><strong>Hero</strong><span>waiting for compile</span></article>
-      <article><strong>Cluster</strong><span>waiting for compile</span></article>
-      <article><strong>Form</strong><span>waiting for compile</span></article>
-      <article><strong>Command</strong><span>waiting for compile</span></article>
-    </div>
-    <div id="mcel-ui-skeleton-health" class="mcel-site-skeleton-health" data-status="pending">
-      Layout health is waiting for browser observation.
-    </div>
-  </section>
 
 
   <section

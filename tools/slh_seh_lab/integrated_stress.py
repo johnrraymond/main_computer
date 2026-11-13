@@ -377,7 +377,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         capacity_error = None
         probe = None
         try:
-            probe = ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client/{relay.slh_id}',
+            probe = ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client',
                                open_timeout=5, close_timeout=1, ping_interval=None)
             try:
                 probe.recv(timeout=5)
@@ -486,7 +486,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         from websockets.exceptions import ConnectionClosed
         from main_computer.seh.relay import MAX_FRAME
         try:
-            with ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client/{relay.slh_id}',
+            with ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client',
                             open_timeout=5,close_timeout=2) as attacker:
                 attacker.send(b'M'*(MAX_FRAME+1))
                 try:

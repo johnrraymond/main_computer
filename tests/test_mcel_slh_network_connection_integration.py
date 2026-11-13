@@ -71,7 +71,8 @@ def test_semantic_network_configuration_replaces_navigation_query():
     nav=[r for r in composition['regions'] if r['recipe']=='navigation']
     task=[r for r in composition['regions'] if r['recipe']=='task']
     assert len(nav)==1 and nav[0]['members'][0]['ref']=='surface-node:slh.available-local-identities'
-    assert len(task)==2
+    assert len(task)==3
+    assert any(any(m['ref']=='surface-node:slh.connect-remote-seh' for m in r['members']) for r in task)
     assert any(any(m['ref']=='surface-node:slh.connect-network-slh' for m in r['members']) for r in task)
     node={n['id']:n for n in ir['surfaces'][0]['nodes']}['surface-node:slh.connect-network-slh']
     assert node['fields']=={'address':{'kind':'string'},'port':{'kind':'integer'}}

@@ -264,6 +264,7 @@ def test_calculator_view_model_owns_session_and_result_qa_context_shapes() -> No
           graphStatus: "graphed sin(x)",
           mathicsPrompt: "factor",
           mathicsExpression: "Factor[x^2-1]",
+          mathicsResult: "(x - 1)(x + 1)",
           mathicsStatus: "Mathics result ready",
           qaPrompt: "why?",
           qaStatus: "result Q&A answered"
@@ -305,6 +306,7 @@ def test_calculator_view_model_owns_session_and_result_qa_context_shapes() -> No
         "mathics": {
             "prompt": "factor",
             "expression": "Factor[x^2-1]",
+            "result": "(x - 1)(x + 1)",
             "status": "Mathics result ready",
         },
         "qa": {

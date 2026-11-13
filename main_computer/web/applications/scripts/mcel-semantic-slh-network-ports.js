@@ -29,6 +29,20 @@
     "set-organization-trash-retention":["set-retention","setOrganizationTrashRetention"],
     "empty-organization-trash":["empty-trash","emptyOrganizationTrash"]
   });
+  function sehLifecycleOperation(req){
+    if(!plain(req) || req.appId!=="slh" || !plain(req.arguments) ||
+       Object.keys(req.arguments).length!==0)return null;
+    const name=req.intentId?.startsWith("intent:")?req.intentId.slice(7):"";
+    const read=name==="read-seh-connection";
+    const action=name.startsWith("seh-connection-")?name.slice(15):"";
+    if(!read && !["start","stop","restart"].includes(action))return null;
+    if(req.capabilityId!==(read?"capability:seh-connection-observer":"capability:seh-connection-control") ||
+       req.risk!==(read?"external-read":"consequential") ||
+       req.effectId!=="effect:"+name+".request" ||
+       req.operation!==(read?"status":action) ||
+       req.runtimeMethod!==(read?"observeSehConnection":"controlSehConnection"))return null;
+    return read?"status":action;
+  }
   function notebookOperation(req){
     const suffix=req?.intentId?.startsWith("intent:")?req.intentId.slice(7):"";
     const descriptor=notebook[suffix];if(!descriptor || !plain(req?.arguments))return null;
@@ -48,7 +62,8 @@
     return descriptor[0];
   }
   function permitted(req){
-    if(notebookOperation(req))return true;
+    if(notebookOperation(req)||sehLifecycleOperation(req)||
+       global.McelSemanticSehDeploymentPort?.operation(req))return true;
     if(!plain(req)||req.appId!=="slh"||req.risk!=="consequential"||!plain(req.arguments))return false;
     const identity=Object.keys(admitted).every(k=>req[k]===admitted[k]);
     const signingOut=Object.keys(disconnect).every(k=>req[k]===disconnect[k]);
@@ -95,9 +110,49 @@
     }
     return Object.freeze({
       onConnectionChanged:callback=>{if(typeof callback==="function")onConnectionChanged=callback;},
-      authorize:async req=>permitted(req) && (!notebookOperation(req)||(!!ticket&&administrator)),
+      authorize:async req=>permitted(req) && (!(notebookOperation(req)||sehLifecycleOperation(req)||
+        global.McelSemanticSehDeploymentPort?.operation(req))||(!!ticket&&administrator)),
       invoke:async req=>{
         if(!permitted(req))throw Error("NETWORK_SLH:OPERATION_REFUSED");
+        const deployment=global.McelSemanticSehDeploymentPort?.operation(req);
+        if(deployment){
+          if(!ticket||!administrator)throw Error("NETWORK_SLH:ADMIN_SESSION_REQUIRED");
+          const response=await fetcher("/api/applications/slh/seh/deployment",{
+            method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+              "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-deployment"},
+            body:JSON.stringify({target:"network",operation:deployment,arguments:req.arguments,sessionTicket:ticket})
+          });
+          const value=await response?.json?.().catch(()=>null);
+          if(!response?.ok||value?.ok!==true){
+            const code=value?.error?.code;
+            if(["NETWORK_SESSION_EXPIRED","NETWORK_SESSION_NOT_FOUND","SESSION_INVALID"].includes(code)){
+              ticket="";administrator=false;onConnectionChanged(false);
+            }
+            throw Error("NETWORK_SLH_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
+          }
+          return value.result;
+        }
+        const sehOperation=sehLifecycleOperation(req);
+        if(sehOperation){
+          if(!ticket||!administrator)throw Error("NETWORK_SLH:ADMIN_SESSION_REQUIRED");
+          if(sehOperation!=="status" && (typeof global.confirm!=="function"||
+             !global.confirm("Manage the selected Network SLH outbound SEH connection: "+sehOperation+"?")))
+            throw Error("NETWORK_SLH:CANCELED");
+          const response=await fetcher("/api/applications/slh/seh/lifecycle",{
+            method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+              "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-lifecycle"},
+            body:JSON.stringify({target:"network",operation:sehOperation,sessionTicket:ticket})
+          });
+          const value=await response?.json?.().catch(()=>null);
+          if(!response?.ok||value?.ok!==true){
+            const code=value?.error?.code;
+            if(["NETWORK_SESSION_EXPIRED","NETWORK_SESSION_NOT_FOUND","SESSION_INVALID"].includes(code)){
+              ticket="";administrator=false;onConnectionChanged(false);
+            }
+            throw Error("NETWORK_SLH_SEH_LIFECYCLE:"+(code||"REQUEST_REFUSED"));
+          }
+          return value.result;
+        }
         const operation=notebookOperation(req);
         if(operation){
           if(!ticket||!administrator)throw Error("NETWORK_SLH:ADMIN_SESSION_REQUIRED");

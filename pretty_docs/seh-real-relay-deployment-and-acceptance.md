@@ -18,6 +18,8 @@ The local **SLH** is the organization's authority. It validates enrolled devices
 
 There are no organizational certificate authorities or per-worker certificate enrollment procedures. The SLH's already-existing self-signed TLS leaf is pinned by each managed Worker. The SEH cannot decrypt or forge this TLS session. The public SEH URL must be **WSS over normal public HTTPS**, with TLS issued by the configured Coolify proxy; plaintext WebSocket is restricted in code to explicitly enabled loopback lab connections.
 
+**Remote SEH administration security boundary (November 12, 2026):** The SEH's opaque `admin` stream connects exclusively to the owning ORG-SLH's ephemeral, `127.0.0.1`-bound TLS identity listener, not the normal full-privilege Organization API. Only narrowly defined identity/session/enrollment/Trash operations are dispatched; a retention policy update must contain *only* `remove_trash_after_30_days`. Lifecycle operations (including outbound SEH connection start/stop/restart), root registration/recovery, marketplace, scheduler, Coolify, accounting, wallets and host administration are refused by ORG-SLH before normal API dispatch even with valid administrator credentials. Physical-inspection policy is not writable over this route. This restriction does not alter the Worker transport or make SEH an identity authority. The direct SLH listener continues serving its independently authorized management API.
+
 The SEH receives an SLH **public** P-256 key in its image configuration. It challenges a connecting SLH with a fresh random nonce; the SLH signs the challenge using its separate persistent SEH service key. The SEH admits only one authenticated outbound SLH tunnel per organization/instance. If it disappears, connected remote clients fail closed and must reconnect. The SEH does not approve devices, issue marketplace MSKs, authorize administrator actions, or store prompts/results.
 
 ## 2. Build the SEH container
@@ -90,7 +92,7 @@ python -m tools.slh_seh_connector run `
   --org-id my-company --slh-id my-slh
 ```
 
-Use the organization/SLH IDs configured in the Coolify target. This command reads the local SEH service signing key, connects outbound through HTTPS/WSS, signs the SEH's challenge, and reconnects on disconnect with a bounded delay. The SEH cannot open an arbitrary outbound connection into your private network; the SLH connector only talks to its own local managed gateway on `127.0.0.1`.
+Use the organization/SLH IDs configured in the Coolify target. This command reads the local SEH service signing key, connects outbound through HTTPS/WSS, signs the SEH's challenge, and reconnects on disconnect with a bounded delay. The SEH cannot open an arbitrary outbound connection into your private network. The resident connector routes Worker streams to its local managed gateway and `admin` streams exclusively to the restricted identity listener over loopback. Standalone historical connector instructions below address Worker traffic only; they do not expose the resident administration listener.
 
 An external worker connects to the SEH using the provided remote adapter. A future Worker application UI can launch the same adapter automatically. The adapter listens on an ephemeral **loopback** port, forwards opaque bytes through the remote WSS relay, and connects the unchanged existing Managed Worker TLS client through it. The Worker still checks the **SLH-managed TLS pin** and performs its Known Device challenge with the actual SLH, not with the SEH.
 
@@ -141,3 +143,32 @@ Invoke-RestMethod http://127.0.0.1:18080/readyz
 ```
 
 The opt-in `--allow-loopback-lab` flag permits unencrypted WebSocket **only** to localhost/127.0.0.1; it does not authorize plaintext connections to any remote endpoint. Loopback HTTP/WS is for **local lab verification only**. Production remote connections still require Coolify-managed HTTPS/WSS, domain routing, and external verification. Do not count the image build or Compose preparation as an actual Coolify deployment, or process health as completed SLH/SEH integration.
+
+## SEH wire protocol v2: one relay, one SLH
+
+The SEH has no SLH routing ID and no public `/v1/seh/binding` discovery endpoint.
+An SEH serves its one registered SLH, authenticated by the P-256 public key in
+`SEH_SLH_PUBLIC_KEY_B64`. Production WebSocket paths are fixed:
+`/v1/seh/slh` (outbound SLH), `/v1/seh/client` (Worker/requester), and
+`/v1/seh/admin` (identity-administration traffic only). Disposable lab
+channels use `/v1/seh/lab/slh/id/{lab_id}` and
+`/v1/seh/lab/client/id/{lab_id}`; lab IDs distinguish isolated test tunnels,
+not organizations or SLHs.
+
+The signed SLH challenge carries `version: 2`, `action: seh.slh.connect`, and a
+fresh nonce (plus the lab ID for a lab tunnel). Only the configured public
+key verifies the signature. No caller can select a different destination by
+supplying a URL component. Remote SEH still verifies the destination ORG-SLH's
+TLS certificate and requires the destination administrator's authentication.
+The restricted identity-administration listener is unchanged; no SLH lifecycle
+control is available through SEH.
+
+**Upgrade requirement:** the SEH image and resident SLH connector must both
+use v2 before reconnecting. Redeploy the SEH with the preserved SLH signing
+public key, then restart the owning SLH's outbound connector through its direct
+management path. The legacy `SEH_SLH_ID` Coolify environment entry, if present,
+is ignored by the new relay and can be deleted by a separately authorized
+operator cleanup after v2 readiness is verified. Never delete or rotate
+`SEH_SLH_PUBLIC_KEY_B64` during this migration. The Remote SEH certificate
+pin is keyed by relay origin after migration, so an administrator must
+explicitly confirm the previously known ORG-SLH TLS fingerprint once more.

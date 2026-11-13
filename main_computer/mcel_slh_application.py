@@ -26,8 +26,10 @@ SOURCE = Path("mcel_apps/slh/application.js")
 ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
     "main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js",
+    "main_computer/web/applications/scripts/mcel-semantic-seh-deployment-ports.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-ports.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-network-ports.js",
+    "main_computer/web/applications/scripts/mcel-semantic-seh-remote-ports.js",
 )
 STYLE = "main_computer/web/applications/styles/mcel-semantic-workbench.css"
 ROUTES = {
@@ -35,7 +37,8 @@ ROUTES = {
     "/applications/slh/workers": "worker-bank",
     "/applications/slh/local/workers": "worker-bank",
     "/applications/slh/network": "network",
-    "/applications/slh/network/workers": "network-worker-bank"
+    "/applications/slh/network/workers": "network-worker-bank",
+    "/applications/slh/remote-seh": "remote-seh"
 }
 SCHEMA = "mcel.slh.first-slice-observation.v1"
 IDENTITIES_SCHEMA = "mcel.slh.identities.v4b"
@@ -72,36 +75,70 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
     if (len(navigation) != 1 or navigation[0]["id"] != "interface-region:slh.identities" or
         membership(navigation[0]) != {"surface-node:slh.available-local-identities"} or
         navigation[0].get("prefer") != {"side":"start"} or
-        len(workspaces) != 2 or {frozenset(membership(r)) for r in workspaces} != {
-          frozenset({"surface-node:slh.configure-org-slh","surface-node:slh.first-administrator-identity"}),
-          frozenset({"surface-node:slh.connect-network-slh","surface-node:slh.network-selected-identity"})} or
+        len(workspaces) != 3 or {frozenset(membership(r)) for r in workspaces} != {
+          frozenset({"surface-node:slh.configure-org-slh","surface-node:slh.organization-enablement",
+                     "surface-node:slh.start-stop-org-slh","surface-node:slh.first-administrator-identity"}),
+          frozenset({"surface-node:slh.connect-network-slh","surface-node:slh.network-selected-identity"}),
+          frozenset({"surface-node:slh.connect-remote-seh","surface-node:slh.remote-seh-selected-identity"})} or
         len(commands) != 2 or {frozenset(membership(r)) for r in commands} != {
-          frozenset({"surface-node:slh.disable-org-slh","surface-node:slh.login-administrator",
-                     "surface-node:slh.logout-administrator"}),
-          frozenset({"surface-node:slh.disconnect-network-slh"})} or
+          frozenset({"surface-node:slh.disconnect-network-slh"}),
+          frozenset({"surface-node:slh.disconnect-remote-seh"})} or
         len([x for x in authored.get("regions",[]) if x.get("id")=="interface-region:slh.organization-identities"]) != 1 or
+        len([x for x in authored.get("regions",[]) if x.get("id")=="interface-region:slh.seh-lifecycle" and
+            membership(x)=={"surface-node:slh.local-seh-lifecycle","surface-node:slh.network-seh-lifecycle"}]) != 1 or
         len(inspectors) != 1 or membership(inspectors[0]) != {
           "surface-node:slh.observed-service","surface-node:slh.last-successful-operation",
-          "surface-node:slh.network-connection-details"} or
+          "surface-node:slh.network-connection-details","surface-node:slh.remote-seh-connection-details",
+          "surface-node:slh.seh-connection-details","surface-node:slh.network-seh-connection-details"} or
         len(activity) != 1 or membership(activity[0]) != {"surface-node:slh.activity"}):
         raise SlhApplicationError("SLH semantic target and inspector ownership invalid")
     nodes = {x["id"]: x for x in surface["nodes"]}
     local_form = nodes.get("surface-node:slh.configure-org-slh", {})
     remote_form = nodes.get("surface-node:slh.connect-network-slh", {})
+    seh_form = nodes.get("surface-node:slh.connect-remote-seh", {})
+    seh_notebooks = [nodes.get("surface-node:slh."+target+"-seh-lifecycle", {})
+                     for target in ("local","network")]
+    if (seh_form.get("nodeKind") != "form" or
+        seh_form.get("intent",{}).get("ref") != "intent:connect-remote-seh" or
+        seh_form.get("fields") != {"sehUrl":{"kind":"string"}} or
+        any(n.get("nodeKind") != "operation-notebook" or n.get("title") != "SEH Lifecycle" or
+            n.get("visibleWhen",{}).get("equals") != target or
+            [tab.get("id") for tab in n.get("tabs",[])] !=
+                ["configuration","deployment","connection","status","diagnostics"] or
+            set(n.get("tabs",[])[2].get("actions",{})) != {"Start","Stop","Restart"} or
+            set(n.get("tabs",[])[1].get("actions",{})) != {
+                "Preflight Deploy","Deploy","Preflight Undeploy","Undeploy"} or
+            len(n.get("tabs",[])[0].get("forms",[])) != 2 or
+            n.get("tabs",[])[0].get("actions")
+            for target,n in zip(("local","network"),seh_notebooks))):
+        raise SlhApplicationError("SEH lifecycle or remote relay contract invalid")
     if (local_form.get("nodeKind") != "form" or
         local_form.get("intent",{}).get("ref") != "intent:configure-and-enable-organization" or
         local_form.get("fields") != {"bindAddress":{"kind":"string"},"port":{"kind":"integer"}} or
+        local_form.get("resetControl") is not False or
+        nodes.get("surface-node:slh.organization-enablement",{}).get("intent",{}).get("ref") !=
+            "intent:toggle-organization-enablement" or
+        nodes.get("surface-node:slh.organization-enablement",{}).get("labelByState",{}).get("labels") !=
+            {"running":"Disable","stopped":"Disable","disabled":"Enable"} or
+        nodes.get("surface-node:slh.start-stop-org-slh",{}).get("labelByState",{}).get("labels") !=
+            {"running":"Stop","stopped":"Start"} or
         remote_form.get("nodeKind") != "form" or
         remote_form.get("intent",{}).get("ref") != "intent:connect-network-slh" or
         remote_form.get("fields") != {"address":{"kind":"string"},"port":{"kind":"integer"}} or
+        remote_form.get("resetControl") is not False or
         "tlsSha256" in remote_form.get("fields",{}) or
         "surface-node:slh.worker-bank" in nodes):
         raise SlhApplicationError("SLH target workspace authority invalid")
     expected_intents = {
         "intent:refresh-identities", "intent:refresh-identity-status", "intent:refresh-lifecycle",
         "intent:choose-identity", "intent:select-target", "intent:connect-network-slh",
-        "intent:disconnect-network-slh", "intent:configure-and-enable-organization", "intent:disable-organization",
+        "intent:disconnect-network-slh", "intent:configure-and-enable-organization", "intent:toggle-organization-enablement",
+        "intent:toggle-organization",
         "intent:login-administrator", "intent:logout-administrator",
+        "intent:connect-remote-seh", "intent:disconnect-remote-seh", "intent:read-seh-connection",
+        "intent:read-seh-deployment", *{f"intent:seh-deployment-{operation}" for operation in
+          ("register","select","preview-deploy","deploy","preview-undeploy","undeploy")},
+        *{f"intent:seh-connection-{action}" for action in ("start","stop","restart")},
         *{f"intent:read-organization-{name}" for name in ("pending","enrolled","trash","retention")},
         *{f"intent:organization-{name}" for name in ("accept","reject","delete","reactivate","remove")},
         "intent:set-organization-trash-retention", "intent:empty-organization-trash"
@@ -110,7 +147,12 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "capability:slh-observer":"external-read", "capability:network-slh-connection":"consequential",
         "capability:slh-first-run":"consequential",
         "capability:organization-identity-administration":"consequential",
-        "capability:organization-identity-observer":"external-read"
+        "capability:organization-identity-observer":"external-read",
+        "capability:remote-seh-connection":"consequential",
+        "capability:seh-connection-observer":"external-read",
+        "capability:seh-connection-control":"consequential",
+        "capability:seh-deployment-observer":"external-read",
+        "capability:seh-deployment-control":"consequential"
     }
     expected_effects = {
         "effect:refresh-identities.request":"external-read",
@@ -119,9 +161,17 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "effect:connect-network-slh.request":"consequential",
         "effect:disconnect-network-slh.request":"consequential",
         "effect:configure-and-enable-organization.request":"consequential",
-        "effect:disable-organization.request":"consequential",
+        "effect:toggle-organization-enablement.request":"consequential",
+        "effect:toggle-organization.request":"consequential",
         "effect:login-administrator.request":"consequential",
         "effect:logout-administrator.request":"consequential",
+        "effect:connect-remote-seh.request":"consequential",
+        "effect:disconnect-remote-seh.request":"consequential",
+        "effect:read-seh-connection.request":"external-read",
+        "effect:read-seh-deployment.request":"external-read",
+        **{f"effect:seh-deployment-{operation}.request":"consequential" for operation in
+          ("register","select","preview-deploy","deploy","preview-undeploy","undeploy")},
+        **{f"effect:seh-connection-{action}.request":"consequential" for action in ("start","stop","restart")},
         **{f"effect:read-organization-{name}.request":"external-read" for name in ("pending","enrolled","trash","retention")},
         **{f"effect:organization-{name}.request":"consequential" for name in ("accept","reject","delete","reactivate","remove")},
         "effect:set-organization-trash-retention.request":"consequential",
@@ -154,7 +204,7 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
     css = (repo / STYLE).read_text(encoding="utf-8")
     if "</style" in css.lower():
         raise SlhApplicationError("Stylesheet contains an HTML closing tag")
-    target = "network" if view.startswith("network") else "local"
+    target = "remote-seh" if view == "remote-seh" else "network" if view.startswith("network") else "local"
     initial_view = "worker-bank" if view.endswith("worker-bank") else "overview"
     # Header links are browser-native addresses, not a hand-authored app layout.
     # The entire operational workspace is generated from the semantic IR.
@@ -172,19 +222,34 @@ try{{const data=JSON.parse(document.getElementById("mcel-generated-data").textCo
 const selectedTarget=document.body.dataset.mcelSlhTarget;
 const port=McelSemanticSlhPorts.create({{appId:data.ir.application.appId,initialView:"{initial_view}"}});
 const networkPort=McelSemanticSlhNetworkPorts.create({{appId:data.ir.application.appId}});
+const sehPort=McelSemanticSehRemotePorts.create({{appId:data.ir.application.appId}});
 // The shared UI uses one semantic IR, but two independent bounded transports.
 // Network connection cannot invoke local setup, login, or Worker mutation.
 const adapter=Object.freeze({{
   authorize:req=>req.capabilityId==="capability:organization-identity-observer" ||
     req.capabilityId==="capability:organization-identity-administration"
-    ? (selectedTarget==="network"?networkPort.authorize(req):port.authorize(req))
+    ? (selectedTarget==="remote-seh"?sehPort.authorize(req):selectedTarget==="network"?networkPort.authorize(req):port.authorize(req))
+    : req.capabilityId==="capability:remote-seh-connection"
+    ? (selectedTarget==="remote-seh" && sehPort.authorize(req))
+    : req.capabilityId==="capability:seh-connection-control" ||
+      req.capabilityId==="capability:seh-connection-observer" ||
+      req.capabilityId==="capability:seh-deployment-control" ||
+      req.capabilityId==="capability:seh-deployment-observer"
+    ? (selectedTarget==="local"?port.authorize(req):selectedTarget==="network"?networkPort.authorize(req):false)
     : req.capabilityId==="capability:network-slh-connection"
     ? (selectedTarget==="network" && networkPort.authorize(req))
     : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
         "intent:refresh-lifecycle"].includes(req.intentId)) && port.authorize(req)),
   invoke:req=>req.capabilityId==="capability:organization-identity-observer" ||
     req.capabilityId==="capability:organization-identity-administration"
-    ? (selectedTarget==="network"?networkPort.invoke(req):port.invoke(req))
+    ? (selectedTarget==="remote-seh"?sehPort.invoke(req):selectedTarget==="network"?networkPort.invoke(req):port.invoke(req))
+    : req.capabilityId==="capability:remote-seh-connection"
+    ? (selectedTarget==="remote-seh" ? sehPort.invoke(req) : Promise.reject(Error("REMOTE_SEH_TARGET_NOT_SELECTED")))
+    : req.capabilityId==="capability:seh-connection-control" ||
+      req.capabilityId==="capability:seh-connection-observer" ||
+      req.capabilityId==="capability:seh-deployment-control" ||
+      req.capabilityId==="capability:seh-deployment-observer"
+    ? (selectedTarget==="local"?port.invoke(req):selectedTarget==="network"?networkPort.invoke(req):Promise.reject(Error("SEH_LIFECYCLE_FORBIDDEN")))
     : req.capabilityId==="capability:network-slh-connection"
     ? (selectedTarget==="network" ? networkPort.invoke(req) : Promise.reject(Error("NETWORK_TARGET_NOT_SELECTED")))
     : ((selectedTarget==="local" || ["intent:refresh-identities","intent:refresh-identity-status",
@@ -199,6 +264,9 @@ port.onAuthenticationChanged(authenticated=>{{
 }});
 networkPort.onConnectionChanged(authenticated=>{{
   if(selectedTarget==="network")app.setNotebookAuthorization(authenticated);
+}});
+sehPort.onConnectionChanged(authenticated=>{{
+  if(selectedTarget==="remote-seh")app.setNotebookAuthorization(authenticated);
 }});
 void app.execute("intent:select-target",{{choice:selectedTarget}});
 window.__mcelSlh=Object.freeze({{app,composition:data.composition}});
@@ -240,7 +308,7 @@ port.onSetupChanged(()=>{{void refreshLifecycle();}});
 const initialIdentityRefresh=refreshIdentities();
 initialIdentityRefresh.then(()=>{{
   if(selectedTarget==="local")void refreshLifecycle();
-  else message.textContent="Network SLH ready to connect · no remote session established";
+  else message.textContent=selectedTarget==="remote-seh"?"Remote SEH ready to connect · no administrator session":"Network SLH ready to connect · no remote session established";
 }}).catch(()=>{{message.textContent="Local signing identities unavailable · configuration cannot proceed";}});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''

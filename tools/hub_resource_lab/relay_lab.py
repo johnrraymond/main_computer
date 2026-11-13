@@ -101,11 +101,11 @@ def run_relay_lab() -> dict:
     relay=connector=adapter=None
     healthy_socket=second_socket=None
     try:
-        relay=SEHRelay(slh_id='resource-lab',slh_public_key=public,port=0).start()
+        relay=SEHRelay(slh_public_key=public,port=0).start()
         url=f'ws://127.0.0.1:{relay.port}'
-        connector=SLHSEHConnector(seh_url=url,slh_id='resource-lab',identity_private_key=private,
+        connector=SLHSEHConnector(seh_url=url,identity_private_key=private,
                                  gateway_port=echo.server_address[1],allow_lab=True).connect()
-        adapter=SEHLocalClientAdapter(url,'resource-lab',allow_lab=True)
+        adapter=SEHLocalClientAdapter(url,allow_lab=True)
         verify('authenticated_control_tunnel_ready',lambda:relay.tunnel_ready)
         healthy_socket=socket.create_connection(adapter.server_address,timeout=3)
         healthy_socket.settimeout(4)
@@ -124,7 +124,7 @@ def run_relay_lab() -> dict:
         # A malicious Client websocket is a separate stream, not an SLH tunnel
         # protocol error. The healthy stream must still deliver bytes afterward.
         def oversized_stream_refused():
-            path=f'{url}/v1/seh/client/resource-lab'
+            path=f'{url}/v1/seh/client'
             with ws_connect(path,open_timeout=4,max_size=MAX_FRAME*2+8192) as attacker:
                 attacker.send(b'X'*(MAX_FRAME+1))
                 try:
@@ -140,7 +140,7 @@ def run_relay_lab() -> dict:
         connector=None
         verify('relay_detects_authenticated_tunnel_loss',lambda:wait_for(lambda:not relay.tunnel_ready,timeout=4))
         verify('old_clients_released_after_tunnel_loss',lambda:wait_for(lambda:len(relay._clients)==0,timeout=4))
-        connector=SLHSEHConnector(seh_url=url,slh_id='resource-lab',identity_private_key=private,
+        connector=SLHSEHConnector(seh_url=url,identity_private_key=private,
                                  gateway_port=echo.server_address[1],allow_lab=True).connect()
         verify('signed_control_tunnel_reconnects',lambda:wait_for(lambda:relay.tunnel_ready,timeout=4))
         new_socket=socket.create_connection(adapter.server_address,timeout=3)

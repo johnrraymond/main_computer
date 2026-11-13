@@ -62,6 +62,247 @@
       return true;
     }
 
+    // The Calculator experiment never writes to the production Calculator DOM.
+    // Lab-only preview: canonical semantic source and Calculator DOM must both be
+    // present before styling. The Calculator route can mount its DOM after the
+    // iframe load event; do not confuse navigation completion with app readiness.
+    let mcelSemanticThemeMountObserver = null;
+    let mcelSemanticThemeMountDeadline = null;
+    function mcelSemanticThemeFrame() {
+      return document.getElementById('mcel-semantic-theme-frame');
+    }
+    function setMcelSemanticThemePreviewStatus(message) {
+      const output = document.getElementById('mcel-semantic-theme-status');
+      if (output) output.textContent = message;
+    }
+    function stopMcelSemanticThemeMountWatch() {
+      if (mcelSemanticThemeMountObserver) mcelSemanticThemeMountObserver.disconnect();
+      mcelSemanticThemeMountObserver = null;
+      if (mcelSemanticThemeMountDeadline !== null) clearTimeout(mcelSemanticThemeMountDeadline);
+      mcelSemanticThemeMountDeadline = null;
+    }
+    function setMcelSemanticThemePreviewMode(enabled) {
+      const legacy = document.getElementById('mcel-legacy-site-preview');
+      const stage = document.querySelector('.mcel-lab-presentation-stage');
+      const evidence = document.getElementById('mcel-semantic-theme-evidence');
+      if (legacy) legacy.hidden = Boolean(enabled);
+      if (stage) stage.dataset.mcelPreviewKind = enabled ? 'calculator' : 'legacy';
+      if (evidence) evidence.hidden = !enabled;
+      const frame = mcelSemanticThemeFrame();
+      if (frame) frame.hidden = !enabled;
+    }
+    function showMcelSemanticThemeEvidence(result) {
+      const evidence = document.getElementById('mcel-semantic-theme-evidence-text');
+      const regionSwatch = document.getElementById('mcel-semantic-theme-card-swatch');
+      const controlSwatch = document.getElementById('mcel-semantic-theme-control-swatch');
+      const visual = result?.visualEvidence;
+      if (!evidence || !visual) return;
+      if (regionSwatch && visual.sampleRegionBackground) regionSwatch.style.backgroundColor = visual.sampleRegionBackground;
+      if (controlSwatch && visual.sampleControlBackground) controlSwatch.style.backgroundColor = visual.sampleControlBackground;
+      const uncolored = visual.uncoloredRegions + visual.uncoloredControls;
+      const contrast = visual.contrast;
+      evidence.textContent = `Computed in Calculator: ${result.controls} source-bound controls, ${result.regions} regions; ` +
+        `${visual.paintedDescendants || 0} related painted surfaces; ` +
+        `${visual.observed} bound elements; ${uncolored} transparent regions or controls.` +
+        (contrast ? ` Text contrast: ${contrast.checked} checked, minimum ${contrast.minimumRatio ?? 'n/a'}:1, ` +
+          `${contrast.belowAA} below 4.5:1.` : '') +
+        (contrast?.belowAA ? ' Inspect contrast failures.' : ' Semantic theme projection checked.');
+    }
+    function mcelSemanticThemeFrameObservation(frame) {
+      let doc = null;
+      try { doc = frame?.contentDocument || null; }
+      catch (_) { /* Cross-origin or sandboxed frame: cannot claim a binding. */ }
+      if (!doc) return {status: 'refused', reason: 'Calculator frame is not accessible from MCEL Lab (origin or sandbox boundary).'};
+      if (!window.McelSemanticThemePreview || !window.McelSemanticPresentationBridge || !window.McelLabStyleLaw)
+        return {status: 'refused', reason: 'Semantic presentation bridge or Theme Law is not loaded.'};
+      // /applications/calculator is a canonical shell route. Its explicit
+      // mcel-shell-child variant renders the promoted semantic Calculator.
+      // Its *own embedded IR* is authoritative; the Lab's original Calculator
+      // DSL projection describes a different, retired host root (#calculator-app).
+      const sourceElement = doc.getElementById('mcel-expanded-ir');
+      const root = doc.getElementById('mcel-expanded-root');
+      if (!sourceElement || !root) {
+        // Preserve isolated legacy host fixtures, but only with their own
+        // source-declared #calculator-app root. Never substitute this source
+        // for a mounted operational Calculator with a different app ID.
+        const legacySource = doc.defaultView?.McelLabCanonicalPresentationSources?.calculator ||
+          window.McelLabCanonicalPresentationSources?.calculator;
+        const legacyRoot = doc.getElementById('calculator-app');
+        if (legacyRoot && legacySource?.schema === 'mcel.application-ir.v1' &&
+            legacySource?.application?.appId === 'calculator' &&
+            legacySource?.surfaces?.length === 1 && legacySource.surfaces[0].root === '#calculator-app') {
+          const bindings = window.McelSemanticPresentationBridge.observePresentationTargets({ir: legacySource, root: legacyRoot});
+          const expected = legacySource.surfaces[0].semanticSurface;
+          if (bindings.status === 'source-bound' &&
+              bindings.targets.filter(t => t.kind === 'control').length >= (expected?.controls?.length || Infinity) &&
+              bindings.targets.filter(t => t.kind === 'region').length >= (expected?.regions?.length || Infinity))
+            return {status: 'ready', doc, root: legacyRoot, ir: legacySource, bindingModel: 'legacy-host'};
+          return {status: 'waiting', doc, reason: 'Waiting for Calculator semantic bindings (legacy-host source incomplete).'};
+        }
+        if (legacySource?.application?.appId === 'calculator')
+          return {status: 'waiting', doc, reason: 'Waiting for canonical Calculator root to mount in preview frame.'};
+        if (doc.querySelector('#mcel-applications-shell, .mcel-applications-shell'))
+          return {status: 'refused', reason: 'Calculator preview mounted the Applications shell instead of its native child. Check mcel-shell-child=1.'};
+        return {status: 'waiting', doc, reason: 'Canonical Calculator semantic source is absent; waiting for promoted Calculator IR and runtime root.'};
+      }
+      let source = null;
+      try { source = JSON.parse(sourceElement.textContent); }
+      catch (_) { return {status: 'refused', reason: 'Mounted Calculator canonical IR is invalid JSON.'}; }
+      if (source?.schema !== 'mcel.application-ir.v1' ||
+          source?.application?.appId !== 'semantic-calculator-expanded' ||
+          !Array.isArray(source?.surfaces) || source.surfaces.length !== 1)
+        return {status: 'refused', reason: 'Mounted Calculator semantic IR identity is not the promoted Calculator.'};
+      const bindings = window.McelSemanticPresentationBridge.observeRuntimePresentationTargets({ir: source, root});
+      if (!bindings.expectedControls || !bindings.expectedRegions)
+        return {status: 'refused', reason: 'Mounted Calculator has no verifiable operational nodes/regions.'};
+      if (bindings.status !== 'source-bound')
+        return {status: 'waiting', doc, reason: `Waiting for exact modern MCEL bindings: ${bindings.targets.filter(t => t.kind === 'control').length}/${bindings.expectedControls} action/form nodes; ${bindings.targets.filter(t => t.kind === 'region').length}/${bindings.expectedRegions} regions. ${bindings.reason || ''}`};
+      return {status: 'ready', doc, root, ir: source, bindingModel: 'operational-runtime'};
+    }
+    function applyMcelSemanticThemePreview(reason = 'theme-change') {
+      const frame = mcelSemanticThemeFrame();
+      if (!mcelLabState.semanticThemePreviewEnabled || !frame || frame.hidden) return {status: 'inactive'};
+      const observation = mcelSemanticThemeFrameObservation(frame);
+      if (observation.status !== 'ready') {
+        setMcelSemanticThemePreviewStatus(observation.reason);
+        return observation;
+      }
+      const theme = window.McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value);
+      const palette = window.McelSemanticThemePreview.themeTokens(mcelRuntimePreview, node => getComputedStyle(node));
+      const result = window.McelSemanticThemePreview.apply({
+        root: observation.root, ir: observation.ir, bindingModel: observation.bindingModel,
+        bridge: window.McelSemanticPresentationBridge, styleLaw: window.McelLabStyleLaw, theme, tokens: palette
+      });
+      if (result.status === 'applied-in-isolated-lab-frame') {
+        stopMcelSemanticThemeMountWatch();
+        showMcelSemanticThemeEvidence(result);
+      }
+      setMcelSemanticThemePreviewStatus(result.status === 'applied-in-isolated-lab-frame'
+        ? `Applied ${window.McelLabStyleLaw.themeLabel(theme)} to the Calculator preview. Chrome unchanged. (${reason})`
+        : `Theme preview refused: ${result.reason || result.status}`);
+      return result;
+    }
+    function watchMcelSemanticThemeMount(frame, observation) {
+      stopMcelSemanticThemeMountWatch();
+      if (observation.status !== 'waiting' || !observation.doc || !mcelLabState.semanticThemePreviewEnabled) return;
+      const doc = observation.doc;
+      const Observer = doc.defaultView?.MutationObserver;
+      if (!Observer) {
+        setMcelSemanticThemePreviewStatus('Calculator DOM readiness observation is unavailable.');
+        return;
+      }
+      // Observe only child insertion/removal, never visual/attribute mutations
+      // from the theme projection. Stop on first resolved binding or deadline.
+      mcelSemanticThemeMountObserver = new Observer(() => {
+        if (mcelSemanticThemeFrame() !== frame || frame.contentDocument !== doc ||
+            !mcelLabState.semanticThemePreviewEnabled) { stopMcelSemanticThemeMountWatch(); return; }
+        const result = applyMcelSemanticThemePreview('calculator-mount');
+        if (result.status !== 'waiting') stopMcelSemanticThemeMountWatch();
+      });
+      mcelSemanticThemeMountObserver.observe(doc, {childList: true, subtree: true});
+      mcelSemanticThemeMountDeadline = setTimeout(() => {
+        stopMcelSemanticThemeMountWatch();
+        if (mcelLabState.semanticThemePreviewEnabled && mcelSemanticThemeFrame() === frame) {
+          const result = applyMcelSemanticThemePreview('mount-timeout');
+          if (result.status === 'waiting')
+            setMcelSemanticThemePreviewStatus(`Calculator mount incomplete: ${result.reason} Theme was not applied.`);
+        }
+      }, 8000);
+    }
+    function onMcelSemanticThemeFrameLoad() {
+      if (!mcelLabState.semanticThemePreviewEnabled) return;
+      const frame = mcelSemanticThemeFrame();
+      const observation = applyMcelSemanticThemePreview('iframe-load');
+      if (observation.status === 'waiting') watchMcelSemanticThemeMount(frame, observation);
+    }
+    function enableMcelSemanticThemePreview() {
+      const frame = mcelSemanticThemeFrame();
+      if (!frame) return;
+      stopMcelSemanticThemeMountWatch();
+      mcelLabState.semanticThemePreviewEnabled = true;
+      setMcelSemanticThemePreviewMode(true);
+      document.getElementById('mcel-semantic-theme-enable').disabled = true;
+      document.getElementById('mcel-semantic-theme-disable').disabled = false;
+      setMcelSemanticThemePreviewStatus('Loading isolated Calculator; waiting for canonical semantic bindings.');
+      frame.src = '/applications/calculator?mcel-shell-child=1&mcel_lab_theme_preview=1';
+    }
+    function disableMcelSemanticThemePreview() {
+      const frame = mcelSemanticThemeFrame();
+      mcelLabState.semanticThemePreviewEnabled = false;
+      stopMcelSemanticThemeMountWatch();
+      setMcelSemanticThemePreviewMode(false);
+      if (frame) frame.src = 'about:blank';
+      document.getElementById('mcel-semantic-theme-enable').disabled = false;
+      document.getElementById('mcel-semantic-theme-disable').disabled = true;
+      setMcelSemanticThemePreviewStatus('Off. The Calculator is not mounted; the legacy site preview is active.');
+      const evidence = document.getElementById('mcel-semantic-theme-evidence-text');
+      if (evidence) evidence.textContent = 'Waiting for computed Calculator colors.';
+    }
+
+    // Presentation compatibility inspection is observational only. No modern IR is
+    // fabricated for legacy DOM roots, and a candidate IR is not production truth.
+    function renderMcelSemanticCompatibility() {
+      const bridge = window.McelSemanticPresentationBridge;
+      const sourceSelect = document.getElementById("mcel-semantic-compatibility-source");
+      const summary = document.getElementById("mcel-semantic-compatibility-summary");
+      const results = document.getElementById("mcel-semantic-compatibility-results");
+      if (!bridge || !sourceSelect || !summary || !results) return;
+      let root = null, ir = null, description = "";
+      if (sourceSelect.value === "candidate") {
+        ir = window.McelTaskManagerNotebookCandidate?.ir || null;
+        const candidateStatus = window.McelTaskManagerNotebookLab?.status?.();
+        const candidateSource = window.McelTaskManagerNotebookCandidate?.metadata;
+        const verifiedCandidate = candidateStatus?.mounted === true &&
+          ["source-bound-candidate", "semantic-application"].includes(candidateStatus.mode) &&
+          candidateStatus.source?.semanticFingerprint === candidateSource?.semanticFingerprint;
+        root = verifiedCandidate ? document.querySelector("#task-manager-app .task-mcel-notebook-lab-host") : null;
+        description = root
+          ? "Task Manager candidate IR and verified, source-bound mounted candidate DOM (not production promotion)"
+          : "Task Manager candidate IR (not a deployed runtime); no matching mounted DOM claimed";
+      } else if (sourceSelect.value === "blueprint") {
+        const blueprint = mcelBlueprintShellSelectedBlueprint(mcelBlueprintShellState().appId);
+        root = blueprint ? mcelBlueprintShellFindMountSource(blueprint) : null;
+        description = `Live ${blueprint?.label || "blueprint"} DOM; canonical application IR not supplied`;
+      } else {
+        root = mcelRuntimePreview;
+        description = "Live MCEL Lab generated preview DOM; canonical modern application IR not supplied";
+      }
+      const report = bridge.observeCompatibility({
+        ir, root,
+        themeLaw: window.McelLabStyleLaw, chromeLaw: window.McelLabChromeLaw,
+        theme: mcelThemeSelect?.value || mcelLabState.theme,
+        chrome: mcelChromeSelect?.value || mcelLabState.chrome
+      });
+      // Report output is separate from the source root and uses textContent only.
+      results.replaceChildren();
+      const append = (tag, value, parent = results) => {
+        const node = document.createElement(tag);
+        node.textContent = value;
+        parent.appendChild(node);
+        return node;
+      };
+      summary.textContent = `${description}. IR: ${report.source.status}; observed ${report.coverage.observedElements}; exact bindings ${report.coverage.exactlyBound}; unresolved ${report.coverage.unbound}; ambiguous ${report.coverage.ambiguous}.`;
+      append("p", `Theme ${report.presentation.theme.id}: ${report.presentation.theme.status}, modern mapping unresolved. Chrome ${report.presentation.chrome.id}: ${report.presentation.chrome.status}, modern mapping unresolved.`);
+      append("p", `Canonical records: ${report.source.declaredRecords}. Legacy-style elements: ${report.coverage.legacyStyleElements}. An enabled button is a DOM observation, not authorization proof.`);
+      for (const message of report.diagnostics) append("p", `Unresolved: ${message}`);
+      const examples = report.elements.filter(item => item.bindingStatus === "exact").slice(0, 12);
+      const declared = report.declaredPreview.slice(0, 12);
+      if (examples.length) {
+        append("h5", "Exact rendered bindings (first 12)");
+        for (const item of examples) {
+          append("p", `${item.tag} → ${item.bindings.map(binding => `${binding.kind}: ${binding.id}; operation=${binding.operationKind || "unknown"}; risk=${binding.risk || "unknown"}; action meaning=unresolved`).join(" | ")}`);
+        }
+      } else if (declared.length) {
+        append("h5", "Declared IR semantics (no rendered binding proven)");
+        for (const item of declared) {
+          append("p", `${item.kind}: ${item.id}; operation=${item.operationKind || "unknown"}; risk=${item.risk || "unknown"}; action meaning=unresolved`);
+        }
+      } else {
+        append("p", "No exact canonical-to-rendered binding can be demonstrated from this source.");
+      }
+      return report;
+    }
+
     function initMcelLabApp() {
       if (!mcelLabApp) return;
       initMcelBlueprintShell({mountSelected: true});
@@ -80,6 +321,7 @@
       populateMcelScenarios();
       populateMcelAcidCases();
       bindMcelLabControls();
+      renderMcelSemanticCompatibility();
       initMcelLabGrapes();
       selectMcelSourceIndex(0, "initial-selection");
       compileMcelLabSource("initial-load");
@@ -17357,8 +17599,13 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       mcelApplyTraits?.addEventListener("click", applyMcelTraitsToSelectedSourceWidget);
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
+      document.getElementById('mcel-semantic-theme-enable')?.addEventListener('click', enableMcelSemanticThemePreview);
+      document.getElementById('mcel-semantic-theme-disable')?.addEventListener('click', disableMcelSemanticThemePreview);
+      mcelSemanticThemeFrame()?.addEventListener('load', onMcelSemanticThemeFrameLoad);
       mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
       mcelChromeSelect?.addEventListener("change", () => changeMcelChrome("chrome-select"));
+      document.getElementById("mcel-semantic-compatibility-source")?.addEventListener("change", renderMcelSemanticCompatibility);
+      document.getElementById("mcel-semantic-compatibility-refresh")?.addEventListener("click", renderMcelSemanticCompatibility);
       mcelOpenEditorModal?.addEventListener("click", () => openMcelLabModal("editor"));
       mcelOpenSiteModal?.addEventListener("click", () => openMcelLabModal("site"));
       mcelOpenSmartCssModal?.addEventListener("click", () => openMcelLabModal("smart-css"));
@@ -17678,6 +17925,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       markSelectedMcelRuntimeElement();
       renderMcelSelectionStatus();
       renderMcelSiteSkeleton();
+      syncMcelRenderedSiteFrame(reason);
+      renderMcelSemanticCompatibility();
     }
 
     function serializeMcelRuntime(reason = "serialize") {
@@ -18110,6 +18359,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       renderMcelGraphReport();
       renderMcelCompilerLog();
       syncMcelRenderedSiteFrame("theme");
+      renderMcelSemanticCompatibility();
+      applyMcelSemanticThemePreview("theme-change");
     }
 
     function changeMcelChrome(reason = "chrome") {
@@ -18128,6 +18379,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       ].slice(-64);
       renderMcelCompilerLog();
       syncMcelRenderedSiteFrame("chrome");
+      renderMcelSemanticCompatibility();
     }
 
     function applyMcelRuntimeStyleLaw(reason = "style-law") {
@@ -20832,6 +21084,13 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const nonce = `${Date.now()}-${twiddle.nonce}`;
       const documentHtml = isolatedSiteDocument(runtimeHtml, {reason, nonce, hash: runtimeHash});
       const documentHash = hashMcelSiteFrameDocument(documentHtml);
+      const presentationFrame = document.querySelector("#mcel-presentation-preview-frame");
+      if (presentationFrame && presentationFrame.dataset.srcdocHash !== documentHash) {
+        presentationFrame.srcdoc = documentHtml;
+        presentationFrame.dataset.srcdocHash = documentHash;
+        presentationFrame.dataset.theme = mcelLabState.theme || "theme-machine";
+        presentationFrame.dataset.chrome = mcelLabState.chrome || "chrome-strict-hierarchy";
+      }
       frame.dataset.synced = reason;
       frame.dataset.srcdocHash = documentHash;
       frame.dataset.runtimeHash = runtimeHash;

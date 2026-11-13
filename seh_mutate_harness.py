@@ -10,6 +10,9 @@ Examples:
     python seh_mutate_harness.py inspect
     python seh_mutate_harness.py diagnostic
     python seh_mutate_harness.py activate-seh --execute-mutations --yes-i-know-this-mutates-seh
+    python seh_mutate_harness.py undeploy-seh  # preflight, no mutation
+    # After disconnecting and settling work, execute the approved deletion:
+    python seh_mutate_harness.py undeploy-seh --execute-mutations --yes-i-know-this-mutates-seh
 
     The canonical activation command is SLH-owned. It enables the existing
     deployment and the resident SLH outbound supervisor, and verifies the
@@ -43,7 +46,7 @@ class HarnessError(ValueError):
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime', 'redeploy-runtime'))
+    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime', 'redeploy-runtime', 'undeploy-seh'))
     p.add_argument('--approve-generation', type=int, help='Exact Mother generation, optional for activation')
     p.add_argument('--admin-device', help='Existing local administrator device (required if more than one local identity)')
     p.add_argument('--local-port', type=int, default=8897, help='Resident SLH loopback port')
@@ -305,6 +308,48 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     network = args.network
     if args.operation == 'list':
         return control.list(network)
+    if args.operation == 'deploy-seh' and not args.seh:
+        # Canonical SLH-owned deployment only. The legacy named-SEH branch
+        # below is retained for explicit legacy invocations, never for MCEL.
+        if any((args.host, args.slh_id, args.public_url, args.replace_existing_trust,
+                args.admin_device, args.approve_generation)):
+            raise HarnessError('Canonical SEH deploy accepts no target or signing overrides')
+        if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+            raise HarnessError('Both mutation approvals are required together')
+        from tools.seh_control import deployment_state as ds
+        from tools.seh_control import identity as identity_state
+        from tools.seh_control.git_deployment import (
+            restore_deleted_canonical_application, _undeploy_receipt)
+        from main_computer.slh.storage import slh_state_dir
+        from main_computer.slh.organization_state import read_config
+        state_dir = args.slh_state_dir or slh_state_dir()
+        _, _, document = identity_state.read(control.root, network)
+        record = identity_state.deployment_record(document, network)
+        if record is None or not record['deployment'].get('application_uuid'):
+            raise HarnessError('Canonical SEH deployment history is required before deploy; '
+                               'first-time canonical creation is not authorized by this operation')
+        prior = ds.selected(control.root, network, record)
+        former = prior['deployment']['application_uuid']
+        receipt = _undeploy_receipt(control.root, network, former)
+        if (prior['deployment'].get('undeployed') is not True or
+                receipt is None or receipt['phase'] != 'VERIFIED'):
+            raise HarnessError('A verified intentional undeploy is required for canonical redeployment')
+        if read_config(state_dir).get('seh_enabled') is True:
+            raise HarnessError('Disconnect outbound SEH before creating replacement')
+        return restore_deleted_canonical_application(
+            control.root, network,
+            execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh),
+            state_dir=state_dir)
+    if args.operation == 'undeploy-seh':
+        if any((args.seh, args.host, args.slh_id, args.public_url,
+                args.replace_existing_trust, args.admin_device, args.approve_generation)):
+            raise HarnessError('Canonical SEH undeploy accepts no alias, controller or signing overrides')
+        if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+            raise HarnessError('Both mutation approvals are required together')
+        from tools.seh_control.git_deployment import undeploy_canonical_runtime
+        return undeploy_canonical_runtime(control.root, network,
+                execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh),
+                state_dir=args.slh_state_dir)
     if args.operation == 'redeploy-runtime':
         if any((args.seh, args.host, args.slh_id, args.public_url,
                 args.replace_existing_trust, args.slh_state_dir,
@@ -647,6 +692,22 @@ def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None
             print('\nSEH_GIT_COMMIT_PUSH_COMMAND: (PowerShell; copy and paste)',
                   file=sys.stderr)
             print(git_command.strip(), file=sys.stderr, flush=True)
+        return
+    if args.operation == 'undeploy-seh':
+        # Presentation only. Running undeploy a second time here previously
+        # raised NameError after a legitimate refusal, and risked repeating a
+        # consequential operation after successful execution.
+        if result.get('status') == 'PLAN_ONLY' and result.get('ready_for_undeploy') is True:
+            command = ['python', r'.\seh_mutate_harness.py', 'undeploy-seh',
+                       '--network', args.network]
+            if args.runtime_state_root != Path('runtime/state'):
+                command.extend(('--runtime-state-root', _powershell_argument(args.runtime_state_root)))
+            if args.slh_state_dir is not None:
+                command.extend(('--slh-state-dir', _powershell_argument(args.slh_state_dir)))
+            command.extend(('--execute-mutations', '--yes-i-know-this-mutates-seh'))
+            print('\nCanonical SEH undeploy preflight passed. Only after confirming all work '
+                  'is settled, execute:', file=sys.stderr)
+            print(' '.join(command), file=sys.stderr, flush=True)
         return
     if args.operation == 'redeploy-runtime':
         if result.get('status') == 'PLAN_ONLY':

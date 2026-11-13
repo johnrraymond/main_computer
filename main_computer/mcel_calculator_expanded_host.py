@@ -27,19 +27,17 @@ ASSETS = [
     'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',
     'main_computer/web/applications/scripts/mcel-semantic-chat-console.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
+    'main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js',
+    'main_computer/web/applications/scripts/mcel-diagnostic-plugins.js',
+    'main_computer/web/applications/scripts/mcel-self-diagnosis.js',
+    'main_computer/web/applications/scripts/mcel-diagnostic-evidence.js',
+    'main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js',
     'main_computer/web/applications/scripts/mcel-calculator-expanded-port.js',
 ]
 INTENT_OPS = {
     'evaluate':('calculator-core','evaluate','evaluateCalculatorExpression'),
     'draw-graph':('calculator-core','graph','sampleGraphExpression'),
     'evaluate-symbolic':('calculator-service','mathics','evaluateMathics'),
-    'ask-symbolic-model':('calculator-service','mathics-ask','askMathicsModel'),
-    'ask-arithmetic-model':('calculator-service','arithmetic-ask','askArithmeticModel'),
-    'ask-graph-model':('calculator-service','graph-ask','askGraphModel'),
-    'ask-result-question':('calculator-service','question','askResultQuestion'),
-    'apply-arithmetic-suggestion':('calculator-core','evaluate','evaluateCalculatorExpression'),
-    'apply-graph-suggestion':('calculator-core','graph','sampleGraphExpression'),
-    'apply-symbolic-suggestion':('calculator-core','normalize-symbolic','normalizeSymbolicSuggestion'),
     'edit-graph-expression':('calculator-core','edit-graph','editGraphExpression'),
     'clear-symbolic':('calculator-core','clear-symbolic','clearSymbolic'),
     'calculator-chat':('calculator-service','chat','calculatorEmbeddedChat'),
@@ -88,6 +86,8 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
     expert_css=(repo/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-chat-console.css').read_text(encoding='utf8')
+    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-calculator-graph-inspection.css').read_text(encoding='utf8')
+    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-diagnostics-counter-widget.css').read_text(encoding='utf8')
     if '</style' in expert_css.lower():
         raise CandidateHostError('style termination')
     page = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -99,8 +99,25 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
  const status=document.getElementById('mcel-expanded-diagnostic');
  try {
    const ir=JSON.parse(document.getElementById('mcel-expanded-ir').textContent);
-   const port=McelCalculatorExpandedPort.create({core:MainComputerCalculatorCore,services:MainComputerCalculatorCapabilities});
-   const app=McelSemanticOperationalRuntime.mount(document.getElementById('mcel-expanded-root'),ir,{capabilities:port,presentation:'expert'});
+   const chatLayoutIr=JSON.parse(document.getElementById('mcel-chat-embedded-ir').textContent);
+   const port=McelCalculatorExpandedPort.create({core:MainComputerCalculatorCore,
+     services:MainComputerCalculatorCapabilities,chatLayoutIr});
+   const root=document.getElementById('mcel-expanded-root');
+   root.addEventListener('mcel:view-transition',event=>{
+     if(event.detail?.stateId!=='state:mode')return;
+     port.setCalculatorMode(event.detail?.value);
+     if(event.detail?.value!=='symbolic')return;
+     status.textContent='Loading Mathics…';
+     status.removeAttribute('data-error');
+     void port.prepareMathics().then(()=>{
+       status.textContent='Mathics ready';
+     }).catch(error=>{
+       status.dataset.error='true';
+       status.textContent='Mathics unavailable: '+String(error?.message||error);
+     });
+   });
+   const app=McelSemanticOperationalRuntime.mount(root,ir,{capabilities:port,presentation:'expert'});
+   window.MCELDiagnosticsCounterWidget?.mountSemantic(ir.application.appId,root,ir,chatLayoutIr);
    window.__mcelExpanded=Object.freeze({app,appId:ir.application.appId});
    status.textContent='Semantic Calculator ready';
  } catch(e){status.dataset.error='true';status.textContent='Calculator refused: '+String(e?.message||e);}

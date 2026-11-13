@@ -8386,3 +8386,173 @@ body.mcel-modal-open {
 #mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-planned button:disabled{opacity:.5;cursor:default}
 
 #mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-options select{padding:4px 6px;color:#f8fafc;background:#142538;border:1px solid #6483a4;border-radius:5px;}
+
+
+/* MCEL Lab workspace presentation and scroll ownership.
+   The application root owns vertical page scrolling; content cards flow at
+   their intrinsic height. A mounted app or site iframe may scroll internally. */
+#mcel-lab-app.mcel-lab-blueprint-shell {
+  block-size: 100%;
+  max-block-size: 100%;
+  min-block-size: 0;
+  grid-template-rows: none;
+  grid-auto-rows: max-content;
+  align-content: start;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+#mcel-lab-app .mcel-lab-blueprint-workbench {
+  block-size: auto;
+  min-block-size: 0;
+  overflow: visible;
+}
+#mcel-lab-app .mcel-lab-blueprint-navigation,
+#mcel-lab-app .mcel-lab-blueprint-primary,
+#mcel-lab-app .mcel-lab-blueprint-right-rail {
+  min-block-size: 0;
+  max-block-size: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+#mcel-lab-app .mcel-lab-blueprint-primary {
+  grid-template-rows: auto;
+}
+#mcel-lab-app .mcel-lab-work-area {
+  grid-template-rows: auto minmax(380px, 60dvh) auto auto;
+  overflow: visible;
+}
+#mcel-lab-app .mcel-lab-targets-card,
+#mcel-lab-app .mcel-lab-targets-card .mcel-lab-blueprint-list,
+#mcel-lab-app .mcel-lab-registry-card .mcel-lab-blueprint-facts,
+#mcel-lab-app .mcel-lab-aspect-card .mcel-lab-blueprint-pills {
+  max-block-size: none;
+  overflow: visible;
+}
+#mcel-lab-app .mcel-lab-targets-card {grid-template-rows: auto auto;}
+#mcel-lab-app .mcel-lab-advanced-legacy .mcel-lab-legacy-proof-surface {
+  max-block-size: none;
+  overflow: visible;
+}
+#mcel-lab-app .mcel-lab-presentation-workspace {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+#mcel-lab-app .mcel-lab-presentation-head,
+#mcel-lab-app .mcel-lab-presentation-preview {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 14px;
+  background: rgba(5, 12, 24, 0.88);
+}
+#mcel-lab-app .mcel-lab-presentation-head h3 {
+  margin: 0;
+  color: var(--gold, #f6c75b);
+}
+#mcel-lab-app .mcel-lab-presentation-head p:last-child {margin-bottom: 0;}
+#mcel-lab-app .mcel-lab-presentation-preview-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+#mcel-lab-app .mcel-lab-presentation-preview-heading h4 {margin: 0;}
+#mcel-lab-app .mcel-lab-presentation-preview-heading span {color: var(--muted, #c9c0aa);}
+#mcel-presentation-preview-frame {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: clamp(390px, 64dvh, 720px);
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 10px;
+  background: #050605;
+}
+#mcel-lab-app:not([data-mcel-workspace-view="presentation"]) > #mcel-lab-presentation-workspace {display:none;}
+#mcel-lab-app:not([data-mcel-workspace-view="blueprint"]) > :is(
+  .mcel-lab-blueprint-topbar,
+  .mcel-lab-blueprint-workbench,
+  .mcel-lab-blueprint-status,
+  .mcel-lab-advanced-legacy
+) {display:none;}
+#mcel-lab-app:not([data-mcel-workspace-view="lifecycle"]) > #mcel-lifecycle-acid {display:none;}
+@container (max-width: 1100px) {
+  #mcel-lab-app .mcel-lab-work-area {grid-template-rows: auto minmax(380px, 60dvh) auto auto;}
+}
+
+/* Read-only semantic presentation evidence. No styles are applied to observed apps. */
+#mcel-lab-app .mcel-semantic-compatibility {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 14px;
+  background: rgba(5, 12, 24, 0.88);
+}
+#mcel-lab-app .mcel-semantic-compatibility-head {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+#mcel-lab-app .mcel-semantic-compatibility-head > div {flex: 1 1 260px;}
+#mcel-lab-app .mcel-semantic-compatibility-head h4 {margin: 0;}
+#mcel-lab-app .mcel-semantic-compatibility-head p {margin: 6px 0 0;}
+#mcel-lab-app .mcel-semantic-compatibility-head label {display: grid;gap: 5px;min-width: min(100%, 240px);}
+#mcel-lab-app .mcel-semantic-compatibility-results {min-width: 0; overflow-wrap: anywhere;}
+#mcel-lab-app .mcel-semantic-compatibility-results p {margin: 6px 0;font-size: 0.88rem;}
+#mcel-lab-app .mcel-semantic-compatibility-results h5 {margin: 12px 0 5px;}
+
+/* Opt-in semantic theme experiment: preview frame owns its own scroll surface. */
+#mcel-lab-app .mcel-semantic-theme-experiment {
+  display: grid; gap: 10px; min-width: 0; padding: 14px;
+  border: 1px solid var(--line, #555); border-radius: 10px;
+}
+#mcel-lab-app .mcel-semantic-theme-experiment-heading {
+  display: flex; align-items: start; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+#mcel-lab-app .mcel-semantic-theme-experiment-heading h4 {margin: 0;}
+#mcel-lab-app .mcel-semantic-theme-experiment-heading p {margin: 6px 0;}
+#mcel-lab-app .mcel-semantic-theme-experiment-actions {display: flex; gap: 8px; flex-wrap: wrap;}
+#mcel-lab-app #mcel-semantic-theme-status {display: block; font-size: 0.84rem; overflow-wrap: anywhere;}
+#mcel-lab-app #mcel-semantic-theme-frame {
+  display: block; width: 100%; height: clamp(350px, 65vh, 750px);
+  border: 1px solid var(--line, #555); min-width: 0;
+}
+#mcel-lab-app #mcel-semantic-theme-frame[hidden] {display: none;}
+
+/* Lab active-preview switch: never show the legacy site and Calculator side by side. */
+#mcel-lab-app .mcel-lab-presentation-stage {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+#mcel-lab-app #mcel-legacy-site-preview[hidden],
+#mcel-lab-app #mcel-semantic-theme-frame[hidden],
+#mcel-lab-app #mcel-semantic-theme-evidence[hidden] {display: none !important;}
+#mcel-lab-app .mcel-semantic-theme-experiment {background: rgba(5, 12, 24, 0.88);}
+#mcel-lab-app .mcel-semantic-theme-evidence {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  font-size: 0.84rem; color: var(--muted, #c9c0aa);
+}
+#mcel-lab-app .mcel-semantic-theme-swatch {
+  flex: 0 0 26px; width: 26px; height: 26px;
+  border: 1px solid var(--line, #555); border-radius: 6px;
+}
+#mcel-lab-app .mcel-semantic-theme-chrome-notice {
+  margin-inline-start: auto;
+  font-size: 0.81rem;
+}
+#mcel-lab-app #mcel-semantic-theme-frame {
+  width: 100%; max-width: 960px;
+  height: clamp(380px, 56dvh, 610px);
+  justify-self: center;
+  background: #101820;
+  border-radius: 10px;
+}

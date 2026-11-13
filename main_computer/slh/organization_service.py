@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import psutil
+import re
 import signal
 from pathlib import Path
 import ssl
@@ -20,13 +21,68 @@ from urllib.parse import parse_qs, urlsplit
 from .api import SLHAPI
 from .authority import SLHAuthority, SLHError
 from .managed_gateway import SLHManagedGateway, SLHMarketplaceProxy, transport_identity
-from .organization_state import read_config
+from .organization_state import read_config, save_config, OrganizationConfigError
 from .organization_process import registered_process
 from .storage import slh_state_dir
 from .marketplace_auto import AutomaticMarketplace, read_settings
 from .organization_wallet import OrganizationWallet
 from .private_requests import PrivateRequests
 from .pinky_sweep import PinkySweep
+
+
+_SEH_OPERATION_LOCK = threading.RLock()
+
+# SEH carries TLS ciphertext; admission is therefore enforced by ORG-SLH on
+# the separate loopback listener, *before* normal API dispatch or authorization.
+# It is deliberately independent of the MCEL notebook/client allowlist.
+_SEH_ID = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}'
+_SEH_REQUEST_ID = r'[0-9a-f]{32}'
+_SEH_ADMIN_EXACT = frozenset({
+    ('GET', '/v1/org/identity'), ('GET', '/v1/org/status'),
+    ('POST', '/v1/auth/challenge'), ('POST', '/v1/auth/verify'),
+    ('GET', '/v1/auth/session'), ('POST', '/v1/auth/logout'),
+    ('GET', '/v1/enrollment/admins'), ('POST', '/v1/enrollment/requests'),
+    ('POST', '/v1/enrollment/approvals'),
+    ('GET', '/v1/admin/devices'), ('GET', '/v1/admin/devices/trash'),
+    ('POST', '/v1/admin/devices/trash/empty'),
+    ('GET', '/v1/admin/enrollments'),
+    ('GET', '/v1/admin/policies'), ('PATCH', '/v1/admin/policies'),
+})
+_SEH_ADMIN_VARIABLE = tuple((method, re.compile(pattern + r'\Z')) for method,pattern in (
+    ('GET', rf'/v1/enrollment/requests/{_SEH_REQUEST_ID}/status'),
+    ('GET', rf'/v1/admin/devices/{_SEH_ID}'),
+    ('PATCH', rf'/v1/admin/devices/{_SEH_ID}'),
+    ('POST', rf'/v1/admin/devices/{_SEH_ID}/revoke'),
+    ('POST', rf'/v1/admin/devices/{_SEH_ID}/reactivate'),
+    ('POST', rf'/v1/admin/devices/{_SEH_ID}/remove'),
+    ('POST', rf'/v1/admin/enrollments/{_SEH_REQUEST_ID}/deny'),
+    ('POST', rf'/v1/admin/enrollments/{_SEH_REQUEST_ID}/keys'),
+))
+
+
+def seh_identity_operation_allowed(method: str, path: str) -> bool:
+    return ((method, path) in _SEH_ADMIN_EXACT or
+            any(method == verb and pattern.fullmatch(path)
+                for verb, pattern in _SEH_ADMIN_VARIABLE))
+
+
+def make_seh_identity_listener(*, authority, api, tls_context, fingerprint):
+    """Loopback-only, TLS-only SEH identity API; no separate authority/store.
+
+    Its port is ephemeral, passed directly to the resident gateway in memory;
+    it is NEVER a configurable remote destination or public-facing listener.
+    """
+    listener = OrganizationHTTPServer(('127.0.0.1', 0), OrganizationHTTPHandler)
+    try:
+        listener.socket = tls_context.wrap_socket(listener.socket, server_side=True)
+        listener.authority = authority
+        listener.api = api
+        listener.fingerprint = fingerprint
+        listener.seh_identity_only = True
+        return listener
+    except BaseException:
+        listener.server_close()
+        raise
 
 
 class OrganizationHTTPServer(ThreadingHTTPServer):
@@ -49,6 +105,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
     def _dispatch(self):
         path = self.path.split('?', 1)[0]
         method = self.command
+        restricted = getattr(self.server, 'seh_identity_only', False)
+        if restricted and (self.path != path or
+                           not seh_identity_operation_allowed(method, path)):
+            self._respond(403, {'error': {'code': 'SEH_OPERATION_NOT_ALLOWED'}})
+            return
         if self.headers.get('Origin'):
             self._respond(403, {'error': {'code': 'CROSS_ORIGIN_DENIED'}})
             return
@@ -71,12 +132,26 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self._respond(400, {'error': {'code': 'INVALID_JSON_OBJECT'}})
             return
+        # Never allow the general policies API to change physical inspection
+        # or future policies over the relay. Only the single Trash retention
+        # boolean may be written through this listener.
+        if restricted and method == 'PATCH' and path == '/v1/admin/policies' and (
+                set(body) != {'remove_trash_after_30_days'} or
+                type(body.get('remove_trash_after_30_days')) is not bool):
+            self._respond(403, {'error': {'code': 'SEH_OPERATION_NOT_ALLOWED'}})
+            return
         auth = self.headers.get('Authorization', '')
         token = auth[7:] if auth.startswith('Bearer ') else ''
         authority = self.server.authority
         if method == 'GET' and path == '/v1/org/identity':
             self._respond(200, {'schema': 'main-computer.slh-org-identity.v1',
                                 'tls_sha256': self.server.fingerprint})
+            return
+        if method == 'GET' and path == '/v1/org/status' and restricted:
+            # The Remote SEH handshake needs readiness, not host, scheduler,
+            # marketplace, lifecycle, or other operational diagnostics.
+            self._respond(200, {'schema': 'main-computer.slh-org-status.v1',
+                                'operational': True})
             return
         if method == 'GET' and path == '/v1/org/status':
             supervisor = (self.server.gateway.seh_connection
@@ -111,6 +186,70 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                 'trash_retention_last_error': getattr(self.server, 'trash_retention_last_error', None),
                                 'trash_retention_last_removed_count': getattr(self.server, 'trash_retention_last_removed_count', 0)})
             return
+        # Administrative lifecycle applies to the resident SLH-owned outbound
+        # SEH connection, not to the external Coolify application's process.
+        # The SEH has no administrator database or organization authority.
+        if path == '/v1/org/admin/seh/connection' and method in ('GET', 'POST'):
+            try:
+                identity = authority.authenticate(token, admin=True)
+            except SLHError as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            cfg = read_config(self.server.state_dir)
+            gateway = self.server.gateway
+            if method == 'GET':
+                self._respond(200, self._seh_connection_status(cfg))
+                return
+            if set(body) != {'action'} or body['action'] not in ('start', 'stop', 'restart'):
+                self._respond(400, {'error': {'code': 'INVALID_SEH_CONNECTION_OPERATION'}})
+                return
+            action = body['action']
+            if not cfg['configured'] or not cfg['enabled'] or not cfg['workers_enabled'] or gateway is None:
+                self._respond(409, {'error': {'code': 'SEH_RESIDENT_GATEWAY_NOT_ENABLED'}})
+                return
+            # No arbitrary remote URL, target, identity, or Coolify credential
+            # can be supplied by this API. The existing canonical resolver
+            # checks the selected SLH deployment before each connection start.
+            try:
+                with getattr(self.server, 'seh_operation_lock', _SEH_OPERATION_LOCK):
+                    cfg = read_config(self.server.state_dir)
+                    if action == 'stop':
+                        # Persist first, acknowledge the caller, then tear
+                        # down the tunnel. Stopping it here would sever a
+                        # request made *through* this very SEH before the
+                        # HTTP response reached the administrator.
+                        save_config(self.server.state_dir, {**cfg, 'seh_enabled': False})
+                        response = self._seh_connection_status(read_config(self.server.state_dir))
+                        response['status'] = 'DISCONNECTION_SCHEDULED'
+                    elif action == 'restart':
+                        if not cfg['seh_enabled']:
+                            self._respond(409, {'error': {'code':'SEH_CONNECTION_NOT_ENABLED'}})
+                            return
+                        response = self._seh_connection_status(cfg)
+                        response['status'] = 'RESTART_SCHEDULED'
+                    else:
+                        if not cfg['seh_enabled']:
+                            save_config(self.server.state_dir, {**cfg, 'seh_enabled': True})
+                        try:
+                            gateway.allow_seh = True
+                            gateway.start_canonical_seh()
+                        except (RuntimeError, ValueError, OSError):
+                            if not cfg['seh_enabled']:
+                                save_config(self.server.state_dir, cfg)
+                                gateway.allow_seh = False
+                            raise
+                        self.server.seh_enabled = True
+                        response = self._seh_connection_status(read_config(self.server.state_dir))
+                        response['status'] = 'CONNECTION_STARTED'
+                self._respond(200, response)
+                if action == 'stop':
+                    threading.Timer(.3, _refresh_outbound_seh, args=(self.server,)).start()
+                elif action == 'restart':
+                    threading.Timer(.3, _restart_outbound_seh, args=(self.server,)).start()
+            except (OSError, RuntimeError, ValueError, OrganizationConfigError) as exc:
+                self._respond(409, {'error': {'code': 'SEH_CONNECTION_OPERATION_REFUSED',
+                                               'error_type': type(exc).__name__}})
+            return
         if method == 'POST' and path == '/v1/org/admin/seh/activate':
             try:
                 authority.authenticate(token, admin=True)
@@ -122,8 +261,9 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                 self._respond(409, {'error': {'code': 'SEH_RESIDENT_GATEWAY_NOT_ENABLED'}})
                 return
             try:
-                self.server.gateway.allow_seh = True
-                self.server.gateway.start_canonical_seh()
+                with getattr(self.server, 'seh_operation_lock', _SEH_OPERATION_LOCK):
+                    self.server.gateway.allow_seh = True
+                    self.server.gateway.start_canonical_seh()
             except (RuntimeError, ValueError, OSError) as exc:
                 self._respond(409, {'error': {'code': 'SEH_CANONICAL_CONNECTION_REFUSED',
                                               'error_type': type(exc).__name__}})
@@ -214,6 +354,28 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                 return
             self._respond(405, {'error': {'code': 'METHOD_NOT_ALLOWED'}})
             return
+        # Full Coolify lifecycle management is available only over the DIRECT
+        # TLS ORG-SLH channel. The distinct SEH identity listener rejects this
+        # path before reaching this handler, even for a valid administrator.
+        if path == '/v1/org/admin/seh/deployment' or path.startswith('/v1/org/admin/seh/deployment/'):
+            if self.path != path:
+                self._respond(400, {'error': {'code': 'SEH_MANAGEMENT_QUERY_NOT_ALLOWED'}})
+                return
+            from .seh_deployment_management import management_request, SEHManagementRefused
+            try:
+                authority.authenticate(token, admin=True)
+                manager = getattr(self.server, 'seh_deployment_manager', None)
+                if manager is None:
+                    raise SEHManagementRefused('SEH_MANAGEMENT_UNAVAILABLE', 503)
+                result = management_request(manager, method, path, body)
+            except SLHError as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            except SEHManagementRefused as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            self._respond(200, result)
+            return
         # All normal organizational operations use SLHAPI, sharing its
         # authentication/permissions. Never dispatch bootstrap or localhost
         # endpoints through this network-facing transport.
@@ -230,6 +392,18 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
             if self.server.marketplace_controller:
                 self.server.marketplace_controller.wake()
         self._respond(status, response)
+
+    def _seh_connection_status(self, cfg):
+        connection = (self.server.gateway.seh_connection if self.server.gateway else None)
+        snapshot = (connection.connection_diagnostics() if connection is not None else {})
+        return {'schema': 'main-computer.slh-seh-connection.v1',
+                'configuration_owner': 'org-slh',
+                'relay_role': 'opaque-passthrough',
+                'connection_enabled': cfg['seh_enabled'],
+                'resident_gateway_ready': self.server.gateway is not None,
+                'connected': snapshot.get('connected') is True,
+                'phase': snapshot.get('phase', 'NOT_STARTED'),
+                'last_error_class': snapshot.get('last_error_class')}
 
     def _marketplace_status(self):
         market = self.server.marketplace
@@ -259,6 +433,29 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 
+def _restart_outbound_seh(server) -> None:
+    """After HTTP acknowledgement, restart only this SLH's relay supervisor.
+
+    The ORG-SLH API and Worker listener remain live. The ordinary resident
+    watcher will retry a failed reconnect without a second authority path.
+    """
+    if server.gateway is None or not server.workers_enabled:
+        return
+    try:
+        with getattr(server, 'seh_operation_lock', _SEH_OPERATION_LOCK):
+            if not read_config(server.state_dir)['seh_enabled']:
+                return
+            previous = server.gateway.seh_connection
+            if previous is not None:
+                previous.stop()
+                server.gateway.seh_connection = None
+            server.gateway.allow_seh = True
+            server.gateway.start_canonical_seh()
+            server.seh_enabled = True
+    except (OSError, RuntimeError, ValueError) as exc:
+        server.seh_activation_error = type(exc).__name__
+
+
 def _refresh_outbound_seh(server) -> None:
     """Honor Local Service-approved SEH enablement in the existing child.
 
@@ -270,13 +467,20 @@ def _refresh_outbound_seh(server) -> None:
     if server.gateway is None or not server.workers_enabled:
         return
     try:
-        cfg = read_config(server.state_dir)
-        if not cfg['seh_enabled']:
-            return
-        if server.gateway.seh_connection is None:
-            server.gateway.allow_seh = True
-            server.gateway.start_canonical_seh()
-        server.seh_enabled = True
+        with getattr(server, 'seh_operation_lock', _SEH_OPERATION_LOCK):
+            cfg = read_config(server.state_dir)
+            if not cfg['seh_enabled']:
+                connection = server.gateway.seh_connection
+                if connection is not None:
+                    connection.stop()
+                    server.gateway.seh_connection = None
+                server.gateway.allow_seh = False
+                server.seh_enabled = False
+                return
+            if server.gateway.seh_connection is None:
+                server.gateway.allow_seh = True
+                server.gateway.start_canonical_seh()
+            server.seh_enabled = True
         server.seh_activation_error = None
     except (RuntimeError, ValueError, OSError) as exc:
         # Keep the resident child and existing Worker services running. The
@@ -336,15 +540,19 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     tls_context, fingerprint = transport_identity(state_dir)
     server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+    server.seh_identity_only = False
     server.authority = authority
     server.state_dir = Path(state_dir)
     server.wallet_service = OrganizationWallet(state_dir)
+    from .seh_deployment_management import SLHSEHDeploymentManager
+    server.seh_deployment_manager = SLHSEHDeploymentManager(state_dir=state_dir)
     server.api = SLHAPI(authority, wallet_service=server.wallet_service,
                         root_api_enabled=True)
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']
     server.seh_enabled = config['seh_enabled']
     server.seh_activation_error = None
+    server.seh_operation_lock = threading.RLock()
     server.marketplace = None
     server.marketplace_controller = None
     server.gateway = None
@@ -375,10 +583,21 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
         signal.signal(signal.SIGINT, handle_shutdown)
     gateway = None
     gateway_thread = None
+    seh_admin_server = None
+    seh_admin_thread = None
     try:
         if config['workers_enabled']:
+            seh_admin_server = make_seh_identity_listener(
+                authority=authority, api=server.api,
+                tls_context=tls_context, fingerprint=fingerprint)
+            seh_admin_thread = threading.Thread(
+                target=seh_admin_server.serve_forever,
+                kwargs={'poll_interval': 0.2}, daemon=True,
+                name='slh-seh-identity-listener')
+            seh_admin_thread.start()
             gateway = SLHManagedGateway(authority, host=config['host'], port=config['worker_port'],
-                                        allow_seh=config['seh_enabled'])
+                                        allow_seh=config['seh_enabled'],
+                                        seh_admin_target=('127.0.0.1', seh_admin_server.server_port))
             gateway_thread = gateway.start_background()
             # The worker gateway must actually bind before the Organization API
             # announces readiness. A failed bind aborts the whole child.
@@ -428,6 +647,11 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
             server.marketplace.close()
         if gateway:
             gateway.stop()
+        if seh_admin_server is not None:
+            seh_admin_server.shutdown()
+            seh_admin_server.server_close()
+            if seh_admin_thread is not None:
+                seh_admin_thread.join(timeout=3)
     return 0
 
 

@@ -442,7 +442,8 @@ class ManagedScheduler:
 class SLHManagedGateway:
     """Socket server: TLS-pinned clients, existing SLH Known Device verification."""
     def __init__(self, authority: SLHAuthority, *, host='127.0.0.1', port=DEFAULT_MANAGED_PORT,
-                 seh_lab_identity=None, seh_lab_id=None, allow_seh=True):
+                 seh_lab_identity=None, seh_lab_id=None, allow_seh=True,
+                 seh_admin_target=None):
         self.authority=authority
         self.scheduler=ManagedScheduler(policy_store=SchedulerPolicyStore(authority),is_authorized=lambda did: any(
             d['id']==did and d['status']=='active' and d['role']=='worker'
@@ -457,6 +458,7 @@ class SLHManagedGateway:
         self.seh_connection=None
         self._seh_start_lock=threading.RLock()
         self.allow_seh=allow_seh
+        self.seh_admin_target=seh_admin_target
         # Lab-only key injection avoids persisting the real organization's key
         # in disposable lab state; normal gateways load their own state key.
         self._seh_lab_identity=seh_lab_identity
@@ -662,6 +664,7 @@ class SLHManagedGateway:
                 # Explicit local lab configuration remains authoritative.
                 self.seh_connection=SEHAutoConnection(
                     self.authority.directory, gateway_port=self.port,
+                    admin_target=self.seh_admin_target,
                     identity_private_key=self._seh_lab_identity, lab_id=self._seh_lab_id).start()
             elif (self.allow_seh and settings is None and
                   (self.authority.directory / 'seh-service-signing-key.pem').is_file()):
@@ -671,6 +674,7 @@ class SLHManagedGateway:
                 from main_computer.slh.seh_canonical_connection import resolve_canonical_connection
                 self.seh_connection=SEHAutoConnection(
                     self.authority.directory, gateway_port=self.port,
+                    admin_target=self.seh_admin_target,
                     settings_resolver=resolve_canonical_connection).start()
             try:
                 server.serve_forever()

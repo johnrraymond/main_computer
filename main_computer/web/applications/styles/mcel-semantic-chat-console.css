@@ -150,3 +150,53 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Generic conversational projection of a notebook-backed embedded Chat Console.
+ * The same persistent thread can be expanded to its full notebook controls. */
+[data-mcel-embedded-chat] [data-chat-console-layout="conversation"] {flex:1 1 auto;min-height:0;height:100%;display:grid;grid-template-rows:minmax(0,1fr);padding:8px;background:#0c171e;border-color:#29495c;}
+[data-chat-console-layout="conversation"] > .chat-console-header {display:none;}
+[data-chat-console-layout="conversation"] .chat-console-thread-layout {min-height:0;grid-template-columns:minmax(0,1fr);}
+[data-chat-console-layout="conversation"] .chat-thread-workspace {min-height:0;display:flex;flex-direction:column;position:relative;background:#0b171f;border:0;}
+[data-chat-console-layout="conversation"] .chat-thread-current-bar {padding:6px 10px;flex:none;}
+[data-chat-console-layout="conversation"] .chat-conversation-switch {flex:none;align-self:flex-end;margin:2px 9px 8px;background:#213846;border:1px solid #38586a;color:#e1e9eb;border-radius:6px;padding:6px 10px;font-size:.8rem;cursor:pointer;}
+[data-chat-console-layout="conversation"] [data-chat-console-embedded-notebook] {flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:14px;overflow-y:auto;overscroll-behavior:contain;background:transparent;padding:10px 12px;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role] {flex:none;max-width:88%;width:fit-content;border:1px solid #304e5f;border-radius:12px;background:#172b38;margin:0;padding:10px 12px;min-height:0;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] {align-self:flex-end;background:#224158;max-width:83%;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="assistant"] {align-self:flex-start;max-width:90%;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="tool"] {align-self:stretch;max-width:100%;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] .chat-cell-tabs,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] .chat-cell-controls,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] .chat-rag-at-controls,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] .chat-cell-attachments,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-cell-tabs,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-rag-at-controls {display:none!important;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="user"] textarea {background:transparent!important;border:0!important;color:#e4f0f3!important;resize:none;box-shadow:none!important;padding:0!important;pointer-events:none;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] {margin-top:auto;position:sticky;bottom:0;z-index:2;align-self:stretch;max-width:100%;width:100%;padding:8px 10px;background:#112633;border-color:#456779;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] textarea {background:#0a1822!important;color:#f3f5f6!important;min-height:42px;max-height:140px;padding:10px!important;border-radius:7px;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-cell-controls {display:flex;justify-content:flex-end;align-items:center;gap:6px;padding-top:5px;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-cell-controls > button:nth-child(n+3) {display:none;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-cell-controls > button:first-child {background:#b6d1dd;color:#12232f;border-color:#b6d1dd;font-weight:700;}
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="assistant"] .chat-cell-tabs,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="assistant"] .chat-cell-controls {display:none!important;}
+/* The Notebook tools switch restores the original shared notebook rendering. */
+[data-chat-console-embed][data-chat-conversation-notebook="1"] [data-chat-console-layout="conversation"] [data-chat-console-embedded-notebook] {display:grid;overflow:auto;}
+[data-chat-console-embed][data-chat-conversation-notebook="1"] [data-chat-console-layout="conversation"] [data-chat-conversation-role] {width:auto;max-width:none;align-self:stretch;border:0;padding:0;background:transparent;position:static;}
+@container mcel-chat-host (max-width:560px) {
+  [data-chat-console-layout="conversation"] [data-chat-console-embedded-notebook] {padding:6px;gap:8px;}
+  [data-chat-console-layout="conversation"] [data-chat-conversation-role] {max-width:95%;}
+}
+/* Let the conversation composer use the actual notebook column instead of
+ * inheriting the cell editor's intrinsic width. */
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] .chat-cell-content,
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] [data-mcel-chat-role="cell-body"],
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] [data-mcel-chat-role="cell-editor"],
+[data-chat-console-layout="conversation"] [data-chat-conversation-role="composer"] textarea {
+  min-width:0;width:100%;max-width:100%;box-sizing:border-box;
+}
+[data-chat-console-layout="conversation"] .chat-conversation-switch {width:max-content;max-width:100%;}
+/* The canonical notebook cell may select a two-track grid for richer cell
+ * tools. Conversation bodies occupy both tracks while retaining the authored
+ * cell grid and its canonical layout authority. */
+[data-chat-console-layout="conversation"] [data-chat-conversation-role] > .chat-cell-content {
+  grid-column:1 / -1;min-width:0;width:100%;max-width:100%;
+}

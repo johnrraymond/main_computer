@@ -41,7 +41,12 @@ from main_computer.energy_chain import EnergyChainClient
 from main_computer.git_tools import GitToolsService
 from main_computer.governance import bridge_governance_status
 from main_computer.heartbeat import HeartbeatConfig, ensure_heartbeat_service
-from main_computer.mathics_bridge import evaluate_mathics_expression
+from main_computer.mathics_bridge import (
+    MathicsImportFailure,
+    MathicsSessionFailure,
+    evaluate_mathics_expression,
+    get_mathics_session,
+)
 from main_computer.chat_console import (
     ai_response_to_parts,
     build_notebook_ai_messages,

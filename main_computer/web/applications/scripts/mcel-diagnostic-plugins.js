@@ -471,3 +471,226 @@
   startup.ready = Promise.all(jobs).then(() => ({armedAt:startup.armedAt, states:{...startup.states}}));
   Object.freeze(window.MCELDiagnosticPlugins);
 })();
+
+/* MCEL console snapshot: copy(debug()) or copy(mcelDebug()).
+ * Read-only; no listeners, probes, navigation, DOM writes, application operations,
+ * access to input values, local storage, cookies, URLs with query strings, or networking.
+ * Installed in both the Applications shell and the hosted application document.
+ */
+(function (host) {
+  'use strict';
+  const schema = 'mcel.console-debug.v1';
+  const maxDepth = 4;
+  const maxFrames = 24;
+  const text = (value, limit = 200) => String(value ?? '').slice(0, limit);
+  const exists = obj => obj !== null && obj !== undefined;
+  const count = (doc, selector) => {
+    try { return doc.querySelectorAll(selector).length; }
+    catch (_) { return null; }
+  };
+  function pathOnly(loc) {
+    try { return text(loc?.pathname || '', 180); }
+    catch (_) { return '(unavailable)'; }
+  }
+  function frameMetadata(frame) {
+    const sandbox = frame.getAttribute('sandbox');
+    const sandboxTokens = sandbox === null ? [] : sandbox.toLowerCase().split(/\s+/).filter(Boolean);
+    const srcdoc = frame.hasAttribute('srcdoc');
+    const rawSrc = frame.getAttribute('src') || '';
+    return {
+      id: text(frame.id || '(anonymous)', 100),
+      title: text(frame.getAttribute('title') || '', 100),
+      sourceType: srcdoc ? 'srcdoc' : rawSrc.startsWith('about:') ? 'about' : rawSrc ? 'url' : 'unset',
+      hidden: !!frame.hidden,
+      sandboxed: sandbox !== null,
+      allowsScripts: sandbox === null || sandboxTokens.includes('allow-scripts'),
+      allowsSameOrigin: sandbox === null || sandboxTokens.includes('allow-same-origin'),
+      // Some legacy rendered-site previews deliberately disallow scripts.
+      sandboxBlocksScripts: sandbox !== null && !sandboxTokens.includes('allow-scripts')
+    };
+  }
+  function safeStatus(doc, id) {
+    const element = doc.getElementById(id);
+    return element ? text(element.textContent.trim(), 320) : null;
+  }
+  function readTheme(win, doc) {
+    const frame = doc.getElementById('mcel-semantic-theme-frame');
+    const lab = doc.getElementById('mcel-lab-app');
+    if (!frame && !lab) return null;
+    const source = win.McelLabCanonicalPresentationSources?.calculator;
+    const selected = doc.getElementById('mcel-theme-select');
+    const runtime = win.mcelRuntimePreview || doc.querySelector('.mcel-runtime-preview');
+    const requiredTokens = [
+      '--mcel-theme-card', '--mcel-theme-ink', '--mcel-theme-muted',
+      '--mcel-theme-accent', '--mcel-theme-accent-2', '--mcel-theme-line'
+    ];
+    let tokens = null;
+    if (runtime && typeof win.getComputedStyle === 'function') {
+      try {
+        const style = win.getComputedStyle(runtime);
+        tokens = Object.fromEntries(requiredTokens.map(key => [key, text(style.getPropertyValue(key).trim(), 100)]));
+      } catch (_) { tokens = null; }
+    }
+    const f = frame ? frameMetadata(frame) : null;
+    let calculatorFrame = null, mountedSource = null;
+    if (frame) {
+      try {
+        const childDoc = frame.contentDocument;
+        if (childDoc) {
+          const expanded = childDoc.getElementById('mcel-expanded-ir');
+          if (expanded) {
+            try {
+              const ir = JSON.parse(expanded.textContent);
+              if (ir?.schema === 'mcel.application-ir.v1' &&
+                  ir?.application?.appId === 'semantic-calculator-expanded') mountedSource = ir;
+            } catch (_) { /* Invalid mounted IR must never be claimed as canonical. */ }
+          }
+          const modernRoot = childDoc.getElementById('mcel-expanded-root');
+          const legacyRoot = childDoc.getElementById('calculator-app');
+          const modern = Boolean(modernRoot && mountedSource);
+          calculatorFrame = {
+            accessible: true,
+            readyState: text(childDoc.readyState, 40),
+            mountModel: modern ? 'promoted-operational-runtime' :
+              legacyRoot ? 'original-host' :
+              childDoc.querySelector('#mcel-applications-shell,.mcel-applications-shell') ? 'applications-shell' : 'unresolved',
+            mountedAppId: modern ? 'semantic-calculator-expanded' : legacyRoot ? 'calculator' : null,
+            canonicalRootFound: modern || !!legacyRoot,
+            canonicalControls: modern ? count(modernRoot,'[data-mcel-node][data-node-kind="control"], [data-mcel-node][data-node-kind="form"]') :
+              count(childDoc, '#calculator-app [data-mcel-control]'),
+            canonicalRegions: modern ? count(modernRoot,'[data-mcel-region]') :
+              count(childDoc, '#calculator-app [data-mcel-region-id]'),
+            themeStyleInstalled: !!childDoc.getElementById('mcel-lab-semantic-theme-color-only')
+          };
+        } else calculatorFrame = {accessible: false, reason: 'origin-or-sandbox-boundary'};
+      } catch (_) { calculatorFrame = {accessible: false, reason: 'origin-or-sandbox-boundary'}; }
+    }
+    const previewEnabled = Boolean(win.mcelLabState?.semanticThemePreviewEnabled) ||
+      (!!frame && !frame.hidden && frame.getAttribute('src') !== 'about:blank');
+    const issues = [];
+    if (previewEnabled) {
+      if (!frame) issues.push('calculator-preview-frame-missing');
+      else {
+        if (f.sandboxBlocksScripts) issues.push('calculator-preview-sandbox-blocks-scripts');
+        if (!calculatorFrame?.accessible) issues.push('calculator-preview-inaccessible');
+        else if (calculatorFrame.mountModel === 'applications-shell')
+          issues.push('calculator-preview-shell-instead-of-native-child');
+        else if (!calculatorFrame.canonicalRootFound)
+          issues.push('calculator-preview-canonical-root-missing');
+        else if (!calculatorFrame.themeStyleInstalled)
+          issues.push('calculator-theme-style-not-installed');
+      }
+      const selectedSource = mountedSource || source;
+      if (selectedSource?.schema !== 'mcel.application-ir.v1' ||
+          !['calculator','semantic-calculator-expanded'].includes(selectedSource?.application?.appId))
+        issues.push('calculator-canonical-source-missing-or-invalid');
+      if (!win.McelSemanticPresentationBridge) issues.push('semantic-presentation-bridge-missing');
+      if (!win.McelSemanticThemePreview) issues.push('semantic-theme-engine-missing');
+      if (!win.McelLabStyleLaw) issues.push('theme-law-missing');
+      if (tokens && Object.values(tokens).some(v => !v)) issues.push('theme-tokens-incomplete');
+    }
+    const activeSource = mountedSource || source;
+    return {
+      previewEnabled,
+      status: safeStatus(doc, 'mcel-semantic-theme-status'),
+      computedColorEvidence: safeStatus(doc, 'mcel-semantic-theme-evidence-text'),
+      selectedTheme: text(selected?.value || win.mcelLabState?.theme || '', 100),
+      selectedChrome: text(doc.getElementById('mcel-chrome-select')?.value || '', 100),
+      chromeProjection: 'observational-only-for-modern-mcel',
+      canonicalSource: {
+        present: !!activeSource,
+        schema: text(activeSource?.schema || '', 90),
+        appId: text(activeSource?.application?.appId || '', 90),
+        rootSelector: text(activeSource?.surfaces?.[0]?.root ||
+          (mountedSource ? '#mcel-expanded-root (runtime mount)' : ''), 90),
+        declaredControls: mountedSource ?
+          (mountedSource.surfaces?.[0]?.nodes || []).filter(n => ['control','form'].includes(n.nodeKind)).length :
+          source?.surfaces?.[0]?.semanticSurface?.controls?.length ?? null,
+        declaredRegions: mountedSource ? mountedSource.surfaces?.[0]?.interfaceIntent?.regions?.length ?? null :
+          source?.surfaces?.[0]?.semanticSurface?.regions?.length ?? null
+      },
+      engines: {
+        semanticBridge: !!win.McelSemanticPresentationBridge,
+        semanticTheme: !!win.McelSemanticThemePreview,
+        styleLaw: !!win.McelLabStyleLaw
+      },
+      frame: f,
+      mountedCalculator: calculatorFrame,
+      computedThemeTokens: tokens,
+      issues
+    };
+  }
+  function coreDebug(win) {
+    const core = win.MCEL;
+    if (!core) return {available: false};
+    try {
+      const history = typeof core.getDebugTimeline === 'function' ? core.getDebugTimeline() : [];
+      const last = history[history.length - 1] || null;
+      return {
+        available: true,
+        historyCount: history.length,
+        lastOperation: text(last?.operation || '', 100),
+        lastPhase: text(last?.phase || '', 50),
+        lastOkay: last?.ok ?? null,
+        lastIssues: Array.isArray(last?.issues) ? last.issues.length : null,
+        mechanismCount: typeof core.listDebugMechanisms === 'function' ? core.listDebugMechanisms().length : null
+      };
+    } catch (_) { return {available: true, error: 'debug-timeline-unreadable'}; }
+  }
+  function collect(win, meta, depth, context) {
+    if (context.seen.includes(win)) return {frame: meta, status: 'already-observed'};
+    context.seen.push(win);
+    let doc;
+    try { doc = win.document; }
+    catch (_) { return {frame: meta, status: 'inaccessible', reason: 'origin-or-sandbox-boundary'}; }
+    if (!doc) return {frame: meta, status: 'inaccessible', reason: 'document-unavailable'};
+    const theme = readTheme(win, doc);
+    const result = {
+      frame: meta,
+      status: 'observed',
+      path: pathOnly(win.location),
+      readyState: text(doc.readyState || '', 50),
+      mcel: {
+        applicationsShell: !!doc.getElementById('mcel-applications-shell'),
+        lab: !!doc.getElementById('mcel-lab-app'),
+        calculatorRoot: !!doc.getElementById('calculator-app'),
+        semanticRootCount: count(doc, '[data-mcel-node], [data-mcel-region-id]'),
+        semanticControlCount: count(doc, '[data-mcel-control]'),
+        semanticRegionCount: count(doc, '[data-mcel-region-id]')
+      },
+      theme,
+      coreDebug: coreDebug(win),
+      frames: []
+    };
+    if (depth >= maxDepth) { result.framesTruncated = 'maximum-depth'; return result; }
+    const frames = Array.from(doc.querySelectorAll('iframe'));
+    for (const iframe of frames) {
+      if (context.seen.length >= maxFrames) {
+        result.framesTruncated = 'maximum-frame-count';
+        break;
+      }
+      const childMeta = frameMetadata(iframe);
+      let child = null;
+      try { child = iframe.contentWindow; }
+      catch (_) { /* Inaccessible boundary recorded below. */ }
+      result.frames.push(child
+        ? collect(child, childMeta, depth + 1, context)
+        : {frame: childMeta, status: 'inaccessible', reason: 'window-unavailable'});
+    }
+    return result;
+  }
+  function capture() {
+    return {
+      schema,
+      generatedAt: new Date().toISOString(),
+      scope: 'current-mcel-window-and-accessible-child-frames',
+      safety: 'read-only; excludes input values, user content, URLs with queries and credentials',
+      document: collect(host, {id: '(console-context)', sourceType: 'current-document'}, 0, {seen: []})
+    };
+  }
+  host.mcelDebug = capture;
+  // DevTools `copy(debug())` uses this short alias when no app owns it.
+  // Never overwrite another application's existing `debug` function.
+  if (typeof host.debug === 'undefined') host.debug = capture;
+  host.MCELDebugCommand = Object.freeze({schema, capture});
+})(window);

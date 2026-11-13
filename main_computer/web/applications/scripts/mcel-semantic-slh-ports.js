@@ -52,6 +52,20 @@
     }else if(keys!=="")return null;
     return operation;
   }
+  function sehLifecycleOperation(req){
+    if(!plain(req) || req.appId!=="slh" || !plain(req.arguments) ||
+       Object.keys(req.arguments).length!==0)return null;
+    const name=req.intentId?.startsWith("intent:")?req.intentId.slice(7):"";
+    const read=name==="read-seh-connection";
+    const action=name.startsWith("seh-connection-")?name.slice(15):"";
+    if(!read && !["start","stop","restart"].includes(action))return null;
+    if(req.capabilityId!==(read?"capability:seh-connection-observer":"capability:seh-connection-control") ||
+       req.risk!==(read?"external-read":"consequential") ||
+       req.effectId!=="effect:"+name+".request" ||
+       req.operation!==(read?"status":action) ||
+       req.runtimeMethod!==(read?"observeSehConnection":"controlSehConnection"))return null;
+    return read?"status":action;
+  }
   const rename = "intent:rename-worker";
   const firstRun = Object.freeze({
     "intent:start-local": ["start", "startSlhLocal", []],
@@ -61,7 +75,8 @@
       ["adminDeviceId", "host", "apiPort", "workerPort"]],
     "intent:configure-and-enable-organization": ["configure-and-enable", "configureAndEnableSlhOrganization",
       ["adminDeviceId", "bindAddress", "port"]],
-    "intent:disable-organization": ["disable", "disableSlhOrganization", ["adminDeviceId"]],
+    "intent:toggle-organization-enablement": ["toggle-enablement", "toggleSlhOrganizationEnablement", ["adminDeviceId"]],
+    "intent:toggle-organization": ["toggle", "toggleSlhOrganization", ["adminDeviceId"]],
     "intent:activate-organization": ["activate", "activateSlhOrganization", ["adminDeviceId"]],
     "intent:login-administrator": ["login", "loginSlhAdministrator", ["adminDeviceId"]],
     "intent:logout-administrator": ["logout", "logoutSlhAdministrator", []]
@@ -69,7 +84,8 @@
   function plain(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
   function permitted(req) {
     if(!req || req.appId!=="slh" || !plain(req.arguments))return false;
-    if(notebookOperation(req))return true;
+    if(notebookOperation(req)||sehLifecycleOperation(req)||
+       global.McelSemanticSehDeploymentPort?.operation(req))return true;
     const spec=admitted[req.intentId];
     if(spec)return req.risk==="external-read" && req.effectId==="effect:"+req.intentId.slice(7)+".request" &&
       req.capabilityId==="capability:slh-observer" && req.operation===spec[0] &&
@@ -135,11 +151,42 @@
       onAuthenticationChanged: callback=>{if(typeof callback==="function")authenticationChanged=callback;},
       onSetupChanged: callback=>{if(typeof callback==="function")setupChanged=callback;},
       preferredIdentity: ()=>identitySnapshot?.state==="AVAILABLE"?identitySnapshot.defaultDeviceId:"",
-      authorize: async req=>permitted(req) && (notebookOperation(req)?!!accessToken:
+      authorize: async req=>permitted(req) && ((notebookOperation(req)||sehLifecycleOperation(req)||
+        global.McelSemanticSehDeploymentPort?.operation(req))?!!accessToken:
         ((req.intentId!==rename && req.intentId!=="intent:logout-administrator") || !!accessToken)),
       invoke: async req=>{
         if(!permitted(req))throw Error("MCEL_SLH_PORT:undeclared-operation");
         if(notebookOperation(req))return notebook(req);
+        const deployment=global.McelSemanticSehDeploymentPort?.operation(req);
+        if(deployment){
+          if(!accessToken)throw Error("MCEL_SEH_DEPLOYMENT:ADMIN_SESSION_REQUIRED");
+          const response=await fetcher("/api/applications/slh/seh/deployment",{
+            method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"seh-deployment"}),
+            body:JSON.stringify({target:"local",operation:deployment,arguments:req.arguments,sessionTicket:""})
+          });
+          const value=await response?.json?.().catch(()=>null);
+          if(!response?.ok||value?.ok!==true){
+            const code=value?.error?.code;
+            throw Error("MCEL_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
+          }
+          return value.result;
+        }
+        const sehOperation=sehLifecycleOperation(req);
+        if(sehOperation){
+          if(!accessToken)throw Error("MCEL_SEH_LIFECYCLE:ADMIN_SESSION_REQUIRED");
+          if(sehOperation!=="status" &&
+             (typeof global.confirm!=="function" || !global.confirm("Manage this ORG-SLH outbound SEH connection: "+sehOperation+"?")))
+            throw Error("MCEL_SEH_LIFECYCLE:CANCELED");
+          const response=await fetcher("/api/applications/slh/seh/lifecycle",{
+            method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"seh-lifecycle"}),
+            body:JSON.stringify({target:"local",operation:sehOperation,sessionTicket:""})
+          });
+          const value=await response?.json?.().catch(()=>null);
+          if(!response?.ok||value?.ok!==true)throw Error("MCEL_SEH_LIFECYCLE:"+(value?.error?.code||"REQUEST_REFUSED"));
+          return value.result;
+        }
         if(firstRun[req.intentId]){
           const action=firstRun[req.intentId][0];
           if(action!=="start" && action!=="logout"){
@@ -159,7 +206,8 @@
             action==="configure-and-enable" ? "Configure or RESTART ORG-SLH on "+
               req.arguments.bindAddress+":"+req.arguments.port+
               " using the selected identity as administrator? The service will auto-start with LMS-SLH until disabled." :
-            action==="disable" ? "Disable and stop ORG-SLH? Its configuration and administrator identity will be retained, and it will NOT auto-start until re-enabled." :
+            action==="toggle-enablement" ? "Change the persistent ORG-SLH enablement policy? Enabling starts the configured service; disabling stops it and prevents automatic startup." :
+            action==="toggle" ? "Start or temporarily stop ORG-SLH according to its current verified state? Stop retains the configured auto-start policy." :
             action==="activate" ? "Enable the configured Organization Service and Worker listener?" :
             "Sign out and revoke this Organization Service session?")))
             throw Error("MCEL_SLH_PORT:administrator-canceled");
@@ -194,7 +242,7 @@
             setupChanged("login");
             return {outcome:"AUTHENTICATED",message:"Organization administrator session verified",deviceId:req.arguments.adminDeviceId};
           }
-          if(!["STARTED","ALREADY_RUNNING","INITIALIZED","CONFIGURED","RUNNING","DISABLED"].includes(result.outcome) ||
+          if(!["STARTED","ALREADY_RUNNING","INITIALIZED","CONFIGURED","RUNNING","ENABLED","STOPPED","DISABLED"].includes(result.outcome) ||
              typeof result.message!=="string" || result.message.length>512)
             throw Error("MCEL_SLH_PORT:invalid-setup-receipt");
           workerViewOverview=null;

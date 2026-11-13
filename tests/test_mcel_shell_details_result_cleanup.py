@@ -34,7 +34,7 @@ def _page(browser, markup, width=1280):
     return p
 
 
-def test_shell_carries_one_heading_without_redundant_controls(browser):
+def test_shell_does_not_claim_application_heading(browser):
     page=_page(browser, render_applications_shell_candidate(canonical_promoted=True))
     try:
         assert page.locator('body').get_attribute('data-mcel-shell-ready')=='true'
@@ -53,7 +53,9 @@ def test_shell_carries_one_heading_without_redundant_controls(browser):
         page.wait_for_timeout(250)  # Allow the rail to retract.
         assert panel.get_attribute('data-open')=='false'
         assert abs(panel.bounding_box()['x']+panel.bounding_box()['width']-56)<=3
-        assert page.locator('#mcel-shell-active-title').count()==1
+        assert page.locator('#mcel-shell-active-title').count()==0
+        assert page.locator('.mcel-shell-workspace-header').count()==0
+        assert page.locator('#mcel-shell-masthead h1').inner_text()=='MAIN COMPUTER APPLICATIONS'
     finally:
         page.close()
 
@@ -67,7 +69,7 @@ def test_no_hamburger_on_any_shell_application(browser):
         assert len(apps)==21
         for app in apps:
             assert page.evaluate('(id)=>window.__mcelApplicationsShell.select(id,true)',app)
-            assert page.locator('#mcel-shell-active-title').inner_text()
+            assert page.locator('#mcel-shell-active-title').count()==0
             assert page.locator('#mcel-shell-open-apps, .mcel-shell-apps-trigger').count()==0
             assert page.locator('#mcel-shell-launcher-panel').count()==1
     finally:
@@ -91,7 +93,7 @@ def test_calculator_primary_result_precedes_expression(browser):
         page.close()
 
 
-def test_embedded_expert_delegates_title_to_parent_shell(browser):
+def test_embedded_expert_keeps_application_title_and_ewg_in_child(browser):
     page=_page(browser,'<iframe id="mcel-shell-frame" title="Calculator"></iframe>')
     try:
         frame=page.frames[-1]
@@ -101,7 +103,8 @@ def test_embedded_expert_delegates_title_to_parent_shell(browser):
             removeItem:k=>data.delete(String(k)),clear:()=>data.clear()}});
         }''')
         frame.set_content(render_expanded_page())
-        assert frame.locator('[data-mcel-application-title]').count()==0
+        assert frame.locator('[data-mcel-application-title]').inner_text()=='Semantic Calculator'
+        assert frame.locator('[data-mcel-diagnostic-title-control]').count()==1
         assert frame.locator('[data-mcel-zone="navigator"] [data-mcel-mode-tabs] button').count()==4
         assert frame.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
     finally:
@@ -138,13 +141,13 @@ def test_task_manager_inspection_and_consequential_workflows_separate(browser):
             page.close()
 
 
-def test_chat_console_omits_redundant_heading_only_inside_shell(browser):
+def test_chat_console_preserves_its_header_inside_shell(browser):
     page=_page(browser,'<iframe id="mcel-shell-frame" title="Chat Console"></iframe>')
     try:
         frame=page.frames[-1]
         frame.set_content(render_chat_console_page(promoted=True))
         assert frame.locator('body').get_attribute('data-mcel-shell-embedded')=='true'
-        assert not frame.locator('.chat-console-header > div:first-child').is_visible()
+        assert frame.locator('.chat-console-header > div:first-child').is_visible()
         assert frame.locator('#chat-console-save-status').is_visible()
     finally:
         page.close()

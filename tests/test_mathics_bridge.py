@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 import types
 import unittest
 from unittest.mock import patch
@@ -64,6 +66,31 @@ class MathicsBridgeTests(unittest.TestCase):
         self.assertEqual(result["result_text"], "formatted 4")
         self.assertEqual(result["outputs"][0]["text"], "formatted 4")
         self.assertEqual(calls, ["builtins", "session", "evaluate:2+2"])
+
+    def test_concurrent_preparation_and_evaluation_share_one_session(self) -> None:
+        calls: list[str] = []
+
+        class FakeSession:
+            def __init__(self, add_builtin: bool, catch_interrupt: bool) -> None:
+                calls.append("session")
+                self.evaluation = FakeEvaluation()
+
+            def evaluate(self, expression: str) -> str:
+                return "4"
+
+        def fake_load() -> None:
+            time.sleep(0.025)
+            calls.append("builtins")
+
+        modules = self._fake_mathics_modules(fake_load, FakeSession)
+        with patch.dict("sys.modules", modules), patch("main_computer.mathics_bridge.is_mathics_available", return_value=True):
+            with ThreadPoolExecutor(max_workers=8) as workers:
+                results = list(workers.map(lambda n: mathics_bridge.get_mathics_session()
+                    if n % 2 == 0 else evaluate_mathics_expression("2+2"), range(8)))
+
+        assert calls == ["builtins", "session"]
+        assert all(item is mathics_bridge._mathics_session for item in results[::2])
+        assert all(item["ok"] for item in results[1::2])
 
     def test_session_value_error_is_not_reported_as_not_installed(self) -> None:
         def fake_import_and_load_builtins() -> None:
@@ -178,6 +205,45 @@ class MathicsBridgeTests(unittest.TestCase):
         self.assertEqual(result["outputs"][0]["text"], "x")
         self.assertNotEqual(result["outputs"][0]["text"], "x -Graphics-")
         self.assertTrue(result["outputs"][1]["data_base64"])
+
+    def test_preparation_endpoint_reports_readiness_and_import_failure(self) -> None:
+        from http import HTTPStatus
+        import importlib.util
+        from pathlib import Path
+
+        # Load only the route mixin, not the viewport page templates (which
+        # depend on the separately exported game component).
+        fake_state = types.ModuleType("main_computer.viewport_state")
+        fake_state.HTTPStatus = HTTPStatus
+        fake_state.MathicsImportFailure = mathics_bridge.MathicsImportFailure
+        fake_state.MathicsSessionFailure = mathics_bridge.MathicsSessionFailure
+        fake_state.get_mathics_session = mathics_bridge.get_mathics_session
+        path = Path(__file__).resolve().parents[1] / "main_computer/viewport_routes_calculator.py"
+        spec = importlib.util.spec_from_file_location("_test_mathics_calculator_routes", path)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict("sys.modules", {"main_computer.viewport_state": fake_state}):
+            spec.loader.exec_module(module)
+
+        class FakeHandler(module.ViewportCalculatorRoutesMixin):
+            def __init__(self) -> None:
+                self.responses = []
+                self.server = types.SimpleNamespace(signal=lambda *args, **kwargs: None)
+
+            def _send_json(self, payload, status=HTTPStatus.OK):
+                self.responses.append((payload, status))
+
+        handler = FakeHandler()
+        with patch.object(module, "get_mathics_session", return_value=object()) as session:
+            handler._handle_calculator_mathics_prepare()
+        session.assert_called_once_with()
+        assert handler.responses == [({"ok": True, "status": "ready"}, HTTPStatus.OK)]
+
+        handler = FakeHandler()
+        with patch.object(module, "get_mathics_session", side_effect=mathics_bridge.MathicsImportFailure("missing")):
+            handler._handle_calculator_mathics_prepare()
+        assert handler.responses[0][1] == HTTPStatus.SERVICE_UNAVAILABLE
+        assert handler.responses[0][0]["ok"] is False
+        assert "missing" in handler.responses[0][0]["detail"]
 
     def _fake_mathics_modules(self, import_and_load_builtins, session_class: type) -> dict[str, types.ModuleType]:
         mathics = types.ModuleType("mathics")

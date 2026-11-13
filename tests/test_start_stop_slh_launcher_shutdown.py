@@ -104,3 +104,30 @@ def test_supervisor_reuses_cached_live_identity_only_with_matching_creation_time
     assert '"verified_creation_date"' in kill
     assert '$sameProcess' in kill
     assert 'if ([string]::IsNullOrWhiteSpace($commandLine)) { $commandLine = $cachedCommand }' in kill
+
+
+def test_supervisor_revalidation_uses_cim_creation_date_not_get_process_starttime() -> None:
+    # A verified live Win32_Process identity must not be rejected solely because
+    # Get-Process.StartTime cannot be obtained or differs from CIM's timestamp.
+    stop = _function("Stop-OnePid(", "Remove-ManagedRuntimeFiles")
+    verified = stop.split('if ($role -eq "supervisor") {', 1)[1].split('  if (-not $verifiedSupervisor', 1)[0]
+    assert 'Get-CimInstance Win32_Process -Filter ("ProcessId = " + $processId)' in verified
+    assert '([datetime]$liveIdentity.CreationDate).ToUniversalTime()' in verified
+    assert '([datetime]$cachedCreated).ToUniversalTime()' in verified
+    assert '(Get-Process -Id $processId -ErrorAction Stop).StartTime' not in verified
+    assert 'if ($null -eq $liveIdentity)' in verified
+    assert 'if ($null -eq $liveIdentity.CreationDate)' in verified
+    assert 'state = "not-running"' in verified
+    assert 'if (-not $newIsSupervisor)' in verified
+    assert 'state = "skipped-not-owned"' in verified
+    assert 'state = "skipped-unverified"' in verified
+
+
+def test_recycled_supervisor_pid_with_unknown_new_owner_must_fail_closed() -> None:
+    stop = _function("Stop-OnePid(", "Remove-ManagedRuntimeFiles")
+    recheck = stop.split('if (-not $sameProcess) {', 1)[1].split('if ([string]::IsNullOrWhiteSpace($commandLine))', 1)[0]
+    # Missing command line is not positive evidence the replacement PID is foreign.
+    assert 'if ([string]::IsNullOrWhiteSpace($newCommand)) {' in recheck
+    unknown = recheck.split('if ([string]::IsNullOrWhiteSpace($newCommand)) {', 1)[1].split('}', 1)[0]
+    assert 'state = "skipped-unverified"' in unknown
+    assert recheck.index('if ([string]::IsNullOrWhiteSpace($newCommand)) {') < recheck.index('if (-not $newIsSupervisor)')

@@ -28,6 +28,13 @@ def browser():
 
 def opened(browser, width=1100):
     page = browser.new_page(viewport={"width": width, "height": 850})
+    # Shared Chat Console persistence requires an origin-safe store in this
+    # opaque browser fixture; production uses the normal browser store.
+    page.evaluate("""() => {const data=new Map();Object.defineProperty(window,'localStorage',{
+      configurable:true,value:{getItem:k=>data.get(String(k))??null,
+      setItem:(k,v)=>data.set(String(k),String(v)),removeItem:k=>data.delete(String(k)),
+      clear:()=>data.clear(),key:i=>[...data.keys()][i]??null,
+      get length(){return data.size;}}});}""")
     page.set_content(render_expanded_page())
     assert page.locator("#mcel-expanded-diagnostic").inner_text() == "Semantic Calculator ready"
     return page
@@ -103,7 +110,8 @@ def test_edit_during_pending_compute_blocks_late_result(browser):
           const ir=JSON.parse(document.getElementById('mcel-expanded-ir').textContent);
           const root=document.createElement('div');document.body.append(root);
           let finish;
-          const port={authorize:async()=>true,invoke:()=>new Promise(resolve=>{finish=resolve})};
+          const port={authorize:async()=>true,invoke:()=>new Promise(resolve=>{finish=resolve}),
+            mountEmbeddedChat:()=>({dispose(){}})};
           const app=McelSemanticOperationalRuntime.mount(root,ir,{capabilities:port,presentation:'expert'});
           const form=root.querySelector('form[data-intent="intent:evaluate"]');
           const input=form.querySelector('input[name="expression"]');
@@ -122,17 +130,24 @@ def test_edit_during_pending_compute_blocks_late_result(browser):
         page.close()
 
 
-def test_result_question_includes_verified_calculator_evidence(browser):
+def test_single_help_conversation_receives_verified_calculator_evidence(browser):
     page = opened(browser)
     try:
         page.evaluate('''() => {
-          window.__qaCalls=[];
+          window.__helpRequests=[];
           window.fetch=async(path,opts)=>{
-            const payload=JSON.parse(opts.body);
-            if(path==='/api/applications/calculator/qa') {
-              window.__qaCalls.push(payload);
-              return {ok:true,status:200,json:async()=>({ok:true,answer:'Based on computed evidence'})};
-            }
+            const payload=opts?.body?JSON.parse(opts.body):{};
+            window.__helpRequests.push({path:String(path),payload});
+            if(String(path).startsWith('/api/applications/chat-console/ai/capacity?'))
+              return {ok:true,status:200,json:async()=>({ok:true,busy:false,available_now:true,active_run_count:0,max_local_concurrency:1})};
+            if(path==='/api/activity/snapshot' || path==='/api/activity/ollama-ps')
+              return {ok:true,status:200,json:async()=>({ok:true,events:[],models:[]})};
+            if(path==='/api/applications/chat-console/cell/evaluate')
+              return {ok:true,status:200,json:async()=>({ok:true,status:'completed',
+                output_cell:{id:'out-mock',type:'output',source_cell_id:payload.cell.id,status:'ok',
+                  parts:[{id:'part-mock',kind:'text',title:'Explanation',content:'Based on computed evidence',snippets:[]}]}})};
+            if(path==='/api/applications/calculator/mathics/prepare')
+              return {ok:true,status:200,json:async()=>({ok:true,status:'ready'})};
             if(path==='/api/applications/calculator/mathics/evaluate')
               return {ok:true,status:200,json:async()=>({ok:true,result_text:'x^2/2'})};
             throw Error('unexpected request: '+path);
@@ -153,42 +168,47 @@ def test_result_question_includes_verified_calculator_evidence(browser):
         symbolic.locator('button[type="submit"]').click()
         page.locator('[data-state="state:symbolic-result"]').get_by_text('x^2/2').wait_for()
         page.locator('[data-mcel-mode-tabs] button[data-value="help"]').click()
-        form = page.locator('form[data-intent="intent:ask-result-question"]')
-        form.locator('input[name="question"]').fill('Compare the results')
-        form.locator('button[type="submit"]').click()
-        page.locator('[data-state="state:qa-result"]').get_by_text('Based on computed evidence').wait_for()
-        sent = page.evaluate('window.__qaCalls')
+        assert page.locator('[data-mcel-embedded-chat]').count() == 1
+        assert page.locator('form[data-intent="intent:ask-result-question"]').count() == 0
+        composer = page.locator('[data-chat-conversation-role="composer"]')
+        composer.locator('textarea').fill('Compare the results')
+        composer.locator('.chat-cell-controls button').first.click()
+        page.locator('[data-chat-conversation-role="assistant"]').get_by_text('Based on computed evidence').wait_for()
+        calls = page.evaluate('window.__helpRequests')
+        sent = [x['payload'] for x in calls if x['path']=='/api/applications/chat-console/cell/evaluate']
         assert len(sent) == 1
-        assert sent[0]['question'] == 'Compare the results'
-        import json
-        context = json.loads(sent[0]['context'])
-        assert context['arithmetic_result'] == '3.4 m'
-        assert context['symbolic_result'] == 'x^2/2'
-        assert 2 <= context['graph']['sample_count'] <= 161
-        assert context['graph']['x_min'] < 0 < context['graph']['x_max']
-        assert context['graph']['visible_y_min'] >= -10
-        assert context['graph']['visible_y_max'] <= 10
-        # A model explanation never modifies the already computed result states.
+        assert sent[0]['cell']['source'] == 'Compare the results'
+        context = sent[0]['embedded_context']
+        assert context['arithmetic']['result'] == '3.4 m'
+        assert context['graph']['expression'] == 'x^2'
+        assert context['graph']['status'] == 'graph sampled'
+        assert float(context['graph']['x_min']) < 0 < float(context['graph']['x_max'])
+        assert context['mathics']['expression'] == 'Integrate[x,x]'
+        assert context['mathics']['result'] == 'x^2/2'
+        assert context['active_mode'] == 'symbolic'
+        # AI explanations do not alter deterministic computed evidence.
         assert page.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")') == '3.4 m'
         assert page.evaluate('window.__mcelExpanded.app.readState("state:symbolic-result")') == 'x^2/2'
     finally:
         page.close()
 
 
-def test_result_question_port_rejects_forged_computational_context(browser):
+def test_retired_result_question_port_refuses_legacy_and_forged_requests(browser):
     page = opened(browser)
     try:
         result = page.evaluate('''async () => {
           const port=McelCalculatorExpandedPort.create();
-          const base={appId:'semantic-calculator-expanded',intentId:'intent:ask-result-question',
-            effectId:'effect:ask-result-question.request',capabilityId:'capability:calculator-service',
-            operation:'question',runtimeMethod:'askResultQuestion',risk:'external-read',
-            arguments:{question:'Explain',arithmeticResult:'3',symbolicResult:'',graphPoints:[]}};
+          const base={appId:'semantic-calculator-expanded',intentId:'intent:calculator-chat',
+            effectId:'effect:calculator-chat.request',capabilityId:'capability:calculator-service',
+            operation:'chat',runtimeMethod:'calculatorEmbeddedChat',risk:'external-read',
+            arguments:{message:'Explain'}};
           return [await port.authorize(base),
-            await port.authorize({...base,arguments:{...base.arguments,graphPoints:[{id:'1',x:0,y:Infinity}]}}),
-            await port.authorize({...base,arguments:{...base.arguments,shell:'run'}}),
+            await port.authorize({...base,intentId:'intent:ask-result-question',
+              effectId:'effect:ask-result-question.request',operation:'question',
+              runtimeMethod:'askResultQuestion'}),
+            await port.authorize({...base,arguments:{...base.arguments,arithmeticResult:'forged'}}),
             await port.authorize({...base,risk:'source-write'}),
-            await port.authorize({...base,arguments:{...base.arguments,graphPoints:[{id:'1',x:0,y:1,html:'<script>'}]}})];
+            await port.authorize({...base,arguments:{...base.arguments,graphPoints:[{id:'1',x:0,y:1}]}})];
         }''')
         assert result == [True, False, False, False, False]
     finally:

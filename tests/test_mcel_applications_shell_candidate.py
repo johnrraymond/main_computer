@@ -30,7 +30,7 @@ def test_compiled_shell_owns_region_hierarchy_without_child_effects():
     regions = ir["surfaces"][0]["interfaceIntent"]["regions"]
     assert {r["id"].split(".")[-1] for r in regions} == {
         "application", "masthead", "shell", "launcher", "workspace",
-        "workspace-header", "application-mount", "status",
+        "application-mount", "status",
     }
     ids = {r["id"] for r in regions}
     assert all(r.get("parentId") is None or r["parentId"] in ids for r in regions)
@@ -48,7 +48,7 @@ def test_rendered_shell_binds_compiled_ir_and_preserves_legacy_routes():
     assert 'mcel.layout-tree.v1' in page
     assert 'MainComputerMCELChatConsole' not in page  # no duplicate child runtime
     assert '<!-- @include' not in page
-    assert page.split('<script id="mcel-applications-shell-ir"')[0].count('data-mcel-region-id="interface-region:semantic-applications-shell.') == 8
+    assert page.split('<script id="mcel-applications-shell-ir"')[0].count('data-mcel-region-id="interface-region:semantic-applications-shell.') == 7
 
 
 def test_compiler_refuses_invalid_canonical_tree(tmp_path):

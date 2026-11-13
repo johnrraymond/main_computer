@@ -32,6 +32,36 @@ class SEHControl:
                           'deployment': ds.selected(self.root, network, records[name])['deployment']}
                          for name in sorted(records)]}
 
+    def register_controller(self, network: str, name: str, controller: dict,
+                            *, expected_generation: int, operation_id: str) -> dict:
+        result = st.mutate(self.root, network, expected_generation, operation_id,
+                           lambda doc, gen, base: st.register_coolify_controller(
+                               doc, network, name, controller))
+        return {**result, 'network': network, 'controller': name,
+                'remote_mutation': False}
+
+    def select_controller(self, network: str, name: str,
+                          *, expected_generation: int, operation_id: str) -> dict:
+        from . import deployment_state as ds
+        from .git_deployment import _plan_path
+        # Serialize selection against a concurrent Coolify create/deploy. An
+        # operational-state file or prepared plan is not permission to retarget.
+        with ds.mutation_lock(self.root, network):
+            _, _, doc = st.read(self.root, network)
+            record = st.deployment_record(doc, network)
+            if record is not None:
+                ds.selected(self.root, network, record)  # validates the binding
+                changing = (record['coolify']['source'] !=
+                            f'networks.{network}.coolify.controllers.{name}')
+                if changing and (ds._path(self.root, network).exists() or
+                                 _plan_path(self.root, network).exists()):
+                    raise st.SEHIdentityError('Existing SEH deployment evidence; controller change refused')
+            result = st.mutate(self.root, network, expected_generation, operation_id,
+                               lambda doc, gen, base: st.select_canonical_coolify_controller(
+                                   doc, network, name, gen, base))
+        return {**result, 'network': network, 'controller': name,
+                'remote_mutation': False}
+
     def migrate_single(self, network: str, expected_generation: int, operation_id: str) -> dict:
         if type(expected_generation) is not int:
             raise st.SEHIdentityError('Migration requires an explicit observed Mother generation')

@@ -190,7 +190,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
         slh_id = 'paid-slh'
         api_port, worker_port = _ports()
         signer, relay_public = generate_identity()
-        relay = (SEHRelay(slh_id=slh_id,
+        relay = (SEHRelay(
                          slh_public_key=relay_public, host='127.0.0.1', port=0).start()
                  if diagnostic_mode != 'direct' else None)
         adapter = None
@@ -228,7 +228,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                     relay_url = f'ws://127.0.0.1:{relay.port}'
                     write_seh_settings(state, SEHConnectionSettings(
                         enabled=True, seh_url=relay_url, 
-                        slh_id=slh_id, allow_loopback_lab=True, retry_seconds=0.2))
+                         allow_loopback_lab=True, retry_seconds=0.2))
                 _ok(_http(lp, 'PATCH', '/v1/local/organization/config',
                           {'host': '127.0.0.1', 'api_port': api_port, 'worker_port': worker_port,
                            'workers_enabled': True, 'seh_enabled': relay is not None}, bearer=token))
@@ -247,7 +247,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                               {}, tls=True)[0] == 401)
                 org_token = _login(api_port, local_sign_port=lp, tls=True)
                 if relay_url is not None:
-                    adapter = SEHLocalClientAdapter(relay_url, slh_id, allow_lab=True)
+                    adapter = SEHLocalClientAdapter(relay_url,  allow_lab=True)
                 # The only active managed Worker is reached through the SEH,
                 # so the Hub cannot route to an accidental direct LAN slot.
                 device = 'lab-paid-remote-worker'

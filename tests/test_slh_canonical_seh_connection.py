@@ -73,7 +73,7 @@ def test_resolves_only_existing_uuid_public_origin_and_matching_key(tmp_path):
         settings = resolve_canonical_connection(tmp_path / 'slh',
                                                  mother_root=tmp_path / 'mother', client=remote)
     assert settings == SEHConnectionSettings(True, 'wss://external.greatlibrary.io',
-                                             'existing-route', False, 2.0)
+                                              False, 2.0)
     assert selection.call_count == 2
     assert all(method == 'GET' for method, _ in remote.calls)
     assert (tmp_path / 'slh' / 'seh-service-signing-key.pem').is_file()
@@ -147,7 +147,7 @@ def test_resolved_tunnel_retries_authenticates_and_recovers_without_written_alia
         s.bind(('127.0.0.1', 0))
         port = s.getsockname()[1]
     settings = SEHConnectionSettings(True, f'ws://127.0.0.1:{port}',
-                                     'existing-route', True, .15)
+                                      True, .15)
     iterations = []
     def resolver(directory):
         iterations.append(1)
@@ -157,7 +157,7 @@ def test_resolved_tunnel_retries_authenticates_and_recovers_without_written_alia
     relay = None
     try:
         assert wait_for(lambda: supervisor.failures >= 1), 'offline retries must be supervised'
-        relay = SEHRelay(slh_id='existing-route',
+        relay = SEHRelay(
                          slh_public_key=base64.b64decode(public).decode('ascii'),
                          host='127.0.0.1', port=port).start()
         assert wait_for(lambda: supervisor.connected and relay.tunnel_ready)
@@ -190,11 +190,11 @@ def test_gateway_owns_canonical_connection_without_any_standalone_process(tmp_pa
     authority.bootstrap({**statement, 'proof': sign_object(admin_signer, statement),
                          'bootstrap_secret': (slh / 'bootstrap.secret').read_text(),
                          'admin_name': 'Owner'}, loopback=True)
-    relay = SEHRelay(slh_id='existing-route',
+    relay = SEHRelay(
                      slh_public_key=base64.b64decode(public_b64).decode('ascii'),
                      host='127.0.0.1', port=0).start()
     settings = SEHConnectionSettings(True, f'ws://127.0.0.1:{relay.port}',
-                                     'existing-route', True, .15)
+                                      True, .15)
     gateway = SLHManagedGateway(authority, host='127.0.0.1', port=0, allow_seh=True)
     try:
         with patch('main_computer.slh.seh_canonical_connection.resolve_canonical_connection',
@@ -224,7 +224,7 @@ def test_explicit_disabled_settings_never_fall_back_to_remote_canonical(tmp_path
     auth.bootstrap({**stmt, 'proof': sign_object(signer, stmt),
                     'bootstrap_secret': (slh / 'bootstrap.secret').read_text(),
                     'admin_name': 'Owner'}, loopback=True)
-    disabled = SEHConnectionSettings(False, 'ws://127.0.0.1:18080', 'existing-route', True, .2)
+    disabled = SEHConnectionSettings(False, 'ws://127.0.0.1:18080',  True, .2)
     write_seh_settings(slh, disabled)
     gateway = SLHManagedGateway(auth, host='127.0.0.1', port=0, allow_seh=True)
     try:
@@ -250,7 +250,7 @@ def test_canonical_diagnostic_reports_trust_only_not_fabricated_live_readiness(t
             return {'status': 'READ_ONLY', 'generation': 32,
                     'deployment': {'deployment': {'application_uuid': UUID}}}
     resolved = SEHConnectionSettings(True, 'wss://external.greatlibrary.io',
-                                     'existing-route', False, 2.0)
+                                      False, 2.0)
     with patch('main_computer.slh.seh_canonical_connection.resolve_canonical_connection',
                return_value=resolved) as resolver:
         result = run(_parser().parse_args(['diagnostic']), control=ReadOnlyControl())

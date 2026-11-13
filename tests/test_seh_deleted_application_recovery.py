@@ -188,7 +188,7 @@ def test_resident_activation_handles_only_explicit_deleted_application(tmp_path,
     from main_computer.slh.seh_autoconnect import SEHConnectionSettings
     resolver.side_effect = [SEHApplicationDeleted('gone'),
         SEHConnectionSettings(True, 'wss://external.greatlibrary.io',
-                              'slh-fingerprint-route', False, 2.0)]
+                               False, 2.0)]
     restore = []
     def fake_restore(mother_root, network, *, execute, state_dir):
         restore.append((mother_root, network, execute, state_dir))
@@ -285,8 +285,10 @@ def test_partial_env_patch_failure_is_resumed_with_exact_creation_receipt(tmp_pa
     def partial(method, path, body=None):
         if method == 'PATCH' and path == f'/api/v1/applications/{NEW}/envs/bulk' and not stopped[0]:
             stopped[0] = True
-            row = next(item for item in body['data'] if item['key'] == 'SEH_SLH_ID')
-            remote.envs = [{'key': 'SEH_SLH_ID', 'value': row['value'], 'uuid': 'env-route'}]
+            # The obsolete SEH_SLH_ID route no longer exists. Simulate a
+            # partial write of the remaining binding/public-origin env instead.
+            row = next(item for item in body['data'] if item['key'] == 'SEH_PUBLIC_ORIGIN')
+            remote.envs = [{'key': 'SEH_PUBLIC_ORIGIN', 'value': row['value'], 'uuid': 'env-partial'}]
             raise ConnectionError('simulated lost partial environment transaction')
         if method == 'PATCH' and path.endswith('/envs/bulk'):
             previous = deepcopy(remote.envs)
@@ -305,7 +307,7 @@ def test_partial_env_patch_failure_is_resumed_with_exact_creation_receipt(tmp_pa
     assert second['status'] == 'REPLACEMENT_QUEUED_NOT_VERIFIED'
     assert second['recovery_action'] == 'ADOPT_VERIFIED_APPLICATION'
     assert second['deployment_uuid'] == 'seh-build-01'
-    assert remote.envs[0]['key'] == 'SEH_SLH_ID'
+    assert remote.envs[0]['key'] == 'SEH_PUBLIC_ORIGIN'
     assert len([op for op in remote.calls if op == ('POST','/api/v1/applications/public')]) == 1
 
 

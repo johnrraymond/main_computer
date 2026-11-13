@@ -3804,6 +3804,7 @@
                   <button type="button" id="${chatConsoleEscapeHtml(copyLinkId)}" data-chat-thread-copy-link>Copy link</button>
                 </div>
               </div>
+              ${config.layout === "conversation" ? '<button type="button" class="chat-conversation-switch" data-chat-conversation-switch aria-pressed="false">Notebook tools</button>' : ""}
               <div class="${chatConsoleEmbeddedClass("chat-console-notebook", config, "embedded-chat-notebook")}" id="${chatConsoleEscapeHtml(config.notebookId)}" aria-label="${chatConsoleEscapeHtml(config.title)} embedded Chat Console notebook cells" data-chat-console-embedded-notebook></div>
             </section>
           </div>
@@ -3822,6 +3823,23 @@
       window.MainComputerMCELChatConsole?.compose(host);
       const session = {host, config, options};
       chatConsoleEmbeddedSessions.set(host, session);
+      if (config.layout === "conversation") {
+        const switcher = host.querySelector("[data-chat-conversation-switch]");
+        // Same notebook cells and thread state; this only changes the
+        // presentation. No second chat controller or model endpoint.
+        if (switcher && switcher.dataset.bound !== "1") {
+          switcher.dataset.bound = "1";
+          switcher.addEventListener("click", () => {
+            const notebook = host.querySelector("[data-chat-console-embedded-notebook]");
+            host.dataset.chatConversationNotebook = host.dataset.chatConversationNotebook === "1" ? "0" : "1";
+            const expanded = host.dataset.chatConversationNotebook === "1";
+            switcher.textContent = expanded ? "Conversation view" : "Notebook tools";
+            switcher.setAttribute("aria-pressed", String(expanded));
+            if (notebook) chatConsoleNotebookRenderSignatures.delete(notebook);
+            renderChatConsoleNotebook();
+          });
+        }
+      }
       threadStore.load();
 
       const embeddedContext = chatConsoleReadEmbeddedContext(session);
@@ -4223,6 +4241,26 @@
     function renderChatConsoleVisibleThread(target = activeChatConsoleNotebook()) {
       if (!target) return;
       const visibleCells = chatConsoleVisibleCellsForRender();
+      const host = target.closest("[data-chat-console-embed]");
+      const conversation = host?.dataset.chatConsoleLayout === "conversation" &&
+        host.dataset.chatConversationNotebook !== "1";
+      if (conversation) {
+        // Project the established notebook/continuation model as a normal
+        // conversation. The same evaluators, persistence and context remain
+        // authoritative. Non-AI cells remain inspectable in notebook mode.
+        visibleCells.forEach(cell => {
+          const element = renderChatConsoleCell(cell);
+          const role = cell.type === "output" ? "assistant" :
+            cell.type === "ai" ? (cell.output_variant_ids?.length || cell.status === "running" ? "user" : "composer") : "tool";
+          element.dataset.chatConversationRole = role;
+          if (role === "user") {
+            const editor = element.querySelector("textarea");
+            if (editor) editor.readOnly = true;
+          }
+          target.append(element);
+        });
+        return;
+      }
       target.append(renderChatConsoleInsertStrip(""));
       visibleCells.forEach((cell, index) => {
         target.append(renderChatConsoleCell(cell));

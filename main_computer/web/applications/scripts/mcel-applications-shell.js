@@ -11,14 +11,13 @@
   const panel = document.getElementById("mcel-shell-launcher-panel");
   const mount = document.getElementById("mcel-shell-application-mount");
   const frame = document.getElementById("mcel-shell-frame");
-  const title = document.getElementById("mcel-shell-active-title");
   function refuse(reason) {
     document.body.dataset.mcelShellReady = "false";
     if (status) { status.dataset.error = "true"; status.textContent = "MCEL shell refused: " + reason; }
     if (shell) shell.inert = true;
     return null;
   }
-  if (!irTag || !catalogTag || !shell || !status || !entries || !panel || !mount || !frame || !title)
+  if (!irTag || !catalogTag || !shell || !status || !entries || !panel || !mount || !frame)
     return refuse("required-shell-element-missing");
 
   let ir, catalog;
@@ -26,7 +25,7 @@
     ir = JSON.parse(irTag.textContent);
     catalog = JSON.parse(catalogTag.textContent);
   } catch (e) { return refuse("compiled-source-or-registry-invalid"); }
-  const expected = ["application", "masthead", "shell", "launcher", "workspace", "workspace-header", "application-mount", "status"];
+  const expected = ["application", "masthead", "shell", "launcher", "workspace", "application-mount", "status"];
   const regionIds = new Set(ir?.surfaces?.[0]?.interfaceIntent?.regions?.map(r => r.id) || []);
   if (ir?.application?.appId !== "semantic-applications-shell" ||
       ir?.layouts?.[0]?.layoutTree?.schema !== "mcel.layout-tree.v1" ||
@@ -132,7 +131,6 @@
         if (slug === id) link.setAttribute("aria-current", "page");
         else link.removeAttribute("aria-current");
       }
-      title.textContent = app.title;
       document.title = "MCEL Shell · " + app.title;
       mount.dataset.mode = app.mount;
       if (app.mount !== "overview") {

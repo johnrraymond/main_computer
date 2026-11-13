@@ -144,6 +144,7 @@
       mathics: Object.freeze({
         prompt: calculatorString(mathics.prompt ?? state.mathicsPrompt),
         expression: calculatorString(mathics.expression ?? state.mathicsExpression),
+        result: calculatorString(mathics.result ?? state.mathicsResult),
         status: calculatorString(mathics.status ?? state.mathicsStatus)
       }),
       qa: Object.freeze({

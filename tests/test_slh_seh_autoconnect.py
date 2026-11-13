@@ -33,7 +33,7 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
                 port=s.getsockname()[1]
             write_seh_settings(Path(td), SEHConnectionSettings(
                 enabled=True, seh_url=f'ws://127.0.0.1:{port}',
-                slh_id='lab-slh',
+                
                 allow_loopback_lab=True,retry_seconds=.15))
             supervisor=SEHAutoConnection(Path(td),gateway_port=1,
                                          identity_private_key=signer).start()
@@ -47,7 +47,7 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
                 self.assertGreaterEqual(diag['failures'], 1)
                 self.assertIsInstance(diag['last_error_class'], str)
                 self.assertIn(diag['phase'], {'RETRYING_AFTER_FAILURE', 'CONNECTING_OUTBOUND_WSS', 'RESOLVING_CONFIGURATION'})
-                relay=SEHRelay(slh_id='lab-slh',
+                relay=SEHRelay(
                                slh_public_key=public,host='127.0.0.1',port=port).start()
                 self.assertTrue(wait(lambda: supervisor.connected and relay.tunnel_ready),
                                 'supervisor must authenticate after SEH appears')
@@ -72,7 +72,7 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
             for configured in (False, True):
                 if configured:
                     write_seh_settings(root,SEHConnectionSettings(
-                        False,'ws://127.0.0.1:18080','lab-slh',True,.2))
+                        False,'ws://127.0.0.1:18080',True,.2))
                 gateway=SLHManagedGateway(auth,host='127.0.0.1',port=0)
                 gateway.start_background()
                 try:
@@ -84,3 +84,27 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+
+def test_legacy_seh_routing_field_is_removed_from_persistent_configuration(tmp_path):
+    from main_computer.slh.seh_autoconnect import read_seh_settings, write_seh_settings
+    import json
+    state = tmp_path / 'slh'
+    state.mkdir()
+    path = state / 'seh-connection.json'
+    path.write_text(json.dumps({
+        'enabled': True,
+        'seh_url': 'ws://127.0.0.1:8181',
+        'slh_id': 'obsolete-route',
+        'organization_id': 'obsolete-org',
+        'allow_loopback_lab': True,
+        'retry_seconds': 2.0,
+    }), encoding='utf-8')
+    cfg = read_seh_settings(state)
+    assert cfg.enabled is True and not hasattr(cfg, 'slh_id')
+    rewritten = json.loads(path.read_text(encoding='utf-8'))
+    assert set(rewritten) == {'enabled', 'seh_url', 'allow_loopback_lab', 'retry_seconds'}
+    assert 'slh_id' not in rewritten
+    import pytest
+    with pytest.raises(ValueError, match='Invalid SLH SEH connection configuration'):
+        SEHConnectionSettings.from_dict({**rewritten, 'slh_id': 'new-route'})

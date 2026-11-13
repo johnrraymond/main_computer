@@ -12,14 +12,15 @@ TARGET_ROUTES = {
     "local": "/applications/slh/local",
     "network": "/applications/slh/network",
 }
-LABELS = {"local": "This Computer", "network": "Network SLH"}
+MANAGEMENT_ROUTES = {**TARGET_ROUTES, "remote-seh": "/applications/slh/remote-seh"}
+LABELS = {"local": "This Computer", "network": "Network SLH", "remote-seh": "Remote SEH"}
 
 
 def target_tabs(selected: str) -> str:
-    if selected not in TARGET_ROUTES:
+    if selected not in MANAGEMENT_ROUTES:
         raise ValueError("Unknown SLH administrative target")
     links = []
-    for target, route in TARGET_ROUTES.items():
+    for target, route in MANAGEMENT_ROUTES.items():
         active = target == selected
         links.append(
             f'<a role="tab" href="{escape(route)}" data-slh-target="{target}" '

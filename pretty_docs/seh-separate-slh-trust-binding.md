@@ -27,11 +27,11 @@ python .\seh_mutate_harness.py bind-slh --network mainnet --seh company-primary 
 `bind-slh` takes the existing connector's **public** P-256 signing identity
 from `runtime/state/slh` without creating a new private key. It verifies the
 selected Mother infrastructure identity, Coolify controller, registered
-application UUID and ownership marker, and the existing remote organization
-and SLH IDs. Partial bindings, mismatched IDs, duplicate environment records,
-and unauthorized key replacement are rejected.
+application UUID and ownership marker, and the existing remote SLH signing public key. Duplicate trust records,
+masked trust, and unauthorized key replacement are rejected. The historical
+SLH association label is not a relay routing field or a trust credential.
 
-The operation updates the three `SEH_*` SLH binding environment variables,
+The operation updates the `SEH_SLH_PUBLIC_KEY_B64` trust environment variable,
 verifies their readback, and triggers redeployment. A queued deployment is
 not proof of authenticated WebSocket readiness. This legacy operator does
 **not** start a connector or configure a running SLH's managed gateway; use

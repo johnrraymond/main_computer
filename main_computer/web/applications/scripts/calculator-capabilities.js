@@ -62,6 +62,10 @@
         return {ok: true, expression: data.expression || "", raw: data};
       }
 
+      async function prepareMathics(options = {}) {
+        return requestJson("/api/applications/calculator/mathics/prepare", {}, options);
+      }
+
       async function evaluateMathics(expression, options = {}) {
         const data = await requestJson("/api/applications/calculator/mathics/evaluate", {expression}, options);
         return {ok: true, output: data.result_text || "(no result)", raw: data};
@@ -80,6 +84,7 @@
         askGraphModel,
         askMathicsModel,
         evaluateMathics,
+        prepareMathics,
         askResultQuestion,
         requestJson
       });

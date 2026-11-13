@@ -422,11 +422,11 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                     key_path.write_bytes(signer.private_bytes(serialization.Encoding.PEM,
                         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
                     key_path.chmod(0o600)
-                    relay = SEHRelay(slh_id=slh_id,
+                    relay = SEHRelay(
                                      slh_public_key=relay_public, host='127.0.0.1', port=0).start()
                     write_seh_settings(state, SEHConnectionSettings(
                         enabled=True, seh_url=f'ws://127.0.0.1:{relay.port}',
-                        slh_id=slh_id,
+                        
                         allow_loopback_lab=True, retry_seconds=0.2))
                     _ok(_http(lp, 'PATCH', '/v1/local/organization/config',
                               {'seh_enabled': True}, bearer=local_token))
@@ -451,7 +451,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                         and sweep_status.get('schema') == 'main-computer.slh-pinky-sweeps.v1')
                     gates['seh_private_accounting_still_requires_admin'] = (
                         _http(api_port, 'GET', '/v1/accounting/sweeps', tls=True)[0] == 401)
-                    adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', slh_id,
+                    adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', 
                                                     allow_lab=True)
                     gates['worker_tls_via_real_seh_relay'] = _await_initial_worker_auth(
                         adapter.server_address[1], 'lab-worker', worker_key,

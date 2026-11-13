@@ -1,0 +1,98 @@
+{
+  "schema": "mcel.slh.seh-management-oracle.v1",
+  "semantic_application": "slh",
+  "navigation": {
+    "This Computer": "/applications/slh/local",
+    "Network SLH": "/applications/slh/network",
+    "Remote SEH": "/applications/slh/remote-seh",
+    "browser_native_links": true
+  },
+  "seh_lifecycle": {
+    "targets": [
+      "local",
+      "network"
+    ],
+    "node_kind": "operation-notebook",
+    "title": "SEH Lifecycle",
+    "tabs": [
+      "configuration",
+      "deployment",
+      "connection",
+      "status",
+      "diagnostics"
+    ],
+    "placement": "after-configuration-in-workspace",
+    "read": "intent:read-seh-connection",
+    "connection_actions": [
+      "intent:seh-connection-start",
+      "intent:seh-connection-stop",
+      "intent:seh-connection-restart"
+    ],
+    "deploy_redeploy_api_available": true,
+    "physical_deployment_distinct_from_outbound_connection": true,
+    "selected_slh_authority_only": true,
+    "failed_commands_do_not_claim_success": true,
+    "deployment_actions": [
+      "intent:seh-deployment-preview-deploy",
+      "intent:seh-deployment-deploy",
+      "intent:seh-deployment-preview-undeploy",
+      "intent:seh-deployment-undeploy"
+    ],
+    "controller_forms": [
+      "intent:seh-deployment-register",
+      "intent:seh-deployment-select"
+    ],
+    "selected_target_from_verified_coolify_identity": true,
+    "canonical_deploy_requires_verified_prior_undeploy": true,
+    "stale_generation_fails_closed": true
+  },
+  "remote_seh": {
+    "target": "remote-seh",
+    "connect": "intent:connect-remote-seh",
+    "disconnect": "intent:disconnect-remote-seh",
+    "connection_fields": [
+      "sehUrl"
+    ],
+    "local_signer_not_browser_private_key": true,
+    "certificate_pin_requires_confirmation": true,
+    "slh_route_auto_discovered": true,
+    "user_supplied_slh_id_forbidden": true,
+    "reuse_notebook": "surface-node:slh.organization-identity-notebook",
+    "allowed": [
+      "worker-requester-transport",
+      "organization-identity-administration"
+    ],
+    "forbidden": [
+      "slh-lifecycle",
+      "seh-connection-lifecycle",
+      "seh-deployment",
+      "scheduler-policy",
+      "marketplace-policy"
+    ],
+    "server_side_restricted_listener": true,
+    "no_local_fallback": true,
+    "session_scoped_to_transport": true
+  },
+  "composition": {
+    "single_semantic_dsl": true,
+    "no_authored_layout": true,
+    "scroll_area_and_trash_footer_remain_separate": true,
+    "preserve_service_details_and_activity_rail": true,
+    "hidden_lifecycle_on_remote_seh": true,
+    "local_service_lifecycle_panel": "absent",
+    "legacy_login_controls_unrendered": true,
+    "local_configuration_reset_control": "absent",
+    "local_configuration_actions": [
+      "intent:toggle-organization-enablement",
+      "intent:toggle-organization"
+    ],
+    "enablement_labels_by_state": {
+      "running": "Disable",
+      "stopped": "Disable",
+      "disabled": "Enable"
+    },
+    "start_stop_requires_enabled_policy": true,
+    "start_stop_is_single_state_dependent_action": true,
+    "temporary_stop_preserves_persistent_enablement": true
+  }
+}

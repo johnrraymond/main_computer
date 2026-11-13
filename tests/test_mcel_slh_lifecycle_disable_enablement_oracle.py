@@ -1,23 +1,17 @@
-"""MCEL conditional action enablement: keep the region and action visible.
+"""Configuration task lifecycle oracle: no Service Lifecycle panel or form reset.
 
-The Service Lifecycle region must not pop in and out when a derived status
-changes. Disabled actions cannot dispatch, even through programmatic execute().
+Stop is a temporary pause of the running child, whereas Disable permanently
+turns off the ORG-SLH auto-start policy. These are local signed actions only.
 """
 from __future__ import annotations
 
 import shutil
-
 import pytest
 from playwright.sync_api import sync_playwright
-
 from main_computer.mcel_slh_application import compile_slh_application, render_slh_page
 
 
 MOCK = r'''() => {
-  const storage={};
-  Object.defineProperty(window,'sessionStorage',{configurable:true,value:{
-    getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=String(v),removeItem:k=>delete storage[k]
-  }});
   window.lifecycle='not_configured';window.slhCalls=[];
   window.fetch=async(url,options={})=>{
     const method=options.method||'GET',body=options.body?JSON.parse(options.body):null;
@@ -30,36 +24,32 @@ MOCK = r'''() => {
       ok:true,schema:'mcel.slh.first-slice-observation.v1',view:'overview',
       overview:{organizationState:window.lifecycle,organizationEndpoint:'127.0.0.1:8899'}})};
     if(url==='/api/applications/slh/setup/action'){
-      if(body.action==='disable')window.lifecycle='disabled';
-      return {ok:true,json:async()=>({outcome:'DISABLED',message:'Disabled',deviceId:body.arguments.adminDeviceId})};
+      if(body.action==='toggle-enablement')window.lifecycle=window.lifecycle==='disabled'?'running':'disabled';
+      else if(body.action==='toggle')window.lifecycle=window.lifecycle==='running'?'stopped':'running';
+      return {ok:true,json:async()=>({outcome:body.action==='toggle-enablement'?(window.lifecycle==='disabled'?'DISABLED':'ENABLED'):window.lifecycle==='stopped'?'STOPPED':'RUNNING',
+        message:'Operation confirmed',deviceId:body.arguments.adminDeviceId})};
     }
     throw Error('UNEXPECTED_API:'+url);
   };
 }'''
 
 
-def _status(page):
-    return page.evaluate('''() => {
-      const region=document.querySelector('[data-mcel-purpose="commands"]');
-      const button=region?.querySelector('button[data-intent="intent:disable-organization"]');
-      return {regionPresent:!!region,regionVisible:!!region?.getClientRects().length && !region.closest('[hidden]'),
-        buttonPresent:!!button,buttonVisible:!!button?.getClientRects().length && !button.closest('[hidden]'),
-        disabled:button?.disabled,ariaDisabled:button?.getAttribute('aria-disabled')};
-    }''')
-
-
-def test_disable_condition_is_semantic_enablement_not_visibility():
-    ir,_=compile_slh_application()
-    node=next(n for n in ir['surfaces'][0]['nodes'] if n['id']=='surface-node:slh.disable-org-slh')
-    assert node['visibleWhen']=={'state':{'ref':'state:selected-target'},'equals':'local'}
-    assert node['enabledWhen']=={'any':[
-        {'state':{'ref':'state:organization-lifecycle'},'path':'state','equals':status}
-        for status in ('running','starting','failed','stopped_unexpectedly')
-    ]}
+def test_lifecycle_controls_are_part_of_configuration_task_and_semantically_gated():
+    ir, composition=compile_slh_application()
+    nodes={n['id']:n for n in ir['surfaces'][0]['nodes']}
+    form=nodes['surface-node:slh.configure-org-slh']
+    assert form['resetControl'] is False
+    disable=nodes['surface-node:slh.organization-enablement']
+    toggle=nodes['surface-node:slh.start-stop-org-slh']
+    assert disable['labelByState']['labels']=={'running':'Disable','stopped':'Disable','disabled':'Enable'}
+    assert toggle['labelByState']['labels']=={'running':'Stop','stopped':'Start'}
+    assert {m['ref'] for r in composition['regions'] if r['recipe']=='task' for m in r['members']} >= {
+        form['id'],disable['id'],toggle['id']}
+    assert not any(r['id'].endswith('service-lifecycle') for r in composition['regions'])
 
 
 @pytest.mark.parametrize('width',[390,1040,1440])
-def test_service_lifecycle_persists_and_disable_is_state_gated(width):
+def test_configure_footer_actions_follow_authoritative_lifecycle(width):
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
         try:
@@ -68,51 +58,64 @@ def test_service_lifecycle_persists_and_disable_is_state_gated(width):
             page.evaluate(MOCK)
             page.set_content(render_slh_page())
             page.wait_for_function("() => window.__mcelSlh?.app.readState('state:organization-lifecycle')?.state==='not_configured'")
-            initial=_status(page)
-            assert initial=={'regionPresent':True,'regionVisible':True,'buttonPresent':True,
-                'buttonVisible':True,'disabled':True,'ariaDisabled':'true'},initial
+            form=page.locator('form[data-intent="intent:configure-and-enable-organization"]')
+            assert form.count()==1
+            assert form.locator('button[type="reset"]').count()==0
+            disable=form.locator('button[data-intent="intent:toggle-organization-enablement"]')
+            toggle=form.locator('button[data-intent="intent:toggle-organization"]')
+            assert disable.count()==toggle.count()==1
+            assert disable.is_disabled() and toggle.is_disabled()
             assert all(c['method']=='GET' for c in page.evaluate('window.slhCalls'))
-            for state,should_enable in [('running',True),('starting',True),('failed',True),
-                                        ('stopped_unexpectedly',True),('disabled',False),
-                                        ('not_configured',False),('unknown',False)]:
-                page.evaluate('(s)=>{window.lifecycle=s}',state)
+            for state, can_disable, can_toggle, label, enable_label in [
+                ('running',True,True,'Stop','Disable'),('stopped',True,True,'Start','Disable'),
+                ('disabled',True,False,'Start','Enable'),('starting',False,False,'Start','Disable'),
+                ('failed',False,False,'Start','Disable'),('not_configured',False,False,'Start','Disable')]:
+                page.evaluate('(s)=>window.lifecycle=s',state)
                 page.evaluate("() => window.__mcelSlh.app.execute('intent:refresh-lifecycle')")
                 page.wait_for_function('(s)=>window.__mcelSlh.app.readState("state:organization-lifecycle")?.state===s',arg=state)
-                observed=_status(page)
-                assert observed['regionVisible'] and observed['buttonVisible'],(state,observed)
-                assert observed['disabled'] is (not should_enable),(state,observed)
-                assert observed['ariaDisabled']==str(not should_enable).lower(),(state,observed)
-                if not should_enable:
-                    posted_before=page.evaluate("() => window.slhCalls.filter(c=>c.method==='POST').length")
-                    # Both ordinary and synthetic clicks must not invoke the port.
-                    page.locator('button[data-intent="intent:disable-organization"]').evaluate('(button)=>button.click()')
-                    result=page.evaluate("async()=>await window.__mcelSlh.app.execute('intent:disable-organization')")
-                    assert result['disposition']=='refused-before-attempt',result
-                    assert page.evaluate("() => window.slhCalls.filter(c=>c.method==='POST').length")==posted_before
-            # A legal enabled action still goes through the existing setup port.
+                assert disable.is_enabled() is can_disable,(state,'disable')
+                assert toggle.is_enabled() is can_toggle,(state,'toggle')
+                assert toggle.inner_text()==label
+                assert disable.inner_text()==enable_label
+                if not can_disable:
+                    before=page.evaluate("() => window.slhCalls.filter(c=>c.method==='POST').length")
+                    refused=page.evaluate("async()=>window.__mcelSlh.app.execute('intent:toggle-organization-enablement')")
+                    assert refused['disposition']=='refused-before-attempt',refused
+                    assert page.evaluate("() => window.slhCalls.filter(c=>c.method==='POST').length")==before
             page.evaluate("() => {window.lifecycle='running'}")
             page.evaluate("() => window.__mcelSlh.app.execute('intent:refresh-lifecycle')")
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='running'")
-            page.locator('button[data-intent="intent:disable-organization"]').click()
-            page.wait_for_function("() => window.slhCalls.some(c=>c.body?.action==='disable')")
+            toggle.click()
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='stopped'")
+            assert toggle.inner_text()=='Start'
+            assert disable.is_enabled() and disable.inner_text()=='Disable'
+            toggle.click()
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='running'")
+            disable.click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='disabled'")
-            assert _status(page)['disabled'] is True
-            assert _status(page)['regionVisible'] is True
+            assert disable.inner_text()=='Enable' and toggle.is_disabled()
+            disable.click()
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='running'")
+            assert disable.inner_text()=='Disable' and toggle.inner_text()=='Stop'
+            assert [c['body']['action'] for c in page.evaluate('window.slhCalls') if c['body']] == ['toggle','toggle','toggle-enablement','toggle-enablement']
         finally:
             browser.close()
 
 
-def test_service_lifecycle_stays_local_and_existing_empty_region_rule_remains():
+@pytest.mark.parametrize('view',['network','remote-seh'])
+def test_no_local_management_controls_on_remote_targets(view):
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None)
         try:
             page=browser.new_page(viewport={'width':1040,'height':800})
             page.evaluate(MOCK)
-            page.set_content(render_slh_page('network'))
-            page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-target')==='network'")
-            status=_status(page)
-            assert status['regionPresent'] and status['buttonPresent'],status
-            assert not status['regionVisible'] and not status['buttonVisible'],status
-            assert all(call['method']=='GET' for call in page.evaluate('window.slhCalls'))
+            page.set_content(render_slh_page(view))
+            page.wait_for_function('() => !!window.__mcelSlh?.app')
+            for intent in ('toggle-organization-enablement','toggle-organization'):
+                button=page.locator(f'button[data-intent="intent:{intent}"]')
+                assert button.count()==1 and not button.is_visible()
+                refused=page.evaluate('(id)=>window.__mcelSlh.app.execute("intent:"+id)',intent)
+                assert refused['disposition']=='refused-before-attempt'
+            assert not any(c['method']=='POST' for c in page.evaluate('window.slhCalls'))
         finally:
             browser.close()

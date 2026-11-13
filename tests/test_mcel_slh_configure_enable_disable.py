@@ -13,15 +13,18 @@ from main_computer.mcel_slh_first_run import SlhFirstRunController, FirstRunErro
 def test_compiled_lifecycle_is_explicit_and_authority_bounded():
     ir, _ = compile_slh_application()
     ids = {x['id']: x for x in ir['intents']}
-    assert 'intent:login-administrator' not in ids
+    assert not any(n['id']=='surface-node:slh.login-administrator' for n in ir['surfaces'][0]['nodes'])
     assert set(ids) & {
-        'intent:configure-and-enable-organization', 'intent:disable-organization',
-    } == {'intent:configure-and-enable-organization', 'intent:disable-organization'}
+        'intent:configure-and-enable-organization', 'intent:toggle-organization-enablement',
+    } == {'intent:configure-and-enable-organization', 'intent:toggle-organization-enablement'}
     assert ids['intent:configure-and-enable-organization']['risk'] == 'consequential'
-    assert ids['intent:disable-organization']['risk'] == 'consequential'
+    assert ids['intent:toggle-organization-enablement']['risk'] == 'consequential'
+    assert ids['intent:toggle-organization']['risk'] == 'consequential'
     nodes = {x['id']: x for x in ir['surfaces'][0]['nodes']}
     assert nodes['surface-node:slh.configure-org-slh']['intent']['ref'] == 'intent:configure-and-enable-organization'
-    assert nodes['surface-node:slh.disable-org-slh']['intent']['ref'] == 'intent:disable-organization'
+    assert nodes['surface-node:slh.organization-enablement']['intent']['ref'] == 'intent:toggle-organization-enablement'
+    assert nodes['surface-node:slh.start-stop-org-slh']['intent']['ref'] == 'intent:toggle-organization'
+    assert nodes['surface-node:slh.configure-org-slh']['resetControl'] is False
     assert 'first-administrator-identity' in render_slh_page()
 
 
@@ -57,9 +60,9 @@ def test_lifecycle_browser_explicit_transitions_preserve_selected_identity():
                     window.orgState='running';window.orgEndpoint=req.body.arguments.bindAddress+':'+req.body.arguments.port;return {ok:true,json:async()=>({
                       outcome:'RUNNING',message:'Configured and running',deviceId:req.body.arguments.adminDeviceId})};
                   }
-                  if(action==='disable'){
-                    window.orgState='disabled';return {ok:true,json:async()=>({
-                      outcome:'DISABLED',message:'Stopped and disabled',deviceId:req.body.arguments.adminDeviceId})};
+                  if(action==='toggle-enablement'){
+                    window.orgState=window.orgState==='disabled'?'running':'disabled';return {ok:true,json:async()=>({
+                      outcome:window.orgState==='disabled'?'DISABLED':'ENABLED',message:'Enablement updated',deviceId:req.body.arguments.adminDeviceId})};
                   }
                 }
                 throw Error('UNEXPECTED_API:'+url);
@@ -81,9 +84,9 @@ def test_lifecycle_browser_explicit_transitions_preserve_selected_identity():
                 'adminDeviceId':'two','bindAddress':'0.0.0.0','port':9023}
             page.wait_for_function("() => window.__mcelSlh?.app.readState('state:organization-lifecycle')?.state==='running' ")
             assert form.locator('[name="port"]').input_value()=='9023' 
-            page.locator('button[data-intent="intent:disable-organization"]').click()
-            page.wait_for_function("() => window.slhCalls.some(c=>c.action==='disable')")
-            assert page.evaluate("window.slhCalls.filter(c=>c.action==='disable')[0].body.arguments.adminDeviceId")=='two'
+            page.locator('button[data-intent="intent:toggle-organization-enablement"]').click()
+            page.wait_for_function("() => window.slhCalls.some(c=>c.action==='toggle-enablement')")
+            assert page.evaluate("window.slhCalls.filter(c=>c.action==='toggle-enablement')[0].body.arguments.adminDeviceId")=='two'
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='disabled' ")
             assert form.locator('[name="port"]').input_value()=='9023' 
             assert page.evaluate("window.__mcelSlh.app.readState('state:selected-local-identity')")=='two'
@@ -100,7 +103,7 @@ def test_configure_refuses_invalid_bind_before_touching_service(tmp_path):
     with pytest.raises(FirstRunError) as err:
         ctl.execute('configure-and-enable',{'adminDeviceId':'dev','bindAddress':'0.0.0.0','port':8897})
     assert err.value.code=='INVALID_PORT'
-    for action in ('configure-and-enable','disable'):
+    for action in ('configure-and-enable','disable','toggle-enablement'):
         with pytest.raises(FirstRunError) as err:
             ctl.execute(action, {'wrong':'fields'})
         assert err.value.code=='INVALID_SETUP_ARGUMENTS'
@@ -147,18 +150,36 @@ def test_real_disposable_configure_starts_persists_disable_and_reconfigure(tmp_p
         # Repeating the same listener is idempotent, without a restart.
         result=controller.execute('configure-and-enable',{**args,'port':second_port})
         assert result['outcome']=='ALREADY_RUNNING'
+        # Stop is temporary: keep enablement and suspend automatic recovery.
+        stopped = controller.execute('toggle', {'adminDeviceId':identity})
+        assert stopped['outcome']=='STOPPED',stopped
+        assert controller.status()['organization']=='stopped'
+        assert read_config(state)['enabled'] is True
+        restarted = controller.execute('toggle', {'adminDeviceId':identity})
+        assert restarted['outcome']=='RUNNING',restarted
+        assert controller.status()['organization']=='running'
+        assert read_config(state)['enabled'] is True
         # Login authenticates only. It did not initiate configuration or start.
         assert controller.execute('login',{'adminDeviceId':identity})['role']=='admin'
-        stopped=controller.execute('disable',{'adminDeviceId':identity})
+        stopped=controller.execute('toggle-enablement',{'adminDeviceId':identity})
         assert stopped['outcome']=='DISABLED'
         cfg=read_config(state)
         assert cfg['enabled'] is False and cfg['configured'] is True and cfg['api_port']==second_port
         assert controller.status()['organization']=='disabled'
+        # Temporary Start must not bypass the persistent Disabled policy.
+        with pytest.raises(FirstRunError) as err:
+            controller.execute('toggle', {'adminDeviceId':identity})
+        assert err.value.code == 'ORGANIZATION_TRANSITION_NOT_READY'
+        assert read_config(state)['enabled'] is False
         with pytest.raises(FirstRunError) as err:
             controller.execute('login',{'adminDeviceId':identity})
         assert err.value.code=='ORGANIZATION_NOT_RUNNING'
+        result=controller.execute('toggle-enablement',{'adminDeviceId':identity})
+        assert result['outcome']=='ENABLED',result
+        assert read_config(state)['enabled'] is True
+        assert controller.status()['organization']=='running'
         result=controller.execute('configure-and-enable',{**args,'port':second_port})
-        assert result['outcome']=='RUNNING',result
+        assert result['outcome']=='ALREADY_RUNNING',result
         cfg=read_config(state)
         assert cfg['api_port']==second_port and cfg['enabled'] is True
         controller.execute('disable',{'adminDeviceId':identity})
@@ -201,3 +222,51 @@ def test_org_autostarts_from_persisted_enable_and_stays_stopped_after_disable(tm
         assert read_config(tmp_path)['configured'] is True
     finally:
         ctl2.close()
+
+
+def test_temporary_stop_suspends_watchdog_but_keeps_autostart_policy(tmp_path, monkeypatch):
+    """A deliberate Stop must not trigger the manager's automatic recovery loop."""
+    import main_computer.slh.organization_controller as module
+    from main_computer.slh.organization_state import DEFAULTS, read_config, save_config
+    class Authority:
+        directory = tmp_path
+        def initialized(self): return True
+    class Child:
+        pid = 999991
+        dead = False
+        def poll(self): return 0 if self.dead else None
+        def terminate(self): self.dead = True
+        def wait(self, timeout=None): return 0
+    launched = []
+    def launch(*args, **kwargs):
+        child = Child()
+        launched.append(child)
+        return child
+    monkeypatch.setattr(module, 'stop_recorded_process', lambda *args, **kwargs: {'state':'not-running'})
+    save_config(tmp_path, {**DEFAULTS, 'configured': True, 'enabled': True,
+                           'activation_confirmed':True, 'host':'127.0.0.1'})
+    controller = module.OrganizationController(Authority(), runner=launch, automatic_start=False)
+    monkeypatch.setattr(controller, '_listening', lambda config: bool(
+        controller._process is not None and controller._process.poll() is None))
+    try:
+        controller.enable()
+        assert controller.status()['state'] == 'running'
+        assert len(launched) == 1
+        stopped = controller.stop()
+        assert stopped['state'] == 'stopped'
+        assert not stopped['listening']
+        assert read_config(tmp_path)['enabled'] is True
+        # Exercise one watchdog cycle without sleeping: it must not relaunch.
+        polls = iter((False,True))
+        monkeypatch.setattr(controller._stop, 'wait', lambda timeout: next(polls))
+        controller._watch()
+        assert len(launched) == 1
+        assert controller.status()['state'] == 'stopped'
+        controller.enable()
+        assert len(launched) == 2
+        assert controller.status()['state'] == 'running'
+        controller.disable()
+        assert read_config(tmp_path)['enabled'] is False
+        assert controller.status()['state'] == 'disabled'
+    finally:
+        controller.close()

@@ -246,3 +246,47 @@ body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mce
   grid-template-columns:repeat(4,minmax(clamp(3.2rem,5.5vw,5rem),1fr));
   max-width:100%;
 }
+
+/* A semantic assistance workspace with one embedded terminus and a
+ * read-only evidence/context region. No calculator ID, viewport target or
+ * fixed positions: the authored roles determine the composition. */
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"][data-mcel-tasks~="review"]:has(> [data-mcel-purpose="inspection"]):has(> [data-mcel-purpose="assistance"] [data-mcel-embedded-chat]) {
+  display:flex;flex-direction:column;gap:10px;flex:1 1 auto;align-self:stretch;
+  min-height:100%;height:100%;overflow:hidden;
+}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"]:has(> [data-mcel-purpose="inspection"]) > h2 {margin:0;font-size:1.15rem;}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"]:has(> [data-mcel-purpose="inspection"]) > p {margin:0;color:var(--mcel-muted);font-size:.9rem;}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] {
+  flex:none;min-height:0;padding:10px 12px!important;border-radius:9px!important;
+  display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;
+}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] h3 {
+  width:100%;font-size:.89rem;margin:0;color:var(--mcel-ink);
+}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] [data-node-kind="state-value"]:has(> output:empty) {display:none;}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] [data-node-kind="state-value"]:not(:has(> output:empty)) {
+  display:inline-flex;align-items:baseline;gap:5px;max-width:100%;min-width:0;
+  font-size:.82rem;color:var(--mcel-muted);
+}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] [data-mcel-value-label] {font-weight:650;color:var(--mcel-muted);}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="inspection"] output {color:var(--mcel-ink);font-family:ui-monospace,monospace;overflow-wrap:anywhere;}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="assistance"]:has([data-mcel-embedded-chat]) {
+  flex:1 1 auto;min-height:220px;display:flex;flex-direction:column;overflow:hidden;padding:0!important;
+}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="assistance"]:has([data-mcel-embedded-chat]) > h3 {display:none;}
+:is(body.mcel-expert-page, [data-mcel-presentation="expert"]) [data-mcel-purpose="assistance"] > [data-mcel-purpose="assistance"] [data-mcel-embedded-chat] {
+  min-height:0;flex:1 1 auto;display:flex;flex-direction:column;
+}
+/* The generated expert scroller defaults every region to intrinsic height.
+ * A semantic assistance region that owns one embedded conversation instead
+ * uses the remaining workspace, with scrolling delegated to the conversation.
+ * This is a role-based exception to the default region sizing, not a
+ * Calculator-specific placement rule. */
+body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mcel-natural-scroller="workspace"] > [data-mcel-purpose="assistance"][data-mcel-tasks~="review"]:has(> [data-mcel-purpose="inspection"]):has(> [data-mcel-purpose="assistance"] [data-mcel-embedded-chat]) {
+  flex:1 1 0;min-height:0;max-height:100%!important;overflow:hidden!important;
+}
+/* The semantic embedded-chat mount wrapper must participate in its parent
+ * assistant region's remaining-height allocation. */
+[data-mcel-purpose="assistance"] > :has(> [data-mcel-embedded-chat][data-chat-console-layout="conversation"]) {
+  display:flex;flex:1 1 auto;min-height:0;min-width:0;
+}

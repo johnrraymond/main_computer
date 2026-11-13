@@ -118,9 +118,9 @@ def test_generic_expert_layout_policy_has_no_app_specific_branches():
     assert 'region.tasks?.includes("compute")' in js
     assert 'region.priority === "primary"' in js
 
-def test_compiled_semantics_and_authority_are_unchanged():
+def test_compiled_non_help_authority_remains_and_help_is_consolidated():
     ir=compile_expanded()
     assert not ir['layouts']
-    assert len(ir['intents'])==14
+    assert len(ir['intents'])==7
     assert {e['risk'] for e in ir['effects']}=={'external-read'}
     assert all('htmlSource' in r for r in ir['surfaces'][0]['interfaceIntent']['regions'])

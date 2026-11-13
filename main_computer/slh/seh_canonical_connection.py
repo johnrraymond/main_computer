@@ -69,18 +69,10 @@ def resolve_canonical_connection(state_dir: Path, *, mother_root: Path | None = 
         raise SEHConnectionResolutionError('Remote SEH signing-key trust cannot be verified')
     if key['value'] != public_key_b64:
         raise SEHConnectionResolutionError('Remote SEH public-key trust differs from preserved SLH identity')
-    # Until the remote route protocol is migrated, this existing Coolify wire
-    # value is needed to connect to the already running SEH. It is NOT an
-    # identity authority, is never requested from an operator, and is not saved.
-    route = git._diagnostic_env_value(rows, 'SEH_SLH_ID')
-    if route['state'] != 'VISIBLE':
-        raise SEHConnectionResolutionError('Existing SEH protocol route cannot be verified')
-    legacy_route = route['value']
-
     from tools.seh_control.deployment_state import identity_binding
     later_record, _, _, _ = git._canonical_selection(root, network)
     if (identity_binding(record) != identity_binding(later_record) or
             later_record['deployment'].get('application_uuid') != application_uuid):
         raise SEHConnectionResolutionError('SEH identity or application changed during connection resolution')
-    return SEHConnectionSettings(enabled=True, seh_url=url, slh_id=legacy_route,
+    return SEHConnectionSettings(enabled=True, seh_url=url,
                                  allow_loopback_lab=False, retry_seconds=2.0)

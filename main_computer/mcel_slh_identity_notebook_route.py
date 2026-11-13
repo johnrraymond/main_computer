@@ -31,9 +31,9 @@ def handle_identity_notebook(self):
             authorization=self.headers.get('Authorization','')
             token=authorization[7:] if authorization.startswith('Bearer ') else ''
             result=execute_notebook(data['operation'],data['arguments'],target='local',local_token=token)
-        elif target=='network':
+        elif target in ('network','remote-seh'):
             if self.headers.get('Authorization'):raise IdentityNotebookError('INVALID_NOTEBOOK_REQUEST')
-            result=execute_notebook(data['operation'],data['arguments'],target='network',remote_ticket=data['sessionTicket'])
+            result=execute_notebook(data['operation'],data['arguments'],target=target,remote_ticket=data['sessionTicket'])
         else:raise IdentityNotebookError('INVALID_NOTEBOOK_REQUEST')
     except IdentityNotebookError as exc:
         self._send_json({'error':{'code':exc.code}},exc.status)

@@ -23,9 +23,7 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-shell-app-card strong{font-size:14px}
 .mcel-shell-app-card span{font-size:12px;color:var(--mcel-muted)}
 .mcel-shell-app-card small{font-size:10px;color:#a3c5fa;text-transform:uppercase;letter-spacing:.06em}
-.mcel-shell-workspace{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0;background:#10061d}
-.mcel-shell-workspace-header{background:#11110e;min-height:56px;padding:9px 18px;display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid var(--mcel-line)}
-.mcel-shell-workspace-header h2{font-size:17px;margin:0}
+.mcel-shell-workspace{display:grid;grid-template-rows:minmax(0,1fr);min-height:0;min-width:0;background:#10061d}
 .mcel-shell-application-mount{min-width:0;min-height:0;position:relative;overflow:hidden}
 .mcel-shell-overview{height:100%;padding:clamp(18px,5vw,64px);overflow:auto;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:12px}
 .mcel-shell-overview h3{font-size:clamp(27px,3vw,44px);line-height:1.08;margin:0;max-width:720px}
@@ -37,7 +35,7 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-shell-application-mount:is([data-mode="semantic"],[data-mode="legacy"]) .mcel-shell-overview{display:none}
 .mcel-shell-status{background:#0a0a08;color:#c9c0aa;border-top:1px solid var(--mcel-line);height:26px;font:12px/24px ui-monospace,monospace;padding:0 12px 0 calc(var(--mcel-rail) + 10px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mcel-shell-status[data-error="true"]{color:#ff9a9a}
-@media (max-width:600px){.mcel-shell-masthead{padding:8px 12px}.mcel-shell-masthead h1{font-size:14px}.mcel-shell-workspace-header{padding:8px}.mcel-shell-workspace-header h2{font-size:15px}.mcel-shell-overview{justify-content:flex-start}}
+@media (max-width:600px){.mcel-shell-masthead{padding:8px 12px}.mcel-shell-masthead h1{font-size:14px}.mcel-shell-overview{justify-content:flex-start}}
 @media (prefers-reduced-motion:reduce){.mcel-shell-launcher-panel{transition:none}}
 /* Original desktop icons are dynamically sourced from the authoritative legacy CSS. */
 body.mcel-applications-candidate{--ink:#f7f3e8;--muted:#c9c0aa;--gold:#f6c75b}

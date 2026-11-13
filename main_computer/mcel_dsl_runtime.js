@@ -995,7 +995,7 @@ function createDsl(metadata, source) {
   }
   const surface = {
     form(name, options = {}) {
-      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "submitLabel"], `surface.form:${name}`);
+      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "resetControl", "submitLabel"], `surface.form:${name}`);
       if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
         "MCEL_DSL_FORM_LABEL_INVALID", "Form label must be nonempty semantic text.");
       if(options.submitLabel!==undefined)assert(typeof options.submitLabel==="string" &&
@@ -1054,13 +1054,96 @@ function createDsl(metadata, source) {
       if(options.clearIntent)assert(options.clearIntent instanceof IntentHandle && options.clearIntent.record.operationKind==="capability" &&
         options.clearIntent.record.input.length===0,"MCEL_DSL_FORM_CLEAR_INVALID","Clear intent must be a no-input capability operation.");
       if(options.resetAndSubmit!==undefined)assert(typeof options.resetAndSubmit==="boolean","MCEL_DSL_FORM_RESET_INVALID","Reset-and-submit must be boolean.");
+      if(options.resetControl!==undefined)assert(typeof options.resetControl==="boolean" && (options.resetControl || !options.resetAndSubmit),
+        "MCEL_DSL_FORM_RESET_CONTROL_INVALID","Reset control must be boolean and required for reset-and-submit.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
         sourceName: name, fields, ...(options.label?{label:options.label}:{}),
         ...(options.submitLabel!==undefined?{submitLabel:options.submitLabel}:{}), ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
         ...(Object.keys(fieldState).length?{fieldState}:{}),...(Object.keys(acceptResult).length?{acceptResult}:{}),
         ...(editor?{editor}:{}),...(options.clearIntent?{clearIntent:ref(options.clearIntent)}:{}),
-        ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...modeCondition(options, `surface.form:${name}`)};
+        ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...(options.resetControl===false?{resetControl:false}:{}),
+        ...modeCondition(options, `surface.form:${name}`)};
       return surfaceNode(name, record);
+    },
+    operationNotebook(name, options = {}) {
+      // A generic read/command notebook for operational status. Unlike a
+      // record notebook it has no per-identity mutations or retention policy.
+      knownOptions(options,["title","tabs","when"],`surface.operationNotebook:${name}`);
+      assert(typeof options.title==="string" && options.title.length>0 && options.title.length<=120 &&
+        Array.isArray(options.tabs) && options.tabs.length>=2 && options.tabs.length<=8,
+        "MCEL_DSL_OPERATION_NOTEBOOK_INVALID","Operational notebook needs bounded tabs.");
+      const seen=new Set();
+      const tabs=options.tabs.map(tab=>{
+        knownOptions(tab,["id","label","state","fields","refresh","actions","forms","receipt","note"],"surface.operationNotebook.tab");
+        assert(typeof tab.id==="string" && /^[a-z][a-z0-9-]*$/.test(tab.id) && !seen.has(tab.id) &&
+          typeof tab.label==="string" && tab.label.length>0 && tab.label.length<=80 &&
+          tab.state instanceof StateHandle && tab.state.record.authority==="derived" &&
+          tab.state.record.schema.kind==="record" &&
+          Array.isArray(tab.fields) && tab.fields.length>0 &&
+          tab.fields.every(field=>typeof field==="string" && field in tab.state.record.schema.fields) &&
+          tab.refresh instanceof IntentHandle && tab.refresh.record.operationKind==="capability" &&
+          tab.refresh.record.risk==="external-read" &&
+          tab.refresh.record.resultBindings.some(binding=>binding.target.ref===tab.state.id) &&
+          (tab.note===undefined || typeof tab.note==="string" && tab.note.length<=400),
+          "MCEL_DSL_OPERATION_NOTEBOOK_TAB_INVALID","Tab requires derived typed status and read intent.");
+        seen.add(tab.id);
+        const actions=tab.actions||{};
+        assert(Object.keys(actions).length<=6 && Object.entries(actions).every(([label,action])=>
+          typeof label==="string" && label.length>0 && label.length<=40 &&
+          action?.intent instanceof IntentHandle && action.intent.record.operationKind==="capability" &&
+          action.intent.record.risk==="consequential" && action.intent.record.input.length===0 &&
+          (action.confirm===undefined || typeof action.confirm==="string" && action.confirm.length<=240)),
+          "MCEL_DSL_OPERATION_NOTEBOOK_ACTION_INVALID","Actions require no-argument consequential intents.");
+        const forms=tab.forms||[];
+        assert(Array.isArray(forms) && forms.length<=3,
+          "MCEL_DSL_OPERATION_NOTEBOOK_FORMS_INVALID","At most three typed operational forms are supported.");
+        const typedForms=forms.map(form=>{
+          knownOptions(form,["label","intent","submitLabel","secretFields","choicesFrom","confirm"],
+            "surface.operationNotebook.form");
+          assert(form.intent instanceof IntentHandle && form.intent.record.operationKind==="capability" &&
+            form.intent.record.risk==="consequential" && form.intent.record.input.length>=1 &&
+            form.intent.record.input.length<=6 &&
+            typeof form.label==="string" && form.label.length>0 && form.label.length<=80 &&
+            typeof form.submitLabel==="string" && form.submitLabel.length>0 && form.submitLabel.length<=80 &&
+            (form.confirm===undefined || typeof form.confirm==="string" && form.confirm.length<=240),
+            "MCEL_DSL_OPERATION_NOTEBOOK_FORM_INVALID","Form must bind a typed consequential intent.");
+          const keys=new Set(form.intent.record.input.map(i=>i.sourceName));
+          const secret=form.secretFields||[];
+          assert(Array.isArray(secret)&&secret.every(key=>keys.has(key)&&
+            form.intent.record.input.find(i=>i.sourceName===key)?.schema?.kind==="string"),
+            "MCEL_DSL_OPERATION_NOTEBOOK_SECRET_INVALID","Secret fields must be typed strings.");
+          const choices={};
+          for(const [field,choice] of Object.entries(form.choicesFrom||{})){
+            const descriptor=choice?.state?.record;
+            const item=descriptor?.schema?.fields?.[choice.path];
+            assert(keys.has(field) && descriptor?.authority==="derived" &&
+              descriptor?.schema?.kind==="record" && item?.kind==="list" &&
+              item?.items?.kind==="record" && item.items.fields?.[choice.valueKey]?.kind==="string" &&
+              item.items.fields?.[choice.labelKey]?.kind==="string",
+              "MCEL_DSL_OPERATION_NOTEBOOK_CHOICE_INVALID","Choice must reference a typed observed list.");
+            choices[field]={state:ref(choice.state),path:choice.path,
+              valueKey:choice.valueKey,labelKey:choice.labelKey};
+          }
+          return {label:form.label,intent:ref(form.intent),submitLabel:form.submitLabel,
+            secretFields:secret,choicesFrom:choices,
+            ...(form.confirm?{confirm:form.confirm}:{})};
+        });
+        const receipt=tab.receipt;
+        assert(receipt===undefined || receipt instanceof StateHandle &&
+          receipt.record.authority==="derived" && receipt.record.schema.kind==="record" &&
+          receipt.record.schema.fields?.outcome?.kind==="string" &&
+          receipt.record.schema.fields?.message?.kind==="string",
+          "MCEL_DSL_OPERATION_NOTEBOOK_RECEIPT_INVALID","Receipt must be a typed derived record.");
+        return {id:tab.id,label:tab.label,state:ref(tab.state),fields:[...tab.fields],
+          refresh:ref(tab.refresh),actions:Object.fromEntries(Object.entries(actions).map(([label,action])=>
+            [label,{intent:ref(action.intent),...(action.confirm?{confirm:action.confirm}:{}),
+              ...(action.enabledWhen?{enabledWhen:{state:ref(action.enabledWhen.state),
+                path:action.enabledWhen.path,equals:action.enabledWhen.equals}}:{})}])),
+          ...(typedForms.length?{forms:typedForms}:{}),...(receipt?{receipt:ref(receipt)}:{}),
+          ...(tab.note?{note:tab.note}:{})};
+      });
+      return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"operation-notebook",
+        title:options.title,tabs,...modeCondition(options,`surface.operationNotebook:${name}`)});
     },
     notebook(name, options = {}) {
       knownOptions(options,["title","tabs","retention","empty"],`surface.notebook:${name}`);
@@ -1148,7 +1231,7 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen", "label", "labelByState"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const resetOutputs=[];
       for(const item of options.resetOutputs||[]){
@@ -1159,8 +1242,25 @@ function createDsl(metadata, source) {
           "MCEL_DSL_CONTROL_RESET_VALUE_INVALID","Control reset value must match its state schema.");
         resetOutputs.push({state:ref(item.state),value:item.value});
       }
+      let labelByState;
+      if(options.labelByState){
+        const spec=options.labelByState;
+        assert(spec.state instanceof StateHandle && stateById.get(spec.state.id)===spec.state &&
+          spec.state.record.authority==="derived" && spec.state.record.schema.kind==="record" &&
+          typeof spec.path==="string" && spec.state.record.schema.fields?.[spec.path]?.kind==="string" &&
+          spec.labels && typeof spec.labels==="object" && !Array.isArray(spec.labels) &&
+          Object.keys(spec.labels).length>=1 && Object.keys(spec.labels).length<=12 &&
+          Object.entries(spec.labels).every(([key,value])=>typeof key==="string" && key.length<=80 &&
+            typeof value==="string" && value.length>0 && value.length<=80) &&
+          typeof spec.fallback==="string" && spec.fallback.length>0 && spec.fallback.length<=80,
+          "MCEL_DSL_ACTION_DYNAMIC_LABEL_INVALID","State-dependent action labels require a typed derived state.");
+        labelByState={state:ref(spec.state),path:spec.path,labels:{...spec.labels},fallback:spec.fallback};
+      }
+      if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 &&
+        options.label.length<=80,"MCEL_DSL_ACTION_LABEL_INVALID","Action label must be bounded text.");
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
+        ...(options.label?{label:options.label}:{}),...(labelByState?{labelByState}:{}),
         ...(resetOutputs.length?{resetOutputs}:{}),...modeCondition(options, `surface.action:${name}`),
         ...(options.enabledWhen===undefined?{}:{enabledWhen:visibilityCondition(options.enabledWhen, `surface.action:${name}.enabledWhen`)}),
       };

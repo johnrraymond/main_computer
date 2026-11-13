@@ -44,8 +44,8 @@ def select(page,mode):
 def test_expanded_compiles_from_real_semantic_html_and_js():
     ir=compile_expanded()
     assert not ir.get('layouts')
-    assert len(ir['intents'])==14
-    assert len(ir['surfaces'][0]['nodes'])>=16
+    assert len(ir['intents'])==7
+    assert len(ir['surfaces'][0]['nodes'])==14
     assert len(ir['surfaces'][0]['interfaceIntent']['regions'])==13
     assert {a['risk'] for a in ir['effects']}=={'external-read'}
     assert any(n['nodeKind']=='plot' for n in ir['surfaces'][0]['nodes'])
@@ -64,17 +64,78 @@ def test_semantic_hierarchy_and_purpose_headings_visible(browser):
         select(p,'symbolic')
         assert p.locator('form[data-intent="intent:evaluate-symbolic"]').is_visible()
         select(p,'help')
-        assert p.locator('form[data-intent="intent:ask-arithmetic-model"]').is_visible()
+        assert p.locator('[data-mcel-embedded-chat]').is_visible()
     finally:p.close()
+
+def test_help_oracle_has_exactly_one_ai_terminus_and_owned_context():
+    ir = compile_expanded()
+    regions = {r["id"].split(".")[-1]: r for r in ir["surfaces"][0]["interfaceIntent"]["regions"]}
+    help_region = regions["help-workspace"]
+    assert help_region["purpose"] == "assistance"
+    assert help_region["tasks"] == ["review"]
+    context = regions["calculator-context"]
+    chat = regions["helper-chat"]
+    assert context["parentId"] == chat["parentId"] == help_region["id"]
+    assert context["purpose"] == "inspection"
+    assert [m["ref"].split(".")[-1] for m in context["members"]] == [
+        "basic-expression-context", "basic-result-context", "graph-expression-context",
+        "symbolic-expression-context", "symbolic-result-context"]
+    assert [m["ref"].split(".")[-1] for m in chat["members"]] == ["calculator-chat"]
+    assert chat["nativeTag"] == "section"
+    ai_surfaces = [n for n in ir["surfaces"][0]["nodes"] if n["nodeKind"] == "embedded-chat"]
+    assert len(ai_surfaces) == 1
+    assert ai_surfaces[0]["intent"] == {"ref": "intent:calculator-chat"}
+    assert {i["id"] for i in ir["intents"]} == {
+        "intent:evaluate", "intent:draw-graph", "intent:evaluate-symbolic",
+        "intent:edit-graph-expression", "intent:clear-symbolic", "intent:calculator-chat",
+        "intent:switch-mode"}
+    assert {effect["risk"] for effect in ir["effects"]} == {"external-read"}
+    for legacy in ("ask-arithmetic-model", "ask-graph-model", "ask-symbolic-model", "ask-result-question"):
+        assert not any(i["id"] == "intent:" + legacy for i in ir["intents"])
+
+
+@pytest.mark.parametrize("width", [390, 1272])
+def test_one_help_composer_and_notebook_toggle(browser, width):
+    p = opened(browser, width)
+    try:
+        select(p, "help")
+        assert p.locator('[data-mcel-embedded-chat]').count() == 1
+        assert p.locator('form[data-intent^="intent:ask-"]').count() == 0
+        assert p.locator('[data-mcel-region$=".calculator-context"] [data-mcel-value-label]').count() == 5
+        assert p.locator('[data-chat-conversation-role="composer"] textarea').count() == 1
+        assert p.locator('[data-chat-conversation-role="composer"] .chat-cell-controls button').first.is_visible()
+        assert p.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert p.locator('[data-chat-console-embed]').get_attribute('data-mcel-chat-layout-status') == 'pass'
+        dimensions = p.evaluate('''() => {
+          const rect = selector => document.querySelector(selector).getBoundingClientRect();
+          return {
+            scroller:rect('[data-mcel-natural-scroller="workspace"]').height,
+            help:rect('[data-mcel-region$=".help-workspace"]').height,
+            chat:rect('[data-mcel-embedded-chat]').width,
+            editor:rect('[data-chat-conversation-role="composer"] textarea').width
+          };
+        }''')
+        assert dimensions['help'] >= dimensions['scroller'] * 0.9
+        assert dimensions['editor'] >= dimensions['chat'] * 0.65
+        toggle = p.locator('[data-chat-conversation-switch]')
+        assert toggle.inner_text() == "Notebook tools"
+        toggle.click()
+        assert toggle.inner_text() == "Conversation view"
+        assert p.locator('[data-chat-console-embedded-notebook] .chat-cell-tabs').first.is_visible()
+        toggle.click()
+        assert p.locator('[data-chat-conversation-role="composer"] textarea').count() == 1
+    finally:
+        p.close()
+
 
 def test_decimal_and_unit_arithmetic_real_core(browser):
     p=opened(browser)
     try:
         f=p.locator('form[data-intent="intent:evaluate"]')
         f.locator('input[name="expression"]').fill('2.5 + 3.25');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:arithmetic-result"]').get_by_text('5.75').wait_for()
+        p.locator('[data-mcel-region$=".answer"] [data-state="state:arithmetic-result"]').get_by_text('5.75').wait_for()
         f.locator('input[name="expression"]').fill('3 m + 40 cm');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:arithmetic-result"]').get_by_text('3.4 m').wait_for()
+        p.locator('[data-mcel-region$=".answer"] [data-state="state:arithmetic-result"]').get_by_text('3.4 m').wait_for()
         f.locator('input[name="expression"]').fill('3 m + 2 s');f.locator('button[type="submit"]').click()
         p.locator('[data-disposition="failed"]').wait_for()
         assert p.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")')=='3.4 m'
@@ -95,40 +156,95 @@ def test_plot_is_generated_numeric_series_not_html_and_is_responsive(browser):
             assert p.evaluate('document.documentElement.scrollWidth <= innerWidth')
         finally:p.close()
 
-def test_optional_services_use_real_endpoints_and_result_question_context(browser):
+def test_help_chat_uses_single_shared_endpoint_with_live_symbolic_context(browser):
     p=opened(browser)
     try:
-        # Stub only the HTTP boundary; Calculator capability wrapper itself is real.
+        # Stub the HTTP edge. The notebook and MCEL capability ports are real.
         p.evaluate('''() => {
           window.__requests=[];
           window.fetch=async (path,opts)=>{
-            window.__requests.push({path,payload:JSON.parse(opts.body)});
-            const data=path==='/api/applications/calculator/mathics/evaluate'?
-              {ok:true,result_text:'4'} : path==='/api/applications/calculator/qa'?
-              {ok:true,answer:'The result follows the arithmetic expression.'}:
-              path==='/api/chat'?{ok:true,content:'2 + 2'}:
-              {ok:true,expression:'Integrate[x^2,x]'};
-            return {ok:true,status:200,json:async()=>data};
+            const payload=opts?.body?JSON.parse(opts.body):{};
+            window.__requests.push({path:String(path),payload});
+            if(String(path).startsWith('/api/applications/chat-console/ai/capacity?'))
+              return {ok:true,status:200,json:async()=>({ok:true,busy:false,available_now:true,active_run_count:0,max_local_concurrency:1})};
+            if(path==='/api/activity/snapshot' || path==='/api/activity/ollama-ps')
+              return {ok:true,status:200,json:async()=>({ok:true,events:[],models:[]})};
+            if(path==='/api/applications/calculator/mathics/prepare')
+              return {ok:true,status:200,json:async()=>({ok:true,status:'ready'})};
+            if(path==='/api/applications/calculator/mathics/evaluate')
+              return {ok:true,status:200,json:async()=>({ok:true,result_text:'4'})};
+            if(path==='/api/applications/chat-console/cell/evaluate')
+              return {ok:true,status:200,json:async()=>({ok:true,status:'completed',
+                output_cell:{id:'out-mock',type:'output',source_cell_id:payload.cell.id,status:'ok',
+                  parts:[{id:'part-mock',kind:'text',title:'Explanation',content:'Because two plus two equals four.',snippets:[]}]}})};
+            throw Error('unexpected endpoint:'+path);
           };
         }''')
         select(p,'symbolic')
         f=p.locator('form[data-intent="intent:evaluate-symbolic"]')
         f.locator('input[name="expression"]').fill('2+2');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:symbolic-result"]').get_by_text('4').wait_for()
+        p.locator('[data-mcel-region$=".mathics-output"] [data-state="state:symbolic-result"]').get_by_text('4').wait_for()
         select(p,'help')
-        f=p.locator('form[data-intent="intent:ask-arithmetic-model"]')
-        f.locator('input[name="prompt"]').fill('What is 2+2?');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:arithmetic-suggestion"]').get_by_text('2 + 2').wait_for()
-        p.wait_for_function("() => window.__mcelExpanded.app.readState('state:arithmetic-result') === '4'",timeout=5000)
-        f=p.locator('form[data-intent="intent:ask-result-question"]')
-        f.locator('input[name="question"]').fill('Explain the answer');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:qa-result"]').get_by_text('The result follows the arithmetic expression.').wait_for()
+        context=p.evaluate('window.MainComputerChatConsole.getActiveEmbeddedContext()')
+        assert context['active_mode']=='symbolic'
+        assert context['mathics']['expression']=='2+2'
+        assert context['mathics']['result']=='4'
+        assert p.locator('[data-mcel-region$=".calculator-context"] output').all_inner_texts().count('4') >= 1
+        composer=p.locator('[data-chat-conversation-role="composer"]')
+        composer.locator('textarea').fill('Why is the answer 4?')
+        composer.locator('.chat-cell-controls button').first.click()
+        p.locator('[data-chat-conversation-role="assistant"]').get_by_text('Because two plus two equals four.').wait_for()
+        assert p.locator('[data-chat-conversation-role="composer"] textarea').count()==1
         calls=p.evaluate('window.__requests')
-        assert [x['path'] for x in calls]==['/api/applications/calculator/mathics/evaluate','/api/chat','/api/applications/calculator/qa']
-        assert json.loads(calls[-1]['payload']['context'])['mathics_output'] == '4'
-        assert {'basic_expression','basic_result','graph_expression','graph_range',
-                'graph_status','mathics_expression','mathics_output'} <= set(json.loads(calls[-1]['payload']['context']))
+        assert [x['path'] for x in calls if '/api/applications/calculator/mathics/' in x['path'] or '/cell/evaluate' in x['path']] == [
+            '/api/applications/calculator/mathics/prepare',
+            '/api/applications/calculator/mathics/evaluate',
+            '/api/applications/chat-console/cell/evaluate']
+        assert next(x for x in calls if x['path'].endswith('/cell/evaluate'))['payload']['embedded_context']['mathics']['result']=='4'
+        assert next(x for x in calls if x['path'].endswith('/cell/evaluate'))['payload']['embedded_context']['active_mode']=='symbolic'
     finally:p.close()
+
+
+def test_entering_symbolic_prepares_once_and_evaluation_waits_for_ready(browser):
+    p=opened(browser)
+    try:
+        p.evaluate('''() => {
+          window.__mathicsCalls=[];
+          window.__finishMathicsPreparation=null;
+          window.fetch=(path,opts)=>{
+            window.__mathicsCalls.push(String(path));
+            if(path==="/api/applications/calculator/mathics/prepare")
+              return new Promise(resolve=>{
+                window.__finishMathicsPreparation=()=>resolve({ok:true,status:200,
+                  json:async()=>({ok:true,status:"ready"})});
+              });
+            if(path==="/api/applications/calculator/mathics/evaluate")
+              return Promise.resolve({ok:true,status:200,json:async()=>({ok:true,result_text:"4"})});
+            throw Error("unexpected request: "+path);
+          };
+        }''')
+        select(p, 'graphing')
+        assert p.evaluate('window.__mathicsCalls') == []
+        select(p, 'symbolic')
+        p.wait_for_function('() => !!window.__finishMathicsPreparation')
+        assert p.evaluate('window.__mathicsCalls') == ['/api/applications/calculator/mathics/prepare']
+        assert p.locator('#mcel-expanded-diagnostic').inner_text() == 'Loading Mathics…'
+        f=p.locator('form[data-intent="intent:evaluate-symbolic"]')
+        f.locator('input[name="expression"]').fill('2+2')
+        f.locator('button[type="submit"]').click()
+        assert p.evaluate('window.__mathicsCalls') == ['/api/applications/calculator/mathics/prepare']
+        p.evaluate('window.__finishMathicsPreparation()')
+        p.locator('[data-mcel-region$=".mathics-output"] [data-state="state:symbolic-result"]').get_by_text('4').wait_for()
+        assert p.evaluate('window.__mathicsCalls') == [
+            '/api/applications/calculator/mathics/prepare',
+            '/api/applications/calculator/mathics/evaluate',
+        ]
+        select(p, 'basic')
+        select(p, 'symbolic')
+        assert p.evaluate('window.__mathicsCalls').count('/api/applications/calculator/mathics/prepare') == 1
+    finally:
+        p.close()
+
 
 def test_unavailable_optional_endpoint_fails_not_fake_result(browser):
     p=opened(browser)
@@ -203,24 +319,18 @@ def test_html_visibility_contract_rejects_unowned_state():
     assert not validated.valid
 
 
-def test_competing_helper_results_do_not_overwrite_newer_one(browser):
+def test_old_model_specific_intents_are_denied(browser):
     p=opened(browser)
     try:
-        result=p.evaluate('''async()=>{
-          const ir=JSON.parse(document.getElementById('mcel-expanded-ir').textContent);
-          const root=document.createElement('div');document.body.append(root);
-          const resolvers=[];
-          const port={authorize:async()=>true,invoke:req=>new Promise(resolve=>resolvers.push({id:req.intentId,resolve})),mountEmbeddedChat:()=>({dispose(){}})};
-          const app=McelSemanticOperationalRuntime.mount(root,ir,{capabilities:port});
-          const first=app.execute('intent:ask-arithmetic-model',{prompt:'first'});
-          const second=app.execute('intent:ask-graph-model',{prompt:'second'});
-          await new Promise(resolve=>setTimeout(resolve,0));
-          resolvers.find(x=>x.id==='intent:ask-graph-model').resolve('second-result');
-          await second;
-          resolvers.find(x=>x.id==='intent:ask-arithmetic-model').resolve('first-result');
-          await first;
-          const final=[app.readState('state:arithmetic-suggestion'),
-                       app.readState('state:graph-suggestion')];app.unmount();root.remove();return final;
+        denied=p.evaluate('''async () => {
+          const port=McelCalculatorExpandedPort.create({core:MainComputerCalculatorCore,
+            services:MainComputerCalculatorCapabilities});
+          const obsolete=['ask-arithmetic-model','ask-graph-model','ask-symbolic-model','ask-result-question'];
+          return Promise.all(obsolete.map(name=>port.authorize({
+            appId:'semantic-calculator-expanded',intentId:'intent:'+name,
+            effectId:'effect:'+name+'.request',capabilityId:'capability:calculator-service',
+            operation:'arithmetic-ask',runtimeMethod:'askArithmeticModel',risk:'external-read',
+            arguments:{prompt:'test'}})));
         }''')
-        assert result==['first-result','second-result']
+        assert denied==[False]*4
     finally:p.close()

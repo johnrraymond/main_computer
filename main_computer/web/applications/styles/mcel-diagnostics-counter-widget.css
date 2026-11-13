@@ -104,3 +104,10 @@
 #document-app .document-head-actions .mcel-diagnostics-counter {
   order: -1;
 }
+
+/* Shared semantic application header: counter is a title peer in the existing
+ * navigation chrome, not another page-specific control or layout surface. */
+[data-mcel-navigation-chrome]:has(> [data-mcel-application-title]) {
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+}
+[data-mcel-navigation-chrome] > [data-mcel-diagnostic-title-control] {margin:0;}

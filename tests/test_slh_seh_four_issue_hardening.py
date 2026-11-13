@@ -81,11 +81,11 @@ def test_relay_pending_deadline_and_gateway_proof(monkeypatch):
     with socket.socket() as listening:
         listening.bind(('127.0.0.1', 0)); listening.listen(10)
         gateway_port = listening.getsockname()[1]
-        relay = SEHRelay(slh_id='lab', slh_public_key=public, host='127.0.0.1', port=0).start()
-        conn = SLHSEHConnector(seh_url=f'ws://127.0.0.1:{relay.port}', slh_id='lab',
+        relay = SEHRelay( slh_public_key=public, host='127.0.0.1', port=0).start()
+        conn = SLHSEHConnector(seh_url=f'ws://127.0.0.1:{relay.port}', 
                                identity_private_key=signer, gateway_port=gateway_port,
                                allow_lab=True).connect()
-        uri = f'ws://127.0.0.1:{relay.port}/v1/seh/client/lab'
+        uri = f'ws://127.0.0.1:{relay.port}/v1/seh/client'
         try:
             with connect(uri) as unauth:
                 assert wait(lambda: len(relay._pending_clients) == 1)
@@ -133,7 +133,7 @@ class FakeConnector:
 
 
 def test_coolify_fallback_is_bounded_and_local_binding_checked(tmp_path, monkeypatch):
-    settings = SEHConnectionSettings(True, 'wss://external.example', 'existing-route', False, .1)
+    settings = SEHConnectionSettings(True, 'wss://external.example',  False, .1)
     state = {'offline':False, 'binding': ('uuid', 'identity', 'deployment', b'key'), 'denied': False}
     calls = []
     def resolver(_):
@@ -261,7 +261,7 @@ def test_canonical_fallback_binding_reads_fresh_mother_state_and_signer(tmp_path
                         lambda root, network: (record, control, 44, 'verified-mother-binding'))
     auto = SEHAutoConnection(state_dir, gateway_port=1,
                              settings_resolver=lambda _: SEHConnectionSettings(
-                                 True, 'wss://external.example', 'existing-route'))
+                                 True, 'wss://external.example'))
     initial = auto._local_canonical_binding()
     assert initial[0] == 'verified-uuid'
     record['deployment']['application_uuid'] = 'different-uuid'

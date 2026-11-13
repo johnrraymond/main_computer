@@ -89,6 +89,10 @@
     }
   });
 
+  // Modern semantic hosts register their own root/title and preserve the
+  // generic diagnostic contract, rather than pretending to be a legacy app.
+  const semanticWidgets = new Map();
+
   // Generic temporal-instability monitor: preserve every confirmed offender, not
   // just the busiest subtree. Measurement clones and redundant mode writes are
   // observed, never modified or suppressed by this module.
@@ -356,7 +360,7 @@
   }
 
   function appConfig(appId) {
-    return APP_WIDGETS[appId] || APP_WIDGETS[DEFAULT_APP_ID];
+    return semanticWidgets.get(appId) || APP_WIDGETS[appId] || APP_WIDGETS[DEFAULT_APP_ID];
   }
 
   function appRoot(doc, appId) {
@@ -798,6 +802,7 @@
       primarySurface: report?.summary?.primarySurface || null,
       appSurfaceConformance: report?.summary?.appSurfaceConformance || report?.appSurfaceConformance || null,
       measurements: compactMeasurements(report),
+      diagnosticEvidence: report?.diagnosticEvidence || null,
       issues: currentIssues
     };
   }
@@ -857,6 +862,22 @@
 
   function diagnose(appId) {
     const global = typeof window !== "undefined" ? window : globalThis;
+    if (semanticWidgets.has(appId)) {
+      const evidence = global.MCELDiagnosticEvidence?.snapshot?.(appId);
+      const findings = (evidence?.findings || []).map(item => ({
+        ...item, finding: item.code + ": " + (item.evidence?.note || item.identity?.role || item.identity?.region || "rendered composition"),
+        recommendedNextProbe: "layout-provenance"}));
+      if (!evidence) findings.push({severity:"warning",code:"diagnostic-collector-unavailable",
+        finding:"MCEL semantic evidence collector not registered",recommendedNextProbe:"diagnostics-integration"});
+      const warning = findings.filter(x=>x.severity==='warning').length;
+      const critical = findings.filter(x=>x.severity==='error'||x.severity==='critical').length;
+      return {schema:"mcel-self-diagnosis-report-v2",appId,contractId:evidence?.contractId||appId,
+        timestamp:evidence?.timestamp||new Date().toISOString(),route:evidence?.route||"",
+        verdict:critical?'fail':warning?'warning':'pass',summary:{critical,warning,info:0},findings,
+        diagnosticEvidence:evidence||{status:"unavailable"},
+        measurements:{diagnosticEvidence:{coverage:evidence?.coverage||{status:"unavailable"},
+          layouts:evidence?.layoutDecisions?.length||0,findings:findings.length}}};
+    }
     const api = global.MCEL;
     if (api && typeof api.diagnose === "function") return api.diagnose(appId, {silent: true});
     if (global.McelSelfDiagnosis && typeof global.McelSelfDiagnosis.diagnose === "function") return global.McelSelfDiagnosis.diagnose(appId, {silent: true});
@@ -1058,7 +1079,9 @@
     widget.__mcelDiagnosticsCounts = counts;
     widget.__mcelDiagnosticsIssueHistory = history;
     widget.__mcelDiagnosticsInactive = false;
-    maybeEmitDiagnosticEvent(widget, report, counts, history);
+    // The modern semantic diagnostic channel is clipboard-only: do not
+    // automatically transmit geometry or plugin evidence to an endpoint.
+    if (!semanticWidgets.has(appId)) maybeEmitDiagnosticEvent(widget, report, counts, history);
     return {report, counts, history};
   }
 
@@ -1109,6 +1132,29 @@
     return widget;
   }
 
+  function mountSemantic(appId, root, ir, childIr) {
+    if(typeof appId!=="string" || !root?.querySelector || !appId.trim()) return null;
+    const title = root.querySelector('[data-mcel-application-title]') || root.querySelector('h1');
+    if(!title) return null;
+    // The widget is a title peer, never a child of the semantic heading.
+    const id='mcel-semantic-ewg-'+appId.replace(/[^a-z0-9_-]/gi,'-');
+    const config={root:'[data-mcel-diagnostics-app="'+appId.replace(/[^a-z0-9_-]/gi,'-')+'"]',
+      placeholder:'#'+id,id,anchors:[]};
+    root.setAttribute('data-mcel-diagnostics-app',appId);
+    semanticWidgets.set(appId,config);
+    const evidence=globalThis.MCELDiagnosticEvidence;
+    if(evidence?.register) evidence.register(appId,root,ir,childIr);
+    let element=root.querySelector(config.placeholder);
+    if(!element) {
+      element=root.ownerDocument.createElement('button');element.type='button';
+      element.id=id;element.className='mcel-diagnostics-counter';
+      element.setAttribute('data-mcel-diagnostics-counter',appId);
+      title.insertAdjacentElement('afterend',element);
+    }
+    element.setAttribute('data-mcel-diagnostic-title-control','');
+    return mount(appId);
+  }
+
   function mountAll(options = {}) {
     return Object.keys(APP_WIDGETS)
       .map((appId) => mount(appId, options))
@@ -1134,6 +1180,7 @@
     APP_WIDGETS,
     mount,
     mountAll,
+    mountSemantic,
     refresh(appId = DEFAULT_APP_ID) {
       const doc = getDocument();
       const widget = ensureWidget(doc, appId);

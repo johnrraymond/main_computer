@@ -138,11 +138,28 @@ class NetworkSlhClient:
         self.signer = signer or (lambda device_id, challenge: SlhFirstRunController()._sign(device_id, challenge))
         self.connection_factory = connection_factory
 
+    def _transport_factory(self, transport):
+        if transport is None:
+            return self.connection_factory
+        if not isinstance(transport, dict) or transport.get('kind') != 'seh':
+            raise NetworkConnectionError('NETWORK_TRANSPORT_INVALID', 503)
+        from main_computer.mcel_seh_remote_client import SEHAdminHTTPSConnection
+        return lambda host, port, *, timeout, context: SEHAdminHTTPSConnection(
+            host, port, timeout=timeout, context=context,
+            seh_url=transport['seh_url'],
+            allow_lab=transport.get('allow_lab', False))
+
     def connect(self, address, port, admin_device_id, *, confirm_pin=None):
         host, port = _target(address, port)
+        return self._connect_validated(host, port, admin_device_id,
+                                       label=_endpoint(host, port), confirm_pin=confirm_pin)
+
+    def _connect_validated(self, host, port, admin_device_id, *, label,
+                           confirm_pin=None, transport=None):
+        # Shared pinned ORG-SLH login. Direct LAN and SEH relay differ only in
+        # their transport; the destination ORG-SLH alone authenticates users.
         if not isinstance(admin_device_id, str) or not _ID.fullmatch(admin_device_id):
             raise NetworkConnectionError('LOCAL_IDENTITY_REQUIRED')
-        label = _endpoint(host, port)
         if confirm_pin is not None and (not isinstance(confirm_pin, str) or not _PIN.fullmatch(confirm_pin)):
             raise NetworkConnectionError('NETWORK_TRUST_CONFIRMATION_INVALID')
         # Lookup and TLS connection share one controlled boundary. Pin changes
@@ -154,7 +171,7 @@ class NetworkSlhClient:
             raise NetworkConnectionError('NETWORK_TLS_IDENTITY_CHANGED', 409)
         try:
             conn, fingerprint = _connection(host, port, prior or (confirm_pin.lower() if confirm_pin else None),
-                                           connection_factory=self.connection_factory)
+                                           connection_factory=self._transport_factory(transport))
             try:
                 identity = _json_request(conn, 'GET', '/v1/org/identity')
                 if identity.get('schema') != 'main-computer.slh-org-identity.v1' or not isinstance(identity.get('tls_sha256'), str) or not hmac.compare_digest(identity['tls_sha256'].lower(), fingerprint):
@@ -196,10 +213,7 @@ class NetworkSlhClient:
                     raise NetworkConnectionError('NETWORK_AUTH_SESSION_INVALID', 502)
                 services = 'AUTHENTICATED'
                 if role == 'admin':
-                    service_status = _json_request(conn, 'GET', '/v1/org/admin/services', token=token)
-                    services = ('WORKER_SERVICE_ENABLED' if service_status.get('worker_serving_enabled') is True
-                                else 'WORKER_SERVICE_DISABLED' if service_status.get('worker_serving_enabled') is False
-                                else 'SERVICE_STATUS_UNVERIFIED')
+                    services = self._admin_services_status(conn, token)
                 expires = session.get('expires_at')
                 if type(expires) is not int or expires <= int(time.time()):
                     raise NetworkConnectionError('NETWORK_AUTH_SESSION_INVALID', 502)
@@ -210,7 +224,8 @@ class NetworkSlhClient:
                         if record['expires'] <= now:
                             _SESSIONS.pop(key,None)
                     _SESSIONS[ticket] = {'host':host, 'port':port, 'pin':fingerprint,
-                                         'device':admin_device_id, 'token':token, 'expires':expires}
+                                         'device':admin_device_id, 'token':token, 'expires':expires,
+                                         'transport':transport}
                 return {'pairingRequired':False,'sessionTicket':ticket,'endpoint':label,
                         'tlsSha256':fingerprint,'organizationState':'RUNNING',
                         'authenticationState':'AUTHENTICATED','role':role,'deviceId':admin_device_id,
@@ -223,7 +238,81 @@ class NetworkSlhClient:
         except (OSError, ssl.SSLError, http.client.HTTPException, ValueError, TypeError) as exc:
             raise NetworkConnectionError('NETWORK_SLH_UNAVAILABLE', 503) from exc
 
+    def _admin_services_status(self, conn, token):
+        # Direct Network SLH management retains lifecycle/marketplace status.
+        service_status = _json_request(conn, 'GET', '/v1/org/admin/services', token=token)
+        return ('WORKER_SERVICE_ENABLED' if service_status.get('worker_serving_enabled') is True
+                else 'WORKER_SERVICE_DISABLED' if service_status.get('worker_serving_enabled') is False
+                else 'SERVICE_STATUS_UNVERIFIED')
+
+    def _check_session_transport(self, ticket):
+        # Tickets minted for one management path cannot be replayed through
+        # another, even when the caller knows an otherwise valid opaque ticket.
+        if not isinstance(ticket,str) or not 30 <= len(ticket) <= 128:
+            raise NetworkConnectionError('NETWORK_SESSION_REQUIRED',401)
+        with _SESSION_LOCK:
+            session=_SESSIONS.get(ticket)
+        if session is None:
+            raise NetworkConnectionError('NETWORK_SESSION_NOT_FOUND',401)
+        is_seh=isinstance(session.get('transport'),dict) and session['transport'].get('kind')=='seh'
+        if is_seh != (getattr(self,'_session_scope','network')=='seh'):
+            raise NetworkConnectionError('NETWORK_SESSION_TARGET_MISMATCH',403)
+
     def admin_request(self, ticket, method, path, body=None):
+        # Admission is checked *before* retrieving a bearer session, and is
+        # never widened to arbitrary paths by the new SEH relay transport.
+        # The caller must use the exact allowlisted notebook request mapping.
+        from main_computer.mcel_slh_identity_notebook import _READS, _ACTIONS
+        allowed={(m,p) for m,p in _READS.values()} | {(m,p) for m,p in _ACTIONS.values() if '{id}' not in p}
+        allowed_path=any(re.fullmatch(p.replace('{id}',r'[A-Za-z0-9_.-]{1,160}'),path) and m==method
+                         for m,p in _ACTIONS.values() if '{id}' in p)
+        if (method,path) not in allowed and not allowed_path:
+            raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+        self._check_session_transport(ticket)
+        return self._authenticated_request(ticket, method, path, body)
+
+    def seh_deployment_request(self, ticket, method, path, body=None):
+        """SEH deployment management via the selected direct Network SLH.
+
+        No caller-controlled URL, SEH relay transport, or arbitrary endpoint.
+        Credentials stay in the authenticated pinned-TLS session.
+        """
+        allowed = {
+            ('GET', '/v1/org/admin/seh/deployment'): None,
+            ('POST', '/v1/org/admin/seh/deployment/controllers'):
+                {'name', 'url', 'api_token', 'expected_generation', 'operation_id'},
+            ('POST', '/v1/org/admin/seh/deployment/selection'):
+                {'name', 'expected_generation', 'operation_id'},
+            ('POST', '/v1/org/admin/seh/deployment/harness'):
+                {'action', 'execute', 'expected_generation', 'confirm'},
+        }
+        marker = (method, path)
+        if marker not in allowed:
+            raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
+        required = allowed[marker]
+        if required is None:
+            if body is not None:
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
+        elif type(body) is not dict or set(body) != required:
+            raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
+        self._check_session_transport(ticket)
+        return self._authenticated_request(ticket, method, path, body)
+
+    def seh_connection_request(self, ticket, *, action=None):
+        """SLH-owned outbound SEH connection status and bounded actions.
+
+        This is the lifecycle backend for the Network SLH target. It cannot
+        choose an SEH, deploy a new container, or send arbitrary API calls.
+        """
+        self._check_session_transport(ticket)
+        if action is None:
+            return self._authenticated_request(ticket, 'GET', '/v1/org/admin/seh/connection')
+        if action not in ('start', 'stop', 'restart'):
+            raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
+        return self._authenticated_request(ticket, 'POST', '/v1/org/admin/seh/connection',
+                                            {'action':action})
+
+    def _authenticated_request(self, ticket, method, path, body=None):
         if not isinstance(ticket,str) or not 30 <= len(ticket) <= 128:
             raise NetworkConnectionError('NETWORK_SESSION_REQUIRED',401)
         with _SESSION_LOCK:
@@ -234,16 +323,9 @@ class NetworkSlhClient:
         if session['expires']<=int(time.time()):
             with _SESSION_LOCK:_SESSIONS.pop(ticket,None)
             raise NetworkConnectionError('NETWORK_SESSION_EXPIRED',401)
-        # The caller must use the exact allowlisted notebook request mapping.
-        from main_computer.mcel_slh_identity_notebook import _READS, _ACTIONS
-        allowed={(m,p) for m,p in _READS.values()} | {(m,p) for m,p in _ACTIONS.values() if '{id}' not in p}
-        allowed_path=any(re.fullmatch(p.replace('{id}',r'[A-Za-z0-9_.-]{1,160}'),path) and m==method
-                         for m,p in _ACTIONS.values() if '{id}' in p)
-        if (method,path) not in allowed and not allowed_path:
-            raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
         try:
             conn,_=_connection(session['host'],session['port'],session['pin'],
-                               connection_factory=self.connection_factory)
+                               connection_factory=self._transport_factory(session.get('transport')))
             try:
                 return _json_request(conn,method,path,body,token=session['token'])
             finally:conn.close()
@@ -252,6 +334,7 @@ class NetworkSlhClient:
             raise NetworkConnectionError('NETWORK_SLH_UNAVAILABLE',503) from exc
 
     def disconnect(self, ticket):
+        self._check_session_transport(ticket)
         if not isinstance(ticket, str) or not 30 <= len(ticket) <= 128:
             raise NetworkConnectionError('NETWORK_SESSION_REQUIRED', 401)
         with _SESSION_LOCK:
@@ -260,7 +343,7 @@ class NetworkSlhClient:
             raise NetworkConnectionError('NETWORK_SESSION_NOT_FOUND', 401)
         try:
             conn, _ = _connection(session['host'],session['port'], session['pin'],
-                                  connection_factory=self.connection_factory)
+                                  connection_factory=self._transport_factory(session.get('transport')))
             try:
                 _json_request(conn,'POST','/v1/auth/logout',{},token=session['token'])
             finally:

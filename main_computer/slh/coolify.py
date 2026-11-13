@@ -84,7 +84,6 @@ def compose_yaml(target: SEHTarget) -> str:
         "    environment:\n"
         f"      SEH_PUBLIC_ORIGIN: {target.public_url}\n"
         "      SEH_AUDIT_MODE: metadata_only\n"
-        f"      SEH_SLH_ID: {target.slh_id}\n"
         f"      SEH_SLH_PUBLIC_KEY_B64: '{target.slh_public_key_b64}'\n"
         f"      SEH_PORT: '{target.internal_port}'\n"
         "    expose:\n"
@@ -100,7 +99,7 @@ def compose_yaml(target: SEHTarget) -> str:
 def desired_state(target: SEHTarget) -> dict[str, Any]:
     return {"schema": "main-computer.seh-deployment-plan.v1", "target": target.to_dict(),
             "resource_name": f"mc-seh-{target.target_id}",
-            "resource_marker": f"main-computer-seh:v1 target={target.target_id} slh={target.slh_id}",
+            "resource_marker": f"main-computer-seh:v2 target={target.target_id}",
             "compose": compose_yaml(target),
             "contract_status": "real-relay-image-local-tested-deployment-not-verified",
             "domain_status": "coolify-proxy-not-verified"}

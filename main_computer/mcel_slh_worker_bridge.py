@@ -57,6 +57,10 @@ class OrganizationWorkerClient:
             ("POST", "/v1/admin/devices/trash/empty"),
             ("GET", "/v1/org/admin/services"),
             ("GET", "/v1/org/admin/marketplace/status"),
+            ("GET", "/v1/org/admin/seh/deployment"),
+            ("POST", "/v1/org/admin/seh/deployment/controllers"),
+            ("POST", "/v1/org/admin/seh/deployment/selection"),
+            ("POST", "/v1/org/admin/seh/deployment/harness"),
             ("GET", "/v1/auth/session"),
             ("POST", "/v1/auth/logout"),
             ("POST", "/v1/auth/challenge"),
@@ -75,6 +79,12 @@ class OrganizationWorkerClient:
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
         elif body is not None:
             allowed_body = (
+                ((method,path)==('POST','/v1/org/admin/seh/deployment/controllers') and
+                 isinstance(body,dict) and set(body)=={'name','url','api_token','expected_generation','operation_id'}) or
+                ((method,path)==('POST','/v1/org/admin/seh/deployment/selection') and
+                 isinstance(body,dict) and set(body)=={'name','expected_generation','operation_id'}) or
+                ((method,path)==('POST','/v1/org/admin/seh/deployment/harness') and
+                 isinstance(body,dict) and set(body)=={'action','execute','expected_generation','confirm'}) or
                 ((method,path)==('POST','/v1/auth/logout') and body=={}) or
                 ((method,path)==('POST','/v1/enrollment/approvals') and
                  set(body)=={'request_id'} and isinstance(body['request_id'],str) and

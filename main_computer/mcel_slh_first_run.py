@@ -28,7 +28,7 @@ from main_computer.slh.storage import slh_state_dir
 _ROOT = Path(__file__).resolve().parents[1]
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
 _ACTIONS = frozenset(('start', 'bootstrap', 'configure', 'configure-and-enable',
-                      'disable', 'activate', 'login', 'logout'))
+                      'disable', 'toggle', 'toggle-enablement', 'activate', 'login', 'logout'))
 _START_LOCK = threading.RLock()
 
 
@@ -101,6 +101,7 @@ class SlhFirstRunController:
             ('POST', '/v1/auth/challenge'), ('POST', '/v1/auth/verify'),
             ('POST', '/v1/bootstrap/begin'), ('POST', '/v1/local/organization/enable'),
             ('POST', '/v1/local/organization/disable'),
+            ('POST', '/v1/local/organization/stop'),
             ('POST', '/v1/local/organization/configure-and-enable'),
             ('POST', '/v1/local/organization/admin/identities'),
             ('PATCH', '/v1/local/organization/config'),
@@ -370,6 +371,57 @@ class SlhFirstRunController:
                 time.sleep(0.1)
             raise FirstRunError('ORGANIZATION_DISABLE_UNVERIFIED', 503)
 
+    def toggle_organization_enablement(self, *, device_id: str) -> dict:
+        """Toggle the persisted enablement policy using fresh local authority state.
+
+        Enabling starts the configured ORG-SLH; disabling stops it and prevents
+        automatic recovery. This is separate from a temporary Stop/Start.
+        """
+        device_id = _identity_id(device_id)
+        with _START_LOCK:
+            self._identity(device_id)
+            org = self._request('GET', '/v1/local/status').get('organization_service', {})
+            if not isinstance(org, dict) or org.get('configured') is not True:
+                raise FirstRunError('ORGANIZATION_NOT_CONFIGURED', 409)
+            if org.get('enabled') is False and org.get('state') == 'disabled':
+                token = self._local_admin_token(device_id)
+                self._request('POST', '/v1/local/organization/enable', {}, token=token)
+                return self._verify_running(device_id, 'ENABLED')
+            if org.get('enabled') is True and org.get('state') in ('running', 'stopped'):
+                return self.disable_organization(device_id=device_id)
+            raise FirstRunError('ORGANIZATION_TRANSITION_NOT_READY', 409)
+
+    def toggle_organization(self, *, device_id: str) -> dict:
+        """Perform an authorized Stop or Start based on fresh LMS-SLH state.
+
+        Stop pauses only the current resident child; Disable separately
+        persists the auto-start policy as disabled.
+        """
+        device_id = _identity_id(device_id)
+        with _START_LOCK:
+            self._identity(device_id)
+            token = self._local_admin_token(device_id)
+            current = self._request('GET', '/v1/local/status')
+            org = current.get('organization_service', {})
+            if not isinstance(org, dict) or org.get('configured') is not True:
+                raise FirstRunError('ORGANIZATION_NOT_CONFIGURED', 409)
+            state = org.get('state')
+            if state == 'running' and org.get('enabled') is True and org.get('listening') is True:
+                self._request('POST', '/v1/local/organization/stop', {}, token=token)
+                for _ in range(30):
+                    status = self._request('GET', '/v1/local/status').get('organization_service', {})
+                    if (status.get('state') == 'stopped' and status.get('enabled') is True and
+                            status.get('listening') is False):
+                        return {'outcome': 'STOPPED',
+                                'message': 'ORG-SLH stopped temporarily; auto-start policy retained',
+                                'deviceId': device_id}
+                    time.sleep(0.1)
+                raise FirstRunError('ORGANIZATION_STOP_UNVERIFIED', 503)
+            if state == 'stopped' and org.get('enabled') is True:
+                self._request('POST', '/v1/local/organization/enable', {}, token=token)
+                return self._verify_running(device_id, 'RUNNING')
+            raise FirstRunError('ORGANIZATION_TRANSITION_NOT_READY', 409)
+
     def activate(self, *, device_id: str) -> dict:
         token = self._local_admin_token(device_id)
         self._request('POST', '/v1/local/organization/enable', {}, token=token)
@@ -413,7 +465,8 @@ class SlhFirstRunController:
             'start': (), 'bootstrap': ('adminId', 'adminName', 'deviceId', 'acknowledgeP256Only'),
             'configure': ('adminDeviceId', 'host', 'apiPort', 'workerPort'),
             'configure-and-enable': ('adminDeviceId', 'bindAddress', 'port'),
-            'disable': ('adminDeviceId',),
+            'disable': ('adminDeviceId',), 'toggle': ('adminDeviceId',),
+            'toggle-enablement': ('adminDeviceId',),
             'activate': ('adminDeviceId',), 'login': ('adminDeviceId',), 'logout': (),
         }
         if set(values) != set(signatures[action]):
@@ -430,6 +483,10 @@ class SlhFirstRunController:
                 bind_address=values['bindAddress'], port=values['port'])
         if action == 'disable':
             return self.disable_organization(device_id=values['adminDeviceId'])
+        if action == 'toggle-enablement':
+            return self.toggle_organization_enablement(device_id=values['adminDeviceId'])
+        if action == 'toggle':
+            return self.toggle_organization(device_id=values['adminDeviceId'])
         if action == 'activate': return self.activate(device_id=values['adminDeviceId'])
         if action == 'login': return self.login(device_id=values['adminDeviceId'])
         return self.logout(token)

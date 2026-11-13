@@ -712,16 +712,21 @@ function init(){
   if(!lab || lab.dataset.mcelWorkspaceSwitchReady==='true')return;
   const lifecycle=lab.querySelector('#mcel-lab-workspace-lifecycle');
   const blueprint=lab.querySelector('#mcel-lab-workspace-blueprint');
-  if(!lifecycle || !blueprint)return;
+  const presentation=lab.querySelector('#mcel-lab-workspace-presentation');
+  if(!lifecycle || !blueprint || !presentation)return;
   const setView=view=>{
     lab.dataset.mcelWorkspaceView=view;
     if(view==='lifecycle')root.mcelMountLifecycleGallery?.();
     lifecycle.setAttribute('aria-pressed',String(view==='lifecycle'));
     blueprint.setAttribute('aria-pressed',String(view==='blueprint'));
+    presentation.setAttribute('aria-pressed',String(view==='presentation'));
+    lab.scrollTop=0;
   };
   lifecycle.addEventListener('click',()=>setView('lifecycle'));
   blueprint.addEventListener('click',()=>setView('blueprint'));
-  setView(lab.dataset.mcelWorkspaceView==='lifecycle'?'lifecycle':'blueprint');
+  presentation.addEventListener('click',()=>setView('presentation'));
+  const requested=lab.dataset.mcelWorkspaceView;
+  setView(['presentation','blueprint','lifecycle'].includes(requested)?requested:'presentation');
   lab.dataset.mcelWorkspaceSwitchReady='true';
 }
 if(global.document){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();}

@@ -1,7 +1,6 @@
 {
   "target_id": "company-relay-1",
   "organization_id": "example-org",
-  "slh_id": "example-slh",
   "public_url": "https://hub.secure.company.com",
   "coolify_url": "https://coolify.company.com",
   "project_uuid": "PROJECT_UUID",

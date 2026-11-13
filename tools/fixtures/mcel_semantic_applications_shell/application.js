@@ -21,7 +21,6 @@ const SHELL_LAYOUT = {
           {id: "workspace", selector: ".mcel-shell-workspace", role: "group", maxColumns: 1,
             gap: 0, verifyControls: false,
             children: [
-              {id: "workspace-header", selector: ".mcel-shell-workspace-header", role: "region", verifyControls: false},
               {id: "application-mount", selector: ".mcel-shell-application-mount", role: "region", verifyControls: false}
             ]}
         ]},

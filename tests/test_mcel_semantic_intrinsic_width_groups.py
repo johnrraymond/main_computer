@@ -24,8 +24,14 @@ def test_compact_working_unit_is_authored_and_has_a_valid_pair():
     assert regions['arithmetic']['preferences'] == {
         'density': 'compact', 'widthGroup': 'calculation', 'sizing': 'intrinsic'}
     assert not html_interface_intent_errors(surface)
+    # Symbolic has its own automatic-width group: it must not inherit the
+    # intrinsic keypad bounds of the Basic calculation unit.
+    assert regions['mathics-output']['preferences'] == {
+        'density': 'compact', 'widthGroup': 'symbolic-calculation', 'align': 'end'}
+    assert regions['mathics-input']['preferences'] == {'widthGroup': 'symbolic-calculation'}
     assert all('widthGroup' not in r.get('preferences', {})
-               for name, r in regions.items() if name not in {'answer', 'arithmetic'})
+               for name, r in regions.items()
+               if name not in {'answer', 'arithmetic', 'mathics-output', 'mathics-input'})
 
 
 def test_width_group_contract_rejects_unpaired_or_inconsistent_regions():
@@ -106,7 +112,7 @@ def test_calc_result_expression_evaluate_and_keypad_share_intrinsic_bounds(width
                 find('[data-mcel-natural-scroller="workspace"]').clientWidth;
               return out;
             }''')
-            assert bounds['unitCount'] == 1
+            assert bounds['unitCount'] == 2  # Basic intrinsic + Symbolic automatic, mode-isolated
             assert bounds['result']['top'] < bounds['field']['top']
             assert abs(bounds['compute']['width'] - bounds['result']['width']) < 1
             assert abs(bounds['answer']['right'] - bounds['pad']['right']) < 2

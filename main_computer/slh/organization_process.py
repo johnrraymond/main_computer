@@ -90,6 +90,33 @@ def _matching_process(record: dict, state_dir: Path) -> psutil.Process | None:
         raise RuntimeError('Cannot verify ORG-SLH process identity') from exc
 
 
+def verified_launched_pid(state_dir: Path, *, launcher_pid: int,
+                          controller_pid: int, controller_created: float) -> int | None:
+    """Report the real resident PID, not a Windows venv Python redirector PID.
+
+    The recorded interpreter must still be alive, own the intended state
+    directory, and belong to this exact controller and launched process. On
+    Windows, ``Popen.pid`` may refer to the venv redirector, whose direct
+    child is the interpreter that published the PID record. A stale or
+    unrelated record must not be reported as this controller's service.
+    """
+    record = read_record(state_dir)
+    if record is None or (record['parent_pid'] != controller_pid or
+                          abs(record['parent_created'] - controller_created) > 0.05):
+        return None
+    process = _matching_process(record, state_dir)
+    if process is None:
+        return None
+    try:
+        if process.pid == launcher_pid or process.ppid() == launcher_pid:
+            return process.pid
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        pass
+    except psutil.AccessDenied as exc:
+        raise RuntimeError('Cannot verify ORG-SLH launcher relationship') from exc
+    return None
+
+
 def _clear_if_unchanged(state_dir: Path, record: dict) -> None:
     # The old child must not erase the replacement child's PID record.
     if read_record(state_dir) == record:

@@ -45,7 +45,6 @@ services:
     cap_drop:
       - ALL
     environment:
-      SEH_SLH_ID: '{slh}'
       SEH_SLH_PUBLIC_KEY_B64: '{public_b64}'
       SEH_PORT: '8080'
       SEH_AUDIT_MODE: metadata_only

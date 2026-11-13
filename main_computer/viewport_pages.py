@@ -55,6 +55,10 @@ def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> 
             from main_computer.mcel_onlyoffice_host_projection import project
 
             return project(_REPOSITORY_ROOT)
+        if include_name == "applications/scripts/mcel-lab-canonical-presentation-source.js":
+            from main_computer.mcel_lab_semantic_presentation_source import project
+
+            return project(_REPOSITORY_ROOT)
         if include_name == "applications/scripts/mcel-application-package-catalog.js":
             from main_computer.mcel_application_virtual_assets import read_virtual_mcel_browser_asset
 

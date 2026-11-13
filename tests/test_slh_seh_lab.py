@@ -69,13 +69,13 @@ class TestSLHSEHLab(unittest.TestCase):
             self.assertIsNone(read_seh_settings(state))
             with self.assertRaises(ValueError):
                 write_seh_settings(state,SEHConnectionSettings(
-                    True,'ws://example.com:8080','slh',False,2))
+                    True,'ws://example.com:8080',False,2))
             with self.assertRaises(ValueError):
                 write_seh_settings(state,SEHConnectionSettings(
-                    True,'ws://127.0.0.1:18080','slh',False,2))
+                    True,'ws://127.0.0.1:18080',False,2))
             self.assertIsNone(read_seh_settings(state))
             disabled=SEHConnectionSettings(False,'ws://127.0.0.1:18080',
-                                            'slh',True,0.2)
+                                            True,0.2)
             write_seh_settings(state,disabled)
             self.assertEqual(read_seh_settings(state),disabled)
             # Disabled config must not create an identity or contact an SEH.
@@ -235,10 +235,10 @@ class TestSLHSEHLab(unittest.TestCase):
         from main_computer.seh.relay import SEHRelay
         from main_computer.slh.seh_transport import SLHSEHConnector
         signer, public = generate_identity()
-        relay = SEHRelay(slh_id='my-slh',
+        relay = SEHRelay(
                           slh_public_key=public,host='127.0.0.1',port=0).start()
         url=f'ws://127.0.0.1:{relay.port}'
-        primary=SLHSEHConnector(seh_url=url,slh_id='my-slh',identity_private_key=signer,
+        primary=SLHSEHConnector(seh_url=url,identity_private_key=signer,
                         gateway_port=1,allow_lab=True).connect()
         server,thread = _in_memory_hub()
         try:

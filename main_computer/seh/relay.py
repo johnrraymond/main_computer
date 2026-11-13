@@ -27,6 +27,8 @@ from .stream_writer import StreamWriter, SharedWriteBudget
 MAX_FRAME = 1024 * 1024
 MAX_CLIENTS = 64
 MAX_PENDING_CLIENTS = 16
+MAX_ADMIN_CLIENTS = 8
+ADMIN_STREAM_DEADLINE_SECONDS = 90
 PREAUTH_DEADLINE_SECONDS = 30
 LAB_ID = re.compile(r"[a-f0-9]{32}\Z")
 MAX_LAB_TUNNELS = 2
@@ -40,14 +42,11 @@ def _frame(obj: dict) -> str:
 
 
 class SEHRelay:
-    def __init__(self, *, slh_id: str, slh_public_key: str,
+    def __init__(self, *, slh_public_key: str,
                  host: str = '127.0.0.1', port: int = 8080, max_clients: int = MAX_CLIENTS):
-        if not slh_id or '/' in slh_id or len(slh_id) > 128:
-            raise ValueError('SEH SLH ID invalid')
         load_public_key(slh_public_key)
         if not 1 <= max_clients <= MAX_CLIENTS:
             raise ValueError('SEH max_clients outside bounded range')
-        self.slh_id = slh_id
         self.slh_public_key = slh_public_key
         self.host = host
         self.port = port
@@ -56,6 +55,7 @@ class SEHRelay:
         self._slh = None
         self._send_lock = threading.RLock()
         self._clients: dict[str, Any] = {}
+        self._admin_streams: set[str] = set()
         self._lab_slhs: dict[str, Any] = {}
         self._lab_clients: dict[tuple[str, str], Any] = {}
         # One bounded, nonrenewable timer per unauthenticated Worker stream.
@@ -181,8 +181,7 @@ class SEHRelay:
 
     def _handle_slh(self, ws, *, lab_id: str | None = None):
         nonce = secrets.token_urlsafe(32)
-        statement = {'version': 1, 'action': 'seh.slh.connect',
-                     'slh_id': self.slh_id, 'nonce': nonce}
+        statement = {'version': 2, 'action': 'seh.slh.connect', 'nonce': nonce}
         if lab_id is not None:
             statement['lab_id'] = lab_id
         ws.send(_frame({'type': 'seh.auth.challenge', 'statement': statement}))
@@ -291,22 +290,32 @@ class SEHRelay:
             for client in clients:
                 self._schedule_client_close(client, code=1012, reason='SLH_DISCONNECTED')
 
-    def _handle_client(self, ws, *, lab_id: str | None = None):
+    def _handle_client(self, ws, *, lab_id: str | None = None, purpose: str = 'worker'):
+        if purpose not in ('worker', 'admin'):
+            ws.close(code=1008, reason='UNKNOWN_STREAM_PURPOSE')
+            return
         with self._lock:
             tunnel = self._lab_slhs.get(lab_id) if lab_id else self._slh
             if (tunnel is None or len(self._clients) + len(self._lab_clients) >= self.max_clients
-                    or len(self._pending_clients) >= min(MAX_PENDING_CLIENTS, self.max_clients)):
+                    or len(self._pending_clients) >= min(MAX_PENDING_CLIENTS, self.max_clients)
+                    or (purpose == 'admin' and len(self._admin_streams) >= MAX_ADMIN_CLIENTS)):
                 ws.close(code=1013, reason='SLH_UNAVAILABLE_OR_BUSY')
                 return
             sid = secrets.token_urlsafe(18)
             pending_key = (lab_id, sid)
-            deadline = threading.Timer(PREAUTH_DEADLINE_SECONDS,
+            # The SEH cannot inspect end-to-end ORG-SLH TLS or attest admin
+            # login. Limit these unauthenticated transport streams by time and
+            # count instead of pretending that the relay authenticated them.
+            deadline = threading.Timer(ADMIN_STREAM_DEADLINE_SECONDS if purpose == 'admin'
+                                       else PREAUTH_DEADLINE_SECONDS,
                                        self._expire_pending, args=(pending_key,))
             deadline.daemon = True
             self._pending_clients[pending_key] = deadline
             self._stream_event('relay_client_accepted', sid, ws=ws)
             if lab_id:self._lab_clients[(lab_id, sid)] = ws
             else:self._clients[sid] = ws
+            if purpose == 'admin':
+                self._admin_streams.add(sid)
             def send_client(data):
                 ws.send(data)
                 with self._lock:
@@ -322,7 +331,7 @@ class SEHRelay:
                 name='seh-client-stream-writer', shared_budget=self._client_write_budget)
         deadline.start()
         try:
-            self._send_slh({'op':'open', 'id':sid}, lab_id=lab_id)
+            self._send_slh({'op':'open', 'id':sid, 'purpose':purpose}, lab_id=lab_id)
             for raw in ws:
                 if not isinstance(raw, bytes) or len(raw) > MAX_FRAME:
                     break
@@ -346,6 +355,7 @@ class SEHRelay:
                     writer.close()
                 if lab_id:self._lab_clients.pop((lab_id, sid), None)
                 else:self._clients.pop(sid, None)
+                self._admin_streams.discard(sid)
                 self.closed_streams += 1
                 self.client_close_codes[label] = self.client_close_codes.get(label, 0) + 1
             self._stream_event('relay_client_close_forwarded_to_slh', sid, ws=ws)
@@ -354,19 +364,21 @@ class SEHRelay:
 
     def handler(self, ws):
         path = ws.request.path
-        if path == f'/v1/seh/slh/{self.slh_id}':
+        if path == '/v1/seh/slh':
             return self._handle_slh(ws)
-        if path == f'/v1/seh/client/{self.slh_id}':
+        if path == '/v1/seh/client':
             return self._handle_client(ws)
+        if path == '/v1/seh/admin':
+            return self._handle_client(ws, purpose='admin')
         # Separate disposable test channel: uses the SAME enrolled SLH public
         # key but never replaces or routes traffic into the production tunnel.
         parts = path.split('/')
-        if (len(parts) == 8 and parts[:4] == ['', 'v1', 'seh', 'lab']
-                and parts[4] == self.slh_id and parts[5] in ('slh', 'client')
-                and parts[6] == 'id' and LAB_ID.fullmatch(parts[7])):
-            if parts[5] == 'slh':
-                return self._handle_slh(ws, lab_id=parts[7])
-            return self._handle_client(ws, lab_id=parts[7])
+        if (len(parts) == 7 and parts[:4] == ['', 'v1', 'seh', 'lab']
+                and parts[4] in ('slh', 'client')
+                and parts[5] == 'id' and LAB_ID.fullmatch(parts[6])):
+            if parts[4] == 'slh':
+                return self._handle_slh(ws, lab_id=parts[6])
+            return self._handle_client(ws, lab_id=parts[6])
         ws.close(code=1008, reason='UNKNOWN_ROUTE')
 
     def process_request(self, conn, request):
@@ -419,12 +431,8 @@ def main(argv=None):
     p.add_argument('--host', default=os.getenv('SEH_HOST','0.0.0.0'))
     p.add_argument('--port', type=int, default=int(os.getenv('SEH_PORT','8080')))
     args = p.parse_args(argv)
-    slh = os.getenv('SEH_SLH_ID','')
     encoded = os.getenv('SEH_SLH_PUBLIC_KEY_B64','')
-    supplied = (bool(slh), bool(encoded))
-    if any(supplied) and not all(supplied):
-        p.error('Partial SLH binding is unsafe: SLH identity and public key are required')
-    if not any(supplied):
+    if not encoded:
         # Securely deployed but unbound. No SLH/client transport may be
         # accepted until a separate, authorized enrollment configures trust.
         from websockets.sync.server import serve
@@ -448,7 +456,7 @@ def main(argv=None):
         key = base64.b64decode(encoded, validate=True).decode('ascii')
     except (ValueError, UnicodeDecodeError):
         p.error('Invalid SEH_SLH_PUBLIC_KEY_B64')
-    relay = SEHRelay(slh_id=slh, slh_public_key=key,
+    relay = SEHRelay(slh_public_key=key,
                      host=args.host, port=args.port)
     print(_frame({'event':'seh_listening', 'port':args.port}), flush=True)
     relay.serve()

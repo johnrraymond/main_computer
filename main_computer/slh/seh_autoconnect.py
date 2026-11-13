@@ -12,7 +12,6 @@ import time
 import json
 import os
 from pathlib import Path
-import re
 import threading
 from typing import Any
 
@@ -22,29 +21,24 @@ from main_computer.slh.seh_transport import SLHSEHConnector, _endpoint
 from main_computer.seh.relay import LAB_ID
 
 _FILENAME = 'seh-connection.json'
-_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 
 
 @dataclass(frozen=True)
 class SEHConnectionSettings:
     enabled: bool
     seh_url: str
-    slh_id: str
     allow_loopback_lab: bool = False
     retry_seconds: float = 2.0
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> 'SEHConnectionSettings':
         if not isinstance(value, dict) or set(value) != {
-            'enabled', 'seh_url', 'slh_id',
+            'enabled', 'seh_url',
             'allow_loopback_lab', 'retry_seconds',
         }:
             raise ValueError('Invalid SLH SEH connection configuration')
         if type(value['enabled']) is not bool or type(value['allow_loopback_lab']) is not bool:
             raise ValueError('SEH enabled and allow_loopback_lab must be booleans')
-        for key in ('slh_id',):
-            if not isinstance(value[key], str) or not _ID.fullmatch(value[key]):
-                raise ValueError(f'Invalid SEH {key}')
         if not isinstance(value['seh_url'], str):
             raise ValueError('Invalid SEH URL')
         _endpoint(value['seh_url'], allow_lab=value['allow_loopback_lab'])
@@ -58,11 +52,12 @@ def read_seh_settings(state_dir: Path) -> SEHConnectionSettings | None:
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding='utf-8'))
-    # One-way removal of the former, non-authoritative organization label.
-    # Validate the *entire* remaining configuration before rewriting it.
-    if isinstance(data, dict) and 'organization_id' in data:
+    # One-way migration: obsolete routing and organization aliases are never
+    # loaded into connection settings or written back to disk.
+    if isinstance(data, dict) and ('organization_id' in data or 'slh_id' in data):
         updated = dict(data)
-        updated.pop('organization_id')
+        updated.pop('organization_id', None)
+        updated.pop('slh_id', None)
         settings = SEHConnectionSettings.from_dict(updated)
         write_seh_settings(state_dir, settings)
         return settings
@@ -98,6 +93,7 @@ def _load_service_signer(state_dir: Path):
 class SEHAutoConnection:
     """Reopens an authenticated tunnel whenever its configured SEH is available."""
     def __init__(self, state_dir: Path, *, gateway_port: int,
+                 admin_target: tuple[str, int] | None = None,
                  identity_private_key=None, lab_id: str | None = None,
                  settings_resolver=None):
         self.state_dir = Path(state_dir)
@@ -113,6 +109,7 @@ class SEHAutoConnection:
         self.signer = identity_private_key or _load_service_signer(self.state_dir)
         self.lab_id = lab_id
         self.gateway_port = gateway_port
+        self.admin_target = admin_target
         self._stop = threading.Event()
         self._lock = threading.RLock()
         self._current = None
@@ -239,8 +236,9 @@ class SEHAutoConnection:
                     self._connection_attempts += 1
                 conn = SLHSEHConnector(
                     seh_url=s.seh_url,
-                    slh_id=s.slh_id, identity_private_key=self.signer,
+                    identity_private_key=self.signer,
                     gateway_port=self.gateway_port, allow_lab=s.allow_loopback_lab,
+                    admin_target=self.admin_target,
                     lab_id=self.lab_id).connect()
                 if self._settings_resolver is not None and not fallback and not s.allow_loopback_lab:
                     # Cache only AFTER a strict Coolify check and authenticated

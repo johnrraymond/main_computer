@@ -35,9 +35,15 @@ ENDPOINTS = (
     Endpoint('POST','/v1/local/organization/enable','local_org_enable','admin'),
     Endpoint('POST','/v1/local/organization/admin/identities','local_root_register_admin','local_root'),
     Endpoint('POST','/v1/local/organization/disable','local_org_disable','admin'),
+    Endpoint('POST','/v1/local/organization/stop','local_org_stop','admin'),
     Endpoint('POST','/v1/local/organization/restart','local_org_restart','admin'),
     Endpoint('POST','/v1/local/seh/activate','local_seh_activate','admin'),
     Endpoint('GET','/v1/local/seh/status','local_seh_status','admin'),
+    Endpoint('POST','/v1/local/seh/disconnect','local_seh_disconnect','admin'),
+    Endpoint('GET','/v1/local/seh/deployment','local_seh_management','admin'),
+    Endpoint('POST','/v1/local/seh/deployment/controllers','local_seh_management','admin'),
+    Endpoint('POST','/v1/local/seh/deployment/selection','local_seh_management','admin'),
+    Endpoint('POST','/v1/local/seh/deployment/harness','local_seh_management','admin'),
     Endpoint('GET','/v1/local/authenticator/status','local_authenticator_status','local_identity'),
     Endpoint('GET','/v1/local/authenticator/identities','local_authenticator_list','local_identity'),
     Endpoint('POST','/v1/local/authenticator/identities','local_authenticator_create','local_identity'),
@@ -119,7 +125,7 @@ def _match(pattern, path):
 
 class SLHAPI:
     def __init__(self, authority: SLHAuthority, *, control=None, local_status_provider=None,
-                 local_authenticator=None, organization_controller=None, local_root_registration=None, wallet_service=None, private_requests=None, pinky_sweeper=None, root_api_enabled=False):
+                 local_authenticator=None, organization_controller=None, local_root_registration=None, wallet_service=None, private_requests=None, pinky_sweeper=None, root_api_enabled=False, seh_deployment_manager=None):
         self.authority=authority
         self.control=control or SLHControlBackend()
         self.local_status_provider=local_status_provider
@@ -130,6 +136,7 @@ class SLHAPI:
         self.private_requests=private_requests
         self.pinky_sweeper=pinky_sweeper
         self.root_api_enabled=root_api_enabled
+        self.seh_deployment_manager=seh_deployment_manager
 
     def openapi(self):
         paths={}
@@ -197,6 +204,15 @@ class SLHAPI:
             elif e.access=='known':identity=self.authority.authenticate(token)
             elif e.access=='optional_key' and not body.get('enrollment_key'):
                 identity=self.authority.authenticate(token,admin=True)
+            if e.handler == 'local_seh_management':
+                from .seh_deployment_management import management_request, SEHManagementRefused
+                if self.seh_deployment_manager is None:
+                    raise SLHError('SEH_MANAGEMENT_UNAVAILABLE', 503)
+                try:
+                    return 200, management_request(self.seh_deployment_manager,
+                                                   method, path, body)
+                except SEHManagementRefused as exc:
+                    raise SLHError(exc.code, exc.status) from None
             if e.state=='unimplemented' or (self.wallet_service is None and
                     e.handler in ('org_wallets','org_credits','org_reconcile')) or (
                     self.pinky_sweeper is None and e.handler in ('pinky_sweep_status','pinky_sweep_now')) or (
@@ -262,11 +278,16 @@ class SLHAPI:
             if op=='local_org_reconfigure_enable':return c.reconfigure_and_enable(b)
             if op=='local_org_enable':return c.enable()
             if op=='local_org_disable':return c.disable()
+            if op=='local_org_stop':return c.stop()
             if op=='local_org_restart':return c.restart()
             if op=='local_seh_activate':return c.activate_seh(
                 execute=b.get('execute') is True,
                 expected_generation=b.get('approve_generation'), token=token)
             if op=='local_seh_status':return c.seh_status()
+            if op=='local_seh_disconnect':
+                if b:
+                    raise SLHError('INVALID_SEH_CONNECTION_OPERATION', 400)
+                return c.disconnect_seh()
         if op=='bootstrap_admin':return a.bootstrap(b,loopback=loopback)
         if op=='capabilities':return {'schema':'main-computer.slh-capabilities.v1','operations':[
             {'method':e.method,'path':e.path,'status':e.state,'access':e.access} for e in ENDPOINTS]}

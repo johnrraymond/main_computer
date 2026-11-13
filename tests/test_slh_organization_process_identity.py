@@ -109,3 +109,73 @@ def test_launcher_and_controller_share_pid_file_contract():
     assert 'org_service_stop = $orgChildStop' in script
     assert '[string]$orgChildStop.state -eq "failed"' in script
     assert 'verified_creation_date' in script
+
+
+def test_controller_status_reports_verified_interpreter_behind_launcher(tmp_path, monkeypatch):
+    """Exercise the two-PID shape of a Windows venv Python redirector.
+
+    Run real disposable processes on every OS; substitute only the production
+    ORG-SLH command-line predicate because the test child sleeps instead of
+    binding an actual ORG-SLH endpoint.
+    """
+    from main_computer.slh.organization_controller import OrganizationController
+
+    current = psutil.Process()
+    # Use the base interpreter to avoid introducing an additional Windows venv
+    # redirector into the *test* launcher/child relationship.
+    base_python = getattr(sys, '_base_executable', sys.executable)
+    launcher_code = (
+        'import subprocess,sys\n'
+        'child=subprocess.Popen([sys._base_executable,"-c","import time;time.sleep(30)"])\n'
+        'print(child.pid,flush=True)\n'
+        'child.wait()\n'
+    )
+    launcher = subprocess.Popen([base_python, '-c', launcher_code],
+                                stdout=subprocess.PIPE, text=True)
+    child_pid = None
+    controller = None
+    try:
+        child_pid = int(launcher.stdout.readline().strip())
+        child = psutil.Process(child_pid)
+        assert child.ppid() == launcher.pid
+        assert child_pid != launcher.pid
+        op._write_record(tmp_path, record_for(tmp_path, child_pid, child.create_time()))
+        monkeypatch.setattr(op, '_belongs_to_org', lambda proc, state: proc.pid == child_pid)
+
+        class Authority:
+            directory = tmp_path
+            def initialized(self):
+                return True
+
+        controller = OrganizationController(Authority(), automatic_start=False)
+        controller._process = launcher
+        monkeypatch.setattr(controller, '_listening', lambda config: True)
+        status = controller.status()
+        assert status['listening']
+        assert status['pid'] == child_pid
+        assert status['pid'] != launcher.pid
+
+        # A guessed launcher or a record for a different Local Service cannot
+        # establish ownership of the PID, despite the live process and state.
+        assert op.verified_launched_pid(
+            tmp_path, launcher_pid=os.getpid(), controller_pid=current.pid,
+            controller_created=current.create_time()) is None
+        assert op.verified_launched_pid(
+            tmp_path, launcher_pid=launcher.pid, controller_pid=current.pid,
+            controller_created=current.create_time() - 10) is None
+        assert op.verified_launched_pid(
+            tmp_path, launcher_pid=launcher.pid, controller_pid=current.pid,
+            controller_created=current.create_time()) == child_pid
+    finally:
+        if controller is not None:
+            controller.close()
+        if child_pid is not None and psutil.pid_exists(child_pid):
+            try:
+                psutil.Process(child_pid).kill()
+            except psutil.NoSuchProcess:
+                pass
+        if launcher.poll() is None:
+            launcher.kill()
+        launcher.wait(timeout=5)
+        if launcher.stdout is not None:
+            launcher.stdout.close()

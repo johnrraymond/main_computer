@@ -44,7 +44,7 @@ def ready(tmp_path, monkeypatch, *, running=True):
         controller._process.poll.return_value = None
     monkeypatch.setattr('main_computer.slh.storage.machine_root', lambda: root)
     settings = SEHConnectionSettings(True, 'wss://external.greatlibrary.io',
-                                     'legacy-route', False, 2.0)
+                                      False, 2.0)
     resolver = Mock(return_value=settings)
     monkeypatch.setattr('main_computer.slh.seh_canonical_connection.resolve_canonical_connection', resolver)
     return root, directory, controller, resolver
@@ -371,7 +371,7 @@ def test_running_gateway_starts_one_canonical_supervisor_without_rebinding_liste
     gateway._server = object()  # already-bound Worker server; do not replace
     existing_server = gateway._server
     fake_settings = SEHConnectionSettings(True, 'wss://external.greatlibrary.io',
-                                          'existing-wire-route', False, 2.0)
+                                           False, 2.0)
     class FakeSupervisor:
         made = []
         def __init__(self, *args, **kwargs):
