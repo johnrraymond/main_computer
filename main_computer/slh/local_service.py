@@ -61,7 +61,7 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
         secure_machine_state_dir(resolved_identity_dir)
     LocalIdentityStore(resolved_identity_dir).ensure_default_identity()
     authority = authority_factory(directory)
-    controller = OrganizationController(authority)
+    controller = OrganizationController(authority,lms_port=port)
     from .seh_deployment_management import SLHSEHDeploymentManager
     seh_deployment_manager = seh_deployment_manager or SLHSEHDeploymentManager(state_dir=directory)
     bound_port = [port]
@@ -69,6 +69,7 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
     api = SLHAPI(authority, local_status_provider=lambda: local_status(authority, bound_port[0], controller),
                  organization_controller=controller,
                  seh_deployment_manager=seh_deployment_manager,
+                 seh_ipc_key=controller.seh_ipc_key,
                  local_authenticator=authenticator,
                  local_root_registration=LocalRootAdministratorRegistration(authority, authenticator))
     try:

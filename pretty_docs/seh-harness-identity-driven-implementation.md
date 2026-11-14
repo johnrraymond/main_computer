@@ -1,5 +1,7 @@
 # SEH Harness — First-Class Coolify Identity and Remote Deployment (Patches 1–3)
 
+> **Historical harness runbook.** The governing November 13 execution/authorization model is [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md): LMS owns saved Coolify access and deployment work, while ORG-SLH authenticates/authorizes Network SLH requests and forwards them to its own LMS. Historic named-SEH CLI instructions below are not the MCEL management pathway; the authoritative Mother registry and existing guarded harness remain in use until the control-plane migration is accepted.
+
 The SEH infrastructure record lives in Mother's **verified private identity state**:
 `runtime/state/mother/identity.private.yaml`, under `networks.<network>.sehs.<seh>`.
 This is a control-plane record; the SEH runtime itself receives neither the

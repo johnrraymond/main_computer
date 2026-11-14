@@ -987,6 +987,23 @@ function createDsl(metadata, source) {
   function modeCondition(options, where) {
     return options.when===undefined?{}:{visibleWhen:visibilityCondition(options.when,where+".when")};
   }
+  // An authored color is a semantic contract, not a CSS escape hatch.
+  // This front-end bounds the portable record; the canonical Theme Law
+  // validates actual roles and cross-dimensional composition at runtime.
+  function authoredColor(options, where) {
+    if(options.color===undefined)return {};
+    const c=options.color;
+    assert(c && typeof c==="object" && !Array.isArray(c) &&
+      Object.keys(c).every(key=>["role","surface","context","consequence","selection","operation"].includes(key)) &&
+      typeof c.role==="string" && /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/.test(c.role) &&
+      ["control","text","indicator","panel","navigation"].includes(c.surface) &&
+      (c.context===undefined || ["default","toolbar","dialog","form","navigation","nested","inline"].includes(c.context)) &&
+      (c.consequence===undefined || ["unspecified","routine","reversible","destructive","critical"].includes(c.consequence)) &&
+      (c.selection===undefined || ["off","on","mixed"].includes(c.selection)) &&
+      (c.operation===undefined || ["idle","pending","succeeded","failed"].includes(c.operation)),
+      "MCEL_DSL_COLOR_SEMANTICS_INVALID", "Only bounded semantic colors may be declared at "+where);
+    return {color:deepClone(c)};
+  }
   const issuedSurfaceNodes = [];
   function surfaceNode(name, record) {
     const handle = new SurfaceNodeHandle(name, record);
@@ -995,7 +1012,7 @@ function createDsl(metadata, source) {
   }
   const surface = {
     form(name, options = {}) {
-      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "resetControl", "submitLabel"], `surface.form:${name}`);
+      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "resetControl", "submitLabel", "color"], `surface.form:${name}`);
       if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
         "MCEL_DSL_FORM_LABEL_INVALID", "Form label must be nonempty semantic text.");
       if(options.submitLabel!==undefined)assert(typeof options.submitLabel==="string" &&
@@ -1057,7 +1074,7 @@ function createDsl(metadata, source) {
       if(options.resetControl!==undefined)assert(typeof options.resetControl==="boolean" && (options.resetControl || !options.resetAndSubmit),
         "MCEL_DSL_FORM_RESET_CONTROL_INVALID","Reset control must be boolean and required for reset-and-submit.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
-        sourceName: name, fields, ...(options.label?{label:options.label}:{}),
+        sourceName: name, fields, ...authoredColor(options,`surface.form:${name}`), ...(options.label?{label:options.label}:{}),
         ...(options.submitLabel!==undefined?{submitLabel:options.submitLabel}:{}), ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
         ...(Object.keys(fieldState).length?{fieldState}:{}),...(Object.keys(acceptResult).length?{acceptResult}:{}),
         ...(editor?{editor}:{}),...(options.clearIntent?{clearIntent:ref(options.clearIntent)}:{}),
@@ -1068,10 +1085,22 @@ function createDsl(metadata, source) {
     operationNotebook(name, options = {}) {
       // A generic read/command notebook for operational status. Unlike a
       // record notebook it has no per-identity mutations or retention policy.
-      knownOptions(options,["title","tabs","when"],`surface.operationNotebook:${name}`);
+      knownOptions(options,["title","tabs","when","authentication"],`surface.operationNotebook:${name}`);
       assert(typeof options.title==="string" && options.title.length>0 && options.title.length<=120 &&
         Array.isArray(options.tabs) && options.tabs.length>=2 && options.tabs.length<=8,
         "MCEL_DSL_OPERATION_NOTEBOOK_INVALID","Operational notebook needs bounded tabs.");
+      const authentication=options.authentication;
+      if(authentication!==undefined){
+        knownOptions(authentication,["intent","label"],`surface.operationNotebook.authentication`);
+        assert(authentication.intent instanceof IntentHandle &&
+          authentication.intent.record.operationKind==="capability" &&
+          authentication.intent.record.risk==="consequential" &&
+          authentication.intent.record.input.length===0 &&
+          typeof authentication.label==="string" && authentication.label.length>0 &&
+          authentication.label.length<=80,
+          "MCEL_DSL_OPERATION_NOTEBOOK_AUTH_INVALID",
+          "Notebook authentication requires a declared no-input consequential intent.");
+      }
       const seen=new Set();
       const tabs=options.tabs.map(tab=>{
         knownOptions(tab,["id","label","state","fields","refresh","actions","forms","receipt","note"],"surface.operationNotebook.tab");
@@ -1119,10 +1148,13 @@ function createDsl(metadata, source) {
             assert(keys.has(field) && descriptor?.authority==="derived" &&
               descriptor?.schema?.kind==="record" && item?.kind==="list" &&
               item?.items?.kind==="record" && item.items.fields?.[choice.valueKey]?.kind==="string" &&
-              item.items.fields?.[choice.labelKey]?.kind==="string",
+              item.items.fields?.[choice.labelKey]?.kind==="string" &&
+              (choice.selectedPath===undefined ||
+                descriptor.schema.fields?.[choice.selectedPath]?.kind==="string"),
               "MCEL_DSL_OPERATION_NOTEBOOK_CHOICE_INVALID","Choice must reference a typed observed list.");
             choices[field]={state:ref(choice.state),path:choice.path,
-              valueKey:choice.valueKey,labelKey:choice.labelKey};
+              valueKey:choice.valueKey,labelKey:choice.labelKey,
+              ...(choice.selectedPath?{selectedPath:choice.selectedPath}:{})};
           }
           return {label:form.label,intent:ref(form.intent),submitLabel:form.submitLabel,
             secretFields:secret,choicesFrom:choices,
@@ -1143,7 +1175,9 @@ function createDsl(metadata, source) {
           ...(tab.note?{note:tab.note}:{})};
       });
       return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"operation-notebook",
-        title:options.title,tabs,...modeCondition(options,`surface.operationNotebook:${name}`)});
+        title:options.title,tabs,
+        ...(authentication?{authentication:{intent:ref(authentication.intent),label:authentication.label}}:{}),
+        ...modeCondition(options,`surface.operationNotebook:${name}`)});
     },
     notebook(name, options = {}) {
       knownOptions(options,["title","tabs","retention","empty"],`surface.notebook:${name}`);
@@ -1195,7 +1229,7 @@ function createDsl(metadata, source) {
           update:ref(retention.update)},empty:ref(options.empty)});
     },
     collection(name, options = {}) {
-      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "when"], `surface.collection:${name}`);
+      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "clearable", "roleFrom", "when"], `surface.collection:${name}`);
       assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");
       assert(Array.isArray(options.fields) && options.fields.length > 0 && options.fields.every(x => typeof x === "string"),
         "MCEL_DSL_COLLECTION_FIELDS_REQUIRED", "Collection requires visible fields.");
@@ -1208,6 +1242,21 @@ function createDsl(metadata, source) {
           "MCEL_DSL_COLLECTION_SELECTION_BINDING_INVALID",
           "Collection selection intent must select from this collection's declared state.");
       }
+      if(options.clearable!==undefined)assert(typeof options.clearable==="boolean" &&
+        (!options.clearable || options.select instanceof IntentHandle),
+        "MCEL_DSL_COLLECTION_CLEAR_INVALID","Clearing requires a collection selection intent.");
+      let roleFrom;
+      if(options.roleFrom){
+        const join=options.roleFrom;
+        knownOptions(join,["state","key","roleField"],`surface.collection:${name}.roleFrom`);
+        assert(join.state instanceof StateHandle && stateById.get(join.state.id)===join.state &&
+          join.state.record.authority==="derived" && join.state.record.schema.kind==="list" &&
+          join.state.record.schema.items.fields?.[join.key]?.kind==="string" &&
+          join.state.record.schema.items.fields?.[join.roleField]?.kind==="string" &&
+          options.state.record.schema.items.fields?.[options.key]?.kind==="string",
+          "MCEL_DSL_COLLECTION_ROLE_SOURCE_INVALID","Roles require a verified derived organization record list.");
+        roleFrom={state:ref(join.state),key:join.key,roleField:join.roleField};
+      }
       const actions = options.actions || {};
       for (const [key, value] of Object.entries(actions)) assert(["add", "update", "remove"].includes(key) && value instanceof IntentHandle,
         "MCEL_DSL_COLLECTION_ACTION_INVALID", "Collection actions must be declared intent handles.");
@@ -1215,23 +1264,24 @@ function createDsl(metadata, source) {
         key: options.key, fields: [...options.fields],
         ...(options.state ? {state: ref(options.state)} : {}),
         ...(options.select ? {selectionIntent: ref(options.select)} : {}),
+        ...(options.clearable?{clearable:true}:{}),...(roleFrom?{roleFrom}:{}),
         actions: Object.fromEntries(Object.entries(actions).map(([key, value]) => [key, ref(value)])),
         ...modeCondition(options, `surface.collection:${name}`)};
       return surfaceNode(name, record);
     },
     text(name, options = {}) {
-      knownOptions(options, ["id", "label", "value", "when"], `surface.text:${name}`);
+      knownOptions(options, ["id", "label", "value", "when", "color"], `surface.text:${name}`);
       if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
         "MCEL_DSL_TEXT_LABEL_INVALID", "Text label must be nonempty semantic text.");
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "state-value",
-        value: expression(options.value), ...(options.label?{label:options.label}:{}),
+        value: expression(options.value), ...authoredColor(options,`surface.text:${name}`), ...(options.label?{label:options.label}:{}),
         ...modeCondition(options, `surface.text:${name}`),
       };
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen", "label", "labelByState"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen", "label", "labelByState", "color"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const resetOutputs=[];
       for(const item of options.resetOutputs||[]){
@@ -1260,6 +1310,7 @@ function createDsl(metadata, source) {
         options.label.length<=80,"MCEL_DSL_ACTION_LABEL_INVALID","Action label must be bounded text.");
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
+        ...authoredColor(options,`surface.action:${name}`),
         ...(options.label?{label:options.label}:{}),...(labelByState?{labelByState}:{}),
         ...(resetOutputs.length?{resetOutputs}:{}),...modeCondition(options, `surface.action:${name}`),
         ...(options.enabledWhen===undefined?{}:{enabledWhen:visibilityCondition(options.enabledWhen, `surface.action:${name}.enabledWhen`)}),
@@ -1267,7 +1318,7 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     embeddedChat(name, options = {}) {
-      knownOptions(options,["id","intent","title","targetId","targetKind"],`surface.embeddedChat:${name}`);
+      knownOptions(options,["id","intent","title","targetId","targetKind","color"],`surface.embeddedChat:${name}`);
       assert(options.intent instanceof IntentHandle && options.intent.record.operationKind==="capability",
         "MCEL_DSL_CHAT_INTENT_REQUIRED","Embedded chat requires a declared capability intent.");
       for(const key of ["title","targetId","targetKind"])
@@ -1275,10 +1326,10 @@ function createDsl(metadata, source) {
           "MCEL_DSL_CHAT_CONFIG_INVALID", "Chat configuration must be bounded semantic text.");
       return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"embedded-chat",
         sourceName:name,intent:ref(options.intent),title:options.title,
-        targetId:options.targetId,targetKind:options.targetKind});
+        targetId:options.targetId,targetKind:options.targetKind,...authoredColor(options,`surface.embeddedChat:${name}`)});
     },
     plot(name, options = {}) {
-      knownOptions(options, ["id", "state", "x", "y"], `surface.plot:${name}`);
+      knownOptions(options, ["id", "state", "x", "y", "color"], `surface.plot:${name}`);
       assert(options.state instanceof StateHandle && stateById.get(options.state.id) === options.state,
         "MCEL_DSL_PLOT_STATE_INVALID", "Plot needs a declared state.");
       const schema = options.state.record.schema;
@@ -1288,7 +1339,8 @@ function createDsl(metadata, source) {
         "MCEL_DSL_PLOT_FIELDS_INVALID", "Plot needs a keyed list with numeric x and y fields.");
       assert(options.x !== options.y, "MCEL_DSL_PLOT_AXES_INVALID", "Plot axes must be distinct.");
       return surfaceNode(name, {id: nodeId(name, options), kind: "surface-node", nodeKind: "plot",
-        sourceName: name, state: ref(options.state), x: options.x, y: options.y});
+        sourceName: name, state: ref(options.state), x: options.x, y: options.y,
+        ...authoredColor(options,`surface.plot:${name}`)});
     },
     documentEditor(name, options = {}) {
       knownOptions(options, ["id", "value", "path", "draft", "loadIntent", "saveIntent"], `surface.documentEditor:${name}`);
@@ -1313,12 +1365,13 @@ function createDsl(metadata, source) {
         ...(options.saveIntent ? {saveIntent:ref(options.saveIntent)}:{})});
     },
     receipt(name, options = {}) {
-      knownOptions(options, ["id"], `surface.receipt:${name}`);
-      const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "operation-evidence"};
+      knownOptions(options, ["id","color"], `surface.receipt:${name}`);
+      const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "operation-evidence",
+        ...authoredColor(options,`surface.receipt:${name}`)};
       return surfaceNode(name, record);
     },
     region(name, options = {}) {
-      knownOptions(options, ["role", "priority", "prefer", "children"], `surface.region:${name}`);
+      knownOptions(options, ["role", "priority", "prefer", "children", "color"], `surface.region:${name}`);
       assert(typeof name === "string" && /^[a-z][a-z0-9-]*$/.test(name),
         "MCEL_DSL_REGION_ID_INVALID", "Region names must be stable lowercase IDs.");
       assert(Array.isArray(options.children || []), "MCEL_DSL_REGION_CHILDREN_INVALID", "Region children must be an array.");
@@ -1340,6 +1393,7 @@ function createDsl(metadata, source) {
         ...(options.role ? {role: options.role} : {}),
         ...(options.priority ? {priority: options.priority} : {}),
         ...(options.prefer ? {prefer: deepClone(options.prefer)} : {}),
+        ...authoredColor(options,`surface.region:${name}`),
         children: (options.children || []).flat()};
     },
     relate(from, kind, to) {
@@ -1428,6 +1482,7 @@ function createDsl(metadata, source) {
           regions.push({id: region.id, kind: "interface-region", role: region.role, source,
             ...(region.priority ? {priority: region.priority} : {}),
             ...(region.prefer ? {prefer: region.prefer} : {}),
+            ...(region.color ? {color:region.color} : {}),
             members: members.sort((a,b) => a.ref.localeCompare(b.ref))});
         } else {
           assert(!members.length || !regions.length,

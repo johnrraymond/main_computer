@@ -16,6 +16,7 @@
       {role: "thread-layout", selector: ".chat-console-thread-layout", required: true},
       {role: "threads", selector: ".chat-thread-rail"},
       {role: "workspace", selector: ".chat-thread-workspace", required: true},
+      {role: "view-switch", selector: ".chat-conversation-switch"},
       {role: "notebook", selector: ".chat-console-notebook", required: true},
       {role: "cell", selector: ".chat-cell", many: true},
       {role: "cell-choices", selector: ".chat-cell-tabs", many: true},

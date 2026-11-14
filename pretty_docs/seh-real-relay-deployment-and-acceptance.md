@@ -1,5 +1,7 @@
 # Secure External Hub — Real Relay Backend, Coolify Deployment, and Integrated Lab
 
+> **Deployment ownership revision (November 13):** [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md) governs MCEL-driven SEH management. The local LMS owns Coolify identity access, SEH harness execution, durable deployment state, and recovery. A Network SLH ORG-SLH authenticates/authorizes and forwards to its **own** LMS; Remote SEH has no deployment authority. Historical standalone harness/lab commands below remain valid within their explicitly stated scope, not as an alternate production UI management path.
+
 > **Historical bring-up and laboratory instructions.** Manual signing-identity
 > creation, manual remote key exchange, and launching a standalone connector
 > are not the normal SLH-owned deployment workflow. The remote harness has not

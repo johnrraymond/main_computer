@@ -106,6 +106,191 @@
       selectors: Object.fromEntries(active.map(item => [item.id, item.selector]))});
   }
 
+  // Form geometry is a hard input to Layout, not a browser correction loop.
+  // CSS supplies the *used* rounded rectangle and the existing spacing;
+  // Layout computes one safe content rectangle before committing the new
+  // geometry. Normal-flow content is guaranteed to fit the corner interior
+  // when it stays within the resulting CSS content box. Unsupported paint
+  // geometries are diagnosed instead of being hidden/clipped.
+  const FORM_SHAPE_SCHEMA = "mcel.form-shape-layout.v1";
+  const formShapeOriginals = new WeakMap();
+  const FORM_INSET_RATIO = 1 - 1 / Math.sqrt(2);
+  const formSides = ["Top", "Right", "Bottom", "Left"];
+  const formPadding = side => `padding${side}`;
+  const formBorder = side => `border${side}Width`;
+  const cssPixels = source => {
+    const n = Number.parseFloat(source);
+    return Number.isFinite(n) && n >= 0 ? n : NaN;
+  };
+  function cornerPair(value, width, height) {
+    const components = String(value || "0").trim().split(/\s+/);
+    if (!components.length || components.length > 2) return null;
+    const resolve = (unit, dimension) => {
+      if (/^-?\d+(?:\.\d+)?%$/.test(unit)) return parseFloat(unit) * dimension / 100;
+      if (/^-?\d+(?:\.\d+)?px$/.test(unit) || unit === "0") return parseFloat(unit);
+      return NaN;
+    };
+    const x = resolve(components[0], width);
+    const y = resolve(components[1] || components[0], height);
+    return x >= 0 && y >= 0 && Number.isFinite(x) && Number.isFinite(y) ? {x,y} : null;
+  }
+  function formUsedCorners(styles, width, height) {
+    const corners = {
+      tl:cornerPair(styles.borderTopLeftRadius,width,height),
+      tr:cornerPair(styles.borderTopRightRadius,width,height),
+      br:cornerPair(styles.borderBottomRightRadius,width,height),
+      bl:cornerPair(styles.borderBottomLeftRadius,width,height)
+    };
+    if (Object.values(corners).some(pair => pair === null)) return null;
+    // CSS Backgrounds and Borders: scale every radius by the same factor
+    // when adjacent radii would exceed an edge. This handles pills and
+    // asymmetric elliptical corners without an arbitrary radius cap.
+    let scale = 1;
+    const limits = [[width,corners.tl.x + corners.tr.x],
+      [height,corners.tr.y + corners.br.y],
+      [width,corners.bl.x + corners.br.x],
+      [height,corners.tl.y + corners.bl.y]];
+    for (const [size,sum] of limits) if (sum > 0) scale = Math.min(scale,size / sum);
+    for (const corner of Object.values(corners)) {corner.x *= scale;corner.y *= scale;}
+    return corners;
+  }
+  function minimumFormInsets({width,height,radii,borders}) {
+    if (!(width > 0 && height > 0) || !radii ||
+        !Array.isArray(borders) || borders.length !== 4 || borders.some(v => !(v >= 0)))
+      return null;
+    // At a rounded corner (rx,ry), the interior point along the diagonal
+    // lies at (rx*(1-1/sqrt(2)), ry*(1-1/sqrt(2))). Insets that meet
+    // these bounds on BOTH axes contain a rectangular content box entirely
+    // within the quarter ellipse. Border thickness already supplies part
+    // of the clearance; padding must supply only the remainder.
+    const inset = [
+      FORM_INSET_RATIO * Math.max(radii.tl.y,radii.tr.y),
+      FORM_INSET_RATIO * Math.max(radii.tr.x,radii.br.x),
+      FORM_INSET_RATIO * Math.max(radii.bl.y,radii.br.y),
+      FORM_INSET_RATIO * Math.max(radii.tl.x,radii.bl.x)
+    ];
+    return inset.map((n,i) => Math.ceil(Math.max(0,n - borders[i]) * 64) / 64);
+  }
+  function clearFormShapeLayout(root) {
+    const prior = formShapeOriginals.get(root);
+    if (!prior) return 0;
+    for (const record of prior) {
+      for (const [property,old] of record.properties) {
+        if (old.value) record.element.style.setProperty(property,old.value,old.priority);
+        else record.element.style.removeProperty(property);
+      }
+    }
+    formShapeOriginals.delete(root);
+    return prior.length;
+  }
+  function evaluateFormShapeLayout({root,containers}={}) {
+    if (!root?.ownerDocument || !Array.isArray(containers))
+      fail("Form shape evaluation requires a root and declared shape containers");
+    const win = root.ownerDocument.defaultView;
+    const records=[],violations=[];
+    const seen = new Set();
+    for (const element of containers) {
+      if (seen.has(element) || (element !== root && !root.contains(element))) continue;
+      seen.add(element);
+      if (!element?.isConnected || element === root ||
+          element.hasAttribute("data-mcel-natural-layout") ||
+          element.querySelector(':scope > [data-mcel-natural-scroller]')) continue;
+      const style=win.getComputedStyle(element);
+      // Controls and explicit scrollports own different layout obligations.
+      if (element.matches('button,input,textarea,select,[role="button"],[role="tab"],'+
+          '[data-mcel-natural-scroller]') || style.display === "none" ||
+          style.display === "contents") continue;
+      const children=[...element.children].filter(child=>{
+        const s=win.getComputedStyle(child);
+        return s.display!=="none" && s.visibility!=="hidden";
+      });
+      if (!children.length) continue;
+      if (children.some(child=>{
+        const s=win.getComputedStyle(child);
+        return ["absolute","fixed"].includes(s.position) ||
+          s.transform!=="none" || formSides.some(side=>cssPixels(s[`margin${side}`]) < 0);
+      })) {
+        violations.push({code:"unsupported-form-content-geometry",node:element});
+        continue;
+      }
+      const box=element.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      const radii=formUsedCorners(style,box.width,box.height);
+      if (!radii) {
+        violations.push({code:"unsupported-form-corner",node:element});
+        continue;
+      }
+      if (Object.values(radii).every(pair=>pair.x===0 || pair.y===0)) continue;
+      // A normally flowed panel may grow when clearance is applied. The
+      // initially *used* radius is therefore not a valid upper bound for
+      // its final shape. Pixel radii are fixed upper bounds regardless of
+      // that growth; percentage radii are not, so require an explicit
+      // size contract rather than claiming a false containment proof.
+      const cornerValues=[style.borderTopLeftRadius,style.borderTopRightRadius,
+        style.borderBottomRightRadius,style.borderBottomLeftRadius];
+      if (cornerValues.some(v=>String(v).includes("%"))) {
+        violations.push({code:"form-dynamic-radius-needs-size-contract",node:element});
+        continue;
+      }
+      const declared=cornerValues.map(v=>cornerPair(v,box.width,box.height));
+      if (!declared.every(Boolean)) {
+        violations.push({code:"unsupported-form-corner",node:element});
+        continue;
+      }
+      for (const [key,corner] of [["tl",declared[0]],["tr",declared[1]],
+           ["br",declared[2]],["bl",declared[3]]]) radii[key] = corner;
+      const borders=formSides.map(side=>cssPixels(style[formBorder(side)]));
+      const padding=formSides.map(side=>cssPixels(style[formPadding(side)]));
+      const needed=minimumFormInsets({width:box.width,height:box.height,radii,borders});
+      if (!needed || padding.some(n=>!Number.isFinite(n))) {
+        violations.push({code:"unresolved-form-metrics",node:element});
+        continue;
+      }
+      const proposed=padding.map((p,i)=>Math.max(p,needed[i]));
+      const extraX=proposed[1]-padding[1]+proposed[3]-padding[3];
+      const extraY=proposed[0]-padding[0]+proposed[2]-padding[2];
+      // Infeasibility is explicit: do not reduce controls below their
+      // original minimum content space or turn the parent into a clipper.
+      const availableWidth=box.width-borders[1]-borders[3]-proposed[1]-proposed[3];
+      const availableHeight=box.height-borders[0]-borders[2]-proposed[0]-proposed[2];
+      const authoredHeight=element.style.getPropertyValue("height").trim();
+      const canGrowVertically=!authoredHeight || authoredHeight==="auto";
+      if (availableWidth <= 0 || (!canGrowVertically && availableHeight <= 0)) {
+        violations.push({code:"form-shape-space-infeasible",node:element,needed,availableWidth,availableHeight});
+        continue;
+      }
+      if (extraX > 1/64 || extraY > 1/64) {
+        records.push({element,base:padding,committed:proposed,required:needed,
+          addedWidth:extraX,addedHeight:extraY});
+      }
+    }
+    return {schema:FORM_SHAPE_SCHEMA,status:violations.length?"partial":"feasible",records,violations};
+  }
+  function applyFormShapeLayout({root,containers}={}) {
+    if (!root) fail("Form shape layout root is required");
+    // Idempotence: the next plan always starts from authored CSS, not the
+    // previous profile's negotiated padding. There are NO retry passes.
+    clearFormShapeLayout(root);
+    const plan=evaluateFormShapeLayout({root,containers});
+    const originals=[];
+    for (const record of plan.records) {
+      const properties=new Map();
+      for (let i=0;i<formSides.length;i++) {
+        if (record.committed[i] <= record.base[i] + 1/64) continue;
+        const prop=`padding-${formSides[i].toLowerCase()}`;
+        properties.set(prop,{value:record.element.style.getPropertyValue(prop),
+          priority:record.element.style.getPropertyPriority(prop)});
+        record.element.style.setProperty(prop,`${record.committed[i]}px`,"important");
+      }
+      if (properties.size) originals.push({element:record.element,properties});
+    }
+    if (originals.length) formShapeOriginals.set(root,originals);
+    return {schema:plan.schema,status:plan.status,adjusted:originals.length,
+      violations:plan.violations,requests:plan.records.map(r=>({
+        node:r.element.getAttribute("data-mcel-region") || r.element.getAttribute("data-mcel-node") || null,
+        requiredInsets:r.required,addedWidth:r.addedWidth,addedHeight:r.addedHeight}))};
+  }
+
   // Executable structural-CSS contract v1. Opted-in nested grids use semantic
   // child controls and browser measurements. Application CSS is a candidate,
   // never a source of proof that labels fit. No application-name branches.
@@ -571,7 +756,7 @@
     const seen = new Set(); let count = 0;
     function validate(node, depth) {
       if (!node || typeof node !== "object" || Array.isArray(node) || depth > 10 || ++count > 64) fail("invalid layout tree depth/size");
-      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible","auxiliarySelectors","keyAttribute"].includes(key)))
+      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible","auxiliarySelectors","auxiliaryPlacement","keyAttribute"].includes(key)))
         fail("unknown canonical layout property");
       if (typeof node.id !== "string" || !node.id || seen.has(node.id)) fail("duplicate or absent layout node id");
       seen.add(node.id);
@@ -597,6 +782,11 @@
             new Set(selectors).size !== selectors.length)
           fail("invalid layout auxiliarySelectors");
       }
+      if (node.auxiliaryPlacement !== undefined &&
+          (node.role !== "group" || !node.auxiliarySelectors?.length ||
+           node.auxiliaryPlacement !== "flow" ||
+           node.variants?.length))
+        fail("invalid layout auxiliary placement");
       if (node.variants !== undefined) {
         if (node.role !== "group" || !Array.isArray(node.variants) || node.variants.length < 1 || node.variants.length > 8) fail("invalid layout variants");
         const childIds=new Set((node.children||[]).map(c=>c.id));
@@ -682,7 +872,10 @@
     if (def.role === "region") return [{columns:0,template:"",gap:0}];
     // All instances share ONE decision, even when their direct children differ.
     // Empty collections are valid; subsequent explicit refresh recomputes this.
-    const count = def.role === "group" ? def.children.length :
+    const flowAuxiliaries=def.role === "group" && def.auxiliaryPlacement === "flow" ?
+      [...entry.el.children].filter(child=>treeElementVisible(child) &&
+        (def.auxiliarySelectors || []).some(selector=>child.matches(selector))).length : 0;
+    const count = def.role === "group" ? def.children.length + flowAuxiliaries :
       (def.role === "repeat" ? entry.els.reduce((maximum,el)=>Math.max(maximum,el.children.length),0) : entry.el.children.length);
     if (def.role === "repeat" && count === 0) return [{columns:0,template:"",gap:0}];
     const options = [];
@@ -775,8 +968,36 @@
             failures.push({id:def.id,code:"auxiliary-control-in-layout-flow"});
         }
       }
+      // In-flow auxiliary controls are explicitly declared optional members
+      // of the group. They retain DOM order and receive a grid cell; reject
+      // absolute positioning and any collision with declared regions.
+      if (def.role === "group" && def.auxiliaryPlacement === "flow") {
+        const visibleChildren=[...el.children].filter(treeElementVisible);
+        for (const child of visibleChildren) if (!def.children.some(c=>child.matches(c.selector)) &&
+            !(def.auxiliarySelectors||[]).some(selector=>child.matches(selector)))
+          failures.push({id:def.id,code:"undeclared-visible-layout-region"});
+        const participants=visibleChildren.filter(child=>
+          (def.children.some(c=>child.matches(c.selector)) ||
+           (def.auxiliarySelectors||[]).some(selector=>child.matches(selector))));
+        for (const auxiliary of participants.filter(child=>
+          (def.auxiliarySelectors||[]).some(selector=>child.matches(selector)))) {
+          const controlStyle=auxiliary.ownerDocument.defaultView.getComputedStyle(auxiliary);
+          if (["absolute","fixed"].includes(controlStyle.position))
+            failures.push({id:def.id,code:"declared-flow-auxiliary-out-of-flow"});
+          const box=auxiliary.getBoundingClientRect();
+          if (box.width < 40 || box.height < 24)
+            failures.push({id:def.id,code:"flow-auxiliary-target-undersized"});
+        }
+        for (let i=0;i<participants.length;i++) for (let j=i+1;j<participants.length;j++) {
+          const a=participants[i].getBoundingClientRect(),b=participants[j].getBoundingClientRect();
+          if (Math.min(a.right,b.right)-Math.max(a.left,b.left)>1 &&
+              Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>1)
+            failures.push({id:def.id,code:"declared-flow-region-overlap"});
+        }
+      }
       const children=["control-grid","repeat"].includes(def.role) ? [...el.children] : (def.role === "group" ?
-        [...el.children].filter(child => !(def.auxiliarySelectors || []).some(selector => child.matches(selector))) : []);
+        [...el.children].filter(child => def.auxiliaryPlacement === "flow" ||
+          !(def.auxiliarySelectors || []).some(selector => child.matches(selector))) : []);
       if (choice.columns && gridTrackCount(style.gridTemplateColumns)!==choice.columns)
         failures.push({id:def.id,code:"computed-css-track-conflict"});
       if (el.scrollWidth > el.clientWidth + 1 && !["auto","scroll"].includes(style.overflowX))
@@ -1798,6 +2019,8 @@
     mountSemanticCollectionLayout, clearSemanticCollectionLayout,
     canonicalLayoutTree, evaluateCanonicalLayoutTree, separateCanonicalTreeLayout, applyCanonicalLayoutTree, clearCanonicalLayoutTree,
     mountCanonicalLayoutTree, unmountCanonicalLayoutTree,
+    FORM_SHAPE_SCHEMA, minimumFormInsets, formUsedCorners,
+    evaluateFormShapeLayout, applyFormShapeLayout, clearFormShapeLayout,
     inferWorkspaceLayout, applyWorkspaceLayout, clearWorkspaceLayout, mountWorkspacePlan,
     adaptiveContract, evaluateAdaptiveControlGrid, applyAdaptiveControlGrid,
     evaluateAdaptiveControlGroup, applyAdaptiveControlGroup,

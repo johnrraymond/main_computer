@@ -1,5 +1,9 @@
 # MCEL SLH Unified Administration — Oracle V4 (November 10, 2026)
 
+> **November 13 management-authority correction:** [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md) establishes one LMS-owned Coolify/SEH management implementation. This Computer uses its LMS locally (no ORG-SLH login); Network SLH uses authenticated ORG-SLH forwarding to its colocated LMS. The "same authenticated administration" language below applies to ORG-owned organization operations, **not** to local LMS management reads or their remote trust boundary. Full implementation remains pending.
+
+> **November 13 superseding UI contract:** [MCEL Identity Selection and Transparent Authorization](mcel-identity-selection-and-authorization.md) replaces the UI-level Login Administrator/Logout Administrator controls in this historical V4 oracle. Identity selection does not log in; the list supports explicit deselection and target-verified **Administrator** badges. Cryptographic authentication remains required on protected operations, transparent to the UI. V4's remaining target, enrollment, TLS pin, and role protections are unchanged. This update is documentation-only; existing V4 tests may still assert historical behavior.
+
 ## Contract and precedence
 
 **V4 is the controlling oracle for SLH administration.** V2 remains the target-navigation,
@@ -58,8 +62,7 @@ Administrator tokens are target-bound and short-lived, absent from browser URLs,
 localStorage, persistent state, logs, and generated MCEL observations. The viewport
 may use an opaque, origin- and target-scoped server session. Switching target
 must never reuse another target's token, follow an unverified redirect, downgrade
-transport, or silently execute on localhost. An expired/revoked session returns
-to login without resetting enrollments. Failed Worker observation is
+transport, or silently execute on localhost. Under the November 13 UI contract, an expired/revoked protocol session does not create a user-facing login step: the next authorized request transparently re-proves possession when possible, or fails closed without resetting enrollments. **Historical V4 implementation** returned to a login action. Failed Worker observation is
 `NOT_OBSERVED`, not an observed empty fleet.
 
 Every semantic destination must have a real, refreshable `href` URL. The current

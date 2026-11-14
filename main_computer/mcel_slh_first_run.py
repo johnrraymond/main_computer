@@ -28,7 +28,7 @@ from main_computer.slh.storage import slh_state_dir
 _ROOT = Path(__file__).resolve().parents[1]
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
 _ACTIONS = frozenset(('start', 'bootstrap', 'configure', 'configure-and-enable',
-                      'disable', 'toggle', 'toggle-enablement', 'activate', 'login', 'logout'))
+                      'disable', 'toggle', 'toggle-enablement', 'activate', 'login', 'authenticate', 'logout'))
 _START_LOCK = threading.RLock()
 
 
@@ -467,7 +467,8 @@ class SlhFirstRunController:
             'configure-and-enable': ('adminDeviceId', 'bindAddress', 'port'),
             'disable': ('adminDeviceId',), 'toggle': ('adminDeviceId',),
             'toggle-enablement': ('adminDeviceId',),
-            'activate': ('adminDeviceId',), 'login': ('adminDeviceId',), 'logout': (),
+            'activate': ('adminDeviceId',), 'login': ('adminDeviceId',),
+            'authenticate': ('adminDeviceId',), 'logout': (),
         }
         if set(values) != set(signatures[action]):
             raise FirstRunError('INVALID_SETUP_ARGUMENTS')
@@ -488,5 +489,5 @@ class SlhFirstRunController:
         if action == 'toggle':
             return self.toggle_organization(device_id=values['adminDeviceId'])
         if action == 'activate': return self.activate(device_id=values['adminDeviceId'])
-        if action == 'login': return self.login(device_id=values['adminDeviceId'])
+        if action in ('login', 'authenticate'): return self.login(device_id=values['adminDeviceId'])
         return self.logout(token)

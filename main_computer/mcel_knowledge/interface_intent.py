@@ -129,7 +129,7 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
     for i, region in enumerate(regions):
         if not isinstance(region, Mapping):
             continue
-        valid = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource','purpose','tasks','content','priority','preferences','staticContent','visibleWhen'}
+        valid = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource','purpose','tasks','content','priority','preferences','staticContent','visibleWhen','color'}
         required = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource'}
         if set(region)-valid or not required <= set(region):
             errors.append(f'regions[{i}] has unknown or missing properties')

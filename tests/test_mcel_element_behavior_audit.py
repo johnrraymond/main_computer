@@ -24,7 +24,8 @@ def _roster():
 
 def test_all_registered_definitions_have_one_traceable_source():
     rows = audit(ROOT, _roster())
-    assert len(rows) == 141
+    assert len(rows) == 142
+    assert "element.core.modal-subprogram" in rows
     assert all(v['definitionLocated'] for v in rows.values())
     assert all(len(v['definitionLocation']['lines'])==1 for v in rows.values())
     assert all(v['implementationExistence']=='UNKNOWN' for v in rows.values())

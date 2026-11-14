@@ -86,6 +86,15 @@
           scrollPolicy: "bounded-read-only-scroll",
           decoderHints: ["status", "output", "log", "report", "activity", "progress"]
         }),
+        def("element.core.modal-subprogram", "Modal Subprogram", "core", "subprogram", "Viewport-bound presentation subprogram with a committed geometry budget and independent operation lifecycle.", {
+          allowedChildren: ["element.core.region", "element.core.action", "element.core.status-feed"],
+          layoutLaws: ["hard-minimum-size", "soft-maximum-request", "region-budget-commit", "no-content-driven-resize", "scroll-owner-by-semantic-role"],
+          scrollPolicy: "region-owned-overflow", htmlTag: "mcel-modal-subprogram",
+          stateModel: {required: ["subprogramId", "presentationState", "geometry", "regions"], optional: ["observedOperationId", "operationState"]},
+          interactionModel: {presentationDismissalIndependentOfOperation: true, geometryChangesOn: ["open", "viewport-resize", "viewport-zoom"]},
+          decoderHints: ["modal subprogram", "dialog lifecycle", "subprogram geometry"],
+          proofFixtures: ["mcel-lab-operation-fixture"]
+        }),
         def("element.core.workflow", "Workflow", "core", "workflow", "Ordered process, wizard, or operational flow.", {
           allowedChildren: ["element.core.panel", "element.core.action", "element.core.status-feed"],
           htmlTag: "mcel-workflow",

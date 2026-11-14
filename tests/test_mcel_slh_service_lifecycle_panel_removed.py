@@ -35,7 +35,7 @@ def test_removal_is_semantic_and_does_not_delete_backend_operations():
     assert not REMOVED_NODES.intersection(n['id'] for n in ir['surfaces'][0]['nodes'])
     assert not any(REMOVED_NODES.intersection(m['ref'] for m in r['members'])
                    for r in composition['regions'])
-    assert REMOVED_INTENTS <= {intent['id'] for intent in ir['intents']}
+    assert REMOVED_INTENTS.isdisjoint({intent['id'] for intent in ir['intents']})
     assert {'surface-node:slh.organization-enablement','surface-node:slh.start-stop-org-slh'} <= {node['id'] for node in ir['surfaces'][0]['nodes']}
     assert {'surface-node:slh.local-seh-lifecycle', 'surface-node:slh.network-seh-lifecycle'} <= {
         node['id'] for node in ir['surfaces'][0]['nodes']

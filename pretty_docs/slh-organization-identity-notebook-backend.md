@@ -2,6 +2,8 @@
 
 **Status:** Implemented ORG-SLH backend and coordinated MCEL semantic notebook, November 11, 2026. This specification applies identically to the local ORG-SLH and a remotely connected ORG-SLH because both use the same authenticated Organization Service API and each organization owns its own durable state.
 
+**UI migration, November 13:** The new [MCEL Identity Selection and Transparent Authorization](mcel-identity-selection-and-authorization.md) contract removes manual Login/Logout steps, adds an explicit way to deselect a signing identity, and displays ORG-SLH-verified **Administrator** rights in the identity list. The backend challenge/session and administrator requirements in this document remain unchanged. The existing explicit-login passage below describes the historical implementation, not the desired UI after migration.
+
 ## Governing model
 
 An identity in the left MCEL navigation is a **local signing identity** belonging to LMS-SLH. An enrolled identity is an **organization-authorized device** in ORG-SLH. Selecting a local signer does not automatically enroll it, and connecting to a remote ORG-SLH does not confer administrator authority.
@@ -75,8 +77,11 @@ the selected target's pinned encrypted transport. Delete, Remove, and Empty
 Trash require explicit user confirmation. The Trash footer is outside the
 notebook's record scroll area and only appears when Trash is selected.
 
-A local administrator explicitly logs in with an LMS-SLH signing identity;
-no automatic enrollment or authentication occurs on page mount. The local
+**Historical implementation:** a local administrator explicitly logs in with
+an LMS-SLH signing identity; no automatic enrollment or authentication occurs
+on page mount. **Target UI:** selecting an identity does not log in, and
+subsequent protected operations obtain cryptographic proof transparently.
+Selecting or deselecting never performs enrollment or privilege recovery. The local
 adapter keeps the ORG-SLH bearer inside its JavaScript port closure and
 uses a same-origin, loopback-only bridge with a TLS-pinned ORG-SLH upstream.
 The remote adapter keeps only an opaque, short-lived ticket; the server

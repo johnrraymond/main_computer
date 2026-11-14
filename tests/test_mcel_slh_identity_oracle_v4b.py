@@ -99,10 +99,9 @@ def test_v4b_semantic_identity_selection_not_manual_device_id():
     assert composition['policy']=='mcel.semantic-structure.p3'
     assert not ir['layouts']
     declared={intent['id']:intent for intent in ir['intents']}
-    assert declared['intent:login-administrator']['risk']=='consequential'
-    assert declared['intent:login-administrator']['confirmationRequired'] is False
-    assert all(intent.get('confirmationRequired') is not False
-               for name,intent in declared.items() if name!='intent:login-administrator')
+    assert 'intent:login-administrator' not in declared
+    assert 'intent:logout-administrator' not in declared
+    assert declared['intent:choose-identity']['collectionSelection']['empty']=='clear'
     assert {'intent:refresh-identities','intent:refresh-identity-status','intent:choose-identity'} <= {
         intent['id'] for intent in ir['intents']}
     page=render_slh_page()
@@ -166,18 +165,17 @@ def test_v4b_browser_reflects_selected_identity_without_exposing_login():
             assert page.locator('input[name="deviceId"]').count()==0
             assert page.locator('[data-record-key="identity-default"]').count()==1
             assert page.locator('[data-record-key="identity-second"]').count()==1
-            assert page.locator('[data-mcel-selected-details="identity-default"]').count()==1
+            assert page.locator('[data-record-key="identity-default"]').get_attribute('aria-selected')=='true'
             assert not page.locator('button[data-intent="intent:login-administrator"]').count()
-            assert page.locator('button[data-mcel-draft-submit]').is_disabled()
+            assert page.locator('form[data-intent="intent:configure-and-enable-organization"] button[type="submit"]').count()==1
             page.locator('[data-record-key="identity-second"] button[data-select-key="identity-second"]').click()
             page.wait_for_function("()=>window.__mcelSlh.app.readState('state:selected-local-identity')==='identity-second'")
-            assert page.locator('[data-mcel-selected-details="identity-second"]').count()==1
-            result=page.evaluate("""async()=>{
-                return (await window.__mcelSlh.app.execute('intent:login-administrator')).disposition;
+            assert page.locator('[data-record-key="identity-second"]').get_attribute('aria-selected')=='true'
+            assert page.evaluate("""async()=>{
+              try {await window.__mcelSlh.app.execute('intent:login-administrator');return false}
+              catch(e){return String(e.message).includes('unknown-intent')}
             }""")
-            assert result in {'failed','refused-before-attempt'}
-            assert all(x['url']=='/api/applications/slh/identities' and x['method']=='GET'
-                       for x in page.evaluate('window.v4bCalls'))
+            assert not any(x['url'].endswith('/setup/action') for x in page.evaluate('window.v4bCalls'))
             assert not errors,errors
         finally:browser.close()
 

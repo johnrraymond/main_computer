@@ -1786,7 +1786,7 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             errors.append("layoutTree nodes must be records")
             return
         role = node.get("role")
-        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible", "auxiliarySelectors", "keyAttribute"}
+        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible", "auxiliarySelectors", "auxiliaryPlacement", "keyAttribute"}
         if set(node) - allowed:
             errors.append("layoutTree node has unsupported properties")
         ident, selector = node.get("id"), node.get("selector")
@@ -1826,6 +1826,12 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
                 or any(not isinstance(selector, str) or not selector.strip() for selector in selectors)
                 or len(set(selectors)) != len(selectors)):
                 errors.append("layoutTree auxiliarySelectors require a group with 1..8 distinct selectors")
+        if "auxiliaryPlacement" in node and (
+            role != "group" or not node.get("auxiliarySelectors")
+            or node["auxiliaryPlacement"] != "flow"
+            or node.get("variants")
+        ):
+            errors.append("layoutTree auxiliaryPlacement requires group auxiliaries; flow cannot use variants")
         variants = node.get("variants", [])
         if "variants" in node:
             if role != "group" or not isinstance(variants, list) or not 1 <= len(variants) <= 8:

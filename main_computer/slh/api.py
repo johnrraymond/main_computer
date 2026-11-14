@@ -40,10 +40,13 @@ ENDPOINTS = (
     Endpoint('POST','/v1/local/seh/activate','local_seh_activate','admin'),
     Endpoint('GET','/v1/local/seh/status','local_seh_status','admin'),
     Endpoint('POST','/v1/local/seh/disconnect','local_seh_disconnect','admin'),
-    Endpoint('GET','/v1/local/seh/deployment','local_seh_management','admin'),
-    Endpoint('POST','/v1/local/seh/deployment/controllers','local_seh_management','admin'),
-    Endpoint('POST','/v1/local/seh/deployment/selection','local_seh_management','admin'),
-    Endpoint('POST','/v1/local/seh/deployment/harness','local_seh_management','admin'),
+    Endpoint('GET','/v1/local/seh/deployment','local_seh_management','local_management'),
+    Endpoint('POST','/v1/local/seh/deployment/controllers','local_seh_management','local_management'),
+    Endpoint('POST','/v1/local/seh/deployment/selection','local_seh_management','local_management'),
+    Endpoint('POST','/v1/local/seh/deployment/harness','local_seh_management','local_management'),
+    Endpoint('GET','/v1/local/seh/deployment/operations','local_seh_management','local_management'),
+    Endpoint('GET','/v1/local/seh/deployment/operations/{id}','local_seh_management','local_management'),
+    Endpoint('POST','/v1/local/seh/deployment/operations/{id}/cancel','local_seh_management','local_management'),
     Endpoint('GET','/v1/local/authenticator/status','local_authenticator_status','local_identity'),
     Endpoint('GET','/v1/local/authenticator/identities','local_authenticator_list','local_identity'),
     Endpoint('POST','/v1/local/authenticator/identities','local_authenticator_create','local_identity'),
@@ -125,7 +128,7 @@ def _match(pattern, path):
 
 class SLHAPI:
     def __init__(self, authority: SLHAuthority, *, control=None, local_status_provider=None,
-                 local_authenticator=None, organization_controller=None, local_root_registration=None, wallet_service=None, private_requests=None, pinky_sweeper=None, root_api_enabled=False, seh_deployment_manager=None):
+                 local_authenticator=None, organization_controller=None, local_root_registration=None, wallet_service=None, private_requests=None, pinky_sweeper=None, root_api_enabled=False, seh_deployment_manager=None, seh_ipc_key=None):
         self.authority=authority
         self.control=control or SLHControlBackend()
         self.local_status_provider=local_status_provider
@@ -137,6 +140,8 @@ class SLHAPI:
         self.pinky_sweeper=pinky_sweeper
         self.root_api_enabled=root_api_enabled
         self.seh_deployment_manager=seh_deployment_manager
+        from .seh_lms_ipc import ForwardAdmission
+        self.seh_forward_admission=ForwardAdmission(seh_ipc_key) if seh_ipc_key else None
 
     def openapi(self):
         paths={}
@@ -199,6 +204,8 @@ class SLHAPI:
             if e.access=='local_bootstrap' and not loopback:
                 raise SLHError('BOOTSTRAP_LOCAL_ONLY',403)
             if e.path.startswith('/v1/local/') and not loopback:
+                raise SLHError('LOCAL_TRANSPORT_ONLY',403)
+            if e.access=='local_management' and not loopback:
                 raise SLHError('LOCAL_TRANSPORT_ONLY',403)
             if e.access=='admin':identity=self.authority.authenticate(token,admin=True)
             elif e.access=='known':identity=self.authority.authenticate(token)
@@ -379,7 +386,8 @@ class SLHAPI:
         # Loopback-only server, no forwarded-address trust, no wildcard CORS.
         remote=environ.get('REMOTE_ADDR','')
         host=environ.get('HTTP_HOST','')
-        if remote not in ('127.0.0.1','::1') or host.split(':')[0] not in ('127.0.0.1','localhost','[::1]'):
+        bound_port=str(environ.get('SERVER_PORT',''))
+        if remote not in ('127.0.0.1','::1') or host not in ('127.0.0.1:'+bound_port, 'localhost:'+bound_port):
             status,result=403,{'error':{'code':'LOCAL_TRANSPORT_ONLY'}}
         elif environ.get('HTTP_ORIGIN'):
             status,result=403,{'error':{'code':'CROSS_ORIGIN_DENIED'}}
@@ -395,12 +403,37 @@ class SLHAPI:
                 status,result=415,{'error':{'code':'JSON_REQUIRED'}}
             else:
                 try:
-                    body=json.loads(environ['wsgi.input'].read(length)) if length else {}
+                    raw_body=environ['wsgi.input'].read(length) if length else b''
+                    body=json.loads(raw_body) if length else {}
                 except (ValueError,UnicodeDecodeError):
                     body=None
                 auth=environ.get('HTTP_AUTHORIZATION','')
                 token=auth[7:] if auth.startswith('Bearer ') else ''
-                status,result=self.call(method,environ.get('PATH_INFO',''),body,token=token,loopback=True)
+                path=environ.get('PATH_INFO','')
+                if environ.get('QUERY_STRING'):
+                    status,result=400,{'error':{'code':'LOCAL_QUERY_REFUSED'}}
+                elif path.startswith('/v1/local/seh/deployment') and (
+                        environ.get('HTTP_X_LMS_FORWARDED') or
+                        environ.get('HTTP_X_LMS_SIGNATURE') or
+                        environ.get('HTTP_X_LMS_TIMESTAMP') or
+                        environ.get('HTTP_X_LMS_NONCE') or
+                        environ.get('HTTP_X_LMS_PRINCIPAL')):
+                    from .seh_lms_ipc import LMSForwardingError
+                    try:
+                        if self.seh_forward_admission is None:
+                            raise LMSForwardingError('LMS_FORWARD_AUTH_REQUIRED',403)
+                        raw = raw_body
+                        verified_principal=self.seh_forward_admission.verify(method,path,raw,environ)
+                        from .seh_lms_ipc import CURRENT_PRINCIPAL
+                        scope=CURRENT_PRINCIPAL.set(verified_principal)
+                        try:
+                            status,result=self.call(method,path,body,token='',loopback=True)
+                        finally:
+                            CURRENT_PRINCIPAL.reset(scope)
+                    except LMSForwardingError as exc:
+                        status,result=exc.status,{'error':{'code':exc.code}}
+                else:
+                    status,result=self.call(method,path,body,token=token,loopback=True)
         raw=json.dumps(result,sort_keys=True).encode('utf-8')
         reasons={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',409:'Conflict',413:'Content Too Large',415:'Unsupported Media Type',500:'Internal Server Error',501:'Not Implemented',503:'Service Unavailable'}
         start_response(f'{status} {reasons.get(status,"Error")}',

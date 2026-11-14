@@ -13,6 +13,10 @@ SOURCE=Path('mcel_apps/slh/network/application.js')
 STYLE=Path('main_computer/web/applications/styles/mcel-semantic-workbench.css')
 ASSETS=(
     'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',
+    'main_computer/web/applications/scripts/mcel-contract.js',
+    'main_computer/web/applications/scripts/mcel-law-registry.js',
+    'main_computer/web/applications/scripts/mcel-style-law.js',
+    'main_computer/web/applications/scripts/mcel-semantic-color-presentation.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-semantic-slh-network-ports.js',
 )

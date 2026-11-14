@@ -815,17 +815,20 @@
     el.dataset.warnings = warnings;
     el.dataset.ok = ok;
     el.dataset.state = counts.errors > 0 ? "error" : counts.warnings > 0 ? "warning" : "ok";
+    // E/W/G declares meaning only. Theme/Color Law owns the actual hues.
+    el.setAttribute("data-mcel-color-role", counts.errors > 0 ? "diagnostic.error" :
+      counts.warnings > 0 ? "diagnostic.warning" : "diagnostic.success");
     el.setAttribute(
       "aria-label",
       `MCEL diagnostics this session: ${counts.errors} observed error issues, ${counts.warnings} observed warning issues, ${counts.ok} currently passing checks. Click to copy current and historical issues.`
     );
     el.innerHTML = [
       '<span class="mcel-diagnostics-counter__bracket">[</span>',
-      `<span class="mcel-diagnostics-counter__error">${errors}</span>`,
+      `<span class="mcel-diagnostics-counter__error" data-mcel-color-role="diagnostic.error">${errors}</span>`,
       '<span class="mcel-diagnostics-counter__slash">/</span>',
-      `<span class="mcel-diagnostics-counter__warning">${warnings}</span>`,
+      `<span class="mcel-diagnostics-counter__warning" data-mcel-color-role="diagnostic.warning">${warnings}</span>`,
       '<span class="mcel-diagnostics-counter__slash">/</span>',
-      `<span class="mcel-diagnostics-counter__ok">${ok}</span>`,
+      `<span class="mcel-diagnostics-counter__ok" data-mcel-color-role="diagnostic.success">${ok}</span>`,
       '<span class="mcel-diagnostics-counter__bracket">]</span>'
     ].join("");
   }

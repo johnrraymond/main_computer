@@ -1,0 +1,105 @@
+HAWK-DOVE CAPTAIN HEAD-TO-HEAD MATRIX — SYNTHETIC TEACHER
+SCENARIO s01: Contested supply cache
+One common scenario and categorical state for everyone.
+Cell = row captain action / column captain action; H=contest, D=yield, I=indifferent, --=self.
+Opponent prediction: rival jacket X -> provisional contest index -> this captain's Y.
+         c01   c02   c03   c04   c05   c06   c07   c08   c09   c10
+c01       --    DD    DH    HD    HD    DD    HD    HD    HD    HD
+c02       DD    --    DH    HD    HD    HD    HD    HD    HD    HD
+c03       HD    HD    --    HD    HD    HD    HD    HD    HD    HD
+c04       DH    DH    DH    --    HD    DH    HD    DD    HD    HD
+c05       DH    DH    DH    DH    --    DH    HD    DH    DD    DH
+c06       DD    DH    DH    HD    HD    --    HD    DD    HD    HD
+c07       DH    DH    DH    DH    DH    DH    --    DH    DH    DH
+c08       DH    DH    DH    DD    HD    DD    HD    --    HD    HD
+c09       DH    DH    DH    DH    DD    DH    HD    DH    --    DH
+c10       DH    DH    DH    DH    HD    DH    HD    DH    HD    --
+
+PER-CAPTAIN RESULTS (9 distinct opponents each)
+ID    JACKET                                 X   H   D   I   HH   HD   DH   DD
+c01   Crew-first mission pragmatist  1,100,000   6   3   0    0    6    1    2
+c02   Ally-bound guardian            1,160,000   7   2   0    0    7    1    1
+c03   Deterrence hardliner           1,440,000   9   0   0    0    9    0    0
+c04   Patient strategist               960,000   4   5   0    0    4    4    1
+c05   Civilian protector               780,000   1   8   0    0    1    7    1
+c06   Expedition opportunist         1,080,000   5   4   0    0    5    2    2
+c07   Treaty keeper                    720,000   0   9   0    0    0    9    0
+c08   Deception skeptic              1,020,000   4   5   0    0    4    3    2
+c09   Mission absolutist               820,000   1   8   0    0    1    7    1
+c10   Coalition builder                900,000   3   6   0    0    3    6    0
+
+UNORDERED MATCHUPS: 45 (self-play excluded)
+Mutual contests: 0 | One-sided contests: 40 | Mutual yields: 5 | Indeterminate: 0
+All choices are a deterministic teacher demonstration, not learned play or optimized strategies.
+
+############################################################################
+
+HAWK-DOVE CAPTAIN HEAD-TO-HEAD MATRIX — SYNTHETIC TEACHER
+SCENARIO s02: Disputed emergency docking corridor
+One common scenario and categorical state for everyone.
+Cell = row captain action / column captain action; H=contest, D=yield, I=indifferent, --=self.
+Opponent prediction: rival jacket X -> provisional contest index -> this captain's Y.
+         c01   c02   c03   c04   c05   c06   c07   c08   c09   c10
+c01       --    HH    HH    DH    DH    HH    HH    HD    DH    HH
+c02       HH    --    HH    HH    HH    HH    HH    HD    HH    HH
+c03       HH    HH    --    HH    HH    HH    HH    HD    HH    HH
+c04       HD    HH    HH    --    HH    HH    HH    HD    HH    HD
+c05       HD    HH    HH    HH    --    HH    HH    HD    HH    HD
+c06       HH    HH    HH    HH    HH    --    HH    HD    DH    HH
+c07       HH    HH    HH    HH    HH    HH    --    HD    DH    HH
+c08       DH    DH    DH    DH    DH    DH    DH    --    DH    DH
+c09       HD    HH    HH    HH    HH    HD    HD    HD    --    HD
+c10       HH    HH    HH    DH    DH    HH    HH    HD    DH    --
+
+PER-CAPTAIN RESULTS (9 distinct opponents each)
+ID    JACKET                                 X   H   D   I   HH   HD   DH   DD
+c01   Crew-first mission pragmatist  1,300,000   6   3   0    5    1    3    0
+c02   Ally-bound guardian            1,540,000   9   0   0    8    1    0    0
+c03   Deterrence hardliner           1,560,000   9   0   0    8    1    0    0
+c04   Patient strategist             1,600,000   9   0   0    6    3    0    0
+c05   Civilian protector             1,620,000   9   0   0    6    3    0    0
+c06   Expedition opportunist         1,440,000   8   1   0    7    1    1    0
+c07   Treaty keeper                  1,420,000   8   1   0    7    1    1    0
+c08   Deception skeptic                800,000   0   9   0    0    0    9    0
+c09   Mission absolutist             1,840,000   9   0   0    4    5    0    0
+c10   Coalition builder              1,280,000   6   3   0    5    1    3    0
+
+UNORDERED MATCHUPS: 45 (self-play excluded)
+Mutual contests: 28 | One-sided contests: 17 | Mutual yields: 0 | Indeterminate: 0
+All choices are a deterministic teacher demonstration, not learned play or optimized strategies.
+
+############################################################################
+
+HAWK-DOVE CAPTAIN HEAD-TO-HEAD MATRIX — SYNTHETIC TEACHER
+SCENARIO s03: Contested sensor relay
+One common scenario and categorical state for everyone.
+Cell = row captain action / column captain action; H=contest, D=yield, I=indifferent, --=self.
+Opponent prediction: rival jacket X -> provisional contest index -> this captain's Y.
+         c01   c02   c03   c04   c05   c06   c07   c08   c09   c10
+c01       --    DD    DD    HD    HD    DD    HD    HD    DD    DD
+c02       DD    --    DD    DD    HD    DD    DD    DD    DD    DD
+c03       DD    DD    --    HD    HD    HD    HD    HD    HD    HD
+c04       DH    DD    DH    --    DD    DD    DD    DD    DD    DD
+c05       DH    DH    DH    DD    --    DD    DD    DD    DD    DD
+c06       DD    DD    DH    DD    DD    --    DD    DD    DD    DD
+c07       DH    DD    DH    DD    DD    DD    --    DD    DD    DD
+c08       DH    DD    DH    DD    DD    DD    DD    --    DD    DD
+c09       DD    DD    DH    DD    DD    DD    DD    DD    --    DD
+c10       DD    DD    DH    DD    DD    DD    DD    DD    DD    --
+
+PER-CAPTAIN RESULTS (9 distinct opponents each)
+ID    JACKET                                 X   H   D   I   HH   HD   DH   DD
+c01   Crew-first mission pragmatist    680,000   4   5   0    0    4    0    5
+c02   Ally-bound guardian              660,000   1   8   0    0    1    0    8
+c03   Deterrence hardliner             980,000   7   2   0    0    7    0    2
+c04   Patient strategist               300,000   0   9   0    0    0    2    7
+c05   Civilian protector               260,000   0   9   0    0    0    3    6
+c06   Expedition opportunist           460,000   0   9   0    0    0    1    8
+c07   Treaty keeper                    300,000   0   9   0    0    0    2    7
+c08   Deception skeptic                300,000   0   9   0    0    0    2    7
+c09   Mission absolutist               380,000   0   9   0    0    0    1    8
+c10   Coalition builder                360,000   0   9   0    0    0    1    8
+
+UNORDERED MATCHUPS: 45 (self-play excluded)
+Mutual contests: 0 | One-sided contests: 12 | Mutual yields: 33 | Indeterminate: 0
+All choices are a deterministic teacher demonstration, not learned play or optimized strategies.

@@ -1,0 +1,33 @@
+/* MCEL-owned modal subprogram: no content-driven outer or sibling sizing. */
+.mcel-semantic-modal-viewport[hidden] { display: none !important; }
+.mcel-semantic-modal-viewport {
+  position: fixed; inset: 0; z-index: 12000;
+  box-sizing: border-box; display: flex; overflow: auto;
+  padding: 12px; background: rgba(0,0,0,.76);
+  overscroll-behavior: contain;
+}
+.mcel-semantic-modal-panel {
+  flex: none; margin: auto; display: grid; box-sizing: border-box;
+  /* Paint the edge without consuming any of the committed region budgets. */
+  border: 0;
+  border-radius: 16px; background: var(--mcel-modal-background, #0c100f);
+  color: var(--mcel-modal-text, #f2eddc);
+  box-shadow: inset 0 0 0 1px var(--mcel-modal-border, rgba(246,199,91,.42)),
+    0 22px 85px rgba(0,0,0,.6);
+  overflow: hidden; min-width: 0; min-height: 0;
+}
+.mcel-semantic-modal-region {
+  box-sizing: border-box; min-width: 0; min-height: 0;
+  padding: 12px 17px;
+}
+.mcel-semantic-modal-region[data-mcel-overflow="clip"] { overflow: hidden; }
+.mcel-semantic-modal-region[data-mcel-overflow="wrap"] { overflow: hidden; overflow-wrap: anywhere; }
+.mcel-semantic-modal-region[data-mcel-overflow="scroll"] { overflow: auto; overscroll-behavior: contain; }
+.mcel-semantic-modal-region--header { border-bottom: 1px solid rgba(246,199,91,.2); }
+.mcel-semantic-modal-region--actions { border-top: 1px solid rgba(246,199,91,.2); }
+.mcel-semantic-modal-region--output { background: rgba(0,0,0,.3); }
+.mcel-semantic-modal-viewport button { cursor: pointer; }
+
+/* A nonexclusive status notice remains dismissible without owning the workspace. */
+.mcel-semantic-modal-viewport[data-mcel-blocking="false"] { background: transparent; pointer-events: none; }
+.mcel-semantic-modal-viewport[data-mcel-blocking="false"] .mcel-semantic-modal-panel { pointer-events: auto; }

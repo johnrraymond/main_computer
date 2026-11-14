@@ -361,17 +361,19 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
             if self.path != path:
                 self._respond(400, {'error': {'code': 'SEH_MANAGEMENT_QUERY_NOT_ALLOWED'}})
                 return
-            from .seh_deployment_management import management_request, SEHManagementRefused
+            from .seh_lms_ipc import local_path, LMSForwardingError
             try:
-                authority.authenticate(token, admin=True)
-                manager = getattr(self.server, 'seh_deployment_manager', None)
-                if manager is None:
-                    raise SEHManagementRefused('SEH_MANAGEMENT_UNAVAILABLE', 503)
-                result = management_request(manager, method, path, body)
+                authorized=authority.authenticate(token, admin=True)
+                forwarder = getattr(self.server, 'seh_lms_forwarder', None)
+                if forwarder is None:
+                    raise LMSForwardingError('LMS_MANAGEMENT_UNAVAILABLE',503)
+                principal=authorized.get('device_id') if isinstance(authorized,dict) else None
+                result = forwarder.request(method, local_path(path),
+                                           body if method != 'GET' else None,principal=principal)
             except SLHError as exc:
                 self._respond(exc.status, {'error': {'code': exc.code}})
                 return
-            except SEHManagementRefused as exc:
+            except LMSForwardingError as exc:
                 self._respond(exc.status, {'error': {'code': exc.code}})
                 return
             self._respond(200, result)
@@ -544,8 +546,18 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     server.authority = authority
     server.state_dir = Path(state_dir)
     server.wallet_service = OrganizationWallet(state_dir)
-    from .seh_deployment_management import SLHSEHDeploymentManager
-    server.seh_deployment_manager = SLHSEHDeploymentManager(state_dir=state_dir)
+    from .seh_lms_ipc import LMSManagementClient
+    key_hex = os.environ.get('MAIN_COMPUTER_LMS_SEH_IPC_KEY', '')
+    # The parent LMS creates this fresh capability for the single child.
+    # There is deliberately no unauthenticated fallback manager in ORG-SLH.
+    port_value=os.environ.get('MAIN_COMPUTER_LMS_SEH_IPC_PORT','8897')
+    try:
+        port_value=int(port_value)
+    except ValueError:
+        port_value=0
+    server.seh_lms_forwarder = (LMSManagementClient(key=bytes.fromhex(key_hex),port=port_value)
+        if len(key_hex)==64 and all(c in '0123456789abcdef' for c in key_hex)
+        and 1<=port_value<=65535 else None)
     server.api = SLHAPI(authority, wallet_service=server.wallet_service,
                         root_api_enabled=True)
     server.fingerprint = fingerprint

@@ -84,7 +84,9 @@ class OrganizationWorkerClient:
                 ((method,path)==('POST','/v1/org/admin/seh/deployment/selection') and
                  isinstance(body,dict) and set(body)=={'name','expected_generation','operation_id'}) or
                 ((method,path)==('POST','/v1/org/admin/seh/deployment/harness') and
-                 isinstance(body,dict) and set(body)=={'action','execute','expected_generation','confirm'}) or
+                 isinstance(body,dict) and set(body) in (
+                   {'action','execute','expected_generation','confirm'},
+                   {'action','execute','expected_generation','confirm','operation_id'})) or
                 ((method,path)==('POST','/v1/auth/logout') and body=={}) or
                 ((method,path)==('POST','/v1/enrollment/approvals') and
                  set(body)=={'request_id'} and isinstance(body['request_id'],str) and

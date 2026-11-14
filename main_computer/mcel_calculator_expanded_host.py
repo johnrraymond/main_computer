@@ -26,6 +26,10 @@ ASSETS = [
     # standalone HTML must load the same composition runtime as the main SPA.
     'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',
     'main_computer/web/applications/scripts/mcel-semantic-chat-console.js',
+    'main_computer/web/applications/scripts/mcel-contract.js',
+    'main_computer/web/applications/scripts/mcel-law-registry.js',
+    'main_computer/web/applications/scripts/mcel-style-law.js',
+    'main_computer/web/applications/scripts/mcel-semantic-color-presentation.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js',
     'main_computer/web/applications/scripts/mcel-diagnostic-plugins.js',
@@ -87,6 +91,7 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-chat-console.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-calculator-graph-inspection.css').read_text(encoding='utf8')
+    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-color-diagnostics.css').read_text(encoding='utf8')
     expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-diagnostics-counter-widget.css').read_text(encoding='utf8')
     if '</style' in expert_css.lower():
         raise CandidateHostError('style termination')

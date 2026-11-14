@@ -660,6 +660,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #f6c75b;
   --mcel-theme-accent-2: #aee06f;
   --mcel-theme-line: rgba(246, 199, 91, 0.22);
+  --mcel-theme-error: #ff8b8b;
+  --mcel-theme-warning: #ffda72;
+  --mcel-theme-success: #87e6a9;
   --mcel-theme-radius: 22px;
   --mcel-theme-shadow: 0 24px 80px rgba(0,0,0,0.26);
   --mcel-theme-field: linear-gradient(90deg, rgba(246, 199, 91, 0.18), transparent);
@@ -678,6 +681,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #2d7a4f;
   --mcel-theme-accent-2: #d77a2d;
   --mcel-theme-line: rgba(47, 80, 48, 0.24);
+  --mcel-theme-error: #a62b3d;
+  --mcel-theme-warning: #855300;
+  --mcel-theme-success: #146b42;
   --mcel-theme-radius: 18px;
   --mcel-theme-shadow: 0 16px 38px rgba(54, 69, 44, 0.12);
   --mcel-theme-field: linear-gradient(90deg, rgba(45, 122, 79, 0.2), transparent);
@@ -694,6 +700,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #64e4ff;
   --mcel-theme-accent-2: #9d7cff;
   --mcel-theme-line: rgba(127, 157, 255, 0.32);
+  --mcel-theme-error: #ff909b;
+  --mcel-theme-warning: #ffe084;
+  --mcel-theme-success: #76efb5;
   --mcel-theme-radius: 22px;
   --mcel-theme-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
   --mcel-theme-field: linear-gradient(90deg, rgba(100, 228, 255, 0.22), transparent);
@@ -710,6 +719,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #9b3f2c;
   --mcel-theme-accent-2: #1f5a68;
   --mcel-theme-line: rgba(45, 35, 22, 0.22);
+  --mcel-theme-error: #aa3542;
+  --mcel-theme-warning: #835000;
+  --mcel-theme-success: #246b4b;
   --mcel-theme-radius: 8px;
   --mcel-theme-shadow: none;
   --mcel-theme-body: Georgia, "Times New Roman", serif;
@@ -727,6 +739,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #d6b56d;
   --mcel-theme-accent-2: #8e6f41;
   --mcel-theme-line: rgba(214, 181, 109, 0.34);
+  --mcel-theme-error: #ffa0a0;
+  --mcel-theme-warning: #ebce84;
+  --mcel-theme-success: #94e3ad;
   --mcel-theme-radius: 3px;
   --mcel-theme-shadow: 0 18px 56px rgba(0, 0, 0, 0.38);
   --mcel-theme-body: "Didot", Georgia, serif;
@@ -742,6 +757,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #075da8;
   --mcel-theme-accent-2: #1b7b6d;
   --mcel-theme-line: rgba(7, 93, 168, 0.24);
+  --mcel-theme-error: #aa2a46;
+  --mcel-theme-warning: #895400;
+  --mcel-theme-success: #166e4c;
   --mcel-theme-radius: 14px;
   --mcel-theme-shadow: 0 14px 34px rgba(11, 57, 94, 0.12);
   --mcel-theme-field: linear-gradient(90deg, rgba(7, 93, 168, 0.16), transparent);
@@ -756,6 +774,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #00e5ff;
   --mcel-theme-accent-2: #ff7a00;
   --mcel-theme-line: #ffffff;
+  --mcel-theme-error: #ff9393;
+  --mcel-theme-warning: #ffe04b;
+  --mcel-theme-success: #7bff9a;
   --mcel-theme-radius: 0;
   --mcel-theme-shadow: none;
   --mcel-theme-body: Arial, Helvetica, sans-serif;
@@ -778,6 +799,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   --mcel-theme-accent: #005cff;
   --mcel-theme-accent-2: #ff3b30;
   --mcel-theme-line: #005cff;
+  --mcel-theme-error: #a72d3d;
+  --mcel-theme-warning: #815000;
+  --mcel-theme-success: #176b46;
   --mcel-theme-radius: 0;
   --mcel-theme-shadow: none;
   --mcel-theme-body: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -8551,8 +8575,41 @@ body.mcel-modal-open {
 }
 #mcel-lab-app #mcel-semantic-theme-frame {
   width: 100%; max-width: 960px;
-  height: clamp(380px, 56dvh, 610px);
+  /* Height stays owned by the original 65vh preview rule above. */
   justify-self: center;
   background: #101820;
   border-radius: 10px;
 }
+
+/* Read-only Color Law v2 inspector: prevent long state expressions from
+   expanding Lab's existing columns or changing the application preview. */
+#mcel-lab-app .mcel-semantic-color-state-report { min-width: 0; max-width: 100%; }
+#mcel-lab-app .mcel-semantic-color-state-report pre {
+  max-width: 100%; min-width: 0; overflow: auto;
+  white-space: pre; font: 12px/1.5 Consolas, monospace;
+}
+
+
+/* Isolated semantic modal subprogram acid fixture. No SEH/LMS dependencies. */
+.mcel-modal-subprogram-lab { margin: 14px 0; padding: 16px; border: 1px solid rgba(115,214,255,.33); border-radius: 12px; background: rgba(11,20,23,.75); }
+.mcel-modal-subprogram-lab h4 { margin: 0 0 6px; color: var(--gold, #f6c75b); }
+.mcel-modal-subprogram-lab p { margin: 0 0 12px; }
+.mcel-modal-subprogram-lab-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.mcel-modal-subprogram-lab-actions button, .mcel-semantic-modal-region--actions button {
+  border: 1px solid rgba(246,199,91,.42); border-radius: 8px;
+  padding: 8px 12px; background: #101b19; color: #f3eedc; font-weight: 600;
+}
+.mcel-modal-subprogram-lab-actions button:focus-visible, .mcel-semantic-modal-region--actions button:focus-visible {outline: 2px solid #f6c75b;outline-offset:2px;}
+.mcel-modal-subprogram-lab [data-mcel-modal-lab-state] { display: block; margin-top: 10px; font-size: 12px; color: #a9d9ce; }
+.mcel-semantic-modal-panel .mcel-semantic-modal-region--header h3 { margin: 0 0 6px; font-size: 16px; color: #f6c75b; }
+.mcel-semantic-modal-panel .mcel-semantic-modal-region--header p { margin: 0; font-size: 13px; line-height: 1.45; }
+.mcel-modal-lab-details { font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.mcel-semantic-modal-panel .mcel-semantic-modal-region--output strong { display: block; margin-bottom: 8px; font-size: 12px; }
+.mcel-semantic-modal-panel .mcel-semantic-modal-region--output pre { margin: 0; font-size: 12px; line-height: 1.5; color: #c6dfd5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcel-semantic-modal-panel .mcel-semantic-modal-region--actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.mcel-semantic-modal-panel button:disabled { opacity: .55; cursor: not-allowed; }
+
+.mcel-modal-lab-contract { margin-top: 10px; font-size: 12px; color: #c0d9d1; }
+.mcel-modal-lab-contract summary { cursor: pointer; }
+.mcel-modal-lab-contract pre { overflow: auto; max-height: 240px; padding: 10px; background: #060d0e; }
+.mcel-modal-lab-contract output { display: block; margin: 8px 0; }

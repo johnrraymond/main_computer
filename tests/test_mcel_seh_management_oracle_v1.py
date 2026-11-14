@@ -49,6 +49,13 @@ def test_compiled_oracle_semantics_navigation_and_authority():
         assert {x['intent']['ref'] for x in notebook['tabs'][1]['actions'].values()} == set(CONTRACT['seh_lifecycle']['deployment_actions'])
         assert notebook['tabs'][1]['state']['ref'] == 'state:seh-deployment-status'
         assert notebook['tabs'][0]['forms'][0]['secretFields'] == ['apiToken']
+        assert notebook.get('authentication') is None
+        assert CONTRACT['seh_lifecycle']['dedicated_sign_in_control_forbidden'] is True
+        if target=='network':
+            assert CONTRACT['seh_lifecycle']['network_uses_existing_authenticated_connection']
+        assert notebook['tabs'][0]['forms'][1]['choicesFrom']['name']['selectedPath'] == 'selectedController'
+        assert CONTRACT['seh_lifecycle']['selected_controller_prepopulated_from_verified_binding']
+        assert CONTRACT['seh_lifecycle']['private_controller_registry_requires_admin_session']
     assert CONTRACT['remote_seh']['slh_route_auto_discovered'] is True
     assert CONTRACT['remote_seh']['user_supplied_slh_id_forbidden'] is True
     assert nodes['surface-node:slh.connect-remote-seh']['nodeKind']=='form'
@@ -166,6 +173,8 @@ def _browser_mock():
             deviceId:'one',services:'IDENTITY_ADMINISTRATION_ONLY',observedAt:'2026-11-12',explanation:'Pinned'});
         }
         if(url==='/api/applications/slh/seh/deployment'){
+          if(body.operation==='operation-state')return reply({ok:true,result:{
+            schema:'main-computer.seh-management-operation-snapshot.v1',state:'IDLE',busy:false,operation:null}});
           if(body.operation==='inspect')return reply({ok:true,result:{generation:33,
             selectedController:'coolify-a',applicationUuid:'existing-uuid',
             deploymentStatus:'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED',
@@ -224,7 +233,7 @@ def test_browser_navigation_notebooks_and_target_specific_authority(target):
             else:
                 assert page.locator('[data-mcel-operation-notebook]:visible').count()==1
                 if target=='overview':
-                    page.evaluate("async () => await window.__mcelSlh.app.execute('intent:login-administrator')")
+                    page.evaluate("async () => await window.__mcelSlh.app.execute('intent:read-seh-deployment')")
                     session_target='local'
                 else:
                     form=page.locator('form[data-intent="intent:connect-network-slh"]')
@@ -331,8 +340,8 @@ def test_seh_notebook_mount_is_fail_closed_and_reports_refused_lifecycle_action(
             assert page.locator('[data-mcel-operation-notebook]:visible').count()==1
             page.locator('[data-mcel-operation-tab="connection"]:visible').click()
             action=page.locator('[data-mcel-operation-action="Stop"]:visible')
-            assert action.is_disabled()  # no administrator session yet
-            page.evaluate("async () => await window.__mcelSlh.app.execute('intent:login-administrator')")
+            # The explicit Connection tab read transparently proves identity.
+            assert action.is_enabled()
             page.wait_for_function("() => !!document.querySelector('[data-mcel-operation-action=Stop]:not(:disabled)')")
             action.click()
             page.wait_for_function("() => document.querySelector('[data-mcel-operation-status]')?.textContent?.includes('Operation refused')")

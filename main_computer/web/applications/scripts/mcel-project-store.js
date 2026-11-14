@@ -25,6 +25,7 @@
           selectedIndex: Number(state.selectedIndex || 0),
           theme: String(state.theme || "theme-machine"),
           chrome: String(state.chrome || "chrome-strict-hierarchy"),
+          formPresentation: String(state.formPresentation || "form-current"),
           mode: String(state.mode || "source"),
           scenario: String(state.scenario || "round-trip"),
           lastSerializerClean: Boolean(state.lastSerializerClean),

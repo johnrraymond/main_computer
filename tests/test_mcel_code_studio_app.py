@@ -1969,9 +1969,12 @@ console.log(JSON.stringify({{
         self.assertIn("#mcel-lab-app #mcel-lab-diagnostics-slot", script)
         self.assertIn("#mcel-lab-app .mcel-lab-diagnostics-slot .mcel-diagnostics-counter", style)
 
-        self.assertIn(".mcel-diagnostics-counter__error", style)
-        self.assertIn(".mcel-diagnostics-counter__warning", style)
-        self.assertIn(".mcel-diagnostics-counter__ok", style)
+        color_law = (APPLICATIONS_HTML.parent / "applications/styles/mcel-semantic-color-diagnostics.css").read_text(encoding="utf-8")
+        for role in ("diagnostic.error", "diagnostic.warning", "diagnostic.success"):
+            self.assertIn(f'data-mcel-color-role="{role}"', app)
+            self.assertIn(f'data-mcel-color-role="{role}"', script)
+            self.assertIn(f'[data-mcel-color-role="{role}"]', color_law)
+        self.assertIn("applications/styles/mcel-semantic-color-diagnostics.css", applications)
         self.assertNotIn("z-index: 10000", style)
 
     def test_mcel_diagnostics_counter_widget_counts_contract_findings(self) -> None:

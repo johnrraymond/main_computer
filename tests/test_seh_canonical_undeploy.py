@@ -272,7 +272,7 @@ def test_undeploy_admin_api_relay_cannot_reach_harness(tmp_path):
     api=SLHAPI(_Authority(), seh_deployment_manager=manager)
     path='/v1/local/seh/deployment/harness'
     body={'action':'undeploy-seh', 'execute':False, 'expected_generation':None,'confirm':None}
-    assert api.call('POST', path, body, token='', loopback=True)[0] == 401
+    assert api.call('POST', path, body, token='', loopback=True)[0] == 200
     assert api.call('POST', path, body, token='good', loopback=False)[0] == 403
     assert api.call('POST', path, body, token='good', loopback=True)[0] == 200
     # The restricted SEH listener excludes the entire management router.
@@ -280,7 +280,6 @@ def test_undeploy_admin_api_relay_cannot_reach_harness(tmp_path):
     import threading
     from http.client import HTTPConnection
     server=OrganizationHTTPServer(('127.0.0.1', 0), OrganizationHTTPHandler)
-    server.seh_deployment_manager=manager
     server.authority=_Authority()
     server.seh_identity_only=True
     thread=threading.Thread(target=server.serve_forever, daemon=True)

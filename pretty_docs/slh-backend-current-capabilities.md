@@ -1,5 +1,7 @@
 # Secure Local Hub (SLH) — Backend Architecture and Current Capabilities
 
+**November 13 governing UI design (not implemented):** [MCEL Identity Selection and Transparent Authorization](mcel-identity-selection-and-authorization.md) supersedes user-facing Login/Logout and special SEH sign-in actions in the historical V6-C descriptions below. The identity list must support explicit deselection and visibly mark verified **Administrator** rights scoped to the selected ORG-SLH; cryptographic challenge/session authorization remains mandatory for protected operations. The descriptions of login-triggered bootstrap and recovery below are historical source capabilities, not the replacement UI requirements.
+
 **Document purpose:** A source-grounded description of the existing SLH backend for operators, application authors, and maintainers. This document describes *the system*, not a proposed interface, screen layout, or user-workflow specification.
 
 **Source baseline:** `main_computer_test-20261107-184414(1).zip` (export named November 7, 2026). Audited November 8, 2026. Later repository changes and actual Windows service configuration are **not** inferred from this export. [Local implementation](../main_computer/slh/) is the primary source of truth for implemented behavior; older design manuals are historical references.
@@ -24,18 +26,26 @@ Keep these principals distinct:
 
 | Principal | Authority or responsibility | Important separation |
 | --- | --- | --- |
-| LMS-SLH frontend/local-management service | Owns this installation's and its local users' identities: creation, discovery, local custody, authorized signing; also owns local setup/service supervision | Does not enroll itself as organization administrator or serve the public Organization API |
+| LMS-SLH frontend/local-management service | Owns the installation's local identity lifecycle and service supervision; **target owner of all Coolify/SEH deployment management**, via Mother verified state and governed harness | Does not enroll itself as organization administrator or serve the public Organization API; full SEH management migration still pending |
 | Main Computer installation / local authority | Owns local bootstrap and service configuration, organization-domain registration and supervisory lifecycle | Local installation identity is distinct from the organization Known Device registry |
 | Administrator | Authenticated changes to enrollment, policy, service lifecycle, marketplace configuration, and accounting controls | A device credential is not a wallet spending key |
 | Known Device / user | Enrolled public-key identity and active role; may be Worker, requester or administrator | Device enrollment does not grant universal administrative authority |
 | Worker | Executes authenticated authorized computation and advertises supported models/capabilities | Does not receive the organizational marketplace wallet private key or MSK |
 | Requester | Authenticated originator of private computation, with access to its own request status | Cannot administer the organization merely by being known |
-| Organization Service | Separate, explicitly enabled TLS network service for Worker, request and marketplace operations | Does not expose local bootstrap/control endpoints over the network |
+| Organization Service | Separate TLS organization authority for Worker/request/marketplace plus **authenticated Network SLH management forwarding to LMS** | Must not own a separate Coolify registry, SEH harness executor, or deployment journal |
 | Stable Hub | Authoritative public-work admission/settlement and credit-account balances | A local snapshot is not settled-credit authorization |
 | SEH | Remote outbound-connected relay/rendezvous transport | Is not the SLH's identity database or private-job authority |
 | Main Computer Reserve | Configured recipient of signed aggregate Pinky Promise transfers in the Hub credit ledger | A Hub-ledger receipt is not external blockchain settlement |
 
 The current authority model is **one local organization**. The implementation removes old synthetic `org_id` database scope from SLH identity, private requests, and wallet binding; the application must not invent a multi-organization selector merely because older manuals contain organization IDs. See [`authority.py`](../main_computer/slh/authority.py), [`private_requests.py`](../main_computer/slh/private_requests.py), and [`organization_wallet.py`](../main_computer/slh/organization_wallet.py).
+
+**November 13 asynchronous-operations extension:** [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md#durable-asynchronous-operations-and-reconnect-visible-lms-busy-state--november-13-extension) now governs detached harness execution, durable exclusive busy-state snapshots, safe pre-execution cancellation, and reconnection-aware MCEL management modals. It is not a license to bypass enrollment on Network SLH. Historical November 7/9 descriptions and the older implementation-gap note below are retained as snapshot history; they do not supersede the new contract.
+
+## SEH management authority: November 13 governing correction
+
+The production **target architecture** is [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md). The **LMS owns** Coolify controller discovery and identity-state mutation, SEH harness invocation, deployment/undeployment, operation journaling, and remote-state verification. The ORG-SLH is **only the authenticated and authorized forwarding gate** for an administrator managing a Network SLH. This Computer invokes its local LMS directly without an ORG-SLH administrator session. Remote SEH remains excluded.
+
+**[IMPLEMENTATION GAP IN THIS SNAPSHOT]** [`seh_deployment_management.py`](../main_computer/slh/seh_deployment_management.py) contains shared management logic, but [`organization_service.py`](../main_computer/slh/organization_service.py) also instantiates that manager and executes the management route itself. The local viewport's deployment bridge currently uses an organization administrator bearer even on This Computer. Reusing a manager class is not the same as having one **LMS-owned** operation supervisor. The LMS ownership/remote-forwarding migration and durable asynchronous operation contract must be implemented and accepted before claiming conformance. Legacy descriptions of ORG-SLH deploying Coolify are non-governing.
 
 ## 2. Runtime topology and ownership
 

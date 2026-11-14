@@ -168,7 +168,9 @@
         return observation;
       }
       const theme = window.McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value);
-      const palette = window.McelSemanticThemePreview.themeTokens(mcelRuntimePreview, node => getComputedStyle(node));
+      // Both hosts use the same named Color Law palette. The Lab's site
+      // preview CSS is no longer an independent semantic color authority.
+      const palette = window.McelLabStyleLaw.themePalette(theme);
       const result = window.McelSemanticThemePreview.apply({
         root: observation.root, ir: observation.ir, bindingModel: observation.bindingModel,
         bridge: window.McelSemanticPresentationBridge, styleLaw: window.McelLabStyleLaw, theme, tokens: palette
@@ -176,10 +178,28 @@
       if (result.status === 'applied-in-isolated-lab-frame') {
         stopMcelSemanticThemeMountWatch();
         showMcelSemanticThemeEvidence(result);
+        applyMcelSemanticFormPreview(observation, reason);
       }
       setMcelSemanticThemePreviewStatus(result.status === 'applied-in-isolated-lab-frame'
         ? `Applied ${window.McelLabStyleLaw.themeLabel(theme)} to the Calculator preview. Chrome unchanged. (${reason})`
         : `Theme preview refused: ${result.reason || result.status}`);
+      return result;
+    }
+    function applyMcelSemanticFormPreview(observation = null, reason = 'form-change') {
+      const frame = mcelSemanticThemeFrame();
+      if (!mcelLabState.semanticThemePreviewEnabled || !frame || frame.hidden) return {status: 'inactive'};
+      const source = observation || mcelSemanticThemeFrameObservation(frame);
+      const law = window.McelSemanticFormPresentationLaw;
+      if (!law || source.status !== 'ready') return {status:'refused',reason:source.reason || 'Form Presentation Law unavailable'};
+      const form = law.normalize(mcelFormPresentationSelect?.value || mcelLabState.formPresentation);
+      const result = law.apply({root:source.root,ir:source.ir,
+        bridge:window.McelSemanticPresentationBridge,bindingModel:source.bindingModel,profile:form});
+      const evidence = document.getElementById('mcel-semantic-form-presentation-evidence');
+      if (evidence) evidence.textContent = result.status === 'applied-in-isolated-lab-frame'
+        ? `Form: ${form} · ${result.shapedElements} source-bound shapes · ${result.roundedGroupBackgrounds} rounded groups · `+
+          `${result.shapeLayout?.adjusted ?? 0} Layout clearances · `+
+          `${result.shapeLayout?.violations?.length ?? 0} unresolved shape constraints`
+        : `Form refused: ${result.reason || result.status}`;
       return result;
     }
     function watchMcelSemanticThemeMount(frame, observation) {
@@ -303,6 +323,89 @@
       return report;
     }
 
+    // Observational semantic Color Law inspection. Uses the same computed
+    // palette as the existing Theme preview; never touches mounted apps.
+    function renderMcelSemanticColorInspector() {
+      const inspector = document.getElementById("mcel-semantic-color-inspector");
+      if (!inspector?.open) return null;
+      const output = document.getElementById("mcel-semantic-color-inspector-results");
+      const status = document.getElementById("mcel-semantic-color-inspector-status");
+      const law = window.McelLabStyleLaw;
+      if (!output || !status || !law?.resolveColor) return null;
+      const theme = law.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
+      const palette = law.themePalette(theme);
+      output.replaceChildren();
+      if (!palette) {
+        status.textContent = `Theme ${theme}: semantic palette unavailable; no colors were guessed.`;
+        return {status:"unresolved",theme};
+      }
+      const table = document.createElement("table");
+      const header = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      for (const label of ["Semantic role", "State", "Foreground", "Background", "Border", "Accent"]) {
+        const th = document.createElement("th"); th.textContent = label;
+        headerRow.appendChild(th);
+      }
+      header.appendChild(headerRow);
+      table.appendChild(header);
+      const body = document.createElement("tbody");
+      const roles = law.semanticColorRoles;
+      for (const role of roles) {
+        const surface = role.startsWith("diagnostic.") ? "indicator" :
+          role.startsWith("action.") ? "control" :
+          role.startsWith("navigation.") ? "navigation" :
+          role.startsWith("text.") ? "text" : "panel";
+        const resolved = law.resolveColor({theme,role,state:"enabled",surface,palette});
+        if (resolved.status !== "resolved") continue;
+        const row = document.createElement("tr");
+        for (const item of [role,"enabled",resolved.foreground,resolved.background,resolved.border,resolved.accent]) {
+          const cell = document.createElement("td");
+          cell.textContent = item;
+          row.appendChild(cell);
+        }
+        body.appendChild(row);
+      }
+      table.appendChild(body);
+      output.appendChild(table);
+      // A read-only example of the v2 state *composition*, deliberately not
+      // CSS-projected onto any application. The live interaction transitions
+      // are handled by the future consumer's native CSS, not this inspector.
+      let visualStateCases = 0;
+      if (typeof law.resolveColorTreatment === "function") {
+        const report = document.createElement("details");
+        report.className = "mcel-semantic-color-state-report";
+        const title = document.createElement("summary");
+        title.textContent = "Action visual-state decisions — read-only";
+        report.appendChild(title);
+        const content = document.createElement("pre");
+        const examples = [
+          ["rest",{}],
+          ["hover",{interaction:{hovered:true}}],
+          ["pressed",{interaction:{hovered:true,pressed:true}}],
+          ["focus-visible",{interaction:{focused:true,focusVisible:true}}],
+          ["selected+hover",{selection:"on",interaction:{hovered:true}}],
+          ["pending+focus",{operation:"pending",interaction:{focused:true,focusVisible:true}}],
+          ["disabled+hover",{availability:"disabled",interaction:{hovered:true}}],
+          ["destructive",{consequence:"destructive"}]
+        ];
+        const lines=[];
+        for (const [label,dimensions] of examples) {
+          const decision=law.resolveColorTreatment({theme,role:"action.generic",
+            surface:"control",palette,...dimensions});
+          if (decision.status !== "resolved") continue;
+          const c=decision.channels;
+          lines.push(`${label}: foreground=${c.foreground}; background=${c.background}; `+
+            `border=${c.border}; focus=${c.focusRing}; selection=${c.selection}; status=${c.status}`);
+        }
+        visualStateCases=lines.length;
+        content.textContent = lines.join("\n");
+        report.appendChild(content);
+        output.appendChild(report);
+      }
+      status.textContent = `Observed ${body.rows.length} semantic roles and ${visualStateCases} visual-state examples under ${law.themeLabel(theme)} (${theme}); palette from existing Theme CSS. No application styles applied.`;
+      return {status:"observed",theme,roles:body.rows.length,visualStateCases};
+    }
+
     function initMcelLabApp() {
       if (!mcelLabApp) return;
       initMcelBlueprintShell({mountSelected: true});
@@ -318,9 +421,11 @@
       }
       populateMcelThemes();
       populateMcelChromes();
+      populateMcelFormProfiles();
       populateMcelScenarios();
       populateMcelAcidCases();
       bindMcelLabControls();
+      window.McelModalSubprogramLab?.init(document);
       renderMcelSemanticCompatibility();
       initMcelLabGrapes();
       selectMcelSourceIndex(0, "initial-selection");
@@ -17603,7 +17708,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       document.getElementById('mcel-semantic-theme-disable')?.addEventListener('click', disableMcelSemanticThemePreview);
       mcelSemanticThemeFrame()?.addEventListener('load', onMcelSemanticThemeFrameLoad);
       mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
+      document.getElementById("mcel-semantic-color-inspector")?.addEventListener("toggle", renderMcelSemanticColorInspector);
       mcelChromeSelect?.addEventListener("change", () => changeMcelChrome("chrome-select"));
+      mcelFormPresentationSelect?.addEventListener("change", () => changeMcelFormPresentation("form-select"));
       document.getElementById("mcel-semantic-compatibility-source")?.addEventListener("change", renderMcelSemanticCompatibility);
       document.getElementById("mcel-semantic-compatibility-refresh")?.addEventListener("click", renderMcelSemanticCompatibility);
       mcelOpenEditorModal?.addEventListener("click", () => openMcelLabModal("editor"));
@@ -17778,6 +17885,18 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       mcelChromeSelect.value = mcelLabState.chrome;
     }
 
+    function populateMcelFormProfiles() {
+      const law = window.McelSemanticFormPresentationLaw;
+      if (!law || !mcelFormPresentationSelect) return;
+      mcelFormPresentationSelect.replaceChildren();
+      for (const profile of law.profiles) {
+        const option = document.createElement('option');
+        option.value = profile.id; option.textContent = profile.label;
+        option.title = profile.description; mcelFormPresentationSelect.appendChild(option);
+      }
+      mcelLabState.formPresentation = law.normalize(mcelLabState.formPresentation);
+      mcelFormPresentationSelect.value = mcelLabState.formPresentation;
+    }
     function populateMcelScenarios() {
       if (!mcelScenarioSelect || typeof McelLabScenarios === "undefined") return;
       mcelScenarioSelect.innerHTML = "";
@@ -17994,8 +18113,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       mcelLabState.lastCommandPlan = null;
       mcelLabState.theme = "theme-machine";
       mcelLabState.chrome = "chrome-strict-hierarchy";
+      mcelLabState.formPresentation = "form-current";
       if (mcelThemeSelect) mcelThemeSelect.value = "theme-machine";
       if (mcelChromeSelect) mcelChromeSelect.value = "chrome-strict-hierarchy";
+      if (mcelFormPresentationSelect) mcelFormPresentationSelect.value = "form-current";
       selectMcelSourceIndex(0, "reset");
       syncMcelGrapesFromSource();
       compileMcelLabSource("reset");
@@ -18361,8 +18482,24 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       syncMcelRenderedSiteFrame("theme");
       renderMcelSemanticCompatibility();
       applyMcelSemanticThemePreview("theme-change");
+      renderMcelSemanticColorInspector();
     }
 
+    function changeMcelFormPresentation(reason = "form") {
+      const law = window.McelSemanticFormPresentationLaw;
+      if (!law) return {status:'unavailable'};
+      mcelLabState.formPresentation = law.normalize(mcelFormPresentationSelect?.value || mcelLabState.formPresentation);
+      if (mcelFormPresentationSelect) mcelFormPresentationSelect.value = mcelLabState.formPresentation;
+      const result = applyMcelSemanticFormPreview(null, reason);
+      syncMcelRenderedSiteFrame("form");
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {level:"success",module:"form-presentation-law",code:"MCEL_FORM_PRESENTATION_CHANGED",
+          message:`Form changed to ${mcelLabState.formPresentation}; Calculator: ${result.status}.`}
+      ].slice(-64);
+      renderMcelCompilerLog();
+      return result;
+    }
     function changeMcelChrome(reason = "chrome") {
       if (typeof McelLabChromeLaw !== "undefined") {
         mcelLabState.chrome = McelLabChromeLaw.normalizeChrome(mcelChromeSelect?.value || mcelLabState.chrome);
@@ -18467,6 +18604,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         selectedIndex: mcelLabState.selectedIndex,
         theme: mcelLabState.theme,
         chrome: mcelLabState.chrome,
+        formPresentation: mcelLabState.formPresentation || "form-current",
         mode: mcelLabState.currentMode,
         scenario: mcelScenarioSelect?.value || "round-trip",
         lastSerializerClean: Boolean(mcelLabState.lastSerializerReport?.serializerClean)
@@ -18494,9 +18632,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           : (result.snapshot.chrome || "chrome-strict-hierarchy");
         if (mcelThemeSelect) mcelThemeSelect.value = mcelLabState.theme;
         if (mcelChromeSelect) mcelChromeSelect.value = mcelLabState.chrome;
+        mcelLabState.formPresentation = window.McelSemanticFormPresentationLaw?.normalize?.(result.snapshot.formPresentation) || "form-current";
+        if (mcelFormPresentationSelect) mcelFormPresentationSelect.value = mcelLabState.formPresentation;
         setMcelLabMode(result.snapshot.mode || "source");
         syncMcelGrapesFromSource();
         compileMcelLabSource("project-restore");
+        applyMcelSemanticFormPreview(null, "project-restore");
       }
       mcelLabState.lastProjectSnapshot = result.snapshot;
       renderMcelProjectReport(result);
@@ -19699,8 +19840,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #151205;
           --site-line: rgba(246, 199, 91, 0.22);
           --site-shadow: 0 24px 80px rgba(0,0,0,0.26);
-          --site-radius: 22px;
-          --site-radius-sm: 999px;
           --site-max: 1180px;
           --site-font-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           --site-font-display: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -19708,7 +19847,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-hero-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
           --site-hero-min: clamp(320px, 52vh, 620px);
           --site-hero-ornament-display: block;
-          --site-hero-ornament-radius: 999px;
           --site-hero-ornament-bg:
             linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
             radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
@@ -19739,14 +19877,11 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #151205;
           --site-line: rgba(246, 199, 91, 0.22);
           --site-shadow: 0 24px 80px rgba(0,0,0,0.26);
-          --site-radius: 22px;
-          --site-radius-sm: 999px;
           --site-max: 1180px;
           --site-heading-track: -0.075em;
           --site-hero-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
           --site-hero-min: clamp(320px, 52vh, 620px);
           --site-hero-ornament-display: block;
-          --site-hero-ornament-radius: 999px;
           --site-hero-ornament-bg:
             linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
             radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
@@ -19776,9 +19911,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #1f1700;
           --site-line: rgba(47, 80, 48, 0.2);
           --site-shadow: 0 18px 55px rgba(54, 69, 44, 0.16);
-          --site-radius: 22px;
-          --site-radius-sm: 14px;
-          --site-hero-ornament-radius: 30px;
           --site-hero-ornament-bg:
             linear-gradient(135deg, rgba(45,122,79,0.86), rgba(120,160,78,0.82)),
             radial-gradient(circle at 30% 22%, rgba(255,255,255,0.52), transparent 36%);
@@ -19808,10 +19940,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #00150f;
           --site-line: rgba(127, 157, 255, 0.28);
           --site-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
-          --site-radius: 28px;
-          --site-radius-sm: 16px;
           --site-heading-track: -0.075em;
-          --site-hero-ornament-radius: 40% 60% 48% 52%;
           --site-hero-ornament-bg:
             linear-gradient(135deg, rgba(100,228,255,0.96), rgba(157,124,255,0.9)),
             radial-gradient(circle at 35% 24%, rgba(255,255,255,0.48), transparent 31%);
@@ -19839,14 +19968,11 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #fff6e5;
           --site-line: rgba(45, 35, 22, 0.2);
           --site-shadow: none;
-          --site-radius: 10px;
-          --site-radius-sm: 6px;
           --site-max: 980px;
           --site-font-display: Georgia, "Times New Roman", serif;
           --site-font-body: Georgia, "Times New Roman", serif;
           --site-heading-track: -0.045em;
           --site-hero-columns: minmax(0, 0.95fr) minmax(220px, 0.7fr);
-          --site-hero-ornament-radius: 6px;
           --site-hero-ornament-bg:
             linear-gradient(180deg, rgba(155,63,44,0.94), rgba(31,90,104,0.88)),
             repeating-linear-gradient(45deg, rgba(255,255,255,0.18) 0 8px, transparent 8px 18px);
@@ -19872,11 +19998,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #120d04;
           --site-line: rgba(214, 181, 109, 0.32);
           --site-shadow: 0 26px 90px rgba(0,0,0,0.52);
-          --site-radius: 4px;
-          --site-radius-sm: 2px;
           --site-font-display: "Didot", "Bodoni 72", Georgia, serif;
           --site-heading-track: -0.035em;
-          --site-hero-ornament-radius: 2px;
           --site-hero-ornament-bg:
             linear-gradient(145deg, rgba(214,181,109,0.88), rgba(75,55,30,0.9)),
             radial-gradient(circle at 40% 20%, rgba(255,255,255,0.32), transparent 28%);
@@ -19902,10 +20025,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #ffffff;
           --site-line: rgba(7, 93, 168, 0.22);
           --site-shadow: 0 16px 40px rgba(11, 57, 94, 0.12);
-          --site-radius: 14px;
-          --site-radius-sm: 8px;
           --site-heading-track: -0.045em;
-          --site-hero-ornament-radius: 999px 999px 20px 20px;
           --site-hero-ornament-bg:
             linear-gradient(180deg, rgba(7,93,168,0.9), rgba(27,123,109,0.86)),
             radial-gradient(circle at 50% 20%, rgba(255,255,255,0.42), transparent 30%);
@@ -19931,8 +20051,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #000000;
           --site-line: #ffffff;
           --site-shadow: none;
-          --site-radius: 0;
-          --site-radius-sm: 0;
           --site-font-body: Arial, Helvetica, sans-serif;
           --site-font-display: Arial, Helvetica, sans-serif;
           --site-heading-track: -0.02em;
@@ -19959,8 +20077,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           --site-action-ink: #ffffff;
           --site-line: #005cff;
           --site-shadow: none;
-          --site-radius: 0;
-          --site-radius-sm: 0;
           --site-font-body: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           --site-font-display: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
           --site-heading-track: -0.02em;
@@ -19997,12 +20113,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           gap: 14px;
           padding: clamp(18px, 3vw, 34px);
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius);
+          border-radius: var(--mcel-form-panel-radius);
           background:
             var(--site-grid-overlay),
             linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015)),
             var(--site-card);
-          box-shadow: var(--site-shadow);
+          box-shadow: var(--mcel-form-elevation);
           overflow: visible;
         }
         .mcel-runtime-preview [data-mc-generated="true"] {
@@ -20030,7 +20146,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         .mcel-runtime-preview > .mc[data-mc-component-kind="page"] {
           gap: clamp(16px, 2.4vw, 28px);
           padding: clamp(18px, 3vw, 40px);
-          border-radius: calc(var(--site-radius) + 8px);
+          border-radius: calc(var(--mcel-form-panel-radius) + 8px);
           background:
             var(--site-grid-overlay),
             radial-gradient(circle at 86% 4%, color-mix(in srgb, var(--site-accent) 14%, transparent), transparent 30%),
@@ -20053,9 +20169,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           grid-row: 1 / span 4;
           grid-column: 2;
           border: 1px solid var(--site-line);
-          border-radius: var(--site-hero-ornament-radius);
+          border-radius: var(--mcel-form-ornament-radius);
           background: var(--site-hero-ornament-bg);
-          box-shadow: var(--site-hero-ornament-shadow);
+          box-shadow: var(--mcel-form-ornament-shadow);
         }
         .mcel-runtime-preview .mc[data-mc-kind="hero"] > *:not([data-mc-generated="true"]) {
           grid-column: 1;
@@ -20116,7 +20232,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         .mcel-runtime-preview [data-mc-slot="meta"] {
           width: fit-content;
           border: 1px solid var(--site-line);
-          border-radius: 999px;
+          border-radius: var(--mcel-form-mark-radius);
           padding: 6px 10px;
           color: var(--site-accent);
           background: var(--site-card-soft);
@@ -20166,7 +20282,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         .mcel-runtime-preview input {
           min-width: 0;
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius-sm);
+          border-radius: var(--mcel-form-field-radius);
           background: var(--site-card);
           color: var(--site-ink);
           padding: 13px 15px;
@@ -20186,7 +20302,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           max-inline-size: 100%;
           min-height: 42px;
           border: 0;
-          border-radius: 999px;
+          border-radius: var(--mcel-form-control-radius);
           background: var(--site-action);
           color: var(--site-action-ink);
           padding: 12px 20px;
@@ -20205,13 +20321,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         }
         body.theme-luxury .mcel-runtime-preview button,
         body.theme-luxury .mcel-runtime-preview a[data-mc-action] {
-          border-radius: 2px;
           text-transform: uppercase;
           letter-spacing: 0.1em;
-        }
-        body.theme-editorial .mcel-runtime-preview button,
-        body.theme-editorial .mcel-runtime-preview a[data-mc-action] {
-          border-radius: 2px;
         }
         .mcel-runtime-preview .mc[data-mc="command-row"] {
           grid-template-columns: minmax(0, 1fr) auto;
@@ -20237,7 +20348,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           display: block;
           min-block-size: auto;
           border: 0;
-          border-radius: 0;
+          border-radius: var(--mcel-form-flat-radius);
           background: transparent;
           box-shadow: none;
           padding: 0;
@@ -20279,7 +20390,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           padding: clamp(28px, 6vw, 76px) 0 clamp(22px, 4vw, 44px);
           border: 0;
           border-bottom: 1px solid var(--site-line);
-          border-radius: 0;
+          border-radius: var(--mcel-form-flat-radius);
         }
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
           display: none;
@@ -20299,7 +20410,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           padding: clamp(20px, 3vw, 36px) 0;
           border: 0;
           border-top: 1px solid var(--site-line);
-          border-radius: 0;
+          border-radius: var(--mcel-form-flat-radius);
         }
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
           grid-template-columns: minmax(0, 1fr);
@@ -20316,7 +20427,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           padding: clamp(16px, 2vw, 24px) 0 clamp(16px, 2vw, 24px) clamp(18px, 3vw, 32px);
           border: 0;
           border-left: 3px solid var(--site-accent);
-          border-radius: 0;
+          border-radius: var(--mcel-form-flat-radius);
           background: transparent;
         }
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc h3 {
@@ -20325,7 +20436,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail > .mc {
           padding: clamp(18px, 3vw, 28px);
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius-sm);
+          border-radius: var(--mcel-form-field-radius);
           background: var(--site-card-soft);
         }
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail form.mc {
@@ -20350,7 +20461,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           display: block;
           min-block-size: auto;
           border: 0;
-          border-radius: 0;
+          border-radius: var(--mcel-form-flat-radius);
           background: transparent;
           box-shadow: none;
           padding: 0;
@@ -20397,9 +20508,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           align-content: center;
           padding: clamp(28px, 6vw, 76px);
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius);
+          border-radius: var(--mcel-form-panel-radius);
           background: var(--site-card-soft);
-          box-shadow: var(--site-shadow);
+          box-shadow: var(--mcel-form-elevation);
         }
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary .mcel-chrome-spotlight-body > .mc {
           border: 0;
@@ -20424,9 +20535,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item {
           padding: clamp(18px, 2.6vw, 30px);
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius-sm);
+          border-radius: var(--mcel-form-field-radius);
           background: var(--site-card-soft);
-          box-shadow: var(--site-shadow);
+          box-shadow: var(--mcel-form-elevation);
         }
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"],
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] {
@@ -20437,7 +20548,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           align-content: center;
           min-block-size: max-content;
           padding: var(--mcel-smart-envelope-block-pad) var(--mcel-smart-envelope-inline-pad);
-          border-radius: 999px;
+          border-radius: var(--mcel-form-envelope-radius);
           overflow: visible;
           isolation: isolate;
         }
@@ -20523,7 +20634,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           inline-size: clamp(38px, 6vw, 58px);
           block-size: clamp(38px, 6vw, 58px);
           border: 1px solid var(--site-line);
-          border-radius: 999px;
+          border-radius: var(--mcel-form-mark-radius);
           background: var(--site-card-soft);
           color: var(--site-accent);
           font-weight: 900;
@@ -20531,9 +20642,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mcel-chrome-journey-body {
           min-width: 0;
           border-left: 3px solid var(--site-accent);
-          border-radius: var(--site-radius-sm);
+          border-radius: var(--mcel-form-field-radius);
           background: var(--site-card-soft);
-          box-shadow: var(--site-shadow);
+          box-shadow: var(--mcel-form-elevation);
           overflow: clip;
           padding: clamp(30px, 5vw, 72px);
         }
@@ -20555,9 +20666,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel {
           overflow: clip;
           border: 1px solid var(--site-line);
-          border-radius: var(--site-radius-sm);
+          border-radius: var(--mcel-form-field-radius);
           background: var(--site-card-soft);
-          box-shadow: var(--site-shadow);
+          box-shadow: var(--mcel-form-elevation);
           padding: clamp(28px, 5vw, 70px) clamp(38px, 7vw, 112px) clamp(34px, 5.5vw, 78px);
           --mcel-chrome-frame-gap: clamp(18px, 3vw, 38px);
         }
@@ -20688,7 +20799,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         }
 
         body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] {
-          border-radius: min(var(--site-radius), 28px) !important;
+          border-radius: var(--mcel-form-repair-radius) !important;
           min-block-size: max-content !important;
           aspect-ratio: auto !important;
           align-content: start;
@@ -20698,7 +20809,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           align-items: stretch;
         }
         body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] :is(.mc,[data-mc]) {
-          border-radius: min(var(--site-radius), 22px);
+          border-radius: var(--mcel-form-repair-small-radius);
         }
         body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-content-envelope"] {
           --mcel-smart-envelope-block-pad: clamp(72px, 11vw, 160px);
@@ -20708,7 +20819,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           align-content: center;
           min-block-size: max-content;
           padding: var(--mcel-smart-envelope-block-pad) var(--mcel-smart-envelope-inline-pad) !important;
-          border-radius: 999px;
+          border-radius: var(--mcel-form-control-radius);
           overflow: visible;
           isolation: isolate;
         }
@@ -20982,7 +21093,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         }
 
         body[data-mcel-fit-remediation~="object-reshape"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] > .mc {
-          border-radius: min(var(--site-radius-sm), 18cqi);
+          border-radius: var(--mcel-form-narrow-radius);
           padding: clamp(18px, 5cqi, 32px);
         }
 
@@ -21054,14 +21165,15 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       mcelLabState.lastChromeReport = chromeResult.report;
       const renderedRuntimeHtml = chromeResult.html || runtimeHtml || "";
       return `<!doctype html>
-<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}" data-mcel-theme="${theme}" data-mcel-chrome="${chrome}">
+<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}" data-mcel-theme="${theme}" data-mcel-chrome="${chrome}" data-mcel-form="${window.McelSemanticFormPresentationLaw?.normalize?.(mcelLabState.formPresentation) || "form-current"}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MCEL rendered site</title>
-<style>${isolatedSiteCss()}</style>
+<style>${isolatedSiteCss()}
+${window.McelSemanticFormPresentationLaw?.legacyCss?.() || ""}</style>
 </head>
-<body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}">
+<body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}" data-mcel-form="${window.McelSemanticFormPresentationLaw?.normalize?.(mcelLabState.formPresentation) || "form-current"}">
   <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash}; theme=${theme}; chrome=${chrome} -->
   <div class="mcel-runtime-preview ${theme}" data-mcel-theme="${theme}" data-mcel-chrome="${chrome}">
     ${renderedRuntimeHtml}

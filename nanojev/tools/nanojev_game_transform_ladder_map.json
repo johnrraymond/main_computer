@@ -1,0 +1,51 @@
+{
+  "schema": "nanojev.game-transform-ladder-map.v1",
+  "description": "Fixed user-selected weighted ladder; T02c is ONE unrelated number, T02h ONE payoff, T02i TWO payoffs, T02j numeric suffix, T02k game suffix; no automatic promotion.",
+  "phases": {
+    "t02_focus": {
+      "retention": 2,
+      "T00": 1,
+      "T01": 1,
+      "T02k": 1,
+      "T02a": 1,
+      "T02b": 1,
+      "T02j": 2,
+      "T02c": 3,
+      "T02h": 1,
+      "T02i": 1,
+      "T02d": 1,
+      "T02f": 1
+    },
+    "t03_bridge": {
+      "retention": 2,
+      "T00": 1,
+      "T01": 1,
+      "T02a": 1,
+      "T02e": 1,
+      "T02f": 2,
+      "T02g": 1,
+      "T03": 5,
+      "T04": 1,
+      "T05": 1
+    },
+    "t04_bridge": {
+      "retention": 2,
+      "T00": 1,
+      "T02f": 2,
+      "T03": 3,
+      "T04": 5,
+      "T05": 2,
+      "T06": 1
+    },
+    "full_transformation": {
+      "retention": 2,
+      "T00": 1,
+      "T02f": 1,
+      "T03": 2,
+      "T04": 2,
+      "T05": 4,
+      "T06": 3,
+      "T07": 1
+    }
+  }
+}

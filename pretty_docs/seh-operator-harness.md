@@ -1,5 +1,7 @@
 # SEH operator harness — infrastructure deployment, independent of SLH onboarding
 
+> **November 13 governing ownership:** [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md) specifies that **LMS**, not ORG-SLH or MCEL, owns the SEH management job and calls this harness. Local MCEL → LMS requires no ORG-SLH login; Network SLH → ORG-SLH authorizes and forwards to its colocated LMS. The following CLI operations remain an operator-level execution mechanism and historical runbook, not a second production deployment authority. The operation-owner cutover and asynchronous monitoring contract have isolated tests; live Windows/Coolify acceptance remains outstanding.
+
 > **Historical implementation; not the intended production provisioning lifecycle.**
 > This standalone infrastructure harness may queue a Coolify deploy and leaves
 > new SEHs unbound. Its separate `bind-slh` operation does not configure the
@@ -12,6 +14,9 @@
 `seh_mutate_harness.py` is the operator-facing entry point following the Mother,
 FDB and Hub harness pattern. It deploys the SEH *infrastructure*. Deploying an
 SEH is not the same operation as binding an organization's SLH to its relay.
+
+
+> **Asynchronous management path:** When invoked through MCEL, LMS journals the operator's request and starts this harness in a separate worker. MCEL reads the LMS `/operations` snapshot on connection and polls an operation ID to monitor it. ORG-SLH only authenticates and forwards from a Network SLH, and the same LMS operation is visible from either view. Cancelling an *already-running* harness is unsafe and refused; an interrupted LMS process leaves a durable recovery-required receipt rather than an automatic retry. See [the operation-state and reconnect contract](lms-seh-management-and-deployment-authority.md#durable-asynchronous-operations-and-reconnect-visible-lms-busy-state--november-13-extension).
 
 ## Read-only inspection of the sole registered deployment
 
@@ -89,5 +94,15 @@ PowerShell-ready next command when the operator is stopped at the mutation
 approval boundary or when Git source must be committed and pushed. The JSON
 receipt remains the only content on stdout; the operator instructions appear
 on stderr, after the receipt, so JSON-processing callers remain compatible.
+
+For LMS-owned asynchronous Deploy/Undeploy, the installed operator harness is
+invoked in a fixed, controlled Python subprocess. LMS captures its actual stdout
+and stderr, persistently retains only bounded credential-redacted entries in the
+operation journal, and reads the structured result through a private `--report`
+file. That live output is visible in the MCEL operation modal through both local
+LMS and authenticated Network SLH management; the operator CLI's standalone
+stdout/stderr contract is unchanged. Automatic preflight runs in the admitted
+LMS worker so its diagnostics are associated with the same operation ID.
+
 The harness never automatically commits or pushes source changes, and a
 queued Coolify deployment is never reported as verified WSS readiness.

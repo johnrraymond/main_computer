@@ -15,6 +15,9 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path("tools/fixtures/mcel_phase2_reference_apps/calculator/application.js")
 CORE = Path("main_computer/web/applications/scripts/calculator-core.js")
+COLOR_LAW_ASSETS = tuple(Path("main_computer/web/applications/scripts/" + name + ".js") for name in (
+    "mcel-contract", "mcel-law-registry", "mcel-style-law", "mcel-semantic-color-presentation",
+))
 RUNTIME = Path("main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js")
 PORT = Path("main_computer/web/applications/scripts/mcel-calculator-core-capability-port.js")
 ROUTE = "/applications/mcel-semantic-calculator-candidate"
@@ -90,7 +93,7 @@ button,input,select{font:inherit;padding:.4rem}button{cursor:pointer}
 <header><h1>MCEL Semantic Calculator Candidate</h1><p>Opt-in compiler/runtime integration test; production Calculator unchanged.</p></header>
 <div id="mcel-phase2c-app" aria-label="MCEL generated Calculator"></div>
 <div id="mcel-phase2c-diagnostic" role="status" aria-live="polite"></div>
-<script type="application/json" id="mcel-phase2c-ir">""" + payload + "</script>\n" +         asset(CORE) + "\n" + asset(RUNTIME) + "\n" + asset(PORT) + "\n" +         """<script>
+<script type="application/json" id="mcel-phase2c-ir">""" + payload + "</script>\n" +         asset(CORE) + "\n" + "\n".join(asset(path) for path in COLOR_LAW_ASSETS) + "\n" + asset(RUNTIME) + "\n" + asset(PORT) + "\n" +         """<script>
 (function(){"use strict";
   const status=document.getElementById("mcel-phase2c-diagnostic");
   try {

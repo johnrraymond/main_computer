@@ -5,7 +5,8 @@ var McelSemanticThemePreview = (() => {
   const schema = "mcel.semantic-theme-preview.v1";
   const colorTokens = Object.freeze([
     "--mcel-theme-card", "--mcel-theme-ink", "--mcel-theme-muted",
-    "--mcel-theme-accent", "--mcel-theme-accent-2", "--mcel-theme-line"
+    "--mcel-theme-accent", "--mcel-theme-accent-2", "--mcel-theme-line",
+    "--mcel-theme-error", "--mcel-theme-warning", "--mcel-theme-success"
   ]);
   const styleId = "mcel-lab-semantic-theme-color-only";
   const safeToken = value => typeof value === "string" && value.trim() &&
@@ -79,10 +80,11 @@ var McelSemanticThemePreview = (() => {
     const one = luminance(fg), two = luminance(bg);
     return (Math.max(one,two)+0.05)/(Math.min(one,two)+0.05);
   }
-  function auditContrast(root, computed) {
+  function auditContrast(root, computed, canonical = false) {
     const result = {checked:0, minimumRatio:null, belowAA:0, examples:[]};
     for (const element of root.querySelectorAll("*")) {
-      if (!element.closest('[data-mcel-theme-preview-kind="region"]') ||
+      if (!(canonical ? element.closest('[data-mcel-region]') :
+          element.closest('[data-mcel-theme-preview-kind="region"]')) ||
           ![...element.childNodes].some(node => node.nodeType === 3 && node.textContent.trim())) continue;
       const style = computed(element);
       if (style.display === "none" || style.visibility === "hidden" || !element.getClientRects().length) continue;
@@ -104,9 +106,48 @@ var McelSemanticThemePreview = (() => {
     return result;
   }
 
+  // One intentionally bounded real consumer. The canonical form's intent,
+  // operation and one-field schema identify the action; neither its rendered
+  // label nor a Calculator-specific CSS selector is used to infer meaning.
+  // This Lab-only source join does NOT make all capability buttons generic.
+  function evaluateColorCandidate({ir,report,bindingModel}) {
+    if (bindingModel !== "operational-runtime" ||
+        ir?.application?.appId !== "semantic-calculator-expanded") return null;
+    const forms = report.targets.filter(target => {
+      if (target.kind !== "control" || target.nodeKind !== "form") return false;
+      const node = ir.surfaces?.[0]?.nodes?.find(item => item.id === target.nodeId);
+      const intent = ir.intents?.find(item => item.id === target.intentId);
+      return node?.nodeKind === "form" && node.intent?.ref === intent?.id &&
+        intent?.operationKind === "capability" && intent.operation === "evaluate" &&
+        intent.risk === "external-read" &&
+        Object.keys(node.fields || {}).length === 1 && node.fields?.expression?.kind === "string";
+    });
+    if (forms.length !== 1) return null;
+    const holder = forms[0].element;
+    const form = holder.querySelector(':scope > form[data-intent]');
+    if (!form || form.getAttribute("data-intent") !== forms[0].intentId) return null;
+    const submits = form.querySelectorAll(':scope > button[type="submit"]');
+    return submits.length === 1 ? submits[0] : null;
+  }
+
   function apply({root, ir, bridge, styleLaw, theme, tokens, bindingModel = "legacy-host"} = {}) {
     if (!root?.ownerDocument || !bridge?.observePresentationTargets || !styleLaw?.themes?.includes(theme))
       return {schema, status:"refused", reason:"Missing canonical root, bridge, or recognized theme"};
+    // A fully source-declared application is already colored by its canonical
+    // operational renderer. The Lab must not run a competing projector over
+    // it: this path only selects the canonical Theme and inspects the result.
+    if(root.hasAttribute('data-mcel-semantic-color-full')) {
+      // Lab swatches are not a palette authority. The canonical renderer
+      // resolves the selected named Theme from the same Color Law as standalone.
+      const result=root.ownerDocument.defaultView?.__mcelExpanded?.app?.setColorTheme?.(theme);
+      if(result?.status!=='applied')return {schema,status:'refused',reason:'Canonical Theme selection refused'};
+      return {schema,status:'applied-in-isolated-lab-frame',theme,
+        source:ir?.application?.appId||'',controls:0,regions:0,
+        visualEvidence:{observed:0,uncoloredRegions:0,uncoloredControls:0,
+          paintedDescendants:0,roundedGroupBackgrounds:0,
+          contrast:auditContrast(root,root.ownerDocument.defaultView.getComputedStyle.bind(root.ownerDocument.defaultView),true)},
+        diagnostics:[],evaluateColor:{status:'delegated-to-canonical-color-law'}};
+    }
     if (!tokens || colorTokens.some(token => !safeToken(tokens[token])))
       return {schema, status:"refused", reason:"Existing theme CSS tokens unavailable"};
     const report = bindingModel === "operational-runtime"
@@ -121,8 +162,10 @@ var McelSemanticThemePreview = (() => {
     // Inspect the *unprojected* surface paint, even on subsequent theme changes.
     // Otherwise a prior theme could progressively turn every child into a card.
     if (sheet) sheet.disabled = true;
-    for (const element of root.querySelectorAll(`[${attr.kind}],[${attr.surface}]`)) {
+    for (const element of root.querySelectorAll(`[${attr.kind}],[${attr.surface}],[data-mcel-color-state="evaluate-form-action"]`)) {
       for (const key of Object.values(attr)) element.removeAttribute(key);
+      if (element.getAttribute("data-mcel-color-state") === "evaluate-form-action")
+        element.removeAttribute("data-mcel-color-state");
     }
     root.setAttribute("data-mcel-semantic-theme-sandbox-root","true");
     const computed = doc.defaultView?.getComputedStyle?.bind(doc.defaultView);
@@ -138,8 +181,40 @@ var McelSemanticThemePreview = (() => {
     const painted = computed ? visualDescendants(root,report.targets,computed) : [];
     for (const element of painted) element.setAttribute(attr.surface,"true");
 
+    const evaluateButton = evaluateColorCandidate({ir,report,bindingModel});
+    let evaluateColors = {status:"not-applicable"}, evaluateCss = "";
+    if (evaluateButton) {
+      if (typeof styleLaw.compileColorStateCss !== "function")
+        return {schema,status:"refused",reason:"Semantic visual-state compiler unavailable"};
+      // The role is already supported by Color Law v2. The exact Evaluate
+      // operation is established above by canonical IR, never button text.
+      evaluateColors = styleLaw.compileColorStateCss({
+        id:"evaluate-form-action",theme,role:"action.generic",surface:"control",
+        context:"form",palette:tokens,important:true
+      });
+      if (evaluateColors.status !== "resolved")
+        return {schema,status:"refused",reason:"Evaluate visual state unresolved: "+evaluateColors.reason};
+      evaluateButton.setAttribute("data-mcel-color-state","evaluate-form-action");
+      evaluateCss = evaluateColors.css;
+    }
     const declarations = colorTokens.map(key => `${key}:${tokens[key]};`).join("");
     const scope = '[data-mcel-semantic-theme-sandbox-root]';
+    // Explicit semantic color roles always outrank generic text styling.
+    // Both the foreground and status-border colors come from the existing,
+    // pure Theme/Color Law resolver, not from an E/W/G-specific palette.
+    const diagnosticRoles = ["diagnostic.error", "diagnostic.warning", "diagnostic.success"];
+    const diagnosticTreatments = diagnosticRoles.map(role => ({role,
+      text:styleLaw.resolveColor?.({theme,role,state:"enabled",surface:"text",palette:tokens}),
+      indicator:styleLaw.resolveColor?.({theme,role,state:"enabled",surface:"indicator",palette:tokens})
+    }));
+    if (diagnosticTreatments.some(item => item.text?.status !== "resolved" ||
+        item.indicator?.status !== "resolved"))
+      return {schema,status:"refused",reason:"Theme semantic diagnostic colors unresolved"};
+    const semanticColorCss = diagnosticTreatments.map(({role,text,indicator}) =>
+      `${scope} [data-mcel-color-role="${role}"]{color:${text.foreground}!important;}`+
+      `${scope} .mcel-diagnostics-counter[data-mcel-color-role="${role}"]{`+
+      `background-color:${indicator.background}!important;border-color:${indicator.border}!important;}`
+    ).join("");
     // Every role owns both its background and its foreground. The only basis
     // for the scopes is a canonical region/control or its visual descendants.
     // No box metrics, layout, visibility, opacity, or operational state change.
@@ -154,36 +229,37 @@ var McelSemanticThemePreview = (() => {
       `background-color:var(--mcel-theme-card)!important;color:var(--mcel-preview-ink)!important;}`+
       `${scope} [${attr.kind}="region"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 95%,var(--mcel-theme-accent) 5%);`+
       `background-color:var(--mcel-preview-region-surface)!important;color:var(--mcel-preview-ink)!important;`+
-      `border-color:var(--mcel-theme-line)!important;background-image:none!important;box-shadow:none!important;}`+
+      `border-color:var(--mcel-theme-line)!important;background-image:none!important;}`+
       `${scope} [${attr.kind}="region"][${attr.depth}="1"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 92%,var(--mcel-theme-accent) 8%);}`+
       `${scope} [${attr.kind}="region"][${attr.depth}="2"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 89%,var(--mcel-theme-accent) 11%);}`+
       `${scope} [${attr.surface}]{background-color:color-mix(in srgb,var(--mcel-preview-region-surface,var(--mcel-theme-card)) 90%,var(--mcel-theme-accent) 10%)!important;`+
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;`+
-      `background-image:none!important;box-shadow:none!important;}`+
+      `background-image:none!important;}`+
       `${scope} [${attr.kind}="control"]{background-color:color-mix(in srgb,var(--mcel-preview-region-surface,var(--mcel-theme-card)) 90%,var(--mcel-theme-accent) 10%)!important;`+
-      `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;box-shadow:none!important;}`+
+      `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;}`+
       `${scope} :is(label,legend,small,span,strong,em,p,h1,h2,h3,h4,h5,h6,output,summary,dt,dd,li,time){color:var(--mcel-preview-ink)!important;}`+
       `${scope} :is(input,textarea,select){background-color:var(--mcel-preview-field)!important;`+
-      `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;box-shadow:none!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]){background-color:var(--mcel-preview-button)!important;`+
+      `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;}`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]){background-color:var(--mcel-preview-button)!important;`+
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-accent)!important;`+
-      `background-image:none!important;box-shadow:none!important;}`+
-      `${scope} [${attr.operation}="capability"] :is(button,[role="button"],[role="tab"]){`+
+      `background-image:none!important;}`+
+      `${scope} [${attr.operation}="capability"] :is(button,[role="button"],[role="tab"]):not([data-mcel-color-state]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 82%,var(--mcel-theme-accent-2) 18%)!important;`+
       `border-color:var(--mcel-theme-accent-2)!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):hover:not(:disabled):not([aria-disabled="true"]){`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):hover:not(:disabled):not([aria-disabled="true"]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 75%,var(--mcel-theme-accent) 25%)!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):active:not(:disabled):not([aria-disabled="true"]){`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):active:not(:disabled):not([aria-disabled="true"]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 70%,var(--mcel-theme-accent) 30%)!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):is([aria-pressed="true"],[aria-selected="true"],[aria-current="true"],[aria-current="page"],[data-selected="true"],[data-active="true"]){`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):is([aria-pressed="true"],[aria-selected="true"],[aria-current="true"],[aria-current="page"],[data-selected="true"],[data-active="true"]){`+
       `background-color:var(--mcel-preview-selected)!important;color:var(--mcel-preview-ink)!important;`+
       `border-color:var(--mcel-theme-accent)!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):is(:disabled,[aria-disabled="true"]),`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):is(:disabled,[aria-disabled="true"]),`+
       `${scope} :is(input,textarea,select):is(:disabled,[aria-disabled="true"]){`+
       `background-color:var(--mcel-preview-region-surface,var(--mcel-theme-card))!important;`+
       `color:var(--mcel-theme-muted)!important;border-color:var(--mcel-theme-line)!important;}`+
-      `${scope} :is(button,input,textarea,select,[role="button"],[role="tab"]):focus-visible{`+
+      `${scope} :is(button,input,textarea,select,[role="button"],[role="tab"]):not([data-mcel-color-state]):focus-visible{`+
       `outline:2px solid var(--mcel-theme-accent)!important;outline-offset:1px!important;}`+
+      semanticColorCss+evaluateCss+
       `body:has(${scope}){background-color:${tokens["--mcel-theme-card"]}!important;`+
       `color:${tokens["--mcel-theme-ink"]}!important;}}`;
     if (!sheet) {sheet=doc.createElement("style");sheet.id=styleId;doc.head.appendChild(sheet);}
@@ -191,7 +267,8 @@ var McelSemanticThemePreview = (() => {
     sheet.disabled=false;
 
     const visualEvidence={observed:0,uncoloredRegions:0,uncoloredControls:0,
-      paintedDescendants:painted.length,sampleRegionBackground:"",sampleControlBackground:""};
+      paintedDescendants:painted.length,roundedGroupBackgrounds:0,
+      sampleRegionBackground:"",sampleControlBackground:""};
     if (computed) {
       for (const target of report.targets) {
         const color=computed(target.element).backgroundColor || "";
@@ -210,7 +287,10 @@ var McelSemanticThemePreview = (() => {
     return {schema,status:"applied-in-isolated-lab-frame",theme,
       source:ir?.application?.appId||"",
       controls:report.targets.filter(t=>t.kind==="control").length,
-      regions:regions.length,visualEvidence,diagnostics:report.diagnostics};
+      regions:regions.length,visualEvidence,diagnostics:report.diagnostics,
+      evaluateColor:{status:evaluateColors.status,role:evaluateButton?"action.generic":null,
+        intent:evaluateButton?.closest("form")?.getAttribute("data-intent") || null,
+        phases:evaluateColors.phases || [],mechanism:evaluateColors.transientMechanism || null}};
   }
   return Object.freeze({schema,themeTokens,apply});
 })();

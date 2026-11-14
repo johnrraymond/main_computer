@@ -92,7 +92,16 @@
       const {sessionTicket,pairingRequired,...observation}=value;
       return observation;
     }
+    function forget(){
+      const previous=ticket;
+      ticket="";administrator=false;
+      onConnectionChanged(false);
+      // The transport ticket remains unexposed. The target is requested to
+      // revoke its server-side authorization, even though UI revocation is immediate.
+      if(previous)void post("disconnect",{sessionTicket:previous}).catch(()=>{});
+    }
     return Object.freeze({
+      forget,
       onConnectionChanged:callback=>{if(typeof callback==="function")onConnectionChanged=callback;},
       authorize:async req=>permitted(req) && (!notebookOperation(req)||(!!ticket&&administrator)),
       invoke:async req=>{

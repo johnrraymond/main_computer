@@ -77,9 +77,7 @@
       ["adminDeviceId", "bindAddress", "port"]],
     "intent:toggle-organization-enablement": ["toggle-enablement", "toggleSlhOrganizationEnablement", ["adminDeviceId"]],
     "intent:toggle-organization": ["toggle", "toggleSlhOrganization", ["adminDeviceId"]],
-    "intent:activate-organization": ["activate", "activateSlhOrganization", ["adminDeviceId"]],
-    "intent:login-administrator": ["login", "loginSlhAdministrator", ["adminDeviceId"]],
-    "intent:logout-administrator": ["logout", "logoutSlhAdministrator", []]
+    "intent:activate-organization": ["activate", "activateSlhOrganization", ["adminDeviceId"]]
   });
   function plain(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
   function permitted(req) {
@@ -107,10 +105,24 @@
     const fetcher=options.fetcher || global.fetch?.bind(global);
     if(typeof fetcher!=="function")throw Error("MCEL_SLH_PORT:missing-fetch");
     let accessToken="";
+    let activeIdentity="";
+    let identityEpoch=0;
+    let pendingAuthentication=null;
     let workerViewOverview=null;
     let identitySnapshot=null;
     let authenticationChanged=()=>{};
     let setupChanged=()=>{};
+    const operationIds=new Map();
+    function durableOperationId(operation,args){
+      if(!["deploy","activate","undeploy"].includes(operation))return undefined;
+      const key=operation+":"+JSON.stringify(args);
+      if(!operationIds.has(key)){
+        const id=global.crypto?.randomUUID?.().replaceAll("-","") ||
+          (Date.now().toString(16)+Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2));
+        operationIds.set(key,"mcel-seh-"+id);
+      }
+      return operationIds.get(key);
+    }
     function headers(extra={}) {return {Accept:"application/json",...(accessToken?{Authorization:"Bearer "+accessToken}:{}),...extra};}
     async function readWorkers(token) {
       const response=await fetcher("/api/applications/slh/observe?view=workers",
@@ -121,10 +133,53 @@
         data.view!=="workers" || data.workerSummary?.observationState!=="AUTHENTICATED")
         throw Error("MCEL_SLH_PORT:admin-session-not-verified");
     }
+    const validSigner=value=>typeof value==="string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value);
+    function discardIdentity(next=""){
+      if(next===activeIdentity)return;
+      const oldToken=accessToken;
+      activeIdentity=next;accessToken="";pendingAuthentication=null;
+      ++identityEpoch;workerViewOverview=null;
+      authenticationChanged(false);
+      if(oldToken){
+        // This is session cleanup, not an interactive Logout operation.
+        void fetcher("/api/applications/slh/setup/action",{method:"POST",credentials:"same-origin",
+          headers:{Accept:"application/json","Content-Type":"application/json",
+            "X-MCEL-SLH-Operation":"logout",Authorization:"Bearer "+oldToken},
+          body:JSON.stringify({action:"logout",arguments:{}})}).catch(()=>{});
+      }
+    }
+    async function ensureAuthorization(){
+      if(!validSigner(activeIdentity))throw Error("MCEL_SLH_PORT:IDENTITY_NOT_SELECTED");
+      if(accessToken)return accessToken;
+      if(pendingAuthentication)return pendingAuthentication;
+      const signer=activeIdentity, epoch=identityEpoch;
+      const pending=(async()=>{
+        const response=await fetcher("/api/applications/slh/setup/action",{
+          method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+            "Content-Type":"application/json","X-MCEL-SLH-Operation":"authenticate"},
+          body:JSON.stringify({action:"authenticate",arguments:{adminDeviceId:signer}})});
+        const result=await response?.json?.().catch(()=>null);
+        if(!response?.ok || typeof result?.access_token!=="string" ||
+           result.access_token.length<24 || (result.device_id||result.deviceId)!==signer)
+          throw Error("MCEL_SLH_PORT:AUTHORIZATION_REFUSED");
+        if(epoch!==identityEpoch || signer!==activeIdentity)
+          throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
+        // Authentication was already verified by ORG-SLH's signed challenge.
+        // Worker inventory is not an authority prerequisite for other operations.
+        if(epoch!==identityEpoch || signer!==activeIdentity)
+          throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
+        accessToken=result.access_token;
+        authenticationChanged(true);
+        return accessToken;
+      })();
+      pendingAuthentication=pending;
+      try{return await pending;}
+      finally{if(pendingAuthentication===pending)pendingAuthentication=null;}
+    }
     async function notebook(req){
       const operation=notebookOperation(req);
       if(!operation)throw Error("MCEL_SLH_NOTEBOOK:UNDECLARED_OPERATION");
-      if(!accessToken)throw Error("MCEL_SLH_NOTEBOOK:ADMIN_SESSION_REQUIRED");
+      await ensureAuthorization();
       const response=await fetcher("/api/applications/slh/identity-notebook",{
         method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
           "X-MCEL-SLH-Operation":"identity-notebook"}),
@@ -138,7 +193,27 @@
       if(!plain(data) || data.ok!==true)throw Error("MCEL_SLH_NOTEBOOK:INVALID_RESPONSE");
       return data.result;
     }
+    let managementChanged=()=>{};
+    async function managementRequest(operation,args={}){
+      if(!["operation-state","operation-status","cancel-operation"].includes(operation))
+        throw Error("MCEL_LMS_MANAGEMENT:OPERATION_REFUSED");
+      const response=await fetcher("/api/applications/slh/seh/deployment",{
+        method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+          "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-deployment"},
+        body:JSON.stringify({target:"local",operation,arguments:args,sessionTicket:""})
+      });
+      const value=await response?.json?.().catch(()=>null);
+      if(!response?.ok||value?.ok!==true)
+        throw Error("MCEL_LMS_MANAGEMENT:"+(value?.error?.code||"UNAVAILABLE"));
+      return value.result;
+    }
     return Object.freeze({
+      managementRequest,
+      onManagementChanged:callback=>{if(typeof callback==="function")managementChanged=callback;},
+      setIdentity: value=>{
+        if(value!==""&&!validSigner(value))throw Error("MCEL_SLH_PORT:INVALID_IDENTITY");
+        discardIdentity(value);
+      },
       connect: async value=>{
         if(typeof value!=="string" || value.length<24 || value.length>256 || !/^[\x21-\x7e]+$/.test(value))
           throw Error("MCEL_SLH_PORT:invalid-session");
@@ -147,34 +222,47 @@
         accessToken=value;
         authenticationChanged(true);
       },
-      forget: ()=>{accessToken="";authenticationChanged(false);},
+      forget: ()=>discardIdentity(""),
       onAuthenticationChanged: callback=>{if(typeof callback==="function")authenticationChanged=callback;},
       onSetupChanged: callback=>{if(typeof callback==="function")setupChanged=callback;},
       preferredIdentity: ()=>identitySnapshot?.state==="AVAILABLE"?identitySnapshot.defaultDeviceId:"",
-      authorize: async req=>permitted(req) && ((notebookOperation(req)||sehLifecycleOperation(req)||
-        global.McelSemanticSehDeploymentPort?.operation(req))?!!accessToken:
-        ((req.intentId!==rename && req.intentId!=="intent:logout-administrator") || !!accessToken)),
+      authorize: async req=>{
+        if(!permitted(req))return false;
+        if(notebookOperation(req)||sehLifecycleOperation(req)||
+           req.intentId===rename ||
+           (req.intentId==="intent:refresh-worker-summary" && options.initialView!=="overview") ||
+           req.intentId==="intent:refresh-workers"){
+          try{await ensureAuthorization();}catch{return false;}
+        }
+        // Config/start continue to be verified separately by the SLH backend.
+        return true;
+      },
       invoke: async req=>{
         if(!permitted(req))throw Error("MCEL_SLH_PORT:undeclared-operation");
+        if(notebookOperation(req)||sehLifecycleOperation(req)||req.intentId===rename)
+          await ensureAuthorization();
         if(notebookOperation(req))return notebook(req);
         const deployment=global.McelSemanticSehDeploymentPort?.operation(req);
         if(deployment){
-          if(!accessToken)throw Error("MCEL_SEH_DEPLOYMENT:ADMIN_SESSION_REQUIRED");
+          // This Computer goes straight to resident LMS. No selected signer,
+          // ORG-SLH session, or Worker inventory is involved in LMS management.
           const response=await fetcher("/api/applications/slh/seh/deployment",{
-            method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
-              "X-MCEL-SLH-Operation":"seh-deployment"}),
-            body:JSON.stringify({target:"local",operation:deployment,arguments:req.arguments,sessionTicket:""})
+            method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+              "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-deployment"},
+            body:JSON.stringify({target:"local",operation:deployment,arguments:req.arguments,sessionTicket:"",
+              ...(durableOperationId(deployment,req.arguments)?{operationId:durableOperationId(deployment,req.arguments)}:{})})
           });
           const value=await response?.json?.().catch(()=>null);
           if(!response?.ok||value?.ok!==true){
             const code=value?.error?.code;
             throw Error("MCEL_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
           }
+          if(["deploy","activate","undeploy"].includes(deployment))managementChanged(value.result);
           return value.result;
         }
         const sehOperation=sehLifecycleOperation(req);
         if(sehOperation){
-          if(!accessToken)throw Error("MCEL_SEH_LIFECYCLE:ADMIN_SESSION_REQUIRED");
+          await ensureAuthorization();
           if(sehOperation!=="status" &&
              (typeof global.confirm!=="function" || !global.confirm("Manage this ORG-SLH outbound SEH connection: "+sehOperation+"?")))
             throw Error("MCEL_SEH_LIFECYCLE:CANCELED");
@@ -189,7 +277,7 @@
         }
         if(firstRun[req.intentId]){
           const action=firstRun[req.intentId][0];
-          if(action!=="start" && action!=="logout"){
+          if(action!=="start"){
             const selected=req.arguments.deviceId||req.arguments.adminDeviceId;
             if(!identitySnapshot || identitySnapshot.state!=="AVAILABLE" ||
                 !identitySnapshot.identities.some(row=>row.deviceId===selected))
@@ -197,8 +285,7 @@
           }
           if(action==="bootstrap" && req.arguments.acknowledgeP256Only!==true)
             throw Error("MCEL_SLH_PORT:p256-acknowledgement-required");
-          // Signing in only authenticates; it is not a destructive operation.
-          if(action!=="login" && (!global.confirm || !global.confirm(action==="bootstrap" ?
+          if(!global.confirm || !global.confirm(action==="bootstrap" ?
             "Enroll the selected LMS-SLH identity as the first administrator? Personal TOTP is not implemented. Continue?" :
             action==="start" ? "Start the local SLH control service on demand (not at Windows boot)?" :
             action==="configure" ? "Apply SLH configuration for "+req.arguments.host+
@@ -209,12 +296,12 @@
             action==="toggle-enablement" ? "Change the persistent ORG-SLH enablement policy? Enabling starts the configured service; disabling stops it and prevents automatic startup." :
             action==="toggle" ? "Start or temporarily stop ORG-SLH according to its current verified state? Stop retains the configured auto-start policy." :
             action==="activate" ? "Enable the configured Organization Service and Worker listener?" :
-            "Sign out and revoke this Organization Service session?")))
+            "Confirm the authorized operation?"))
             throw Error("MCEL_SLH_PORT:administrator-canceled");
           const response=await fetcher("/api/applications/slh/setup/action", {
             method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
               "Content-Type":"application/json","X-MCEL-SLH-Operation":action,
-              ...(action==="logout" && accessToken ? {Authorization:"Bearer "+accessToken} : {})},
+              ...(accessToken ? {Authorization:"Bearer "+accessToken} : {})},
             body:JSON.stringify({action,arguments:req.arguments})
           });
           if(!response?.ok){
@@ -225,23 +312,6 @@
           }
           const result=await response.json();
           if(!plain(result))throw Error("MCEL_SLH_PORT:invalid-setup-receipt");
-          if(action==="logout"){
-            if(result.outcome!=="SIGNED_OUT")throw Error("MCEL_SLH_PORT:invalid-logout-receipt");
-            accessToken="";
-            authenticationChanged(false);
-            return {outcome:"SIGNED_OUT",message:"Organization session revoked",deviceId:""};
-          }
-          if(action==="login"){
-            if(typeof result.access_token!=="string")throw Error("MCEL_SLH_PORT:invalid-login-receipt");
-            await readWorkers(result.access_token);
-            accessToken=result.access_token;
-            authenticationChanged(true);
-            // Fresh-organization login can also initialize and activate ORG.
-            // Invalidate stale pre-login Overview evidence immediately.
-            workerViewOverview=null;
-            setupChanged("login");
-            return {outcome:"AUTHENTICATED",message:"Organization administrator session verified",deviceId:req.arguments.adminDeviceId};
-          }
           if(!["STARTED","ALREADY_RUNNING","INITIALIZED","CONFIGURED","RUNNING","ENABLED","STOPPED","DISABLED"].includes(result.outcome) ||
              typeof result.message!=="string" || result.message.length>512)
             throw Error("MCEL_SLH_PORT:invalid-setup-receipt");
@@ -251,7 +321,7 @@
           return {outcome:result.outcome,message:result.message,deviceId:result.deviceId||""};
         }
         if(req.intentId===rename){
-          if(!accessToken)throw Error("MCEL_SLH_PORT:admin-session-required");
+          await ensureAuthorization();
           if(!global.confirm || !global.confirm("Rename authenticated Worker "+req.arguments.deviceId+
               " to '"+req.arguments.label+"'? This changes the organization's audited device directory."))
             throw Error("MCEL_SLH_PORT:administrator-canceled");
@@ -322,7 +392,13 @@
               (result.state!=="AVAILABLE" && (result.identities.length || result.defaultDeviceId)))
             throw Error("MCEL_SLH_PORT:invalid-identity-observation");
           identitySnapshot=result;
-          if(req.intentId==="intent:refresh-identities")return result.identities;
+          // UNAVAILABLE and UNVERIFIED are failed observations, not verified
+          // empty directories. Preserve the separate status projection while
+          // refusing to publish an empty list as an authoritative result.
+          if(req.intentId==="intent:refresh-identities"){
+            if(result.state!=="AVAILABLE")throw Error("MCEL_SLH_PORT:identity-directory-"+result.state.toLowerCase());
+            return result.identities;
+          }
           return {state:result.state,defaultDeviceId:result.defaultDeviceId,explanation:result.explanation};
         }
         const view=req.intentId.includes("worker")?"workers":"overview";

@@ -16,17 +16,17 @@
   data-mcel-workspace-view="presentation"
 >
   <nav class="mcel-lab-workspace-switch" aria-label="MCEL Lab workspaces">
-    <button type="button" id="mcel-lab-workspace-presentation" aria-controls="mcel-lab-presentation-workspace" aria-pressed="true">Theme &amp; Chrome</button>
+    <button type="button" id="mcel-lab-workspace-presentation" aria-controls="mcel-lab-presentation-workspace" aria-pressed="true">Theme, Form &amp; Chrome</button>
     <button type="button" id="mcel-lab-workspace-blueprint" aria-controls="mcel-lab-blueprint-workspace" aria-pressed="false">App Blueprint / Inspector</button>
     <button type="button" id="mcel-lab-workspace-lifecycle" aria-controls="mcel-lifecycle-acid" aria-pressed="false">Lifecycle Acid Test · L18-01</button>
   </nav>
 
-  <section id="mcel-lab-presentation-workspace" class="mcel-lab-presentation-workspace" aria-label="MCEL theme and chrome explorer">
+  <section id="mcel-lab-presentation-workspace" class="mcel-lab-presentation-workspace" aria-label="MCEL theme, form and chrome explorer">
     <header class="mcel-lab-presentation-head">
       <div>
         <p class="eyebrow">MCEL Lab</p>
-        <h3>Theme &amp; Chrome Explorer</h3>
-        <p>Explore presentation choices using the MCEL style and chrome laws. Theme controls appearance; chrome controls structural realization.</p>
+        <h3>Theme, Form &amp; Chrome Explorer</h3>
+        <p>Explore presentation choices using the MCEL style and chrome laws. Theme controls color; Form controls element geometry; Chrome controls structural realization.</p>
       </div>
     </header>
   <section class="mcel-lab-scenarios" aria-label="MCEL Lab scenarios">
@@ -53,6 +53,16 @@
       </select>
     </label>
     <label>
+      Form
+      <select id="mcel-form-presentation-select" aria-label="MCEL Form presentation selector">
+        <option value="form-current">Current (preserve)</option>
+        <option value="form-angular">Angular</option>
+        <option value="form-soft">Soft</option>
+        <option value="form-pill">Pill</option>
+        <option value="form-wireframe">Wireframe</option>
+      </select>
+    </label>
+    <label>
       Chrome
       <select id="mcel-chrome-select" aria-label="MCEL chrome selector">
         <option value="chrome-strict-hierarchy">Strict Hierarchy</option>
@@ -63,7 +73,7 @@
         <option value="chrome-compact-disclosure">Compact Disclosure</option>
       </select>
     </label>
-    <span>Theme affects the active preview. Chrome transforms the legacy rendered site only; modern Calculator chrome remains observational.</span>
+    <span>Theme and Form affect the active preview independently. Chrome still transforms only the legacy rendered site.</span>
     <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
       <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
       <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
@@ -75,13 +85,31 @@
   </section>
 
 
+  <section id="mcel-modal-subprogram-lab" class="mcel-modal-subprogram-lab" aria-label="MCEL semantic modal subprogram lab">
+    <h4>Modal subprogram · lifecycle / geometry acid test</h4>
+    <p>Isolated mock operation. Test instant open, delayed acknowledgement, streaming stdout/stderr, refusal, dismissal, reopening, and fixed region budgets. No LMS or SEH requests.</p>
+    <div class="mcel-modal-subprogram-lab-actions" role="group" aria-label="Mock modal lifecycle actions">
+      <button type="button" data-mcel-modal-start>Run mock completion</button>
+      <button type="button" data-mcel-modal-fail>Run mock refusal</button>
+      <button type="button" data-mcel-modal-reconnect>Reopen / reconnect</button>
+      <button type="button" data-mcel-modal-stress>Add 180 output lines</button>
+      <button type="button" data-mcel-modal-reset>Reset mock state</button>
+    </div>
+    <output data-mcel-modal-lab-state role="status" aria-live="polite">Mock fixture loading.</output>
+    <details class="mcel-modal-lab-contract">
+      <summary>Inspect modal semantic contract and committed geometry</summary>
+      <pre data-mcel-modal-lab-contract aria-label="Modal semantic contract"></pre>
+      <output data-mcel-modal-lab-geometry aria-live="polite">Open modal to negotiate geometry.</output>
+    </details>
+  </section>
+
   <section class="mcel-lab-presentation-stage" aria-label="MCEL active presentation preview" data-mcel-preview-kind="legacy">
     <section class="mcel-semantic-theme-experiment" aria-label="Modern MCEL Calculator theme preview">
       <div class="mcel-semantic-theme-experiment-heading">
         <div>
           <p class="eyebrow">Opt-in · Lab only</p>
-          <h4>Calculator semantic theme preview</h4>
-          <p>The Theme selector directly above controls this source-bound Calculator preview when enabled. Chrome is not yet applied to modern MCEL.</p>
+          <h4>Calculator semantic Theme and Form preview</h4>
+          <p>Theme controls color; Form controls source-bound element shapes in this isolated Calculator. Chrome is not yet applied to modern MCEL.</p>
         </div>
         <div class="mcel-semantic-theme-experiment-actions" role="group" aria-label="Calculator preview actions">
           <button type="button" id="mcel-semantic-theme-enable">Enable Calculator Preview</button>
@@ -93,7 +121,7 @@
         <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-card-swatch" aria-hidden="true"></div>
         <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-control-swatch" aria-hidden="true"></div>
         <span id="mcel-semantic-theme-evidence-text">Waiting for computed Calculator colors.</span>
-        <span class="mcel-semantic-theme-chrome-notice">Chrome: not connected to modern MCEL</span>
+        <span id="mcel-semantic-form-presentation-evidence">Form: Current (preserve)</span><span class="mcel-semantic-theme-chrome-notice">Chrome: not connected to modern MCEL</span>
       </div>
       <iframe id="mcel-semantic-theme-frame" title="Isolated Calculator semantic theme preview"
         src="about:blank" sandbox="allow-same-origin allow-scripts allow-forms" hidden></iframe>
@@ -127,6 +155,11 @@
     </div>
     <p id="mcel-semantic-compatibility-summary" role="status" aria-live="polite">Awaiting read-only inspection.</p>
     <div id="mcel-semantic-compatibility-results" class="mcel-semantic-compatibility-results"></div>
+    <details id="mcel-semantic-color-inspector" class="mcel-semantic-color-inspector">
+      <summary>Semantic Color Law — read-only</summary>
+      <p id="mcel-semantic-color-inspector-status" role="status" aria-live="polite">Open to inspect the selected Theme's semantic colors. No application colors are changed.</p>
+      <div id="mcel-semantic-color-inspector-results"></div>
+    </details>
   </section>
   <section class="mcel-site-skeleton" aria-label="MCEL minimal site skeleton">
     <div class="mcel-site-skeleton-copy">

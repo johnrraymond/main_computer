@@ -24,6 +24,7 @@ def test_semantic_deployment_contract_is_typed_and_not_remote_authority():
     assert tabs['configuration']['forms'][1]['choicesFrom']['name']['path'] == 'controllers'
     assert {x['intent']['ref'] for x in tabs['deployment']['actions'].values()} == {
         'intent:seh-deployment-preview-deploy','intent:seh-deployment-deploy',
+        'intent:seh-deployment-preview-activate','intent:seh-deployment-activate',
         'intent:seh-deployment-preview-undeploy','intent:seh-deployment-undeploy'}
     assert nodes['surface-node:slh.network-seh-lifecycle']['tabs'] == local['tabs']
     assert nodes['surface-node:slh.remote-seh-connection-details']['nodeKind'] == 'state-value'
@@ -32,9 +33,8 @@ def test_semantic_deployment_contract_is_typed_and_not_remote_authority():
 
 class FakeDirect:
     def __init__(self): self.calls=[]
-    def request(self,method,path,token,body=None):
-        self.calls.append((method,path,token,body))
-        assert token == 't'*32
+    def request(self,method,path,body=None):
+        self.calls.append((method,path,body))
         if method=='GET':
             return {'schema':'main-computer.slh-seh-management.v1', 'status':'READ_ONLY',
                     'network':'mainnet','generation':33,'controllers':[
@@ -50,28 +50,29 @@ class FakeNetwork:
     def seh_deployment_request(self,ticket,method,path,body=None):
         self.calls.append((ticket,method,path,body))
         assert ticket=='n'*40
-        return FakeDirect().request(method,path,'t'*32,body)
+        return FakeDirect().request(method,path,body)
 
 
 def test_local_and_network_deploy_plans_use_selected_slh_without_relay():
     direct=FakeDirect()
-    data=execute_seh_deployment('inspect',{},target='local',local_token='t'*32,local_client=direct)
+    data=execute_seh_deployment('inspect',{},target='local',local_client=direct)
     assert data['deploymentStatus']=='UNDEPLOYED'
     assert [x['identity'] for x in data['controllers']]==['coolify-a','coolify-c']
-    assert direct.calls==[('GET','/v1/org/admin/seh/deployment','t'*32,None)]
-    plan=execute_seh_deployment('preview-deploy',{},target='local',local_token='t'*32,local_client=direct)
+    assert direct.calls==[('GET','/v1/local/seh/deployment',None)]
+    plan=execute_seh_deployment('preview-deploy',{},target='local',local_client=direct)
     assert plan['outcome']=='PLAN_ONLY'
     assert direct.calls[-1][-1]=={'action':'deploy-seh','execute':False,
                                  'expected_generation':None,'confirm':None}
     direct.calls.clear()
-    deferred=execute_seh_deployment('deploy',{},target='local',local_token='t'*32,local_client=direct)
+    deferred=execute_seh_deployment('deploy',{},target='local',local_client=direct)
     assert deferred['outcome']=='PLAN_ONLY'  # fake execute returns a plan, never fabricated success
     assert [x[:2] for x in direct.calls]==[
-        ('GET','/v1/org/admin/seh/deployment'),
-        ('POST','/v1/org/admin/seh/deployment/harness'),
-        ('POST','/v1/org/admin/seh/deployment/harness')]
-    assert direct.calls[-1][-1]=={'action':'deploy-seh','execute':True,
-                                 'expected_generation':33,'confirm':'DEPLOY_SEH'}
+        ('GET','/v1/local/seh/deployment'),
+        ('POST','/v1/local/seh/deployment/harness')]
+    assert {k:v for k,v in direct.calls[-1][-1].items() if k!='operation_id'}=={
+        'action':'deploy-seh','execute':True,
+        'expected_generation':33,'confirm':'DEPLOY_SEH'}
+    assert direct.calls[-1][-1]['operation_id'].startswith('mcel-seh-')
     remote=FakeNetwork()
     execute_seh_deployment('preview-undeploy',{},target='network',
                            remote_ticket='n'*40,network_client=remote)
@@ -85,13 +86,15 @@ def test_local_and_network_deploy_plans_use_selected_slh_without_relay():
         execute_seh_deployment('inspect',{},target='network',local_token='t'*32,remote_ticket='n'*40)
 
 
-def test_preflight_refuses_unready_undeploy_before_execute():
-    class NotReady(FakeDirect):
-        def request(self,method,path,token,body=None):
-            if method=='POST':return {'status':'PLAN_ONLY','ready_for_undeploy':False}
-            return super().request(method,path,token,body)
-    with pytest.raises(SEHDeploymentUIError,match='SEH_DEPLOYMENT_PREFLIGHT_REFUSED'):
-        execute_seh_deployment('undeploy',{},target='local',local_token='t'*32,local_client=NotReady())
+def test_undeploy_dispatches_to_lms_without_blocking_on_preflight():
+    # The worker performs preflight and records its refusal under an operation
+    # ID; MCEL must not block the UI on an unobservable preflight call.
+    direct=FakeDirect()
+    execute_seh_deployment('undeploy',{},target='local',local_client=direct)
+    assert [x[:2] for x in direct.calls]==[
+        ('GET','/v1/local/seh/deployment'),
+        ('POST','/v1/local/seh/deployment/harness')]
+    assert direct.calls[-1][-1]['execute'] is True
 
 
 def test_secret_schema_and_request_rejection():
@@ -103,7 +106,7 @@ def test_secret_schema_and_request_rejection():
             # Transport refuses origin at the backend, not this screen layer.
             continue
         with pytest.raises(SEHDeploymentUIError):
-            execute_seh_deployment('register',args,target='local',local_token='t'*32,local_client=client)
+            execute_seh_deployment('register',args,target='local',local_client=client)
     assert not client.calls
 
 
@@ -125,6 +128,8 @@ def test_browser_deployment_controls_are_selected_target_scoped(target):
                 window.fetch=async(url,options={})=>{
                   if(String(url).endsWith('/seh/deployment')){
                     const body=JSON.parse(options.body||'{}');window.sehAdmin.calls.push(body);
+                    if(body.operation==='operation-state')return {ok:true,json:async()=>({ok:true,result:{
+                      schema:'main-computer.seh-management-operation-snapshot.v1',state:'IDLE',busy:false,operation:null}})};
                     const value=window.sehAdmin;
                     if(body.operation==='inspect')return {ok:true,json:async()=>({ok:true,
                       result:{generation:33,selectedController:value.selected,applicationUuid:'old-app',
@@ -146,7 +151,7 @@ def test_browser_deployment_controls_are_selected_target_scoped(target):
                 assert not errors,errors
                 return
             if target=='overview':
-                page.evaluate("async()=>window.__mcelSlh.app.execute('intent:login-administrator')")
+                page.evaluate("async()=>window.__mcelSlh.app.execute('intent:read-seh-deployment')")
                 transport='local'
             else:
                 form=page.locator('form[data-intent="intent:connect-network-slh"]')
@@ -211,3 +216,137 @@ def test_real_network_client_deployment_transport_requires_direct_authenticated_
     finally:
         with module._SESSION_LOCK:
             module._SESSIONS.pop(ticket, None)
+
+
+def test_local_seh_notebook_reads_coolify_directly_without_authentication():
+    """The removed Service Lifecycle panel must not strand the saved controller.
+
+    Local LMS does not depend on a selected identity or ORG-SLH sign-in.
+    """
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True,
+            executable_path=shutil.which('chromium') or None, args=['--no-sandbox'])
+        try:
+            page = browser.new_page(viewport={'width':1050,'height':800})
+            errors=[]
+            page.on('pageerror', lambda e:errors.append(str(e)))
+            page.on('dialog', lambda d:d.accept())
+            page.evaluate(_browser_mock())
+            # Explicitly deselected identity must not block local LMS reads.
+            page.evaluate("""() => Object.defineProperty(window,'sessionStorage',{
+              configurable:true,value:{_store:{'mcel.slh.selected-identity.v2.local':'__NONE__'},
+              getItem(k){return this._store[k]??null},setItem(k,v){this._store[k]=v}}})""")
+            page.evaluate('''() => {
+                window.coolifyInspections=[];
+                const original=window.fetch;
+                window.fetch=async(url,options={})=>{
+                    if(String(url)==='/api/applications/slh/seh/deployment'){
+                        const body=JSON.parse(options.body);
+                        if(body.operation==='operation-state')return {ok:true,json:async()=>({ok:true,result:{
+                          schema:'main-computer.seh-management-operation-snapshot.v1',state:'IDLE',busy:false,operation:null}})};
+                        window.coolifyInspections.push(body);
+                        if(body.operation!=='inspect')throw Error('UNEXPECTED_OPERATION');
+                        if(options.headers?.Authorization)
+                            throw Error('UNEXPECTED_ORG_BEARER');
+                        return {ok:true,json:async()=>({ok:true,result:{
+                          generation:33,controllers:[{identity:'coolify-a'},{identity:'coolify-c'}],
+                          selectedController:'coolify-c',applicationUuid:'former-app-uuid',
+                          deploymentStatus:'UNDEPLOYED'}})};
+                    }
+                    return original(url,options);
+                };
+            }''')
+            page.set_content(render_slh_page('overview'))
+            page.wait_for_function('() => !!window.__mcelSlh?.app')
+            notebook=page.locator('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"]')
+            select=notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"] select')
+            authenticate=notebook.locator('[data-mcel-operation-auth]')
+            assert authenticate.count()==0
+            # Opening Configuration already triggers the first LMS inspection.
+            # There is no need to click its already-selected tab.
+            page.wait_for_function('() => window.coolifyInspections.length > 0')
+            page.wait_for_function('''() => document.querySelector(
+              '[data-mcel-operation-form="intent:seh-deployment-select"] select')?.value==='coolify-c' ''')
+            assert select.locator('option').all_text_contents()==[
+                'Select a saved controller','coolify-a','coolify-c']
+            assert authenticate.count()==0
+            assert notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"] button').is_enabled()
+            page.wait_for_function("() => !!window.__mcelSlh.app.readState('state:local-identities')")
+            assert page.evaluate("window.__mcelSlh.app.readState('state:selected-local-identity')") == ''
+            assert not [call for call in page.evaluate('window.calls')
+                        if call['url']=='/api/applications/slh/setup/action']
+            # Local management remains populated across identity selection and deselection.
+            page.evaluate("async()=>await window.__mcelSlh.app.execute('intent:choose-identity',{key:'one'})")
+            assert select.input_value()=='coolify-c'
+            page.get_by_role('button',name='Deselect identity').click()
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='' ")
+            assert select.input_value()=='coolify-c'
+            assert len(page.evaluate('window.coolifyInspections'))==1
+            assert not errors,errors
+        finally:
+            browser.close()
+
+
+def test_local_seh_inspect_does_not_depend_on_failed_org_auth():
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser=playwright.chromium.launch(headless=True,
+          executable_path=shutil.which('chromium') or None, args=['--no-sandbox'])
+        try:
+            page=browser.new_page()
+            page.evaluate(_browser_mock())
+            page.evaluate('''() => {
+                window.coolifyInspections=0;
+                window.authRequests=0;
+                const original=window.fetch;
+                window.fetch=async(url,opts={})=>{
+                    if(String(url).includes('/seh/deployment')){
+                        if(JSON.parse(opts.body||'{}').operation==='operation-state')return {ok:true,json:async()=>({ok:true,result:{
+                          schema:'main-computer.seh-management-operation-snapshot.v1',state:'IDLE',busy:false,operation:null}})};
+                        window.coolifyInspections++;
+                        if(opts.headers?.Authorization)throw Error('UNEXPECTED_BEARER');
+                        return {ok:true,json:async()=>({ok:true,result:{
+                          generation:33,controllers:[{identity:'coolify-a'}],
+                          selectedController:'coolify-a',applicationUuid:'',
+                          deploymentStatus:'TARGET_SELECTED'}})};
+                    }
+                    if(String(url)==='/api/applications/slh/setup/action' &&
+                        JSON.parse(opts.body||'{}').action==='authenticate'){
+                        window.authRequests++;
+                        return {ok:false,json:async()=>({error:{code:'UNAUTHORIZED'}})};
+                    }
+                    return original(url,opts);
+                };
+            }''')
+            page.set_content(render_slh_page('overview'))
+            page.wait_for_function('() => !!window.__mcelSlh?.app')
+            notebook=page.locator('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"]')
+            notebook.locator('[data-mcel-operation-tab="configuration"]').click()
+            page.wait_for_function("() => window.coolifyInspections>0")
+            select=notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"] select')
+            page.wait_for_function("() => document.querySelector('[data-mcel-operation-form=\"intent:seh-deployment-select\"] select')?.value==='coolify-a'")
+            assert notebook.locator('[data-mcel-operation-auth]').count()==0
+            assert page.evaluate('window.authRequests')==0
+            assert select.input_value()=='coolify-a'
+        finally:
+            browser.close()
+
+
+def test_saved_mother_coolify_identities_reach_the_ui_projection(tmp_path):
+    """Use verified identity-state files, not a fabricated controllers response."""
+    from tests.test_slh_seh_coolify_management_backend import root_state
+    from main_computer.slh.seh_deployment_management import SLHSEHDeploymentManager
+    manager=SLHSEHDeploymentManager(root=root_state(tmp_path),state_dir=tmp_path/'slh')
+    manager.select({'name':'coolify-a','expected_generation':1,
+                    'operation_id':'select-controller-test'})
+    class Direct:
+        def request(self,method,path,body=None):
+            assert method=='GET' and path=='/v1/local/seh/deployment'
+            return manager.inspect({})
+    projection=execute_seh_deployment('inspect',{},target='local',local_client=Direct())
+    assert projection['controllers']==[{'identity':'coolify-a'}]
+    assert projection['selectedController']=='coolify-a'
+    assert projection['generation']==2
+    assert projection['deploymentStatus']=='TARGET_SELECTED'
+    assert 'api_token' not in json.dumps(projection)

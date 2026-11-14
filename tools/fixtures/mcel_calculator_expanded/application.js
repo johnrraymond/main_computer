@@ -34,26 +34,32 @@ module.exports=mcel.defineApp({id:"semantic-calculator-expanded",title:"Semantic
   const graphEditor=dsl.intent.capabilityRequest("edit-graph-expression",core,{operation:"edit-graph",inputs:{expression:text,action:text,token:text,selectionStart:number,selectionEnd:number},resultTo:graphEdited});
   const chat=dsl.intent.capabilityRequest("calculator-chat",service,{operation:"chat",inputs:{message:text},resultTo:chatReceipt});
   const switchMode=dsl.intent.selectView("switch-mode",mode);
+  // Source declares meaning only. The generic MCEL renderer owns descendants'
+  // interaction states, and Theme Law alone chooses physical colors.
+  const control={role:"action.evaluate",surface:"control",context:"form",consequence:"routine"};
+  const navigation={role:"navigation.item",surface:"navigation",context:"navigation"};
+  const value={role:"text.primary",surface:"text",context:"nested"};
+  const graphSurface={role:"surface.panel",surface:"panel",context:"nested"};
   const surface=dsl.surface.bindHtml("application",{bindings:{
-    mode:[dsl.surface.action("choose-mode",{intent:switchMode})],
-    arithmetic:[dsl.surface.form("arithmetic-expression",{fields:{expression:text},intent:evaluate,fieldState:{expression:arithmeticExpression}})],
-    answer:[dsl.surface.text("calculated-value",{value:arithmeticResult})],
+    mode:[dsl.surface.action("choose-mode",{intent:switchMode,color:navigation})],
+    arithmetic:[dsl.surface.form("arithmetic-expression",{fields:{expression:text},intent:evaluate,fieldState:{expression:arithmeticExpression},color:control})],
+    answer:[dsl.surface.text("calculated-value",{value:arithmeticResult,color:value})],
     "graph-input":[dsl.surface.form("graph-expression",{fields:{expression:text,xMin:number,xMax:number,yMin:number,yMax:number},defaults:{xMin:-10,xMax:10,yMin:-5,yMax:5},intent:graph,
       fieldState:{expression:graphExpression,xMin,xMax,yMin,yMax},acceptResult:{edited:{state:graphEdited,field:"expression",pick:"expression"}},
-      editor:{intent:graphEditor,templates:["^","x",",","pi","e","sin()","cos()","tan()","asin()","acos()","atan()","sqrt()","abs()","exp()","log()","ln()","min(,)","max(,)","floor()","ceil()","round()"]},resetAndSubmit:true})],
-    "graph-output":[dsl.surface.plot("graph-plot",{state:graphPoints,x:"x",y:"y"})],
-    "mathics-input":[dsl.surface.form("symbolic-expression",{fields:{expression:text},intent:mathics,fieldState:{expression:symbolicExpression},clearIntent:clearSymbolic})],
-    "mathics-output":[dsl.surface.text("symbolic-value",{value:symbolicResult})],
+      editor:{intent:graphEditor,templates:["^","x",",","pi","e","sin()","cos()","tan()","asin()","acos()","atan()","sqrt()","abs()","exp()","log()","ln()","min(,)","max(,)","floor()","ceil()","round()"]},resetAndSubmit:true,color:control})],
+    "graph-output":[dsl.surface.plot("graph-plot",{state:graphPoints,x:"x",y:"y",color:graphSurface})],
+    "mathics-input":[dsl.surface.form("symbolic-expression",{fields:{expression:text},intent:mathics,fieldState:{expression:symbolicExpression},clearIntent:clearSymbolic,color:control})],
+    "mathics-output":[dsl.surface.text("symbolic-value",{value:symbolicResult,color:value})],
     // Context is declarative, read-only and separate from the one AI terminus.
     // These are calculator-owned values, never assistant-generated results.
     "calculator-context":[
-      dsl.surface.text("basic-expression-context",{label:"Basic expression",value:arithmeticExpression}),
-      dsl.surface.text("basic-result-context",{label:"Basic result",value:arithmeticResult}),
-      dsl.surface.text("graph-expression-context",{label:"Graph expression",value:graphExpression}),
-      dsl.surface.text("symbolic-expression-context",{label:"Symbolic expression",value:symbolicExpression}),
-      dsl.surface.text("symbolic-result-context",{label:"Symbolic result",value:symbolicResult})],
-    "helper-chat":[dsl.surface.embeddedChat("calculator-chat",{intent:chat,title:"Calculator Help",targetKind:"calculator-session",targetId:"calculator"})],
-    status:[dsl.surface.receipt("receipts")]
+      dsl.surface.text("basic-expression-context",{label:"Basic expression",value:arithmeticExpression,color:value}),
+      dsl.surface.text("basic-result-context",{label:"Basic result",value:arithmeticResult,color:value}),
+      dsl.surface.text("graph-expression-context",{label:"Graph expression",value:graphExpression,color:value}),
+      dsl.surface.text("symbolic-expression-context",{label:"Symbolic expression",value:symbolicExpression,color:value}),
+      dsl.surface.text("symbolic-result-context",{label:"Symbolic result",value:symbolicResult,color:value})],
+    "helper-chat":[dsl.surface.embeddedChat("calculator-chat",{intent:chat,title:"Calculator Help",targetKind:"calculator-session",targetId:"calculator",color:graphSurface})],
+    status:[dsl.surface.receipt("receipts",{color:graphSurface})]
   }});
   return {states:[mode,arithmeticResult,graphPoints,symbolicResult,chatReceipt,graphEdited,
       arithmeticExpression,graphExpression,xMin,xMax,yMin,yMax,symbolicExpression],capabilities:[core,service],

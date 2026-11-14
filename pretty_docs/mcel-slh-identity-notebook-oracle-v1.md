@@ -2,14 +2,15 @@
 
 **Status:** Semantic oracle and UI implementation, 2026-11-11.
 
+**November 13 governing UI update:** [MCEL Identity Selection and Transparent Authorization](mcel-identity-selection-and-authorization.md) requires a visible **Deselect identity** action and a verified **Administrator** indicator on the *local signer list*, including unselected identities. No separate Login/Logout/Sign in control is required. The **Organization Identities** Pending/Enrolled/Trash notebook below is distinct from the signer list, and its administrator-only backend reads remain authenticated. These UI changes are design requirements, not assertions that the existing V1 tests or application already implement them.
+
 ## Governing contract
 
 The single semantic SLH application renders a persistent **Organization
 Identities** notebook in the lower main workspace of both This Computer and
 Network SLH. The selected ORG-SLH is the sole authority for its records.
 Neither the browser nor the local signing identity directory is an enrollment
-authority. The existing configuration, Service Lifecycle, left navigation,
-and right-side Service Details/Operation Evidence rail retain their placement.
+authority. Existing configuration, left navigation, and right-side Service Details/Operation Evidence rail retain their semantic roles; the retired Service Lifecycle panel must not reappear.
 
 The notebook is a reusable `record-notebook` MCEL node: a typed list with a
 record key and label, bound read intent, and per-row typed consequential
@@ -27,8 +28,10 @@ coordinates. Ordinary MCEL collections are not reordered by the notebook rule.
 
 Each row carries its real organization-issued `id`; displaying a name must
 never substitute that name for the action's record key. Failed reads have an
-explicit unavailable state. Without administrator authentication, no
-organization records are rendered or fetched.
+explicit unavailable state. Without administrator authorization verified by ORG-SLH, no
+organization records are rendered or fetched. A separate user-facing login
+button is not required; the transport may establish a challenge-verified
+session transparently when the authorized read is requested.
 
 Below the **Trash record scroll area**, place the independently anchored
 checkbox **Remove items after 30 days** and button **Empty Trash**. The

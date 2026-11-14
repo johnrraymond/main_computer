@@ -1,5 +1,7 @@
 # SLH target selection: local versus network (Oracle V2)
 
+> **November 13 SEH management correction:** [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md) supersedes the historical local-versus-remote management execution assumptions here. This Computer invokes LMS directly without ORG-SLH authorization; Network SLH is an authorized direct-ORG-SLH-to-LMS forwarding path. Remote SEH cannot forward deployment requests. This is a target architecture, not a claim the V2 code already implements it.
+
 > **Historical milestone, not the current SLH administration oracle.** The separate-app and remote-no-login requirements in this document are superseded by `mcel-slh-unified-admin-oracle-v4.md`. The existing network TLS, origin, target, and authority-isolation safety constraints remain in force.
 
 

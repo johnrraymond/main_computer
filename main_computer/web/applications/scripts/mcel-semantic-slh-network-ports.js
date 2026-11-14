@@ -80,6 +80,17 @@
     let ticket="";
     let administrator=false;
     let onConnectionChanged=()=>{};
+    const operationIds=new Map();
+    function durableOperationId(operation,args){
+      if(!["deploy","activate","undeploy"].includes(operation))return undefined;
+      const key=ticket+":"+operation+":"+JSON.stringify(args);
+      if(!operationIds.has(key)){
+        const id=global.crypto?.randomUUID?.().replaceAll("-","") ||
+          (Date.now().toString(16)+Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2));
+        operationIds.set(key,"mcel-seh-"+id);
+      }
+      return operationIds.get(key);
+    }
     async function post(action,args){
       const response=await fetcher("/api/applications/slh/network/connect",{
         method:"POST",credentials:"same-origin",headers:{"Accept":"application/json",
@@ -108,7 +119,33 @@
       const {sessionTicket,pairingRequired,...observation}=value;
       return observation;
     }
+    function forget(){
+      const previous=ticket;
+      ticket="";administrator=false;operationIds.clear();
+      onConnectionChanged(false);
+      // The transport ticket remains unexposed. The target is requested to
+      // revoke its server-side authorization, even though UI revocation is immediate.
+      if(previous)void post("disconnect",{sessionTicket:previous}).catch(()=>{});
+    }
+    let managementChanged=()=>{};
+    async function managementRequest(operation,args={}){
+      if(!["operation-state","operation-status","cancel-operation"].includes(operation))
+        throw Error("MCEL_LMS_MANAGEMENT:OPERATION_REFUSED");
+      if(!ticket||!administrator)throw Error("NETWORK_SLH:ADMIN_SESSION_REQUIRED");
+      const response=await fetcher("/api/applications/slh/seh/deployment",{
+        method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+          "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-deployment"},
+        body:JSON.stringify({target:"network",operation,arguments:args,sessionTicket:ticket})
+      });
+      const value=await response?.json?.().catch(()=>null);
+      if(!response?.ok||value?.ok!==true)
+        throw Error("NETWORK_LMS_MANAGEMENT:"+(value?.error?.code||"UNAVAILABLE"));
+      return value.result;
+    }
     return Object.freeze({
+      managementRequest,
+      onManagementChanged:callback=>{if(typeof callback==="function")managementChanged=callback;},
+      forget,
       onConnectionChanged:callback=>{if(typeof callback==="function")onConnectionChanged=callback;},
       authorize:async req=>permitted(req) && (!(notebookOperation(req)||sehLifecycleOperation(req)||
         global.McelSemanticSehDeploymentPort?.operation(req))||(!!ticket&&administrator)),
@@ -120,7 +157,8 @@
           const response=await fetcher("/api/applications/slh/seh/deployment",{
             method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
               "Content-Type":"application/json","X-MCEL-SLH-Operation":"seh-deployment"},
-            body:JSON.stringify({target:"network",operation:deployment,arguments:req.arguments,sessionTicket:ticket})
+            body:JSON.stringify({target:"network",operation:deployment,arguments:req.arguments,sessionTicket:ticket,
+              ...(durableOperationId(deployment,req.arguments)?{operationId:durableOperationId(deployment,req.arguments)}:{})})
           });
           const value=await response?.json?.().catch(()=>null);
           if(!response?.ok||value?.ok!==true){
@@ -130,6 +168,7 @@
             }
             throw Error("NETWORK_SLH_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
           }
+          if(["deploy","activate","undeploy"].includes(deployment))managementChanged(value.result);
           return value.result;
         }
         const sehOperation=sehLifecycleOperation(req);

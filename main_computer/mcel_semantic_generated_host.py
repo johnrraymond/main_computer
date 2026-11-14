@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path("tools/fixtures/mcel_p1_task_monitor/application.js")
 ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
+    "main_computer/web/applications/scripts/mcel-contract.js",
+    "main_computer/web/applications/scripts/mcel-law-registry.js",
+    "main_computer/web/applications/scripts/mcel-style-law.js",
+    "main_computer/web/applications/scripts/mcel-semantic-color-presentation.js",
     "main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js",
     "main_computer/web/applications/scripts/mcel-semantic-read-ports.js",
 )

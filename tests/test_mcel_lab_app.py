@@ -1453,12 +1453,12 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "wantsGeneratedContainer" in ui
     assert "generatedContainerWithSource" in ui
     assert "writing-mode: horizontal-tb" in ui
-    assert "border-radius: min(var(--site-radius), 28px) !important" in ui
+    assert "border-radius: var(--mcel-form-repair-radius) !important" in ui
     assert 'data-mcel-chrome-primitive="content-envelope"' in ui
     assert "contentFlowPrimitiveSelector" in chrome_law
     assert "content-flow" in chrome_law
     assert "--mcel-smart-envelope-block-pad" in ui
-    assert "border-radius: 999px;" in ui
+    assert "border-radius: var(--mcel-form-envelope-radius);" in ui
     assert '[data-mcel-composition-remedy~="smart-flow-frame"]' in ui
     assert "runCompositionRemediationPasses" in ui
     assert 'body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"]' in ui

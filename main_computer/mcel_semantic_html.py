@@ -46,6 +46,7 @@ ATTRS = frozenset({
     'data-mcel-prefer-sizing', 'data-mcel-prefer-width-group',
     'data-mcel-prefer-align',
     'data-mcel-when-state', 'data-mcel-when-value',
+    'data-mcel-color-role', 'data-mcel-color-surface', 'data-mcel-color-context',
 })
 NATIVE_PURPOSE = {'main':'workspace', 'nav':'navigation', 'aside':'inspection',
                   'output':'results', 'search':'query-controls'}
@@ -163,6 +164,16 @@ class _SemanticParser(HTMLParser):
             if purpose: region['purpose'] = purpose
             if tasks: region['tasks'] = tasks
             if kind: region['content'] = {'kind':kind, 'ref':ref}
+            color_fields=('data-mcel-color-role','data-mcel-color-surface','data-mcel-color-context')
+            if any(k in raw for k in color_fields):
+                role=raw.get('data-mcel-color-role')
+                surface=raw.get('data-mcel-color-surface')
+                context=raw.get('data-mcel-color-context','default')
+                if (not role or not re.fullmatch(r'[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*', role)
+                    or surface not in {'panel','navigation'}
+                    or context not in {'default','toolbar','dialog','form','navigation','nested','inline'}):
+                    self.fail('MCEL_HTML_COLOR_INVALID', 'Semantic region color requires a valid role, surface, and context; physical colors are forbidden.')
+                region['color']={'role':role,'surface':surface,'context':context}
             if priority: region['priority'] = priority
             if when_state: region['visibleWhen'] = {'state': {'ref': when_state}, 'equals': when_value}
             if prefs: region['preferences'] = prefs

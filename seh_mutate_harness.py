@@ -129,6 +129,7 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
     from http.client import HTTPConnection
     import time
     from main_computer.slh.authenticator_store import LocalIdentityStore, IdentityStoreError
+    from main_computer.slh.storage import slh_state_dir
     from main_computer.slh.ports import DEFAULT_SLH_API_HOST
 
     if any((args.seh, args.host, args.slh_id, args.public_url,
@@ -141,7 +142,8 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
     if not 1 <= args.local_port <= 65535 or not 0 < args.activation_timeout <= 180:
         raise HarnessError('Invalid local port or activation timeout')
 
-    store = LocalIdentityStore()
+    # Activation signs with the resident LMS identity, not the per-user AppData store.
+    store = LocalIdentityStore(slh_state_dir() / "identities")
     device = args.admin_device
     if not device:
         entries = store.list()
@@ -153,7 +155,8 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
     # API tokens only exist in memory for this command and are logged out.
     def request(method, path, body=None, token=None):
         payload = None if body is None else json.dumps(body).encode('utf-8')
-        headers = {'Content-Type': 'application/json', 'Host': '127.0.0.1'}
+        headers = {'Content-Type': 'application/json',
+                   'Host': f'{DEFAULT_SLH_API_HOST}:{args.local_port}'}
         if token:
             headers['Authorization'] = 'Bearer ' + token
         connection = HTTPConnection(DEFAULT_SLH_API_HOST, args.local_port, timeout=40)

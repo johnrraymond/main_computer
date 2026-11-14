@@ -279,21 +279,32 @@ class NetworkSlhClient:
         """
         allowed = {
             ('GET', '/v1/org/admin/seh/deployment'): None,
+            ('GET', '/v1/org/admin/seh/deployment/operations'): None,
             ('POST', '/v1/org/admin/seh/deployment/controllers'):
                 {'name', 'url', 'api_token', 'expected_generation', 'operation_id'},
             ('POST', '/v1/org/admin/seh/deployment/selection'):
                 {'name', 'expected_generation', 'operation_id'},
             ('POST', '/v1/org/admin/seh/deployment/harness'):
-                {'action', 'execute', 'expected_generation', 'confirm'},
+                ({'action', 'execute', 'expected_generation', 'confirm'},
+                 {'action', 'execute', 'expected_generation', 'confirm', 'operation_id'}),
         }
         marker = (method, path)
+        if ((method == 'GET' and re.fullmatch(
+                r'/v1/org/admin/seh/deployment/operations/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', path)) or
+                (method == 'POST' and re.fullmatch(
+                r'/v1/org/admin/seh/deployment/operations/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/cancel', path))):
+            self._check_session_transport(ticket)
+            if body not in (None, {}):
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+            return self._authenticated_request(ticket, method, path, {} if method=='POST' else None)
         if marker not in allowed:
             raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
         required = allowed[marker]
         if required is None:
             if body is not None:
                 raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
-        elif type(body) is not dict or set(body) != required:
+        elif type(body) is not dict or not (
+                (set(body) in required) if isinstance(required,tuple) else set(body)==required):
             raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED', 403)
         self._check_session_transport(ticket)
         return self._authenticated_request(ticket, method, path, body)

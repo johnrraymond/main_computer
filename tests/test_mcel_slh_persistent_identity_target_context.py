@@ -117,7 +117,9 @@ def test_selected_identity_survives_target_change_and_remote_pin_stays_distinct(
             page.evaluate('window.nonIdentityLocalCalls=[]')
             page.set_content(render_slh_page('network'))
             _wait_identities(page)
-            assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-alt'
+            assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-default'
+            page.locator('[data-select-key="dev-alt"]').click()
+            page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='dev-alt'")
             assert page.evaluate('window.nonIdentityLocalCalls')==[]
             form=page.locator('form[data-intent="intent:connect-network-slh"]')
             form.locator('input[name="address"]').fill('192.168.1.20')

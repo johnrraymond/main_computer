@@ -41,3 +41,9 @@ markers = [
   "mother_specification: Mother documentation-graph and conformance verification",
   "mother_contract: traced Mother module, protocol, or operation contract test",
 ]
+
+[tool.pyright]
+exclude = [
+  "runtime/state/**",
+  "**/evidence-workspace/**",
+]

@@ -128,7 +128,13 @@ def test_harness_reuses_operator_entry_point_and_mutations_require_exact_approva
     assert len(captured) == 1
     result = manager.harness({**initial, 'execute': True, 'expected_generation': 1,
                               'confirm': 'REDEPLOY_RUNTIME'})
-    assert result['status'] == 'PLAN_ONLY' and captured[-1].execute_mutations is True
+    assert result['status'] == 'ACCEPTED'
+    import time
+    deadline=time.monotonic()+3
+    while manager.operation_status(result['operation_id'])['phase'] not in ('RECORDED','RECOVERY_REQUIRED') and time.monotonic()<deadline:
+        time.sleep(.01)
+    assert manager.operation_status(result['operation_id'])['phase']=='RECORDED'
+    assert captured[-1].execute_mutations is True
     assert captured[-1].yes_i_know_this_mutates_seh is True
     for action in ('deploy','undeploy'):
         with pytest.raises(SEHManagementRefused, match='SEH_HARNESS_OPERATION_NOT_AVAILABLE'):
@@ -146,14 +152,14 @@ class _Authority:
 def test_local_api_requires_administrator_and_loopback(tmp_path):
     manager = SLHSEHDeploymentManager(root=root_state(tmp_path))
     api = SLHAPI(_Authority(), seh_deployment_manager=manager)
-    for token, loopback, expected in [('', True, 401), ('good', False, 403), ('good', True, 200)]:
+    for token, loopback, expected in [('', True, 200), ('good', False, 403), ('good', True, 200)]:
         code, reply = api.call('GET', '/v1/local/seh/deployment', token=token, loopback=loopback)
         assert code == expected, reply
     request = {'name': 'coolify-b', 'url': 'https://coolify-b.example.org',
                'api_token': TOKEN, 'expected_generation': 1, 'operation_id': 'add-coolify'}
     assert api.call('POST', '/v1/local/seh/deployment/controllers', request, token='good', loopback=True)[0] == 200
     assert manager.inspect({})['generation'] == 2
-    assert api.call('POST', '/v1/local/seh/deployment/controllers', request, token='', loopback=True)[0] == 401
+    assert api.call('POST', '/v1/local/seh/deployment/controllers', request, token='', loopback=True)[0] == 409
     assert manager.inspect({})['generation'] == 2
 
 
@@ -171,9 +177,17 @@ def _http(port, method, path, body=None, *, bearer=''):
 
 
 def test_direct_org_management_available_but_same_request_relay_denied(tmp_path):
+    from main_computer.slh.seh_lms_ipc import LMSManagementClient
     manager = SLHSEHDeploymentManager(root=root_state(tmp_path))
+    from wsgiref.simple_server import make_server, WSGIRequestHandler
+    import secrets
+    key=secrets.token_bytes(32)
+    api=SLHAPI(_Authority(),seh_deployment_manager=manager,seh_ipc_key=key)
+    lms=make_server('127.0.0.1',0,api.wsgi_app)
+    lms_thread=threading.Thread(target=lms.serve_forever,daemon=True)
+    lms_thread.start()
     server = OrganizationHTTPServer(('127.0.0.1', 0), OrganizationHTTPHandler)
-    server.seh_deployment_manager = manager
+    server.seh_lms_forwarder = LMSManagementClient(port=lms.server_port,key=key)
     server.authority = _Authority()
     server.seh_identity_only = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -190,6 +204,7 @@ def test_direct_org_management_available_but_same_request_relay_denied(tmp_path)
         server.shutdown()
         thread.join(timeout=2)
         server.server_close()
+        lms.shutdown();lms_thread.join(timeout=2);lms.server_close()
 
 
 def test_router_cannot_accept_caller_selected_state_paths(tmp_path):

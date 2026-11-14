@@ -1,0 +1,109 @@
+{
+  "id": "nanojev_games_transformation_supervision_v1",
+  "inputs": [
+    "canonical game G=(N,S,A,T,O,I,U,H)",
+    "parameter instantiation",
+    "requested transform T",
+    "orientation/paraphrase",
+    "jacket and scenario when applicable"
+  ],
+  "loss_weights_for_new_transformation_head": {
+    "counterfactual_contrast": 0.1,
+    "equilibrium": 0.15,
+    "operator": 0.1,
+    "paired_consistency": 0.1,
+    "structure": 0.15,
+    "transformed_numeric": 0.2,
+    "xy_numeric": 0.2
+  },
+  "losses": {
+    "counterfactual_contrast": "distinguish equivalence-preserving maps from incentive-changing maps",
+    "equilibrium": "set-exact matching or regret-weighted loss on checked matrix games",
+    "numeric_transformation": "smooth regression to checked post-transform output and delta",
+    "operand_sign_exponent_mantissa": "existing v3 supervision on X and Y where defined",
+    "operator_classification": "cross-entropy for transformation id",
+    "paired_consistency": "both orientations must independently predict the SAME canonical target",
+    "structural_fields": "structured categorical/sequence objective on actors, actions, conditions, and invariants"
+  },
+  "mathematical_state": "G=(N,S,A,T,O,I,U,H); physically realizable state/action constraints precede strategic analysis",
+  "mix_policy": {
+    "batch_size": 16,
+    "composition": "explicit fixed per-family distribution; never transition by training step",
+    "paired_orientations": true
+  },
+  "model_initialization": "Continue current frozen Qwen + numeric X/Y attention head checkpoint; new structured multi-field targets require a separately trainable transformation head/adapter.",
+  "readiness": {
+    "cross_family_held_out_report_required": true,
+    "joint_paired_10pct_target": 0.9,
+    "numeric_retention_5pct_target": 0.9,
+    "structure_exact_match_target": 0.9,
+    "transformation_operator_accuracy_target": 0.95
+  },
+  "scheduling": {
+    "strategy": "explicit user-selected distribution, not step milestones",
+    "unit": "game family and operator"
+  },
+  "scope": "game as unit: math/structural equivalence, changed-games counterfactuals, Captain scenario and tactical games",
+  "targets": {
+    "capture": [
+      "canonical operands X,Y for existing numerical head",
+      "full structured game transform for additional head"
+    ],
+    "execute": [
+      "operator id",
+      "operator inputs",
+      "actual transformed payoff tensor / numeric output",
+      "counterfactual deltas",
+      "transformation preconditions"
+    ],
+    "identify": [
+      "game family",
+      "roles and state variables",
+      "players/actions",
+      "constraints",
+      "observation and hidden type",
+      "time horizon"
+    ],
+    "reason": [
+      "best responses",
+      "pure equilibria where finite matrix",
+      "changes in equilibria",
+      "invariants vs non-invariants",
+      "equivalence certificate"
+    ],
+    "transfer": [
+      "same underlying game under new story",
+      "different games with same math structure",
+      "modified action/information/utility structures"
+    ]
+  },
+  "validation": {
+    "equilibria_verify_with_exhaustive_best_response": true,
+    "held_out": [
+      "parameter instance",
+      "surface frame",
+      "orientation",
+      "game family where feasible",
+      "operator composition"
+    ],
+    "matrix_payoff_exact_match": true,
+    "numeric_no_oracle_contamination": true,
+    "operation_exact_match": true,
+    "report": [
+      "per_family",
+      "per_operator",
+      "per_representation",
+      "numeric X/Y",
+      "structure",
+      "invariant",
+      "counterfactual",
+      "coverage"
+    ],
+    "strict_paired_joint_thresholds": [
+      0.01,
+      0.05,
+      0.1
+    ],
+    "structure_exact_match": true
+  }
+}

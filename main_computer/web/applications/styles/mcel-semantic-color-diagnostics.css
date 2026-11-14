@@ -1,0 +1,30 @@
+/* MCEL Theme-owned diagnostic palette and semantic color projection.
+ * Applications and E/W/G declare meaning, never a physical color. The
+ * standalone baseline preserves the existing diagnostic palette. Theme
+ * presets replace these tokens at their canonical semantic root. */
+:root {
+  --mcel-theme-error: #f87171;
+  --mcel-theme-warning: #facc15;
+  --mcel-theme-success: #4ade80;
+  --mcel-diagnostic-base-ink: #cbd5e1;
+  --mcel-diagnostic-base-muted: rgba(203, 213, 225, 0.78);
+  --mcel-diagnostic-base-background: rgba(15, 23, 42, 0.78);
+  --mcel-diagnostic-base-border: rgba(148, 163, 184, 0.35);
+  --mcel-diagnostic-hover-background: rgba(15, 23, 42, 0.92);
+  --mcel-diagnostic-hover-border: rgba(203, 213, 225, 0.65);
+  --mcel-diagnostic-focus-ring: rgba(125, 211, 252, 0.75);
+}
+/* The data role, not the widget tag or visual class, determines meaning. */
+[data-mcel-color-role="diagnostic.error"] { color: var(--mcel-theme-error) !important; }
+[data-mcel-color-role="diagnostic.warning"] { color: var(--mcel-theme-warning) !important; }
+[data-mcel-color-role="diagnostic.success"] { color: var(--mcel-theme-success) !important; }
+/* The parent indicator carries its highest-severity semantic role too. */
+.mcel-diagnostics-counter[data-mcel-color-role="diagnostic.error"] {
+  border-color: color-mix(in srgb, var(--mcel-theme-error) 65%, transparent);
+}
+.mcel-diagnostics-counter[data-mcel-color-role="diagnostic.warning"] {
+  border-color: color-mix(in srgb, var(--mcel-theme-warning) 58%, transparent);
+}
+.mcel-diagnostics-counter[data-mcel-color-role="diagnostic.success"] {
+  border-color: color-mix(in srgb, var(--mcel-theme-success) 48%, transparent);
+}

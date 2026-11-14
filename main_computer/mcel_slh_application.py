@@ -29,9 +29,12 @@ ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-seh-deployment-ports.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-ports.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-network-ports.js",
+    "main_computer/web/applications/scripts/mcel-semantic-modal-subprogram.js",
+    "main_computer/web/applications/scripts/mcel-semantic-slh-management-modal.js",
     "main_computer/web/applications/scripts/mcel-semantic-seh-remote-ports.js",
 )
 STYLE = "main_computer/web/applications/styles/mcel-semantic-workbench.css"
+MODAL_STYLE = "main_computer/web/applications/styles/mcel-semantic-modal-subprogram.css"
 ROUTES = {
     "/applications/slh": "overview", "/applications/slh/local": "overview",
     "/applications/slh/workers": "worker-bank",
@@ -103,11 +106,13 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         seh_form.get("fields") != {"sehUrl":{"kind":"string"}} or
         any(n.get("nodeKind") != "operation-notebook" or n.get("title") != "SEH Lifecycle" or
             n.get("visibleWhen",{}).get("equals") != target or
+            n.get("authentication") is not None or
+            n.get("tabs",[])[0].get("forms",[])[1].get("choicesFrom",{}).get("name",{}).get("selectedPath") != "selectedController" or
             [tab.get("id") for tab in n.get("tabs",[])] !=
                 ["configuration","deployment","connection","status","diagnostics"] or
             set(n.get("tabs",[])[2].get("actions",{})) != {"Start","Stop","Restart"} or
             set(n.get("tabs",[])[1].get("actions",{})) != {
-                "Preflight Deploy","Deploy","Preflight Undeploy","Undeploy"} or
+                "Preflight Deploy","Deploy","Preflight Activate","Activate / Resume","Preflight Undeploy","Undeploy"} or
             len(n.get("tabs",[])[0].get("forms",[])) != 2 or
             n.get("tabs",[])[0].get("actions")
             for target,n in zip(("local","network"),seh_notebooks))):
@@ -134,10 +139,9 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "intent:choose-identity", "intent:select-target", "intent:connect-network-slh",
         "intent:disconnect-network-slh", "intent:configure-and-enable-organization", "intent:toggle-organization-enablement",
         "intent:toggle-organization",
-        "intent:login-administrator", "intent:logout-administrator",
         "intent:connect-remote-seh", "intent:disconnect-remote-seh", "intent:read-seh-connection",
         "intent:read-seh-deployment", *{f"intent:seh-deployment-{operation}" for operation in
-          ("register","select","preview-deploy","deploy","preview-undeploy","undeploy")},
+          ("register","select","preview-deploy","deploy","preview-activate","activate","preview-undeploy","undeploy")},
         *{f"intent:seh-connection-{action}" for action in ("start","stop","restart")},
         *{f"intent:read-organization-{name}" for name in ("pending","enrolled","trash","retention")},
         *{f"intent:organization-{name}" for name in ("accept","reject","delete","reactivate","remove")},
@@ -163,14 +167,12 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "effect:configure-and-enable-organization.request":"consequential",
         "effect:toggle-organization-enablement.request":"consequential",
         "effect:toggle-organization.request":"consequential",
-        "effect:login-administrator.request":"consequential",
-        "effect:logout-administrator.request":"consequential",
         "effect:connect-remote-seh.request":"consequential",
         "effect:disconnect-remote-seh.request":"consequential",
         "effect:read-seh-connection.request":"external-read",
         "effect:read-seh-deployment.request":"external-read",
         **{f"effect:seh-deployment-{operation}.request":"consequential" for operation in
-          ("register","select","preview-deploy","deploy","preview-undeploy","undeploy")},
+          ("register","select","preview-deploy","deploy","preview-activate","activate","preview-undeploy","undeploy")},
         **{f"effect:seh-connection-{action}.request":"consequential" for action in ("start","stop","restart")},
         **{f"effect:read-organization-{name}.request":"external-read" for name in ("pending","enrolled","trash","retention")},
         **{f"effect:organization-{name}.request":"consequential" for name in ("accept","reject","delete","reactivate","remove")},
@@ -201,7 +203,7 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
     ir, composition = compile_slh_application(repo)
     payload = json.dumps({"ir": ir, "composition": composition},
                          separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
-    css = (repo / STYLE).read_text(encoding="utf-8")
+    css = (repo / STYLE).read_text(encoding="utf-8") + "\n" + (repo / MODAL_STYLE).read_text(encoding="utf-8")
     if "</style" in css.lower():
         raise SlhApplicationError("Stylesheet contains an HTML closing tag")
     target = "remote-seh" if view == "remote-seh" else "network" if view.startswith("network") else "local"
@@ -256,47 +258,102 @@ const adapter=Object.freeze({{
         "intent:refresh-lifecycle"].includes(req.intentId)) ? port.invoke(req)
         : Promise.reject(Error("LOCAL_AUTHORITY_NOT_SELECTED")))
 }});
+let managementOverlay=null;
 const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),data.ir,
   {{capabilities:adapter,composition:data.composition,presentation:"expert",
     navigationChrome:document.getElementById("mcel-slh-navigation-context")}});
+const scopeKey="mcel.slh.selected-identity.v2."+selectedTarget;
+// Changing signer invalidates both local proof and target-specific tickets.
+// Selection itself is renderer-local: no authentication request is issued.
+const identitySelected=value=>{{
+  port.setIdentity(value);
+  networkPort.forget();sehPort.forget();
+  // Signer changes invalidate protected organization records, but must not
+  // withdraw local LMS management authority or erase its Coolify projection.
+  if(selectedTarget==="local"){{
+    app.setNotebookAuthorization(false,{{scope:"records"}});
+    app.setNotebookAuthorization(!!value,{{scope:"records",refresh:false}});
+  }}
+  try{{globalThis.sessionStorage?.setItem(scopeKey,value||"__NONE__");}}catch{{}}
+}};
+document.getElementById("mcel-workbench").addEventListener("mcel:collection-selection",event=>{{
+  if(event.detail?.stateId==="state:selected-local-identity")identitySelected(event.detail.value||"");
+}});
 port.onAuthenticationChanged(authenticated=>{{
-  if(selectedTarget==="local")app.setNotebookAuthorization(authenticated);
+  if(selectedTarget==="local")app.setNotebookAuthorization(!!authenticated,{{scope:"records"}});
 }});
 networkPort.onConnectionChanged(authenticated=>{{
-  if(selectedTarget==="network")app.setNotebookAuthorization(authenticated);
+  if(selectedTarget==="network"){{
+    app.setNotebookAuthorization(!!authenticated);
+    if(authenticated)void managementOverlay?.start();
+    else managementOverlay?.stop();
+  }}
 }});
 sehPort.onConnectionChanged(authenticated=>{{
-  if(selectedTarget==="remote-seh")app.setNotebookAuthorization(authenticated);
+  if(selectedTarget==="remote-seh")app.setNotebookAuthorization(!!authenticated);
 }});
-void app.execute("intent:select-target",{{choice:selectedTarget}});
-window.__mcelSlh=Object.freeze({{app,composition:data.composition}});
+if(selectedTarget!=="remote-seh"){{
+  const managementPort=selectedTarget==="local"?port:networkPort;
+  managementOverlay=McelSlhManagementModal.create({{
+    host:document.getElementById("mcel-workbench"),
+    request:(operation,args)=>managementPort.managementRequest(operation,args),
+    onSettled:()=>{{void app.execute("intent:read-seh-deployment");}}
+  }});
+  managementPort.onManagementChanged(receipt=>{{
+    if(receipt?.operationId)managementOverlay.track(receipt.operationId);
+    void managementOverlay.refresh();
+  }});
+  // This event is synchronous with MCEL execution dispatch, before any
+  // backend preflight or HTTP request. The LMS snapshot later takes over.
+  document.getElementById("mcel-workbench").addEventListener("mcel:parity-operation",event=>{{
+    const intent=event.detail?.intentId;
+    if(!["intent:seh-deployment-deploy","intent:seh-deployment-activate","intent:seh-deployment-undeploy"].includes(intent))return;
+    if(event.detail.phase==="dispatch")managementOverlay.begin(intent,
+      intent.endsWith("undeploy")?"Undeploy SEH":intent.endsWith("activate")?"Activate SEH":"Deploy SEH");
+    if(event.detail.phase==="settled"){{
+      const receipt=app.receipts().at(-1);
+      managementOverlay.settled(intent,event.detail.disposition,
+        receipt?.intentId===intent?receipt.reason:"");
+    }}
+  }});
+  if(selectedTarget==="local")void managementOverlay.start();
+}}
+window.__mcelSlh=Object.freeze({{app,composition:data.composition,managementOverlay}});
 const refreshIdentities=async()=>{{
-  const observations=await Promise.all([app.execute("intent:refresh-identities"),
-    app.execute("intent:refresh-identity-status")]);
-  if(!observations.every(r=>r && r.disposition==="completed"))return;
-  // Preserve the operator's existing selection when it remains available.
-  // Select the LMS-SLH default only on first discovery or if selection vanished.
+  // Identity discovery and Coolify management both use the resident LMS.
+  // Complete the identity observation first; an empty UNAVAILABLE response
+  // must never be misrepresented as a verified empty identity directory.
+  const identities=await app.execute("intent:refresh-identities");
+  const status=await app.execute("intent:refresh-identity-status");
+  const summary=app.readState("state:local-identity-status");
+  if(identities?.disposition!=="completed" || status?.disposition!=="completed"){{
+    message.textContent="Local identity directory unavailable · "+
+      String(summary?.explanation||identities?.reason||status?.reason||"observation failed");
+    return false;
+  }}
+  if(summary?.state!=="AVAILABLE"){{
+    message.textContent="Local identity directory "+String(summary?.state||"UNVERIFIED")+
+      " · "+String(summary?.explanation||"Inspect the resident LMS identity service");
+    return false;
+  }}
   const selected=app.readState("state:selected-local-identity");
   const available=app.readState("state:local-identities")||[];
-  if(available.some(row=>row.deviceId===selected))return;
-  // A device ID is nonsecret, unlike its signing key or a bearer. Persist only
-  // the selection for the lifetime of this browser tab across canonical URLs.
-  let remembered="";
-  try{{remembered=globalThis.sessionStorage?.getItem("mcel.slh.selected-identity.v1")||"";}}catch{{}}
-  const chosen=available.some(row=>row.deviceId===remembered)?remembered:port.preferredIdentity();
+  if(available.some(row=>row.deviceId===selected))return true;
+  let remembered=null;
+  try{{remembered=globalThis.sessionStorage?.getItem(scopeKey)??null;}}catch{{}}
+  // Explicit deselection is durable for this target; do not resurrect default.
+  if(remembered==="__NONE__"){{identitySelected("");return true;}}
+  const chosen=available.some(row=>row.deviceId===remembered)?remembered:
+    remembered===null?port.preferredIdentity():"";
   if(chosen)await app.execute("intent:choose-identity",{{key:chosen}});
+  else identitySelected("");
+  return true;
 }};
-// Page navigation performs read-only observations ONLY. Both consequential
-// lifecycle actions require explicit interactions and are never autoplayed.
-const saveSelectedIdentity=()=>{{
-  try{{
-    const value=app.readState("state:selected-local-identity")||"";
-    if(/^[A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}$/.test(value))
-      globalThis.sessionStorage?.setItem("mcel.slh.selected-identity.v1",value);
-    else globalThis.sessionStorage?.removeItem("mcel.slh.selected-identity.v1");
-  }}catch{{}}
-}};
-window.addEventListener("pagehide",saveSelectedIdentity);
+// Store only a non-secret signer name or the explicit None marker.
+window.addEventListener("pagehide",()=>{{
+  try{{globalThis.sessionStorage?.setItem(scopeKey,
+    app.readState("state:selected-local-identity")||"__NONE__");}}catch{{}}
+}});
 const refreshLifecycle=async()=>{{
   const receipt=await app.execute("intent:refresh-lifecycle");
   if(selectedTarget!=="local" || receipt?.disposition!=="completed")return;
@@ -305,11 +362,27 @@ const refreshLifecycle=async()=>{{
     observed.bindAddress+":"+observed.port;
 }};
 port.onSetupChanged(()=>{{void refreshLifecycle();}});
-const initialIdentityRefresh=refreshIdentities();
-initialIdentityRefresh.then(()=>{{
-  if(selectedTarget==="local")void refreshLifecycle();
-  else message.textContent=selectedTarget==="remote-seh"?"Remote SEH ready to connect · no administrator session":"Network SLH ready to connect · no remote session established";
-}}).catch(()=>{{message.textContent="Local signing identities unavailable · configuration cannot proceed";}});
+// LMS is a single local management authority. Do not race its identity
+// discovery with the SEH deployment inspection on initial page load.
+// This is ordering, not an authorization dependency: deployment still loads
+// when no identity is selected or the directory cannot be verified.
+void refreshIdentities().then(identitiesAvailable=>{{
+  if(selectedTarget==="local"){{
+    const identityFailure=identitiesAvailable?"":message.textContent;
+    void refreshLifecycle().then(()=>{{
+      if(identityFailure && message.textContent!==identityFailure)message.textContent+=" · "+identityFailure;
+    }});
+  }}else message.textContent=selectedTarget==="remote-seh"?
+    "Remote SEH ready to connect · no administrator session":
+    "Network SLH ready to connect · no remote session established";
+}},()=>{{message.textContent="Local identity directory unavailable · observation failed";}})
+.then(()=>app.execute("intent:select-target",{{choice:selectedTarget}}))
+.then(receipt=>{{
+  if(selectedTarget==="local" && receipt?.disposition==="completed")
+    app.setNotebookAuthorization(true,{{scope:"operations"}});
+}}).catch(error=>{{message.dataset.error="true";
+  message.textContent="SLH initialization unavailable: "+String(error?.message||error);
+}});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''
 

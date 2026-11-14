@@ -33,6 +33,11 @@ const CHAT_CONSOLE_LAYOUT_TREE = {
             requireVisible: false, verifyControls: false},
           {id: "thread-workspace", selector: ".chat-thread-workspace", role: "group",
             maxColumns: 1, gap: 8,
+            // Conversation mode adds an optional view switch between the
+            // thread header and notebook. It is an in-flow semantic control,
+            // never a floating overlay or an undeclared grid child.
+            auxiliarySelectors: [".chat-conversation-switch"],
+            auxiliaryPlacement: "flow",
             children: [
               {id: "active-thread", selector: ".chat-thread-current-bar", role: "region",
                 requireVisible: false, verifyControls: false},

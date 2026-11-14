@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import deque
 import hashlib
 import os
+import secrets
 import psutil
 import http.client
 import json
@@ -23,13 +24,16 @@ from .authority import SLHError, SLHAuthority
 
 class OrganizationController:
     def __init__(self, authority: SLHAuthority, *, python_executable=None, runner=None,
-                 automatic_start=True):
+                 automatic_start=True, lms_port=None):
         self.authority = authority
         self.directory = authority.directory
         initialize_disabled(self.directory)
         self._lock = threading.RLock()
         self._process = None
         self._last_error = None
+        self.seh_ipc_key = secrets.token_bytes(32)
+        from .ports import DEFAULT_SLH_API_PORT
+        self.lms_port = lms_port if lms_port is not None else DEFAULT_SLH_API_PORT
         self._paused = False  # Explicit runtime Stop, distinct from persistent Disable.
         self._stop = threading.Event()
         self._restarts = deque()
@@ -66,7 +70,9 @@ class OrganizationController:
                  '--parent-pid', str(os.getpid()),
                  '--parent-created', str(psutil.Process(os.getpid()).create_time())],
                 stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
-                close_fds=True)
+                close_fds=True,
+                env={**os.environ, 'MAIN_COMPUTER_LMS_SEH_IPC_KEY':self.seh_ipc_key.hex(),
+                      'MAIN_COMPUTER_LMS_SEH_IPC_PORT':str(self.lms_port)})
         self._last_error = None
 
     def _listening(self, config):

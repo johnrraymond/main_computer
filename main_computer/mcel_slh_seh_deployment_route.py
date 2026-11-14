@@ -26,22 +26,30 @@ def handle_seh_deployment(self):
         if not 2 <= length <= 8192:
             raise ValueError()
         data = json.loads(self.rfile.read(length))
-        if (type(data) is not dict or set(data) != {'target', 'operation', 'arguments', 'sessionTicket'} or
+        if (type(data) is not dict or set(data) not in (
+                {'target','operation','arguments','sessionTicket'},
+                {'target','operation','arguments','sessionTicket','operationId'}) or
                 type(data['arguments']) is not dict or type(data['sessionTicket']) is not str or
-                len(data['sessionTicket']) > 128):
+                len(data['sessionTicket']) > 128 or
+                (data.get('operationId') is not None and
+                 (type(data['operationId']) is not str or
+                  not __import__('re').fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{15,127}',data['operationId'])))):
+            raise ValueError()
+        operation_id=data.get('operationId')
+        if (not data['operation'] in ('deploy','activate','undeploy') and operation_id is not None):
             raise ValueError()
         target = data['target']
         authorization = self.headers.get('Authorization','')
         if target == 'local':
-            if data['sessionTicket'] or not authorization.startswith('Bearer '):
+            if data['sessionTicket'] or authorization:
                 raise SEHDeploymentUIError('SEH_DEPLOYMENT_TARGET_MISMATCH', 403)
             result = execute_seh_deployment(data['operation'],data['arguments'],target='local',
-                                            local_token=authorization[7:])
+                                            operation_id=operation_id)
         elif target == 'network':
             if authorization:
                 raise SEHDeploymentUIError('SEH_DEPLOYMENT_TARGET_MISMATCH', 403)
             result = execute_seh_deployment(data['operation'],data['arguments'],target='network',
-                                            remote_ticket=data['sessionTicket'])
+                                            remote_ticket=data['sessionTicket'], operation_id=operation_id)
         else:
             raise SEHDeploymentUIError('SEH_DEPLOYMENT_TARGET_REFUSED', 403)
     except SEHDeploymentUIError as exc:

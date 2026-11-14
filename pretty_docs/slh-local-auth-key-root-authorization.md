@@ -1,5 +1,7 @@
 # ORG-SLH LOCAL-AUTH-KEY — Local Root Authorization Contract
 
+**November 13 frontend requirement:** [MCEL Identity Selection and Transparent Authorization](mcel-identity-selection-and-authorization.md) eliminates separate user-facing Login/Logout controls and requires Deselect and target-verified Administrator role indicators. This does **not** authorize automatic root usage on identity selection. Every first-administrator grant or recovery remains an explicit, separately authorized operation. The V6-C login-triggered grant below describes historical implemented behavior requiring migration; the ORG-SLH root, signed proof, and zero-administrator transaction checks remain in force.
+
 **Status:** V6-A implements the **ORG-SLH root file and root-authorized administrator-grant API**. V6-B implements **explicit LMS-SLH root consumption and identity registration** through its local API. V6-C connects the existing MCEL **Login Administrator** action to conditional first-administrator registration. On a truly unestablished organization, the same **Login Administrator** click now runs the existing protected one-time `bootstrap.secret` P-256 initialization with the selected identity, configures a loopback TLS listener when configuration is genuinely absent, activates ORG-SLH, and signs in. `/v1/bootstrap/recovery` remains a stub.
 
 ## Objective and trust model

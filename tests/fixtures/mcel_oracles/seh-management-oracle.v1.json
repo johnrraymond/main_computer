@@ -35,6 +35,8 @@
     "deployment_actions": [
       "intent:seh-deployment-preview-deploy",
       "intent:seh-deployment-deploy",
+      "intent:seh-deployment-preview-activate",
+      "intent:seh-deployment-activate",
       "intent:seh-deployment-preview-undeploy",
       "intent:seh-deployment-undeploy"
     ],
@@ -44,7 +46,12 @@
     ],
     "selected_target_from_verified_coolify_identity": true,
     "canonical_deploy_requires_verified_prior_undeploy": true,
-    "stale_generation_fails_closed": true
+    "stale_generation_fails_closed": true,
+    "local_authentication": "transparent-on-protected-read",
+    "dedicated_sign_in_control_forbidden": true,
+    "network_uses_existing_authenticated_connection": true,
+    "selected_controller_prepopulated_from_verified_binding": true,
+    "private_controller_registry_requires_admin_session": true
   },
   "remote_seh": {
     "target": "remote-seh",
