@@ -63,6 +63,94 @@ def test_matching_pid_timestamp_without_module_identity_is_never_killed(tmp_path
     assert (tmp_path / op.PID_FILENAME).exists()
 
 
+@pytest.mark.parametrize(
+    ('scenario', 'expected_state'),
+    [
+        ('exit_after_denial', 'not-running'),
+        ('transient_denial', 'terminated'),
+        ('recycled_after_denial', 'not-running'),
+        ('persistent_denial', None),
+        ('foreign_after_denial', None),
+        ('identity_access_denied', None),
+    ],
+)
+def test_stop_cmdline_denial_differential_no_kill_unverified(
+        tmp_path, monkeypatch, scenario, expected_state):
+    """Exercise actual shutdown code with simulated process handles only."""
+    fake_pid = 57321
+    fake_created = 1731624544.0
+
+    class FakeProcess:
+        pid = fake_pid
+        created = fake_created
+        alive = True
+        cmdline_reads = 0
+        terminations = 0
+        kills = 0
+
+        def create_time(self):
+            if scenario == 'identity_access_denied':
+                raise psutil.AccessDenied(self.pid)
+            return self.created
+
+        def is_running(self):
+            return self.alive
+
+        def status(self):
+            return 'running' if self.alive else psutil.STATUS_ZOMBIE
+
+        def cmdline(self):
+            self.cmdline_reads += 1
+            if self.cmdline_reads == 1 and scenario == 'exit_after_denial':
+                self.alive = False
+                raise psutil.AccessDenied(self.pid)
+            if self.cmdline_reads == 1 and scenario == 'recycled_after_denial':
+                self.created += 100
+                raise psutil.AccessDenied(self.pid)
+            if scenario == 'persistent_denial' or (
+                    self.cmdline_reads == 1 and scenario in ('transient_denial', 'foreign_after_denial')):
+                raise psutil.AccessDenied(self.pid)
+            module = ('other.unrelated_service' if scenario == 'foreign_after_denial'
+                      else 'main_computer.slh.organization_service')
+            return ['python', '-m', module, '--state-dir', str(tmp_path)]
+
+        def terminate(self):
+            self.terminations += 1
+            self.alive = False
+
+        def kill(self):
+            self.kills += 1
+            self.alive = False
+
+    fake = FakeProcess()
+    op._write_record(tmp_path, record_for(tmp_path, fake_pid, fake_created))
+    monkeypatch.setattr(op.psutil, 'Process', lambda pid: fake)
+    monkeypatch.setattr(op.time, 'sleep', lambda seconds: None)
+
+    if expected_state is None:
+        expected_error = ('Cannot verify ORG-SLH process identity'
+                          if scenario == 'identity_access_denied'
+                          else 'unverified process' if scenario == 'foreign_after_denial'
+                          else 'Cannot verify ORG-SLH command line')
+        with pytest.raises(RuntimeError, match=expected_error):
+            op.stop_recorded_process(tmp_path, timeout=0.001)
+        assert fake.terminations == fake.kills == 0
+        assert (tmp_path / op.PID_FILENAME).exists()
+    else:
+        assert op.stop_recorded_process(tmp_path, timeout=0.001) == {
+            'state': expected_state, 'pid': fake_pid}
+        assert fake.terminations == (1 if expected_state == 'terminated' else 0)
+        assert fake.kills == 0
+        assert not (tmp_path / op.PID_FILENAME).exists()
+    assert fake.cmdline_reads <= 4
+
+
+def test_org_shutdown_failure_is_not_reported_as_gateway_failure():
+    script = (Path(__file__).resolve().parents[1] / 'scripts/main-computer-start-stop.ps1').read_text(encoding='utf-8-sig')
+    assert 'ORG-SLH shutdown verification failed: {0}. Stop report: {1}' in script
+    assert 'Verified SLH process did not terminate. Stop report: $reportPath' in script
+
+
 def test_invalid_record_fails_closed(tmp_path):
     path = tmp_path / op.PID_FILENAME
     path.write_text('{"pid":123}', encoding='utf-8')

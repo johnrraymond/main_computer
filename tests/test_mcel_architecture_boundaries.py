@@ -87,6 +87,7 @@ MCEL_LAYER_INVENTORY = {
     ],
     "chrome-law": [
         "main_computer/web/applications/scripts/mcel-chrome-law.js",
+        "main_computer/web/applications/scripts/mcel-semantic-chrome-presentation-law.js",
     ],
     "lab-ui": [
         "main_computer/web/applications/scripts/mcel-lab.js",
@@ -135,6 +136,7 @@ CHROME_OPTIONS = [
     ("chrome-spotlight", "Spotlight"),
     ("chrome-journey", "Journey"),
     ("chrome-compact-disclosure", "Compact Disclosure"),
+    ("chrome-tng-side-rails", "TNG Side Rails"),
 ]
 
 CORE_FACADE_METHODS = [

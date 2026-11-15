@@ -4598,6 +4598,11 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
 
   Write-Host ""
   if ($slhFailure) {
+    if ($slhFailedResults.Count -eq 0 -and
+        [string]$slhChildStop.state -notin @("termination-attempted", "skipped-not-owned") -and
+        [string]$orgChildStop.state -eq "failed") {
+      throw ("ORG-SLH shutdown verification failed: {0}. Stop report: {1}" -f ([string]$orgChildStop.error), $reportPath)
+    }
     throw "Verified SLH process did not terminate. Stop report: $reportPath"
   }
   Write-Host "Main Computer stop completed."

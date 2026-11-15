@@ -183,6 +183,10 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                 'seh_outbound_failures': diagnostics.get('failures', 0),
                                 'seh_outbound_last_error_class': diagnostics.get('last_error_class'),
                                 'seh_outbound_last_http_status': diagnostics.get('last_http_status'),
+                                'seh_outbound_failure_stage': diagnostics.get('failure_stage'),
+                                'seh_outbound_failure_code': diagnostics.get('failure_code'),
+                                'seh_outbound_failure_unix_ns': diagnostics.get('failure_unix_ns'),
+                                'seh_outbound_failure_attempt': diagnostics.get('failure_attempt'),
                                 'trash_retention_last_error': getattr(self.server, 'trash_retention_last_error', None),
                                 'trash_retention_last_removed_count': getattr(self.server, 'trash_retention_last_removed_count', 0)})
             return

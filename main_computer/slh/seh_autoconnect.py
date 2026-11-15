@@ -121,6 +121,13 @@ class SEHAutoConnection:
         self._connection_attempts = 0
         self._phase = 'NOT_STARTED'
         self._last_http_status = None
+        # Separate last failure from live phase: the retry loop immediately
+        # returns to RESOLVING_CONFIGURATION, but that is not the failed gate.
+        # Only fixed codes/stages and numeric observations may escape the SLH.
+        self._failure_stage = None
+        self._failure_code = None
+        self._failure_unix_ns = None
+        self._failure_attempt = None
         self._retired_stream_events = deque(maxlen=4096)
         self._tunnel_lifecycle = deque(maxlen=256)
         self._last_strict_settings = None
@@ -145,6 +152,42 @@ class SEHAutoConnection:
         if loaded != disk:
             raise ValueError('Local SEH signing identity changed')
         return (record['deployment']['application_uuid'], *_operational_binding(record), loaded)
+
+    def _check_fallback_binding(self):
+        # A fallback's local binding check also needs a distinct failure stage.
+        try:
+            return self._local_canonical_binding()
+        except Exception:
+            with self._lock:
+                self._phase = 'VERIFYING_LOCAL_BINDING'
+            raise
+
+    @staticmethod
+    def _failure_code_for(exc, stage: str, http_status) -> str:
+        # These exact known errors are authority decisions, not arbitrary
+        # exception messages. All other exceptions receive a generic code.
+        if isinstance(exc, ValueError):
+            known = {
+                'Canonical SEH was disabled': 'SEH_LOCAL_CONNECTION_DISABLED',
+                'Canonical SEH deployment was disabled': 'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+                'Local SEH signing identity changed': 'SEH_LOCAL_SIGNING_IDENTITY_CHANGED',
+                'Canonical SEH is not enabled': 'SEH_RESOLVED_CONNECTION_DISABLED',
+            }
+            if str(exc) in known:
+                return known[str(exc)]
+        if stage == 'VERIFYING_LOCAL_BINDING':
+            return 'SEH_LOCAL_CANONICAL_BINDING_FAILED'
+        if stage == 'RESOLVING_CONFIGURATION':
+            return 'SEH_CONFIGURATION_RESOLUTION_FAILED'
+        if stage == 'CONNECTING_OUTBOUND_WSS':
+            if http_status in (401, 403):
+                return 'SEH_OUTBOUND_AUTH_REJECTED'
+            if http_status == 404:
+                return 'SEH_OUTBOUND_ENDPOINT_NOT_FOUND'
+            if type(http_status) is int and 500 <= http_status <= 599:
+                return 'SEH_OUTBOUND_SERVICE_UNAVAILABLE'
+            return 'SEH_OUTBOUND_CONNECT_FAILED'
+        return 'SEH_OUTBOUND_SUPERVISOR_FAILED'
 
     def mark_worker_authenticated(self, gateway_peer_port: int) -> bool:
         with self._lock:
@@ -182,7 +225,11 @@ class SEHAutoConnection:
                     'attempts': self._connection_attempts,
                     'connections': self.connections, 'failures': self.failures,
                     'last_error_class': self.last_error,
-                    'last_http_status': self._last_http_status}
+                    'last_http_status': self._last_http_status,
+                    'failure_stage': self._failure_stage,
+                    'failure_code': self._failure_code,
+                    'failure_unix_ns': self._failure_unix_ns,
+                    'failure_attempt': self._failure_attempt}
 
     @property
     def connected(self) -> bool:
@@ -211,6 +258,7 @@ class SEHAutoConnection:
         while not self._stop.is_set():
             s = self.settings
             conn = None
+            failed_stage = 'RESOLVING_CONFIGURATION'
             try:
                 with self._lock:
                     self._phase = 'RESOLVING_CONFIGURATION'
@@ -225,12 +273,13 @@ class SEHAutoConnection:
                             self._fallback_started_at = now
                         if (self._last_strict_settings is None or
                                 now - self._fallback_started_at >= 300 or
-                                self._local_canonical_binding() != self._last_verified_binding):
+                                self._check_fallback_binding() != self._last_verified_binding):
                             raise
                         s = self._last_strict_settings
                         fallback = True
                     if not isinstance(s, SEHConnectionSettings) or not s.enabled:
                         raise ValueError('Canonical SEH is not enabled')
+                failed_stage = 'CONNECTING_OUTBOUND_WSS'
                 with self._lock:
                     self._phase = 'CONNECTING_OUTBOUND_WSS'
                     self._connection_attempts += 1
@@ -243,6 +292,9 @@ class SEHAutoConnection:
                 if self._settings_resolver is not None and not fallback and not s.allow_loopback_lab:
                     # Cache only AFTER a strict Coolify check and authenticated
                     # P-256 tunnel have both succeeded.
+                    failed_stage = 'VERIFYING_LOCAL_BINDING'
+                    with self._lock:
+                        self._phase = 'VERIFYING_LOCAL_BINDING'
                     verified_binding = self._local_canonical_binding()
                 with self._lock:
                     if self._settings_resolver is not None and not fallback and not s.allow_loopback_lab:
@@ -253,6 +305,10 @@ class SEHAutoConnection:
                     self.connections += 1
                     self.last_error = None
                     self._last_http_status = None
+                    self._failure_stage = None
+                    self._failure_code = None
+                    self._failure_unix_ns = None
+                    self._failure_attempt = None
                     self._phase = ('LAST_VERIFIED_BINDING_FALLBACK' if fallback else 'AUTHENTICATED')
                     self._tunnel_lifecycle.append({'event': 'seh_tunnel_connected',
                                                    'unix_ns': time.time_ns(),
@@ -263,11 +319,22 @@ class SEHAutoConnection:
                 with self._lock:
                     self.failures += 1
                     self.last_error = type(exc).__name__
+                    phase_at_failure = self._phase
                     self._phase = 'RETRYING_AFTER_FAILURE'
                     response = getattr(exc, 'response', None)
                     status = getattr(response, 'status_code', None)
                     self._last_http_status = (status if type(status) is int and 100 <= status <= 599
                                               else None)
+                    # Keep the failed boundary even while _phase moves on to
+                    # the next attempt. No raw exception text is ever retained.
+                    failure_stage = ('VERIFYING_LOCAL_BINDING'
+                                     if phase_at_failure == 'VERIFYING_LOCAL_BINDING'
+                                     else failed_stage)
+                    self._failure_stage = failure_stage
+                    self._failure_code = self._failure_code_for(exc, failure_stage,
+                                                                self._last_http_status)
+                    self._failure_unix_ns = time.time_ns()
+                    self._failure_attempt = self._connection_attempts
                     self._tunnel_lifecycle.append({'event': 'seh_tunnel_connect_failed',
                                                    'exception_class': type(exc).__name__,
                                                    'unix_ns': time.time_ns(),

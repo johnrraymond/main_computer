@@ -198,11 +198,12 @@ def test_resident_activation_handles_only_explicit_deleted_application(tmp_path,
                 'mother_generation': current, 'remote_mutation': True}
     monkeypatch.setattr('tools.seh_control.git_deployment.restore_deleted_canonical_application',fake_restore)
     result = controller.activate_seh(execute=True, token='verified-admin')
-    assert result['status'] == 'ACTIVATION_STARTED'
-    assert result['remote_recovery'] == 'REPLACEMENT_QUEUED_NOT_VERIFIED'
+    assert result['status'] == 'INCOMPLETE'
+    assert result['failed_stage'] == 'replacement_build_pending'
     assert result['application_uuid'] == NEW
     assert len(restore) == 1 and restore[0][2] is True
-    assert controller.config()['seh_enabled'] is True
+    # A queued build cannot silently authorize resident outbound connection.
+    assert controller.config()['seh_enabled'] is False
     controller.close()
 
 

@@ -2252,6 +2252,10 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
             raise SEHGitError('Verified SEH controller identity changed before adoption')
         successor = deepcopy(newer['deployment'])
         successor['application_uuid'] = new_uuid
+        # Creation and a queued build are not deployment activation. Stage the
+        # replacement disabled until its exact build, trust and live runtime
+        # are verified by a subsequent explicitly authorized activation.
+        successor['enabled'] = False
         # A new, explicitly approved deployment ends the prior UUID's tombstone.
         # The UUID-scoped undeploy receipt remains as independent audit evidence.
         successor.pop('undeployed', None)
@@ -2773,7 +2777,10 @@ def reconcile_pending_recovery(root: Path, network: str, *, state_dir: Path,
                     root, network, state_dir=state_dir, checkpoint=checkpoint,
                     record=record, remote=remote, app=app,
                     execute=execute, source=source, repo_root=repo_root)
-            return {'status': 'REPLACEMENT_QUEUED_NOT_VERIFIED',
+            build_status = proof['deployment_status'].lower()
+            return {'status': ('REPLACEMENT_BUILD_VERIFIED' if
+                               build_status in _REDEPLOY_TERMINAL_OK else
+                               'REPLACEMENT_QUEUED_NOT_VERIFIED'),
                     'application_uuid': uuid, 'former_application_uuid': checkpoint['old_uuid'],
                     'mother_generation': generation, 'remote_mutation': False,
                     'deployment_uuid': checkpoint['deployment_uuid'],
@@ -2821,3 +2828,69 @@ def reconcile_pending_recovery(root: Path, network: str, *, state_dir: Path,
                 'mother_generation': generation, 'remote_mutation': True,
                 'deployment_uuid': deployment_uuid, 'build_verification': 'VERIFIED',
                 'build_status': proof['deployment_status']}
+
+
+def enable_verified_recovery(root: Path, network: str, *, state_dir: Path,
+                             execute: bool, client=None, probe=None) -> dict | None:
+    """Enable an existing receipt-bound replacement only with operator approval.
+
+    No new application, deployment or signing identity is created. A disabled
+    deployment without this exact completed recovery remains disabled; this is
+    *not* a general purpose enable-bypass for the canonical activation gate.
+    """
+    with ds.mutation_lock(root, network) if execute else _nullcontext():
+        record, controller, generation, _ = _canonical_selection(root, network)
+        uuid = record['deployment']['application_uuid']
+        if record['deployment'].get('enabled') is True:
+            return None
+        receipt = _recovery_checkpoint(state_dir)
+        if receipt is None or receipt['new_uuid'] != uuid or receipt['old_uuid'] == uuid:
+            return None
+        if record['deployment'].get('undeployed') is True or _undeploy_receipt(root, network, uuid):
+            return {'status': 'REFUSED', 'error_code': 'SEH_INTENTIONALLY_UNDEPLOYED',
+                    'application_uuid': uuid, 'remote_mutation': False}
+
+        # This uses the existing exact UUID, build SHA, signing-trust, source,
+        # placement and environment readbacks. It cannot queue another build.
+        remote = client if client is not None else _client(controller)
+        checked = reconcile_pending_recovery(root, network, state_dir=state_dir,
+                                             execute=False, client=remote)
+        if checked is None or checked.get('status') != 'REPLACEMENT_BUILD_VERIFIED':
+            return {'status': 'INCOMPLETE',
+                    'failed_stage': 'recovery_build_not_verified',
+                    'recovery_status': (checked or {}).get('status', 'NOT_OBSERVED'),
+                    'application_uuid': uuid, 'remote_mutation': False}
+        app = _registered_application(remote, uuid)
+        if app is None or 'running' not in str(app.get('status') or '').lower() or \
+                'healthy' not in str(app.get('status') or '').lower():
+            return {'status': 'INCOMPLETE', 'failed_stage': 'replacement_runtime_not_healthy',
+                    'application_uuid': uuid, 'remote_mutation': False}
+        # An HTTP 200 alone is insufficient: _public_runtime_probe verifies
+        # the canonical SEH health payload and distinguishes WSS readiness.
+        observation = (probe or _public_runtime_probe)(DEFAULT_PUBLIC_URL)
+        if not isinstance(observation, dict) or observation.get('status') != 'PUBLIC_RUNTIME_PRESENT':
+            return {'status': 'INCOMPLETE', 'failed_stage': 'replacement_public_runtime_unverified',
+                    'application_uuid': uuid, 'remote_mutation': False}
+        base = {'application_uuid': uuid, 'mother_generation': generation,
+                'deployment_uuid': checked['deployment_uuid'],
+                'build_verification': 'VERIFIED', 'build_status': checked['build_status'],
+                'public_runtime': 'PUBLIC_RUNTIME_PRESENT',
+                'remote_mutation': False, 'mother_mutation': 'UNCHANGED'}
+        if not execute:
+            return {**base, 'status': 'PLAN_ONLY', 'action': 'ENABLE_VERIFIED_RECOVERY'}
+        # The lock serializes this exact revision/UUID CAS against all other
+        # SEH state writers. Mother provides identity and is never mutated.
+        _, _, identity_doc = st.read(root, network, 'deployment-identity-read')
+        identity_record = st.deployment_record(identity_doc, network)
+        if identity_record is None or ds.identity_binding(identity_record) != ds.identity_binding(record):
+            raise SEHGitError('SEH verified controller identity changed during recovery completion')
+        previous = ds.read(root, network, identity_record)
+        if previous is None or previous['deployment'] != record['deployment']:
+            raise SEHGitError('SEH operational deployment changed before enablement')
+        successor = deepcopy(record['deployment'])
+        successor['enabled'] = True
+        committed = ds.write(root, network, identity_record,
+                             expected_uuid=uuid, expected_revision=previous['revision'],
+                             deployment=successor)
+        return {**base, 'status': 'RECOVERY_ENABLEMENT_VERIFIED',
+                'seh_deployment_revision': committed['revision']}

@@ -18,6 +18,7 @@ var McelSemanticFormPresentationLaw = (() => {
   const styleId = "mcel-lab-semantic-form-presentation";
   const targetAttr = "data-mcel-form-presentation-kind";
   const cornerAttr = "data-mcel-form-presentation-corner";
+  const nestedPaintAttr = "data-mcel-form-presentation-nested-paint";
   const refusalAttr = "data-mcel-form-shape-refused";
   const scopeAttr = "data-mcel-form-presentation-root";
   const runtimeViews = new WeakMap();
@@ -109,6 +110,40 @@ var McelSemanticFormPresentationLaw = (() => {
     }
     return results;
   }
+  // A semantic region can be painted twice: a rounded host and a full-size,
+  // source-bound nested region with its own background. Without the same
+  // radius, the inner region's square paint obscures the host's corner.
+  // This is a shape-continuity contract, not a new color or application rule.
+  function nestedRegionPaintCorners(regions, computed) {
+    const eligible=new Set(regions);
+    const radius=value=>{const n=Number.parseFloat(value);return Number.isFinite(n)&&n>0?n:0;};
+    const corners=["borderTopLeftRadius","borderTopRightRadius",
+      "borderBottomRightRadius","borderBottomLeftRadius"];
+    const painted=style=>Boolean((style.backgroundColor && style.backgroundColor!=="transparent" &&
+      style.backgroundColor!=="rgba(0, 0, 0, 0)") ||
+      (style.backgroundImage && style.backgroundImage!=="none"));
+    const sameBox=(a,b)=>Math.max(Math.abs(a.left-b.left),Math.abs(a.top-b.top),
+      Math.abs(a.width-b.width),Math.abs(a.height-b.height))<=1;
+    const result=new Map();
+    for (const child of regions) {
+      let parent=child.parentElement;
+      while(parent && !eligible.has(parent))parent=parent.parentElement;
+      if (!parent) continue;
+      const childStyle=computed(child),parentStyle=computed(parent);
+      if (!painted(childStyle) || !painted(parentStyle)) continue;
+      const childBox=child.getBoundingClientRect(),parentBox=parent.getBoundingClientRect();
+      if (!childBox.width || !childBox.height || !sameBox(childBox,parentBox)) continue;
+      const childRadii=corners.map(key=>radius(childStyle[key]));
+      const parentRadii=corners.map(key=>radius(parentStyle[key]));
+      // A nested region may be the rounded layer or its parent may be.
+      // The other layer must follow whichever already owns the shape.
+      if (childRadii.every(r=>r===0) && parentRadii.some(Boolean))
+        result.set(child,{element:child,radii:parentRadii});
+      else if (parentRadii.every(r=>r===0) && childRadii.some(Boolean))
+        result.set(parent,{element:parent,radii:childRadii});
+    }
+    return [...result.values()];
+  }
   function apply({root,ir,bridge,bindingModel="operational-runtime",profile="form-current"}={}) {
     const id = normalize(profile);
     if (profile !== id || !root?.ownerDocument || !bridge)
@@ -131,8 +166,9 @@ var McelSemanticFormPresentationLaw = (() => {
     if (sheet) sheet.disabled = true;
     // Remove *only* Form's own runtime attributes; never disturb Theme's identity
     // or its color projection. Idempotent across profile changes.
-    for (const el of [root,...root.querySelectorAll(`[${targetAttr}],[${cornerAttr}],[${refusalAttr}]`)]) {
-      el.removeAttribute(targetAttr);el.removeAttribute(cornerAttr);el.removeAttribute(refusalAttr);
+    for (const el of [root,...root.querySelectorAll(`[${targetAttr}],[${cornerAttr}],[${nestedPaintAttr}],[${refusalAttr}]`)]) {
+      el.removeAttribute(targetAttr);el.removeAttribute(cornerAttr);
+      el.removeAttribute(nestedPaintAttr);el.removeAttribute(refusalAttr);
     }
     const targets = new Map();
     for (const binding of result.targets) {
@@ -152,6 +188,11 @@ var McelSemanticFormPresentationLaw = (() => {
     const regions = result.targets.filter(t => t.kind === "region").map(t => t.element);
     const painted = [];
     for (const el of root.querySelectorAll('*')) {
+      // Chrome-owned inert paint is not semantic Form geometry. Counting its
+      // texture layers as nested painted containers would produce false
+      // corner-clearance violations on repeated Theme/Form applications.
+      if (el.closest('[data-mcel-chrome-generated="true"], [data-mcel-chrome-decorative="true"]'))
+        continue;
       if (targets.has(el) || !regions.some(region=>region.contains(el)) ||
           el.matches('button,input,select,textarea,[role="button"],[role="tab"],[role="switch"]')) continue;
       const css = computed(el);
@@ -164,9 +205,12 @@ var McelSemanticFormPresentationLaw = (() => {
     const scope = `[${scopeAttr}="true"]`;
     // Theme Law previously suppressed these shadows. Retain that baseline,
     // but make Form the sole owner of the edge/elevation treatment.
-    let css = `@layer mcel-semantic-form{${scope} [data-mcel-theme-preview-surface],`+
-      `${scope} [data-mcel-theme-preview-kind="control"],`+
-      `${scope} :is(button,input,select,textarea,[role="button"],[role="tab"],[role="switch"]){`+
+    // Form owns geometry, not Chrome's specular elevation. When the source-
+    // bound Chrome resolver has assigned a material, let its light/shadow
+    // treatment show through. Non-Chrome surfaces retain Form's shadow reset.
+    let css = `@layer mcel-semantic-form{${scope} [data-mcel-theme-preview-surface]:not([data-mcel-chrome-material]),`+
+      `${scope} [data-mcel-theme-preview-kind="control"]:not([data-mcel-chrome-material]),`+
+      `${scope} :is(button,input,select,textarea,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-chrome-material]){`+
       `box-shadow:none!important;}}`;
     if (id !== "form-current") {
       const kinds = ["control","field","group","region","badge"];
@@ -196,12 +240,26 @@ var McelSemanticFormPresentationLaw = (() => {
     cornerGroups.forEach((group,index)=>group.element.setAttribute(cornerAttr,String(index)));
     if (cornerGroups.length) sheet.textContent += `@layer mcel-semantic-form{${cornerGroups.map((g,i)=>
       `${scope} [${cornerAttr}="${i}"]{border-radius:${g.radius}px!important;}`).join('')}}`;
+    // The same box must have the same paint shape on every nested semantic
+    // surface, otherwise its flat background covers the parent's curved edge.
+    // The parent already owns corner-safe Layout clearance. Do not allocate
+    // that clearance a second time for its coextensive painted child.
+    const nestedPaint=nestedRegionPaintCorners(regions,computed);
+    nestedPaint.forEach((entry,i)=>entry.element.setAttribute(nestedPaintAttr,String(i)));
+    if (nestedPaint.length) sheet.textContent += `@layer mcel-semantic-form{${nestedPaint.map((entry,i)=>
+      `${scope} [${nestedPaintAttr}="${i}"]{`+
+      `border-top-left-radius:${entry.radii[0]}px!important;`+
+      `border-top-right-radius:${entry.radii[1]}px!important;`+
+      `border-bottom-right-radius:${entry.radii[2]}px!important;`+
+      `border-bottom-left-radius:${entry.radii[3]}px!important;}`).join('')}}`;
+    const coextensivePaint=new Set(nestedPaint.map(entry=>entry.element));
     // Geometry negotiation is a single deterministic Layout solve over
     // source-bound shape containers. No DOM nudging, rendering retries,
     // event remounts or application-specific selectors.
     const layout = McelSemanticLayoutInference.applyFormShapeLayout({root,containers:[
-      ...[...targets].filter(([el,kind])=>kind==="region" || kind==="group").map(([el])=>el),
-      ...painted, ...cornerGroups.map(group=>group.element)
+      ...[...targets].filter(([el,kind])=>(kind==="region" || kind==="group") &&
+        !coextensivePaint.has(el)).map(([el])=>el),
+      ...painted.filter(el=>!coextensivePaint.has(el)), ...cornerGroups.map(group=>group.element)
     ]});
     // Do not retain a curved frame whose interior cannot be proven. The
     // bounded safe fallback is a square frame plus an explicit diagnostic;
@@ -227,7 +285,8 @@ var McelSemanticFormPresentationLaw = (() => {
       regions:result.targets.filter(t=>t.kind==="region").length,
       controls:result.targets.filter(t=>t.kind==="control").length,
       shapedElements:targets.size,paintedDescendants:painted.length,
-      roundedGroupBackgrounds:cornerGroups.length,diagnostics:result.diagnostics};
+      roundedGroupBackgrounds:cornerGroups.length,roundedNestedPaint:nestedPaint.length,
+      diagnostics:result.diagnostics};
   }
   return Object.freeze({schema,profiles,normalize,legacyCss,apply,cornerAwareGroups});
 })();

@@ -371,7 +371,15 @@ class OrganizationController:
                     'resident_outbound_last_error_class': (child.get('seh_outbound_last_error_class')
                                                           if child else None),
                     'resident_outbound_last_http_status': (child.get('seh_outbound_last_http_status')
-                                                           if child else None)}
+                                                           if child else None),
+                    'resident_outbound_failure_stage': (child.get('seh_outbound_failure_stage')
+                                                       if child else None),
+                    'resident_outbound_failure_code': (child.get('seh_outbound_failure_code')
+                                                      if child else None),
+                    'resident_outbound_failure_unix_ns': (child.get('seh_outbound_failure_unix_ns')
+                                                         if child else None),
+                    'resident_outbound_failure_attempt': (child.get('seh_outbound_failure_attempt')
+                                                         if child else None)}
 
     def disconnect_seh(self) -> dict:
         """Persistently disable the owned outbound relay, keeping ORG-SLH running.
@@ -403,7 +411,7 @@ class OrganizationController:
             resolve_canonical_connection, SEHApplicationDeleted)
         from tools.seh_control.git_deployment import (
             SEHGitError, SEHGitPublicationError, restore_deleted_canonical_application,
-            reconcile_pending_recovery, _canonical_selection)
+            reconcile_pending_recovery, enable_verified_recovery, _canonical_selection)
         from main_computer.slh.seh_autoconnect import read_seh_settings
 
         if execute and not token:
@@ -429,20 +437,52 @@ class OrganizationController:
                                                      expected_generation != generation):
                 raise SLHError('IDENTITY_SNAPSHOT_CHANGED', 409)
             existing_uuid = record['deployment']['application_uuid']
+            # The resident supervisor must see an enabled canonical deployment.
+            # A disabled deployment normally refuses; a receipt-bound, fully
+            # verified replacement can be enabled by this signed activation.
+            # An ordinary disabled deployment is never implicitly enabled.
+            recovery = None
+            if record['deployment'].get('enabled') is not True:
+                # Keep the Patch 1 fail-closed gate for ordinary disabled
+                # deployments. Only an exact, independently verified recovery
+                # receipt may be enabled by this explicitly approved action.
+                try:
+                    completion = enable_verified_recovery(
+                        root, 'mainnet', state_dir=self.directory, execute=execute)
+                except (SEHGitError, ValueError, RuntimeError, OSError):
+                    raise SLHError('SEH_RECOVERY_ENABLEMENT_PREFLIGHT_REFUSED', 409) from None
+                if completion is None:
+                    return {'status': 'REFUSED',
+                            'error_code': 'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+                            'failed_stage': 'canonical_deployment_activation_gate',
+                            'canonical_deployment_enabled': False,
+                            'local_connection_enabled': cfg['seh_enabled'] is True,
+                            'mother_generation': generation,
+                            'application_uuid': existing_uuid,
+                            'remote_mutation': False}
+                if completion['status'] != 'RECOVERY_ENABLEMENT_VERIFIED':
+                    return completion
+                recovery = {**completion, 'status': 'REPLACEMENT_BUILD_VERIFIED',
+                            'former_application_uuid': None}
             # All remote probes are read-only. This verifies the existing UUID,
             # origin, Coolify placement, signing-key trust and Mother binding.
-            recovery = None
             try:
                 # Reconcile the exact previously-created UUID and any forced
                 # build receipt before local activation. Never CREATE twice.
-                pending = reconcile_pending_recovery(root, 'mainnet',
-                                                     state_dir=self.directory, execute=execute)
+                pending = (None if recovery is not None else
+                           reconcile_pending_recovery(root, 'mainnet',
+                                                      state_dir=self.directory, execute=execute))
                 if pending is not None:
                     if pending['status'] == 'PLAN_ONLY':
                         return pending
-                    if pending['status'] != 'REPLACEMENT_QUEUED_NOT_VERIFIED':
+                    if pending['status'] not in ('REPLACEMENT_QUEUED_NOT_VERIFIED',
+                                                 'REPLACEMENT_BUILD_VERIFIED'):
                         return {**pending, 'status': 'INCOMPLETE',
                                 'failed_stage': pending.get('failed_stage', 'recovery_build_reconciliation')}
+                    if pending['status'] == 'REPLACEMENT_QUEUED_NOT_VERIFIED':
+                        return {**pending, 'status': 'INCOMPLETE',
+                                'failed_stage': 'replacement_build_pending',
+                                'outbound_tunnel_authenticated': False}
                     recovery = pending
                 settings = resolve_canonical_connection(
                     self.directory, mother_root=root, require_enabled=False)
@@ -483,19 +523,12 @@ class OrganizationController:
                     return {**restored, 'status': 'INCOMPLETE',
                             'failed_stage': restored.get('failed_stage', 'coolify_application_recovery'),
                             'remote_recovery': restored['status']}
-                # The replacement was verified and committed to SEH state.
-                # Continue the SAME authorized call
-                # through normal local activation, then let the CLI wait for
-                # authenticated WSS. Never count Coolify's queue as success.
-                recovery = restored
-                generation = restored['mother_generation']
-                existing_uuid = restored['application_uuid']
-                try:
-                    settings = resolve_canonical_connection(
-                        self.directory, mother_root=root, require_enabled=False)
-                except (ValueError, RuntimeError, OSError):
-                    return {**restored, 'status': 'INCOMPLETE',
-                            'failed_stage': 'new_application_trust_readback'}
+                # The new UUID is adopted, but its build is queued and the
+                # deployment stays disabled. A later normal activation must
+                # verify the finished build and live runtime before enabling.
+                return {**restored, 'status': 'INCOMPLETE',
+                        'failed_stage': 'replacement_build_pending',
+                        'outbound_tunnel_authenticated': False}
             except (ValueError, RuntimeError, OSError):
                 raise SLHError('SEH_REMOTE_TRUST_PREFLIGHT_REFUSED', 409) from None
             if not settings.seh_url.startswith('wss://'):
@@ -503,8 +536,10 @@ class OrganizationController:
             result = {'application_uuid': existing_uuid, 'network': 'mainnet',
                       'seh_url': settings.seh_url, 'mother_generation': generation,
                       'remote_mutation': recovery.get('remote_mutation', False) if recovery else False,
-                      **({'former_application_uuid': recovery['former_application_uuid'],
-                          'remote_recovery': recovery['status']} if recovery else {}),
+                      **({'remote_recovery': recovery['status'],
+                          **({'former_application_uuid': recovery['former_application_uuid']}
+                             if recovery.get('former_application_uuid') else {})}
+                         if recovery else {}),
                       'worker_service_setup': ('REQUIRED' if needs_worker_setup
                                                else 'ALREADY_CONFIGURED'),
                       'worker_bind_policy': ('LOOPBACK_DEFAULT' if not cfg['configured']

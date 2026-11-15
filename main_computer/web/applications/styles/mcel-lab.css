@@ -8544,6 +8544,8 @@ body.mcel-modal-open {
 #mcel-lab-app .mcel-semantic-theme-experiment-heading h4 {margin: 0;}
 #mcel-lab-app .mcel-semantic-theme-experiment-heading p {margin: 6px 0;}
 #mcel-lab-app .mcel-semantic-theme-experiment-actions {display: flex; gap: 8px; flex-wrap: wrap;}
+#mcel-lab-app .mcel-semantic-theme-experiment-actions label {display: grid; gap: 4px; min-width: 160px; font-size: 0.78rem;}
+#mcel-lab-app #mcel-semantic-preview-app {min-height: 32px; padding: 4px 8px; color: var(--ink, #f1e8d5); background: var(--surface, #101820); border: 1px solid var(--line, #555); border-radius: 6px;}
 #mcel-lab-app #mcel-semantic-theme-status {display: block; font-size: 0.84rem; overflow-wrap: anywhere;}
 #mcel-lab-app #mcel-semantic-theme-frame {
   display: block; width: 100%; height: clamp(350px, 65vh, 750px);

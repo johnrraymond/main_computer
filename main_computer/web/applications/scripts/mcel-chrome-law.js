@@ -32,7 +32,8 @@
         "chrome-cluster-grid",
         "chrome-spotlight",
         "chrome-journey",
-        "chrome-compact-disclosure"
+        "chrome-compact-disclosure",
+        "chrome-tng-side-rails"
       ]);
 
       const commonHardObjectSelector = "img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button";
@@ -68,6 +69,18 @@
       }
 
       const chromeDefinitions = Object.freeze({
+        "chrome-tng-side-rails": Object.freeze({
+          id: "chrome-tng-side-rails",
+          label: "TNG Side Rails",
+          contractVersion: CONTRACT_VERSION,
+          kind: "semantic-chrome",
+          description: "Application-independent TNG material treatment on source-bound controls, fields, displays and housing; optional segmented side rails when a primary working unit is geometrically eligible.",
+          preservesPixelBaseline: false,
+          restructuresHierarchy: false,
+          fitContract: chromeFitContractDefinition({genericFallback:false}),
+          compositionContract: chromeCompositionContractDefinition([], [], {}),
+          remediation: chromeRemediationDefinition([], [])
+        }),
         "chrome-strict-hierarchy": Object.freeze({
           id: "chrome-strict-hierarchy",
           label: "Strict Hierarchy",
@@ -404,7 +417,10 @@
         accordion: "chrome-compact-disclosure",
         "compact-disclosure": "chrome-compact-disclosure",
         "compact-disclosure.v1": "chrome-compact-disclosure",
-        "chrome-disclosure": "chrome-compact-disclosure"
+        "chrome-disclosure": "chrome-compact-disclosure",
+        "tng": "chrome-tng-side-rails",
+        "tng-side-rails": "chrome-tng-side-rails",
+        "lcars": "chrome-tng-side-rails"
       });
 
       const chromeCatalog = Object.freeze(chromes.map((id) => chromeDefinitions[id] || Object.freeze({

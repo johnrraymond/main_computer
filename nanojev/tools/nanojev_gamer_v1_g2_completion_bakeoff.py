@@ -541,7 +541,8 @@ def fresh_cohorts40(prior,pool37,dev37,pool38,dev38,pool39,dev39):
 
 def run(*,precision30_run,representation31_run,completeness32_run,structured33_run,
         diagnosis34_run,coverage35_run,selective36_run,curriculum37_run,context38_run,
-        relationship39_run,output,device='cuda',max_length=MAX_LENGTH,**kwargs):
+        relationship39_run,output,device='cuda',max_length=MAX_LENGTH,
+        diagnostic_callback=None,**kwargs):
     if max_length!=MAX_LENGTH:raise ValueError('GAMER_G2_0040_FIXED_PROTOCOL')
     if Path(output).exists():raise FileExistsError('GAMER_G2_0040_IMMUTABLE_OUTPUT')
     state=p30._prepare(output=output,device=device,max_length=max_length,
@@ -662,6 +663,32 @@ def run(*,precision30_run,representation31_run,completeness32_run,structured33_r
     print('GAMER_G2_0040_FRONTIER '+json.dumps({
         'train':training_frontier,'fit':fit_frontier,
         'natural_audit':natural_audit_frontier},sort_keys=True),flush=True)
+    if diagnostic_callback is not None:
+        # TRAIN-only callbacks may request a DEV capture only after their
+        # candidate has passed TRAIN-fit and independent TRAIN-audit.
+        # DEV capture is label-blind; gold metrics belong to the caller.
+        def post_selection_dev_capture():
+            evaluated={}
+            for split,rows in {**fresh,**dev40}.items():
+                cases=[]
+                for ix,row in enumerate(rows,1):
+                    record=build_case(row,state,parent31,relation_nets,acceptors,
+                        acceptor_policies,rpolicy,device=device)
+                    cases.append(prepare_for_selection(record,parent_policies,pol32,
+                        nets32,nets33,pol33,adapted=None))
+                    if ix==1 or ix%40==0 or ix==len(rows):
+                        print(f'GAMER_G2_0042_CAPTURE_DEV {split} {ix}/{len(rows)}',flush=True)
+                evaluated[split]=cases
+            assert_all_frozen()
+            return evaluated
+        assert_all_frozen()
+        return diagnostic_callback(training=training,fitting=fitting,auditing=auditing,
+            training_frontier=training_frontier,fit_frontier=fit_frontier,
+            natural_audit_frontier=natural_audit_frontier,train_rows=train40,
+            fit_rows=fit40,audit_rows=audit40,
+            meta={'train_mining':train_mining,'fit_mining':fit_mining},pol33=pol33,
+            parent33_models=nets33,post_selection_dev_capture=post_selection_dev_capture,
+            assert_all_frozen=assert_all_frozen)
     no_opportunity=not fit_frontier['all'].get('repairable')
     if no_opportunity:
         # The decoder cannot fix a graph absent from its candidate inventory.

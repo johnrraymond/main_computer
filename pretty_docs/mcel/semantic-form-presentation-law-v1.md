@@ -16,6 +16,10 @@ Form now governs all legacy site element corner geometry through scoped `--mcel-
 
 The corner-aware background treatment previously implemented inside the semantic Theme preview belongs to Form. It rounds painted group backgrounds only when existing control edges demonstrate the need; it does not use `overflow:hidden` or `clip-path` to hide containment failures.
 
+### Coextensive semantic paint surfaces
+
+A rounded semantic region may share its exact box with another source-bound region that paints an opaque background. If one layer has rounded corners and the other has square corners, the square layer obscures the curved background at the corners (as with the Calculator's inspection/Activity surfaces). Form now assigns the already-established radii to the unrounded, coextensive painted peer. This is a generic source-bound shape-continuity rule, not an Activity selector, an application-owned color, or a clipping workaround. The parent region continues to own the necessary Layout clearance; Form does not apply duplicate clearance to that coextensive paint layer. The rule is idempotent across Form and Theme changes, and the `form-wireframe` profile remains square.
+
 ## Deterministic Form–Layout contract
 
 Form supplies the selected radius geometry for source-bound panels and groups. The existing `McelSemanticLayoutInference` owns a one-pass `applyFormShapeLayout` solver: it resolves each framed container's CSS corner radii (including elliptic corner pairs), computes the minimum insets that place a rectangular normal-flow content box inside those quarter ellipses, and commits only necessary padding increases. The geometric clearance factor is `1 - 1/sqrt(2)` on both axes. Borders contribute to clearance. Root viewport layouts, scroll owners, controls, and transformed or out-of-flow children are not blindly adjusted.

@@ -29,9 +29,19 @@ class Authority:
         return {'user_id': 'owner', 'role': 'admin'}
 
 
-def ready(tmp_path, monkeypatch, *, running=True):
+def ready(tmp_path, monkeypatch, *, running=True, deployment_enabled=True):
     root, _ = populated(tmp_path)
     SEHControl(root).migrate_single('mainnet', 1, 'migrate')
+    # Most activation scenarios require an already-enabled canonical
+    # deployment. Mother is only an identity input; the operational state owns
+    # the deployment-enabled bit independently of local SLH authorization.
+    if deployment_enabled:
+        from tools.seh_control import deployment_state as ds, identity as st
+        identity = st.deployment_record(st.read(root, 'mainnet')[2], 'mainnet')
+        deployment = deepcopy(identity['deployment'])
+        deployment['enabled'] = True
+        ds.write(root, 'mainnet', identity,
+                 expected_uuid=deployment['application_uuid'], deployment=deployment)
     directory = tmp_path / 'slh'
     directory.mkdir()
     save_config(directory, {'schema': 'main-computer.slh-organization-config.v1',
@@ -64,6 +74,72 @@ def test_plan_is_read_only_and_does_not_choose_an_identity(tmp_path, monkeypatch
     assert mother.read(root, 'mainnet')[1].binding == before
     assert read_config(directory)['seh_enabled'] is False
     assert resolver.call_count == 1
+    controller.close()
+
+
+@pytest.mark.parametrize('execute', [False, True])
+@pytest.mark.parametrize('local_enabled', [False, True])
+def test_disabled_canonical_deployment_refused_before_activation(
+        tmp_path, monkeypatch, execute, local_enabled):
+    from tools.seh_control import git_deployment as git
+    root, directory, controller, resolver = ready(
+        tmp_path, monkeypatch, deployment_enabled=False)
+    if local_enabled:
+        save_config(directory, {**read_config(directory), 'seh_enabled': True})
+    before = mother.read(root, 'mainnet')[1].binding
+    # A disabled deployment must short-circuit before remote reconciliation,
+    # trust probes or any local configuration change.
+    monkeypatch.setattr(git, 'reconcile_pending_recovery',
+                        lambda *a, **kw: pytest.fail('Remote recovery was entered'))
+    result = controller.activate_seh(
+        execute=execute, token='verified-admin' if execute else None)
+    assert result['status'] == 'REFUSED'
+    assert result['error_code'] == 'SEH_CANONICAL_DEPLOYMENT_DISABLED'
+    assert result['failed_stage'] == 'canonical_deployment_activation_gate'
+    assert result['canonical_deployment_enabled'] is False
+    assert result['local_connection_enabled'] is local_enabled
+    assert result['remote_mutation'] is False
+    assert result['application_uuid'] == APP
+    assert read_config(directory)['seh_enabled'] is local_enabled
+    assert mother.read(root, 'mainnet')[1].binding == before
+    assert not resolver.called
+    controller.close()
+
+
+def test_lms_preserves_precise_disabled_deployment_refusal(tmp_path, monkeypatch):
+    import time
+    from main_computer.slh.seh_deployment_management import SLHSEHDeploymentManager
+    root, directory, controller, _ = ready(
+        tmp_path, monkeypatch, deployment_enabled=False)
+    manager = SLHSEHDeploymentManager(root=root, state_dir=directory)
+    calls = []
+
+    def fake_harness(args, *, control):
+        calls.append((args.operation, args.execute_mutations))
+        assert args.operation == 'activate-seh' and not args.execute_mutations
+        return {'status': 'REFUSED',
+                'error_code': 'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+                'remote_mutation': False}
+
+    manager.harness_runner = fake_harness
+    operation_id = 'mcel-seh-canonical-disabled-gate-0001'
+    result = manager.harness({
+        'action': 'activate-seh', 'execute': True,
+        'expected_generation': 2, 'confirm': 'ACTIVATE_SEH',
+        'operation_id': operation_id})
+    assert result['status'] == 'ACCEPTED'
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        receipt = manager.operation_status(operation_id)
+        if receipt['phase'] == 'RECORDED':
+            break
+        time.sleep(.01)
+    else:
+        pytest.fail('No terminal LMS operation receipt')
+    assert receipt['result']['status'] == 'REFUSED'
+    assert receipt['result']['error_code'] == 'SEH_CANONICAL_DEPLOYMENT_DISABLED'
+    assert receipt['result']['remote_mutation'] is False
+    assert calls == [('activate-seh', False)]
     controller.close()
 
 

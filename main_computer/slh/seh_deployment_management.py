@@ -379,8 +379,16 @@ class SLHSEHDeploymentManager:
                                 'error_type':type(exc).__name__, 'remote_mutation':False}
                     if preview.get('status') != 'PLAN_ONLY' or (
                             harness_action == 'undeploy-seh' and preview.get('ready_for_undeploy') is not True):
+                        # Preserve the canonical disabled-deployment gate's
+                        # precise refusal in the durable LMS operation result.
+                        # Do not pass through arbitrary untrusted harness codes.
+                        error_code = ('SEH_CANONICAL_DEPLOYMENT_DISABLED'
+                            if harness_action == 'activate-seh' and
+                            preview.get('status') == 'REFUSED' and
+                            preview.get('error_code') == 'SEH_CANONICAL_DEPLOYMENT_DISABLED'
+                            else 'SEH_' + ('ACTIVATION' if harness_action=='activate-seh' else 'DEPLOYMENT') + '_PREFLIGHT_REFUSED')
                         return {'status':'REFUSED',
-                                'error_code':'SEH_' + ('ACTIVATION' if harness_action=='activate-seh' else 'DEPLOYMENT') + '_PREFLIGHT_REFUSED',
+                                'error_code':error_code,
                                 'preflight_status':str(preview.get('status','UNKNOWN'))[:100],
                                 'remote_mutation':False}
                     return None

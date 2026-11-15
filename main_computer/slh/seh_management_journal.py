@@ -19,6 +19,79 @@ from .storage import secure_machine_state_dir, secure_private_state_file
 
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{15,127}\Z')
 
+# Fixed classification vocabulary. The journal must never persist an
+# untrusted error string as causal evidence, even from a test harness runner.
+_CAUSAL_CODES = {
+    'SEH_LOCAL_CONNECTION_DISABLED', 'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+    'SEH_LOCAL_SIGNING_IDENTITY_CHANGED', 'SEH_RESOLVED_CONNECTION_DISABLED',
+    'SEH_LOCAL_CANONICAL_BINDING_FAILED', 'SEH_CONFIGURATION_RESOLUTION_FAILED',
+    'SEH_OUTBOUND_AUTH_REJECTED', 'SEH_OUTBOUND_ENDPOINT_NOT_FOUND',
+    'SEH_OUTBOUND_SERVICE_UNAVAILABLE', 'SEH_OUTBOUND_CONNECT_FAILED',
+    'SEH_OUTBOUND_SUPERVISOR_FAILED', 'SEH_OUTBOUND_OUTCOME_UNVERIFIED',
+    'SEH_ACTIVATION_PREFLIGHT_REFUSED', 'SEH_ACTIVATION_PREFLIGHT_UNAVAILABLE',
+    'SEH_DEPLOYMENT_PREFLIGHT_REFUSED', 'SEH_DEPLOYMENT_PREFLIGHT_UNAVAILABLE',
+    'SEH_ACTIVATION_NOT_ELIGIBLE', 'HARNESS_EXECUTION_UNCONFIRMED',
+    'LMS_RESULT_UNCONFIRMED', 'SEH_OPERATION_EXECUTOR_UNAVAILABLE',
+    'SEH_HARNESS_OUTCOME_UNVERIFIED',
+}
+_CAUSAL_STAGES = {
+    'RESOLVING_CONFIGURATION', 'CONNECTING_OUTBOUND_WSS',
+    'VERIFYING_LOCAL_BINDING', 'RESIDENT_OUTBOUND_VERIFICATION',
+    'ACTIVATION_PREFLIGHT', 'PREFLIGHT_EXECUTING', 'ACTIVATION_EXECUTING',
+    'MUTATION_EXECUTING', 'HARNESS_EXECUTING', 'HARNESS_RETURNED',
+    'HARNESS_RESULT_UNCONFIRMED', 'EXECUTION_RESULT_UNCONFIRMED',
+    'canonical_deployment_activation_gate',
+    'resident_status_unavailable', 'resident_outbound_wss_verification',
+    'coolify_runtime_recovery', 'resident_response_oversized',
+    'resident_non_json_response', 'resident_invalid_response',
+    'resident_service_activation', 'resident_activation_unhandled',
+    'git_source_publication', 'seh_git_source_not_published',
+    'coolify_ack_unconfirmed',
+}
+_CAUSAL_CLASSES = {
+    'ValueError', 'TimeoutError', 'ConnectionError', 'OSError', 'SSLError',
+    'InvalidStatus', 'ConnectionClosedError', 'InvalidHandshake',
+    'RuntimeError', 'KeyError', 'TypeError',
+}
+
+
+def _causal_receipt(result: dict, observed_stage: str) -> dict | None:
+    """Sanitize one existing harness outcome into durable structured evidence."""
+    if result.get('status') not in ('REFUSED', 'INCOMPLETE',
+                                    'DEPLOYMENT_REGISTERED_ACTIVATION_REFUSED'):
+        return None
+    raw = result.get('causal_diagnostic')
+    raw = raw if type(raw) is dict else {}
+    code = raw.get('error_code') or result.get('error_code')
+    stage = raw.get('failed_stage') or result.get('failed_stage')
+    if type(stage) is not str or stage not in _CAUSAL_STAGES:
+        stage = observed_stage if observed_stage in _CAUSAL_STAGES else 'HARNESS_RETURNED'
+    source = ('resident-outbound-supervisor'
+              if raw.get('source') == 'resident-outbound-supervisor' else 'lms-harness')
+    fallback_code = ('SEH_OUTBOUND_OUTCOME_UNVERIFIED'
+                     if source == 'resident-outbound-supervisor'
+                     else 'SEH_HARNESS_OUTCOME_UNVERIFIED')
+    diagnostic = {
+        'schema': 'main-computer.seh-causal-diagnostic.v1',
+        'source': source,
+        'error_code': (code if type(code) is str and code in _CAUSAL_CODES
+                       else fallback_code),
+        'failed_stage': stage,
+    }
+    for key in ('attempts', 'failures', 'failure_attempt', 'failure_unix_ns'):
+        value = raw.get(key)
+        if type(value) is int and 0 <= value <= 10**20:
+            diagnostic[key] = value
+    status = raw.get('http_status')
+    if type(status) is int and 100 <= status <= 599:
+        diagnostic['http_status'] = status
+    if (type(raw.get('exception_class')) is str and
+            raw['exception_class'] in _CAUSAL_CLASSES):
+        diagnostic['exception_class'] = raw['exception_class']
+    if type(raw.get('resident_child_observed')) is bool:
+        diagnostic['resident_child_observed'] = raw['resident_child_observed']
+    return diagnostic
+
 
 class ManagementJournalError(ValueError):
     def __init__(self, code: str, status: int = 409):
@@ -93,7 +166,7 @@ class ManagementJournal:
     def _public_row(row):
         return {k: v for k, v in row.items() if k in
                 ('operation_id', 'phase', 'action', 'principal', 'accepted_at',
-                 'stage', 'result', 'output')} | {'cancelable': row['phase'] == 'ACCEPTED'}
+                 'stage', 'result', 'output', 'causal_diagnostic')} | {'cancelable': row['phase'] == 'ACCEPTED'}
 
     def _finish_interrupted_unlocked(self, row, *, code='LMS_RESULT_UNCONFIRMED'):
         """Close a dead/legacy executor receipt, never repeat its remote action.
@@ -111,6 +184,11 @@ class ManagementJournal:
         row['result'] = {'status': 'INCOMPLETE',
                          'error_code': old.get('error_code') or code,
                          'remote_mutation': 'UNKNOWN'}
+        # Preserve an earlier diagnostic if the worker died after persisting it.
+        row.setdefault('causal_diagnostic', {
+            'schema': 'main-computer.seh-causal-diagnostic.v1',
+            'source': 'lms-harness', 'error_code': 'LMS_RESULT_UNCONFIRMED',
+            'failed_stage': 'EXECUTION_RESULT_UNCONFIRMED'})
         self._write(row)
         return row
 
@@ -189,7 +267,7 @@ class ManagementJournal:
                 raise ManagementJournalError('SEH_OPERATION_NOT_FOUND', 404)
             return {k: v for k, v in row.items() if k in
                     ('operation_id', 'phase', 'action', 'principal', 'accepted_at',
-                     'result', 'stage', 'output')}
+                     'result', 'stage', 'output', 'causal_diagnostic')}
 
     def snapshot(self):
         with self.lock:
@@ -273,9 +351,22 @@ class ManagementJournal:
         with self.lock:
             try:
                 row = self._read(operation_id)
+                previous_stage = row.get('stage', 'HARNESS_EXECUTING')
                 row['phase'] = 'RECORDED'
                 row['stage'] = stage
+                diagnostic = _causal_receipt(safe_result, previous_stage)
+                # Never persist the harness's untrusted diagnostic dictionary.
+                # Store only our allowlisted normalized projection, including
+                # within the existing result returned to older MCEL clients.
+                if 'causal_diagnostic' in safe_result:
+                    safe_result = {**safe_result}
+                    if diagnostic is None:
+                        safe_result.pop('causal_diagnostic')
+                    else:
+                        safe_result['causal_diagnostic'] = diagnostic
                 row['result'] = safe_result
+                if diagnostic is not None:
+                    row['causal_diagnostic'] = diagnostic
                 self._write(row)
             finally:
                 self._active_id = None

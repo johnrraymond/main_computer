@@ -120,6 +120,45 @@ def _record_step(events: list[dict], stage: str, status: str, detail: dict | Non
 
 
 
+def _resident_failure_diagnostic(observed: dict) -> dict:
+    """Bounded nonsecret readback. No URL, credential or exception text."""
+    codes = {
+        'SEH_LOCAL_CONNECTION_DISABLED', 'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+        'SEH_LOCAL_SIGNING_IDENTITY_CHANGED', 'SEH_RESOLVED_CONNECTION_DISABLED',
+        'SEH_LOCAL_CANONICAL_BINDING_FAILED', 'SEH_CONFIGURATION_RESOLUTION_FAILED',
+        'SEH_OUTBOUND_AUTH_REJECTED', 'SEH_OUTBOUND_ENDPOINT_NOT_FOUND',
+        'SEH_OUTBOUND_SERVICE_UNAVAILABLE', 'SEH_OUTBOUND_CONNECT_FAILED',
+        'SEH_OUTBOUND_SUPERVISOR_FAILED',
+    }
+    stages = {'RESOLVING_CONFIGURATION', 'CONNECTING_OUTBOUND_WSS',
+              'VERIFYING_LOCAL_BINDING'}
+    code = observed.get('resident_outbound_failure_code')
+    stage = observed.get('resident_outbound_failure_stage')
+    result = {'schema': 'main-computer.seh-causal-diagnostic.v1',
+              'source': 'resident-outbound-supervisor',
+              'error_code': (code if type(code) is str and code in codes
+                             else 'SEH_OUTBOUND_OUTCOME_UNVERIFIED'),
+              'failed_stage': (stage if type(stage) is str and stage in stages
+                               else 'RESIDENT_OUTBOUND_VERIFICATION'),
+              'resident_child_observed': observed.get('resident_child_observed') is True}
+    for key, source in (('attempts', 'resident_outbound_attempts'),
+                        ('failures', 'resident_outbound_failures'),
+                        ('failure_attempt', 'resident_outbound_failure_attempt'),
+                        ('failure_unix_ns', 'resident_outbound_failure_unix_ns')):
+        value = observed.get(source)
+        if type(value) is int and 0 <= value <= 10**20:
+            result[key] = value
+    status = observed.get('resident_outbound_last_http_status')
+    if type(status) is int and 100 <= status <= 599:
+        result['http_status'] = status
+    cls = observed.get('resident_outbound_last_error_class')
+    if type(cls) is str and cls in ('ValueError', 'TimeoutError', 'ConnectionError', 'OSError',
+               'SSLError', 'InvalidStatus', 'ConnectionClosedError',
+               'InvalidHandshake', 'RuntimeError', 'KeyError', 'TypeError'):
+        result['exception_class'] = cls
+    return result
+
+
 def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
     """One signed-admin invocation; only the resident SLH mutates its service.
 
@@ -280,6 +319,7 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
                             'remote_mutation': runtime_recovery_evidence.get('remote_mutation', False),
                             'outbound_tunnel_authenticated': False}
             if time.monotonic() >= deadline:
+                diagnostic = _resident_failure_diagnostic(observed)
                 return {**result, 'status': 'INCOMPLETE',
                         'failed_stage': 'resident_outbound_wss_verification',
                         'outbound_tunnel_authenticated': False,
@@ -292,6 +332,9 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
                         'resident_outbound_failures': observed.get('resident_outbound_failures'),
                         'resident_outbound_last_error_class': observed.get('resident_outbound_last_error_class'),
                         'resident_outbound_last_http_status': observed.get('resident_outbound_last_http_status'),
+                        'resident_outbound_failure_code': diagnostic['error_code'],
+                        'resident_outbound_failure_stage': diagnostic['failed_stage'],
+                        'causal_diagnostic': diagnostic,
                         'runtime_recovery_status': (runtime_recovery_evidence or {}).get('status'),
                         'runtime_recovery_error_class': (runtime_recovery_evidence or {}).get('error_class')}
             time.sleep(0.3)

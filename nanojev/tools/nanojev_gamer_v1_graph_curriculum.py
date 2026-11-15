@@ -1864,6 +1864,170 @@ def main(argv=None):
         g2_bakeoff40.add_argument('--'+name)
     g2_bakeoff40.add_argument('--device',default='cuda')
     g2_bakeoff40.add_argument('--max-length',type=int,default=2048)
+    g2_oracle41=sub.add_parser('frob-g2-causal-oracles',
+        help='G2-0041 full TRAIN-only causal oracle diagnosis of graph completion')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run','selective36-run','curriculum37-run','context38-run','relationship39-run','bakeoff40-run','output'):
+        g2_oracle41.add_argument('--'+name)
+    g2_oracle41.add_argument('--device',default='cuda')
+    g2_oracle41.add_argument('--max-length',type=int,default=2048)
+    g2_rank42=sub.add_parser('frob-g2-rank-calibration-bakeoff',
+        help='G2-0042 causal score-factor diagnosis and TRAIN-only ranking/calibration bake-off')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run','selective36-run','curriculum37-run','context38-run','relationship39-run','bakeoff40-run','oracle41-run','output'):
+        g2_rank42.add_argument('--'+name)
+    g2_rank42.add_argument('--device',default='cuda')
+    g2_rank42.add_argument('--max-length',type=int,default=2048)
+    g2_abs43=sub.add_parser('frob-g2-absolute-score-bakeoff',
+        help='G2-0043 absolute edge scoring / group margin / joint count TRAIN-only bake-off')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','output'):
+        g2_abs43.add_argument('--'+name)
+    g2_abs43.add_argument('--device',default='cuda')
+    g2_abs43.add_argument('--max-length',type=int,default=2048)
+    g2_mem44=sub.add_parser('frob-g2-train-memorization-diagnosis',
+        help='G2-0044 TRAIN-only single/multiple graph memorization and gradient diagnosis')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run','output'):
+        g2_mem44.add_argument('--'+name)
+    g2_mem44.add_argument('--device',default='cuda')
+    g2_mem44.add_argument('--max-length',type=int,default=2048)
+    g2_mem44.add_argument('--single-steps',type=int,default=480)
+    g2_mem44.add_argument('--multi-steps',type=int,default=840)
+    g2_sep45=sub.add_parser('frob-g2-separability-diagnosis',
+        help='G2-0045 TRAIN-only frozen-edge-feature capacity vs loss interference')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','output'):
+        g2_sep45.add_argument('--'+name)
+    g2_sep45.add_argument('--device',default='cuda')
+    g2_sep45.add_argument('--max-length',type=int,default=2048)
+    g2_sep45.add_argument('--simple-steps',type=int,default=420)
+    g2_sep45.add_argument('--hard-steps',type=int,default=420)
+    g2_multi46=sub.add_parser('frob-g2-multiprompt-discrimination',
+        help='G2-0046 TRAIN-only shared-readout, prompt-disjoint relational transfer')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','output'):
+        g2_multi46.add_argument('--'+name)
+    g2_multi46.add_argument('--device',default='cuda')
+    g2_multi46.add_argument('--max-length',type=int,default=2048)
+    g2_multi46.add_argument('--steps',type=int,default=720)
+    g2_multi46.add_argument('--batch-prompts',type=int,default=8)
+    g2_multi46.add_argument('--eval-every',type=int,default=120)
+    g2_cross47=sub.add_parser('frob-g2-architectural-crossover',
+        help='G2-0047 TRAIN-only frozen-vs-joint representation x BCE-vs-structured graph learning')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','output'):
+        g2_cross47.add_argument('--'+name)
+    g2_cross47.add_argument('--device',default='cuda')
+    g2_cross47.add_argument('--max-length',type=int,default=2048)
+    g2_cross47.add_argument('--steps',type=int,default=720)
+    g2_cross47.add_argument('--batch-prompts',type=int,default=8)
+    g2_cross47.add_argument('--eval-every',type=int,default=120)
+    g2_cross47.add_argument('--structured-per-batch',type=int,default=2)
+    g2_context48=sub.add_parser('frob-g2-occurrence-evidence-repair',
+        help='G2-0048 restore frozen Qwen occurrence evidence to the trainable G2 graph scorer')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run','output'):
+        g2_context48.add_argument('--'+name)
+    g2_context48.add_argument('--device',default='cuda')
+    g2_context48.add_argument('--max-length',type=int,default=2048)
+    g2_context48.add_argument('--steps',type=int,default=720)
+    g2_context48.add_argument('--batch-prompts',type=int,default=8)
+    g2_context48.add_argument('--eval-every',type=int,default=120)
+
+    g2_curriculum49=sub.add_parser('frob-g2-integrated-curriculum',
+        help='G2-0049 test ranking, cardinality and retention curriculum from frozen G2-0048 weights')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run','occurrence48-run','output'):
+        g2_curriculum49.add_argument('--'+name)
+    g2_curriculum49.add_argument('--device',default='cuda')
+    g2_curriculum49.add_argument('--max-length',type=int,default=2048)
+    g2_curriculum49.add_argument('--steps',type=int,default=360)
+    g2_curriculum49.add_argument('--batch-prompts',type=int,default=8)
+    g2_curriculum49.add_argument('--eval-every',type=int,default=120)
+
     d=sub.add_parser('diagnose-g1')
     d.add_argument('--dataset',required=True);d.add_argument('--checkpoint',required=True)
     d.add_argument('--output',required=True);d.add_argument('--device',default='cuda')
@@ -3939,6 +4103,631 @@ def main(argv=None):
                        device=a.device,max_length=a.max_length)
         finally:
             os.chdir(previous)
+    elif a.command=='frob-g2-causal-oracles':
+        from tools.nanojev_gamer_v1_g2_causal_oracle_diagnosis import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0041_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'output':'graph-g2-causal-oracle-diagnosis-0041',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-rank-calibration-bakeoff':
+        from tools.nanojev_gamer_v1_g2_rank_calibration_bakeoff import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0042_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'output':'graph-g2-rank-calibration-bakeoff-0042',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-absolute-score-bakeoff':
+        from tools.nanojev_gamer_v1_g2_absolute_score_bakeoff import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0043_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'output':'graph-g2-absolute-score-bakeoff-0043',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-train-memorization-diagnosis':
+        from tools.nanojev_gamer_v1_g2_memorization_diagnosis import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0044_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'output':'graph-g2-train-memorization-diagnosis-0044',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,
+                       single_steps=a.single_steps,multi_steps=a.multi_steps)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-separability-diagnosis':
+        from tools.nanojev_gamer_v1_g2_separability_diagnosis import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0045_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'memorization44_run':'graph-g2-train-memorization-diagnosis-0044',
+            'output':'graph-g2-separability-diagnosis-0045',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,
+                       simple_steps=a.simple_steps,hard_steps=a.hard_steps)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-multiprompt-discrimination':
+        from tools.nanojev_gamer_v1_g2_multiprompt_discrimination import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0046_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'memorization44_run':'graph-g2-train-memorization-diagnosis-0044',
+            'separability45_run':'graph-g2-separability-diagnosis-0045',
+            'output':'graph-g2-multiprompt-discrimination-0046',
+        }
+        inputs={name:canonical(getattr(a,name),root/path)
+                for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,
+                       steps=a.steps,batch_size=a.batch_prompts,eval_every=a.eval_every)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-architectural-crossover':
+        from tools.nanojev_gamer_v1_g2_architectural_crossover import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0047_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'memorization44_run':'graph-g2-train-memorization-diagnosis-0044',
+            'separability45_run':'graph-g2-separability-diagnosis-0045',
+            'multiprompt46_run':'graph-g2-multiprompt-discrimination-0046',
+            'output':'graph-g2-architectural-crossover-0047',
+        }
+        inputs={name:canonical(getattr(a,name),root/path) for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,steps=a.steps,
+                       batch_size=a.batch_prompts,eval_every=a.eval_every,
+                       structured_per_batch=a.structured_per_batch)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-occurrence-evidence-repair':
+        from tools.nanojev_gamer_v1_g2_occurrence_evidence_repair import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0048_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'memorization44_run':'graph-g2-train-memorization-diagnosis-0044',
+            'separability45_run':'graph-g2-separability-diagnosis-0045',
+            'multiprompt46_run':'graph-g2-multiprompt-discrimination-0046',
+            'crossover47_run':'graph-g2-architectural-crossover-0047',
+            'output':'graph-g2-occurrence-evidence-repair-0048',
+        }
+        inputs={name:canonical(getattr(a,name),root/path) for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,steps=a.steps,
+                       batch_size=a.batch_prompts,eval_every=a.eval_every)
+        finally:
+            os.chdir(previous)
+    elif a.command=='frob-g2-integrated-curriculum':
+        from tools.nanojev_gamer_v1_g2_integrated_curriculum import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0049_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        defaults={
+            'g2_run':'graph-g2-binding-bootstrap-0001',
+            'selection_run':'graph-g2-binding-selection-0002',
+            'discrimination_run':'graph-g2-binding-discrimination-0003',
+            'relational_run':'graph-g2-relational-training-0004',
+            'density_run':'graph-g2-density-discrimination-0005',
+            'consistency_run':'graph-g2-graph-consistency-0006',
+            'context_run':'graph-g2-contextual-graph-0007',
+            'learned_run':'graph-g2-learned-graph-context-0008',
+            'recall_run':'graph-g2-recall-preserving-graph-0009',
+            'crowded_run':'graph-g2-crowded-recall-calibration-0010',
+            'robustness_run':'graph-g2-robustness-validation-0011',
+            'diagnosis_run':'graph-g2-relationship-error-diagnosis-0012',
+            'source_run':'graph-g2-source-conditioned-discrimination-0013',
+            'specialization_run':'graph-g2-density-specialization-0014',
+            'routing_robustness_run':'graph-g2-density-routing-robustness-0015',
+            'general_run':'graph-g2-general-relational-discrimination-0016',
+            'ceiling_run':'graph-g2-architectural-ceiling-diagnosis-0017',
+            'context18_run':'graph-g2-competitor-context-intervention-0018',
+            'train19_run':'graph-g2-inference-realistic-training-0019',
+            'ceiling20_run':'graph-g2-structural-ceiling-validation-0020',
+            'ceiling21_run':'graph-g2-relationship-discrimination-ceiling-0021',
+            'competition22_run':'graph-g2-competition-aware-learning-0022',
+            'context23_run':'graph-g2-contextual-relationship-representation-0023',
+            'audit24_run':'graph-g2-context-utilization-audit-0024',
+            'intervention25_run':'graph-g2-context-utilization-intervention-0025',
+            'identity26_run':'graph-g2-competitor-identity-discrimination-0026',
+            'evidence27_run':'graph-g2-relationship-evidence-sufficiency-audit-0027',
+            'probe28_run':'graph-g2-occurrence-identity-evidence-probe-0028',
+            'bakeoff29_run':'graph-g2-architecture-bakeoff-0029',
+            'precision30_run':'graph-g2-graph-precision-selection-0030',
+            'representation31_run':'graph-g2-representation-bakeoff-0031',
+            'completeness32_run':'graph-g2-graph-completeness-0032',
+            'structured33_run':'graph-g2-structured-graph-decoder-0033',
+            'diagnosis34_run':'graph-g2-causal-graph-diagnosis-0034',
+            'coverage35_run':'graph-g2-candidate-coverage-0035',
+            'selective36_run':'graph-g2-selective-occurrence-0036',
+            'curriculum37_run':'graph-g2-occurrence-curriculum-0037',
+            'context38_run':'graph-g2-contextual-occurrence-0038',
+            'relationship39_run':'graph-g2-recovered-relationships-0039',
+            'bakeoff40_run':'graph-g2-completion-bakeoff-0040-repair',
+            'oracle41_run':'graph-g2-causal-oracle-diagnosis-0041',
+            'rank42_run':'graph-g2-rank-calibration-bakeoff-0042',
+            'absolute43_run':'graph-g2-absolute-score-bakeoff-0043',
+            'memorization44_run':'graph-g2-train-memorization-diagnosis-0044',
+            'separability45_run':'graph-g2-separability-diagnosis-0045',
+            'multiprompt46_run':'graph-g2-multiprompt-discrimination-0046',
+            'crossover47_run':'graph-g2-architectural-crossover-0047',
+            'occurrence48_run':'graph-g2-occurrence-evidence-repair-0048',
+            'output':'graph-g2-integrated-curriculum-0049',
+        }
+        inputs={name:canonical(getattr(a,name),root/path) for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,steps=a.steps,
+                       batch_size=a.batch_prompts,eval_every=a.eval_every)
+        finally:
+            os.chdir(previous)
     elif a.command=='frob-g2-representation-bakeoff':
         from tools.nanojev_gamer_v1_g2_representation_bakeoff import run
         import os
@@ -4131,7 +4920,25 @@ def main(argv=None):
            challenge_report=a.challenge_report,output=a.output,
            retention_dev=keyed(a.retention_dev),
            retention_challenge=keyed(a.retention_challenge))
-    print(json_text(result))
+    if a.command=='frob-g2-integrated-curriculum':
+        # Keep G2-0049's console actionable; full immutable evidence is in the
+        # report/ledger files, not thousands of prompt IDs in PowerShell.
+        compact={'status':result['status'],'decision':result['decision'],
+                 'output':str(inputs['output']),
+                 'results':{arm:{sec:{'exact':part[sec]['all']['exact'],
+                     'cases':part[sec]['all']['cases'],
+                     'reachable_exact':part[sec]['candidate_reachable']['exact'],
+                     'reachable_cases':part[sec]['candidate_reachable']['cases'],
+                     'missing':part[sec]['all']['missing'],
+                     'extra':part[sec]['all']['extra'],
+                     'count_error_l1':part[sec]['all']['count_error_l1']}
+                     for sec in ('learn','transfer','train_fit','natural_train_audit')}
+                     for arm,part in result['results'].items()},
+                 'paired_vs_0048_transfer':{
+                     arm:paired['transfer'] for arm,paired in result['paired_vs_0048'].items()}}
+        print(json_text(compact))
+    else:
+        print(json_text(result))
     return result
 
 if __name__=='__main__':main()

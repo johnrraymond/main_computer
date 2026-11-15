@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import math
 import os
@@ -19,6 +20,72 @@ import psutil
 
 PID_FILENAME = 'organization-service.pid'
 SCHEMA = 'main-computer.slh-organization-process.v1'
+
+# Scoped to the explicit command-line stop invocation: the in-process local
+# controller and status probes do not emit diagnostics or change their behavior.
+_STOP_IDENTITY_TRACE: ContextVar[list | None] = ContextVar('org_slh_identity_trace', default=None)
+
+
+def _trace_identity(event: str, **fields) -> None:
+    trace = _STOP_IDENTITY_TRACE.get()
+    if trace is not None:
+        trace.append({'event': event, 'at_unix': time.time(), **fields})
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    # The known ORG-SLH arguments are paths and PIDs. Defend against future
+    # additions containing credentials; logs should never contain secrets.
+    result = []
+    mask_next = False
+    for item in argv:
+        if mask_next:
+            result.append('<redacted>')
+            mask_next = False
+        elif any(x in item.lower() for x in ('password', 'secret', 'token', 'api-key', 'authorization')):
+            if '=' in item:
+                result.append(item.split('=', 1)[0] + '=<redacted>')
+            else:
+                result.append(item)
+                mask_next = True
+        else:
+            result.append(item)
+    return result
+
+
+def _write_identity_trace(state_dir: Path, error: str, trace: list[dict]) -> Path:
+    # Stored alongside stop reports, never under the canonical identity file.
+    # Use a collision-safe name and atomic write; do not mutate any PID record.
+    state_dir = Path(state_dir).resolve()
+    if (state_dir.name.lower() == 'slh' and state_dir.parent.name.lower() == 'state'
+            and state_dir.parent.parent.name.lower() == 'runtime'):
+        destination = state_dir.parent.parent / 'start_stop'
+    else:
+        # Disposable test directories must never write to a global location.
+        destination = state_dir / 'identity_diagnostics'
+    destination.mkdir(parents=True, exist_ok=True)
+    output = destination / f'org-slh-identity-failure-{os.getpid()}-{time.time_ns()}.json'
+    data = {
+        'schema': 'main-computer.org-slh-identity-failure.v1',
+        'failure_at_unix': time.time(),
+        'state_dir': str(state_dir),
+        'error': error,
+        'trace': trace,
+        'processes_terminated_by_diagnostic': 0,
+    }
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=destination, prefix='.org-slh-identity-',
+                                         suffix='.tmp', encoding='utf-8', delete=False) as stream:
+            tmp = Path(stream.name)
+            json.dump(data, stream, indent=2, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, output)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+    return output
 
 
 def _path(state_dir: Path) -> Path:
@@ -57,18 +124,40 @@ def read_record(state_dir: Path) -> dict | None:
 def _belongs_to_org(proc: psutil.Process, state_dir: Path) -> bool:
     try:
         argv = proc.cmdline()
-    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+    except (psutil.NoSuchProcess, psutil.ZombieProcess) as exc:
+        _trace_identity('cmdline-unavailable', exception=type(exc).__name__)
         return False
     except psutil.AccessDenied as exc:
+        _trace_identity('cmdline-unavailable', exception=type(exc).__name__)
         raise RuntimeError('Cannot verify ORG-SLH command line') from exc
-    for i in range(len(argv) - 1):
-        if argv[i] == '-m' and argv[i + 1] == 'main_computer.slh.organization_service':
-            break
-    else:
-        return False
-    for i in range(len(argv) - 1):
-        if argv[i] == '--state-dir':
-            return _normal_path(argv[i + 1]) == _normal_path(state_dir)
+    _trace_identity('cmdline-observed', argv=_redact_argv(argv))
+    # Windows can briefly expose an empty or partial argv for a live Python
+    # interpreter. Such an observation is not evidence of a foreign process.
+    # Raise the same retryable verification error as AccessDenied: the stop
+    # helper rechecks PID, creation time and liveness before every retry.
+    # A complete but foreign module/--state-dir remains a hard refusal.
+    if not argv or len(argv) == 1:
+        raise RuntimeError('Cannot verify ORG-SLH command line')
+    for i, arg in enumerate(argv):
+        if arg != '-m':
+            continue
+        if i + 1 == len(argv):
+            raise RuntimeError('Cannot verify ORG-SLH command line')
+        if argv[i + 1] != 'main_computer.slh.organization_service':
+            return False
+        for j in range(i + 2, len(argv)):
+            if argv[j] == '--state-dir':
+                if j + 1 == len(argv):
+                    raise RuntimeError('Cannot verify ORG-SLH command line')
+                return _normal_path(argv[j + 1]) == _normal_path(state_dir)
+        # The correct module was observed but its state-dir argument was not.
+        # Treat this as incomplete, never as a verified identity.
+        raise RuntimeError('Cannot verify ORG-SLH command line')
+    # A Python interpreter with only interpreter switches may not yet have an
+    # observable '-m' argument. Other complete CLI shapes are foreign.
+    if all(arg in ('-u', '-B', '-E', '-I', '-s', '-S', '-O', '-OO')
+           for arg in argv[1:]):
+        raise RuntimeError('Cannot verify ORG-SLH command line')
     return False
 
 
@@ -77,11 +166,16 @@ def _matching_process(record: dict, state_dir: Path) -> psutil.Process | None:
         proc = psutil.Process(record['pid'])
         # A recycled PID is not the recorded process, even if the new program
         # happens to have the same command line.
-        if abs(proc.create_time() - record['created']) > 0.05:
+        observed_created = proc.create_time()
+        _trace_identity('pid-created', pid=record['pid'],
+                        record_created=record['created'], observed_created=observed_created,
+                        state_dir=str(state_dir), record=record)
+        if abs(observed_created - record['created']) > 0.05:
             return None
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
             return None
         if not _belongs_to_org(proc, state_dir):
+            _trace_identity('identity-refused', pid=record['pid'])
             raise RuntimeError('ORG-SLH PID belongs to an unverified process; refusing termination')
         return proc
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
@@ -179,12 +273,41 @@ def _wait_exited(proc: psutil.Process, timeout: float) -> bool:
         time.sleep(0.1)
 
 
+def _matching_process_for_stop(record: dict, state_dir: Path) -> psutil.Process | None:
+    """Retry transient unavailable or incomplete command lines during shutdown.
+
+    An incomplete observation never proves exit or ownership. Before each retry, check
+    the recorded PID's creation time and liveness; refuse if those checks are
+    unavailable or the original process remains unverifiable after retries.
+    """
+    for attempt in range(4):
+        try:
+            return _matching_process(record, state_dir)
+        except RuntimeError as exc:
+            if str(exc) != 'Cannot verify ORG-SLH command line':
+                raise
+            try:
+                proc = psutil.Process(record['pid'])
+                if abs(proc.create_time() - record['created']) > 0.05:
+                    return None  # Original exited; this PID belongs to a replacement.
+                if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                    return None
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                return None
+            except psutil.AccessDenied as identity_exc:
+                raise RuntimeError('Cannot verify ORG-SLH process identity') from identity_exc
+            if attempt == 3:
+                raise  # Still alive, but command line cannot establish ownership.
+            time.sleep(0.1)
+    raise AssertionError('unreachable')
+
+
 def stop_recorded_process(state_dir: Path, *, timeout: float = 5.0) -> dict:
     """Stop only the exact recorded ORG-SLH instance; missing is a no-op."""
     record = read_record(state_dir)
     if record is None:
         return {'state': 'not-running', 'pid': None}
-    proc = _matching_process(record, state_dir)
+    proc = _matching_process_for_stop(record, state_dir)
     if proc is None:
         _clear_if_unchanged(state_dir, record)
         return {'state': 'not-running', 'pid': record['pid']}
@@ -199,7 +322,7 @@ def stop_recorded_process(state_dir: Path, *, timeout: float = 5.0) -> dict:
         pass
     except psutil.AccessDenied as exc:
         raise RuntimeError('Verified ORG-SLH did not terminate') from exc
-    if _matching_process(record, state_dir) is not None:
+    if _matching_process_for_stop(record, state_dir) is not None:
         raise RuntimeError('Verified ORG-SLH is still running')
     _clear_if_unchanged(state_dir, record)
     return {'state': 'terminated', 'pid': record['pid']}
@@ -210,11 +333,23 @@ def main(argv=None) -> int:
     parser.add_argument('command', choices=['stop'])
     parser.add_argument('--state-dir', type=Path, required=True)
     args = parser.parse_args(argv)
+    trace: list[dict] = []
+    token = _STOP_IDENTITY_TRACE.set(trace)
     try:
         result = stop_recorded_process(args.state_dir)
     except (OSError, RuntimeError) as exc:
+        # Record the exact first-read argv and PID record observed *during* the
+        # rejecting stop, rather than a different service started afterward.
+        if ('unverified process' in str(exc) or 'Cannot verify ORG-SLH' in str(exc)):
+            try:
+                path = _write_identity_trace(args.state_dir, str(exc), trace)
+                print(f'ORG-SLH identity failure evidence: {path}', file=sys.stderr)
+            except (OSError, ValueError) as diagnostic_exc:
+                print(f'ORG-SLH diagnostic capture unavailable: {diagnostic_exc}', file=sys.stderr)
         print(f'ORG-SLH shutdown refused: {exc}', file=sys.stderr)
         return 1
+    finally:
+        _STOP_IDENTITY_TRACE.reset(token)
     print(json.dumps(result, sort_keys=True))
     return 0
 

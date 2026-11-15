@@ -110,6 +110,7 @@
     let pendingAuthentication=null;
     let workerViewOverview=null;
     let identitySnapshot=null;
+    let lifecycleObservation=null;
     let authenticationChanged=()=>{};
     let setupChanged=()=>{};
     const operationIds=new Map();
@@ -226,6 +227,8 @@
       onAuthenticationChanged: callback=>{if(typeof callback==="function")authenticationChanged=callback;},
       onSetupChanged: callback=>{if(typeof callback==="function")setupChanged=callback;},
       preferredIdentity: ()=>identitySnapshot?.state==="AVAILABLE"?identitySnapshot.defaultDeviceId:"",
+      // Public, read-only observation provenance for SLH E/W/G diagnostics.
+      lifecycleObservation: ()=>lifecycleObservation?{...lifecycleObservation}:null,
       authorize: async req=>{
         if(!permitted(req))return false;
         if(notebookOperation(req)||sehLifecycleOperation(req)||
@@ -364,12 +367,27 @@
           const endpoint=result.overview.organizationEndpoint;
           if(typeof state!=="string" || state.length>80 || typeof endpoint!=="string" || endpoint.length>120)
             throw Error("MCEL_SLH_PORT:invalid-lifecycle-state");
+          // The overview can succeed while its underlying 1.5-second LMS
+          // probe has timed out. Never manufacture a configuration from that
+          // successful HTTP response. A wildcard bind is valid *only* when
+          // explicitly present in the observed endpoint.
           const match=/^((?:[0-9]{1,3}\.){3}[0-9]{1,3}):([0-9]{1,5})$/.exec(endpoint);
-          const bindAddress=match?match[1]:"0.0.0.0";
-          const port=match?Number(match[2]):8899;
-          if(!Number.isSafeInteger(port)||port<1||port>65535)
-            throw Error("MCEL_SLH_PORT:invalid-lifecycle-port");
-          return {state,bindAddress,port};
+          const host=match?.[1]||"";
+          const port=match?Number(match[2]):0;
+          const validEndpoint=!!match && host.split(".").every(part=>Number(part)<=255) &&
+            Number.isSafeInteger(port) && port>=1 && port<=65535;
+          const serviceState=String(result.overview.serviceState||"UNKNOWN");
+          const observationState=String(result.overview.observationState||"UNKNOWN");
+          const stateVerified=!(["NOT_OBSERVED","UNVERIFIED","UNAVAILABLE"].includes(state) ||
+            ["NOT_OBSERVED","UNREACHABLE","UNVERIFIED"].includes(serviceState) ||
+            ["UNAVAILABLE","NOT_OBSERVED","UNVERIFIED"].includes(observationState));
+          const classification=validEndpoint && stateVerified?"observed":
+            !validEndpoint?"endpoint-unverified":"service-unverified";
+          lifecycleObservation={serviceState,observationState,organizationState:state,
+            endpoint,classification,observedAt:new Date().toISOString()};
+          if(classification!=="observed")
+            throw Error("MCEL_SLH_PORT:lifecycle-"+classification);
+          return {state,bindAddress:host,port};
         }
         if(req.intentId==="intent:refresh-identities" || req.intentId==="intent:refresh-identity-status"){
           const response=await fetcher("/api/applications/slh/identities",

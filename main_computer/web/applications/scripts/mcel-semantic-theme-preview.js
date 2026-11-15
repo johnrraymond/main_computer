@@ -139,7 +139,11 @@ var McelSemanticThemePreview = (() => {
     if(root.hasAttribute('data-mcel-semantic-color-full')) {
       // Lab swatches are not a palette authority. The canonical renderer
       // resolves the selected named Theme from the same Color Law as standalone.
-      const result=root.ownerDocument.defaultView?.__mcelExpanded?.app?.setColorTheme?.(theme);
+      const mounted = root.ownerDocument.defaultView;
+      const application = mounted?.__mcelExpanded || mounted?.__mcelWorkbench;
+      if (application?.appId !== ir?.application?.appId)
+        return {schema,status:'refused',reason:'Mounted application handle does not match canonical source'};
+      const result=application.app?.setColorTheme?.(theme);
       if(result?.status!=='applied')return {schema,status:'refused',reason:'Canonical Theme selection refused'};
       return {schema,status:'applied-in-isolated-lab-frame',theme,
         source:ir?.application?.appId||'',controls:0,regions:0,
@@ -229,12 +233,17 @@ var McelSemanticThemePreview = (() => {
       `background-color:var(--mcel-theme-card)!important;color:var(--mcel-preview-ink)!important;}`+
       `${scope} [${attr.kind}="region"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 95%,var(--mcel-theme-accent) 5%);`+
       `background-color:var(--mcel-preview-region-surface)!important;color:var(--mcel-preview-ink)!important;`+
-      `border-color:var(--mcel-theme-line)!important;background-image:none!important;}`+
+      `border-color:var(--mcel-theme-line)!important;}`+
+      // A material-owned surface keeps the Theme's colors but receives its
+      // optical finish from Chrome. The background-image reset is deliberately
+      // separate so it cannot erase a mounted Chrome's alpha-only gradients.
+      `${scope} [${attr.kind}="region"]:not([data-mcel-chrome-material]){background-image:none!important;}`+
       `${scope} [${attr.kind}="region"][${attr.depth}="1"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 92%,var(--mcel-theme-accent) 8%);}`+
       `${scope} [${attr.kind}="region"][${attr.depth}="2"]{--mcel-preview-region-surface:color-mix(in srgb,var(--mcel-theme-card) 89%,var(--mcel-theme-accent) 11%);}`+
       `${scope} [${attr.surface}]{background-color:color-mix(in srgb,var(--mcel-preview-region-surface,var(--mcel-theme-card)) 90%,var(--mcel-theme-accent) 10%)!important;`+
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;`+
-      `background-image:none!important;}`+
+      `}`+
+      `${scope} [${attr.surface}]:not([data-mcel-chrome-material]){background-image:none!important;}`+
       `${scope} [${attr.kind}="control"]{background-color:color-mix(in srgb,var(--mcel-preview-region-surface,var(--mcel-theme-card)) 90%,var(--mcel-theme-accent) 10%)!important;`+
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;}`+
       `${scope} :is(label,legend,small,span,strong,em,p,h1,h2,h3,h4,h5,h6,output,summary,dt,dd,li,time){color:var(--mcel-preview-ink)!important;}`+
@@ -242,7 +251,8 @@ var McelSemanticThemePreview = (() => {
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-line)!important;}`+
       `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]){background-color:var(--mcel-preview-button)!important;`+
       `color:var(--mcel-preview-ink)!important;border-color:var(--mcel-theme-accent)!important;`+
-      `background-image:none!important;}`+
+      `}`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):not([data-mcel-chrome-material]){background-image:none!important;}`+
       `${scope} [${attr.operation}="capability"] :is(button,[role="button"],[role="tab"]):not([data-mcel-color-state]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 82%,var(--mcel-theme-accent-2) 18%)!important;`+
       `border-color:var(--mcel-theme-accent-2)!important;}`+

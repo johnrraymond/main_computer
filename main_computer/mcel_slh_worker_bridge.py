@@ -58,6 +58,8 @@ class OrganizationWorkerClient:
             ("GET", "/v1/org/admin/services"),
             ("GET", "/v1/org/admin/marketplace/status"),
             ("GET", "/v1/org/admin/seh/deployment"),
+            ("GET", "/v1/org/admin/seh/connection"),
+            ("POST", "/v1/org/admin/seh/connection"),
             ("POST", "/v1/org/admin/seh/deployment/controllers"),
             ("POST", "/v1/org/admin/seh/deployment/selection"),
             ("POST", "/v1/org/admin/seh/deployment/harness"),
@@ -71,6 +73,10 @@ class OrganizationWorkerClient:
                    r"/v1/admin/devices/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}/(?:revoke|reactivate|remove)",path)) and not (method == "PATCH" and path.startswith("/v1/admin/devices/") and
                    _DEVICE_ID.fullmatch(path.removeprefix("/v1/admin/devices/"))):
             raise WorkerBridgeError("OPERATION_NOT_ADMITTED", 403)
+        if (method, path) == ("POST", "/v1/org/admin/seh/connection") and (
+                not isinstance(body, dict) or set(body) != {"action"} or
+                body["action"] not in ("start", "stop", "restart")):
+            raise WorkerBridgeError("OPERATION_NOT_ADMITTED", 403)
         if authentication:
             if not isinstance(body, dict) or (path.endswith('/challenge') and set(body) != {'device_id'}) or (
                 path.endswith('/verify') and set(body) != {'device_id','challenge_id','signature'}):
@@ -79,6 +85,9 @@ class OrganizationWorkerClient:
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
         elif body is not None:
             allowed_body = (
+                ((method,path)==('POST','/v1/org/admin/seh/connection') and
+                 isinstance(body,dict) and set(body)=={'action'} and
+                 body['action'] in ('start','stop','restart')) or
                 ((method,path)==('POST','/v1/org/admin/seh/deployment/controllers') and
                  isinstance(body,dict) and set(body)=={'name','url','api_token','expected_generation','operation_id'}) or
                 ((method,path)==('POST','/v1/org/admin/seh/deployment/selection') and

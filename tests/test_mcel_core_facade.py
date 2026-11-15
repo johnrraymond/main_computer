@@ -19,6 +19,7 @@ CHROME_IDS = [
     "chrome-spotlight",
     "chrome-journey",
     "chrome-compact-disclosure",
+    "chrome-tng-side-rails",
 ]
 
 
@@ -115,6 +116,7 @@ process.stdout.write(JSON.stringify({{
         "Spotlight",
         "Journey",
         "Compact Disclosure",
+        "TNG Side Rails",
     ]
     assert data["clusterAlias"] == "chrome-cluster-grid"
     assert data["unknownFallback"] == "chrome-strict-hierarchy"

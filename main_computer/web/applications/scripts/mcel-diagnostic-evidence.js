@@ -4,7 +4,7 @@
 (function (global) {
   "use strict";
   if (!global || global.MCELDiagnosticEvidence) return;
-  const entries = new Map(), histories = new Map();
+  const entries = new Map(), histories = new Map(), operationalReaders = new Map();
   const LIMIT = 60, HISTORY = 100;
   const now = () => new Date().toISOString();
   const rounded = n => Math.round(n * 10) / 10;
@@ -151,12 +151,37 @@
       semanticRegions:root.querySelectorAll('[data-mcel-region],[data-mcel-region-id]').length,
       nestedCanonical:declaredCoverage(entry.childIr),
       selfDiagnosis:(()=>{const names=global.MCEL?.selfDiagnosis?.listContracts?.() || [];return {status:names.some(c=>c.appId===appId)?'contract-covered':'not-covered',reason:'semantic-app-not-in-legacy-contract-registry',registeredContracts:names.length};})()};
+    // Operational sources are registered by semantic hosts, not inferred from
+    // their rendered DOM. This supplements the shared structural collector
+    // without invoking a capability, repeating an observation, or reading an
+    // input value. The host supplies an explicitly bounded public projection.
+    let operational={status:'not-instrumented'};
+    const operationalReader=operationalReaders.get(appId);
+    if(operationalReader) {
+      try {
+        const observed=operationalReader();
+        operational=observed && typeof observed==='object' && !Array.isArray(observed)
+          ? {status:'observed',...observed} : {status:'invalid-observation'};
+      } catch(error) {
+        operational={status:'collection-failed',errorClass:String(error?.name||'unknown')};
+      }
+      for(const item of (Array.isArray(operational.findings)?operational.findings:[]).slice(0,12)) {
+        if(!/^[a-z0-9-]{1,80}$/.test(String(item?.code||'')))continue;
+        if(!['warning','error'].includes(item?.severity))continue;
+        if(results.length>=LIMIT)break;
+        results.push({code:item.code,severity:item.severity,identity:{region:'operational',node:null,role:null,tag:''},
+          evidence:{status:safeLabel(item.status||'observed')},time,source:'mcel-operational-observation'});
+      }
+    }
     const plugins=pluginSnapshot();
     const current={schema:'mcel-diagnostic-evidence-v1',appId,contractId:ir?.application?.appId||appId,
       route:global.location?.pathname||'',timestamp:time,coverage,nested,findings:results,layoutDecisions:layouts,
-      plugins,privacy:{mode:'structural-only',inputValues:false,conversationMessages:false,rawPluginDetails:false}};
+      plugins,operational,privacy:{mode:'structural-plus-declared-operational',
+        inputValues:operational.capturesConfigurationInputs===true,
+        configurationFields:operational.capturesConfigurationInputs===true?['bindAddress','port']:[],
+        conversationMessages:false,rawPluginDetails:false}};
     const history=histories.get(appId)||[];
-    const found=results.map(r=>[r.code,r.identity.region,r.identity.role,r.geometry.x,r.geometry.y].join('|'));
+    const found=results.map(r=>[r.code,r.identity.region,r.identity.role,r.geometry?.x??null,r.geometry?.y??null].join('|'));
     if(found.join('~')!==(history[history.length-1]?.signatures||[]).join('~')) {
       history.push({timestamp:time,projection:nested.projection||null,codes:results.map(r=>r.code),signatures:found});
       if(history.length>HISTORY)history.splice(0,history.length-HISTORY);
@@ -170,7 +195,12 @@
     entries.set(String(appId),{root,ir,childIr});
     return snapshot(String(appId));
   }
-  const api=Object.freeze({VERSION:'mcel-diagnostic-evidence-v1',register,snapshot,
+  function registerOperational(appId,reader) {
+    if(!appId||typeof reader!=='function')throw Error('MCEL operational diagnostic registration requires a reader');
+    operationalReaders.set(String(appId),reader);
+    return {appId:String(appId),status:'registered'};
+  }
+  const api=Object.freeze({VERSION:'mcel-diagnostic-evidence-v1',register,registerOperational,snapshot,
     history:appId=>(histories.get(appId)||[]).slice()});
   global.MCELDiagnosticEvidence=api;
 })(typeof window!=='undefined'?window:null);

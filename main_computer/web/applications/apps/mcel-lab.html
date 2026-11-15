@@ -71,9 +71,10 @@
         <option value="chrome-spotlight">Spotlight</option>
         <option value="chrome-journey">Journey</option>
         <option value="chrome-compact-disclosure">Compact Disclosure</option>
+        <option value="chrome-tng-side-rails">TNG Side Rails</option>
       </select>
     </label>
-    <span>Theme and Form affect the active preview independently. Chrome still transforms only the legacy rendered site.</span>
+    <span>Theme and Form affect the active preview independently. TNG Chrome provides source-bound materials for each eligible mounted application; side rails appear only where geometry permits.</span>
     <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
       <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
       <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
@@ -104,26 +105,35 @@
   </section>
 
   <section class="mcel-lab-presentation-stage" aria-label="MCEL active presentation preview" data-mcel-preview-kind="legacy">
-    <section class="mcel-semantic-theme-experiment" aria-label="Modern MCEL Calculator theme preview">
+    <section class="mcel-semantic-theme-experiment" aria-label="Modern MCEL mounted application presentation preview">
       <div class="mcel-semantic-theme-experiment-heading">
         <div>
           <p class="eyebrow">Opt-in · Lab only</p>
-          <h4>Calculator semantic Theme and Form preview</h4>
-          <p>Theme controls color; Form controls source-bound element shapes in this isolated Calculator. Chrome is not yet applied to modern MCEL.</p>
+          <h4>Mounted application · Theme, Form and Chrome preview</h4>
+          <p>Select a canonical MCEL application to verify the same Theme, Form and TNG Chrome material treatment. Structural rails appear only when supported by the mounted layout.</p>
+          <p>These are live application mounts, not operation mocks. Only use operational controls when you intend their real effects.</p>
         </div>
-        <div class="mcel-semantic-theme-experiment-actions" role="group" aria-label="Calculator preview actions">
-          <button type="button" id="mcel-semantic-theme-enable">Enable Calculator Preview</button>
+        <div class="mcel-semantic-theme-experiment-actions" role="group" aria-label="Mounted application preview actions">
+          <label for="mcel-semantic-preview-app">Application
+            <select id="mcel-semantic-preview-app" aria-label="Mounted application for Chrome preview">
+              <option value="calculator">Calculator</option>
+              <option value="file-manager">File Manager</option>
+              <option value="task-manager">Task Manager</option>
+              <option value="code-editor">Code Editor</option>
+            </select>
+          </label>
+          <button type="button" id="mcel-semantic-theme-enable">Enable App Preview</button>
           <button type="button" id="mcel-semantic-theme-disable" disabled>Disable Preview</button>
         </div>
       </div>
-      <output id="mcel-semantic-theme-status" role="status" aria-live="polite">Off. The Calculator is not mounted; the legacy site preview is active.</output>
+      <output id="mcel-semantic-theme-status" role="status" aria-live="polite">Off. No semantic application is mounted; the legacy site preview is active.</output>
       <div id="mcel-semantic-theme-evidence" class="mcel-semantic-theme-evidence" hidden aria-live="polite">
         <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-card-swatch" aria-hidden="true"></div>
         <div class="mcel-semantic-theme-swatch" id="mcel-semantic-theme-control-swatch" aria-hidden="true"></div>
-        <span id="mcel-semantic-theme-evidence-text">Waiting for computed Calculator colors.</span>
-        <span id="mcel-semantic-form-presentation-evidence">Form: Current (preserve)</span><span class="mcel-semantic-theme-chrome-notice">Chrome: not connected to modern MCEL</span>
+        <span id="mcel-semantic-theme-evidence-text">Waiting for computed application colors.</span>
+        <span id="mcel-semantic-form-presentation-evidence">Form: Current (preserve)</span><span id="mcel-semantic-chrome-presentation-evidence" class="mcel-semantic-theme-chrome-notice">Chrome: TNG Side Rails (default)</span>
       </div>
-      <iframe id="mcel-semantic-theme-frame" title="Isolated Calculator semantic theme preview"
+      <iframe id="mcel-semantic-theme-frame" title="Isolated mounted MCEL application presentation preview"
         src="about:blank" sandbox="allow-same-origin allow-scripts allow-forms" hidden></iframe>
     </section>
     <section class="mcel-lab-presentation-preview" id="mcel-legacy-site-preview" aria-label="Live themed and chromed site">

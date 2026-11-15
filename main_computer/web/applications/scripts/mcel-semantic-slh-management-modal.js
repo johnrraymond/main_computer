@@ -9,7 +9,7 @@
     let running=false, active=false, inFlight=false, generation=0, timer=null;
     let tracked="", shown="", lastState=null, lastCompletion=null, dismissedId="", dismissedUntilIdle=false;
     let presentation="";
-    let submission=null, lastObservedStage="", lastObservedResult="";
+    let submission=null, lastObservedStage="", lastObservedResult="", lastRecorded=null;
     let outputLines=[];
     const lastHarnessOutputSeq=new Map();
     // The semantic workspace is the visual boundary; target navigation stays live.
@@ -39,16 +39,13 @@
         {id:"actions",budget:"fixed",height:70,overflow:"clip"}
       ]
     });
-    let internalDismiss=false;
     const modal=Engine.create({definition,document:global.document,root:global.document.body,
       viewport:zone,onDismiss:()=>{
         inertRest(false);
         presentation="";
-        if(!internalDismiss){
-          if(submission)submission.dismissed=true;
-          dismissedId=shown;
-          if(!shown)dismissedUntilIdle=true;
-        }
+        if(submission)submission.dismissed=true;
+        dismissedId=shown;
+        if(!shown)dismissedUntilIdle=true;
       }});
     const shade=modal.element;
     shade.dataset.mcelLmsOperationModal="";
@@ -119,27 +116,73 @@
       log("LMS · "+String(op.phase||"UNKNOWN")+" · "+String(op.stage||"stage unavailable")+
         (op.operation_id?" · "+op.operation_id:""));
     }
+    // LMS already persists a bounded, allowlisted diagnostic. Treat it as data,
+    // not executable markup or a reason to inspect raw harness output. The
+    // readback can appear either on the receipt or inside its result.
+    function causalDiagnostic(receipt){
+      const raw=receipt?.causal_diagnostic || receipt?.result?.causal_diagnostic;
+      if(!raw || raw.schema!=="main-computer.seh-causal-diagnostic.v1" ||
+         !/^[A-Z][A-Z0-9_]{2,95}$/.test(raw.error_code||"") ||
+         !/^[A-Za-z][A-Za-z0-9_-]{2,95}$/.test(raw.failed_stage||""))return null;
+      const diagnostic={schema:raw.schema,error_code:raw.error_code,
+        failed_stage:raw.failed_stage};
+      if(["lms-harness","resident-outbound-supervisor"].includes(raw.source))
+        diagnostic.source=raw.source;
+      if(/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(raw.exception_class||""))
+        diagnostic.exception_class=raw.exception_class;
+      for(const key of ["attempts","failures","failure_attempt","failure_unix_ns"]){
+        if(Number.isSafeInteger(raw[key]) && raw[key]>=0)diagnostic[key]=raw[key];
+      }
+      if(Number.isInteger(raw.http_status)&&raw.http_status>=100&&raw.http_status<=599)
+        diagnostic.http_status=raw.http_status;
+      if(typeof raw.resident_child_observed==="boolean")
+        diagnostic.resident_child_observed=raw.resident_child_observed;
+      return diagnostic;
+    }
+    function receiptFields(receipt){
+      const diag=causalDiagnostic(receipt);
+      return {"Operation ID":receipt.operation_id||"Not confirmed",
+        "Status":receipt.result?.status||receipt.phase||"UNKNOWN",
+        ...(diag?{"Failure code":diag.error_code,"Failure stage":diag.failed_stage}:{})};
+    }
     function logResult(receipt){
       logHarnessOutput(receipt);
       const result=receipt?.result;
       if(!result || typeof result!=="object")return;
-      const key=JSON.stringify([receipt.operation_id,receipt.phase,result.status,result.error_code]);
+      const diag=causalDiagnostic(receipt);
+      if(typeof receipt.operation_id==="string" && receipt.operation_id)
+        lastRecorded={schema:"mcel.slh.management-evidence.v1",
+          operationId:receipt.operation_id,phase:receipt.phase||"UNKNOWN",
+          status:result.status||receipt.phase||"UNKNOWN",causalDiagnostic:diag};
+      const key=JSON.stringify([receipt.operation_id,receipt.phase,result.status,result.error_code,diag]);
       if(lastObservedResult===key)return;
       lastObservedResult=key;
       log("LMS result · "+String(result.status||receipt.phase||"UNKNOWN"));
-      // Explicit allowlist of status fields. No raw harness output, args or secrets.
+      // Explicit allowlist only. No exception messages, raw request parameters,
+      // credentials, or unrecognized diagnostic fields.
       for(const field of ["error_code","error_type","application_uuid","remote_mutation"]){
         if(["string","boolean"].includes(typeof result[field]))
           log(field+": "+String(result[field]).slice(0,160));
       }
+      if(diag){
+        log("LMS causal diagnostic · "+diag.error_code+" · "+diag.failed_stage);
+        for(const field of ["source","exception_class","http_status","attempts",
+          "failures","failure_attempt","resident_child_observed"]){
+          if(diag[field]!==undefined)log("causal_"+field+": "+diag[field]);
+        }
+      }
     }
-    function hide(){
-      if(!modal.isOpen())return;
-      internalDismiss=true;
-      try{modal.dismiss();}finally{internalDismiss=false;}
-      inertRest(false);
-      presentation="";
+    function showReceipt(receipt,prior=false){
+      const incomplete=receipt.result?.status==="INCOMPLETE";
+      display(incomplete?(prior?"Previous LMS operation incomplete":"LMS operation incomplete"):
+        "LMS management operation completed",
+        incomplete?"LMS recorded an incomplete outcome. Inspect the failure code and stage before another operation.":
+          "LMS recorded the outcome. Coolify submission is not proof of SEH readiness.",
+        receiptFields(receipt),{kind:"completed"});
     }
+    // Service observations have no authority to dismiss the operator's dialog.
+    // Only the Dismiss control (or the engine's Escape key) closes it; leaving
+    // the page naturally tears down the whole document.
     function display(name,explanation,fields={},opts={}){
       const opening=!modal.isOpen();
       presentation=opts.kind||"notice";
@@ -184,10 +227,8 @@
       }else if(state.state==="IDLE"&&state.last_operation?.result?.status==="INCOMPLETE"){
         const last=state.last_operation;
         shown=last.operation_id||"";
-        if(force)display("Previous LMS operation incomplete",
-          "The prior execution outcome was not confirmed. LMS is idle. Any new mutation must pass the SEH harness's existing safety checks.",
-          {...detailsFor(last),"Recorded result":"INCOMPLETE",
-            "Remote mutation":last.result?.remote_mutation||"UNKNOWN"},{kind:"notice"});
+        logStage(last);logResult(last);
+        if(force)showReceipt(last,true);
       }
     }
     // MCEL dispatch happens synchronously on the operator click, before an
@@ -196,6 +237,7 @@
       submission={intentId,action,state:"submitting",dismissed:false};
       tracked="";shown="";lastCompletion=null;lastObservedStage="";lastObservedResult="";
       outputLines=[];lastHarnessOutputSeq.clear();outputText.textContent="";
+      lastRecorded=null;
       dismissedId="";dismissedUntilIdle=false;
       log("MCEL · "+action+" requested");
       log("MCEL · Submitting to LMS; waiting for operation acknowledgement");
@@ -247,6 +289,9 @@
         const op=state.operation;
         const wasActive=active;
         if(state.busy&&op){
+          // A different operation supersedes the previous completed diagnosis.
+          // Never attribute stale receipt evidence to a newly observed action.
+          if(lastRecorded && lastRecorded.operationId!==op.operation_id)lastRecorded=null;
           lastCompletion=null;
           active=true;
           shown=op.operation_id||"";
@@ -255,7 +300,7 @@
         }else if(tracked){
           const receipt=await request("operation-status",{operationId:tracked});
           if(!running||epoch!==generation)return;
-          active=false;shown="";
+          active=false;shown=tracked;
           if(receipt.phase==="RECORDED"||receipt.phase==="CANCELED"){
             logStage(receipt);logResult(receipt);
             lastCompletion={operationId:tracked,status:receipt.result?.status||receipt.phase};
@@ -263,12 +308,10 @@
             const incomplete=receipt.result?.status==="INCOMPLETE";
             setIndicator(incomplete?"LMS operation incomplete":"LMS operation completed · "+(receipt.result?.status||receipt.phase),"View result");
             if(!submission?.dismissed && !dismissedUntilIdle && dismissedId!==tracked){
-              display(incomplete?"LMS operation incomplete":"LMS management operation completed",
-                incomplete?"The harness outcome was not confirmed. LMS is idle; inspect its receipt before a new operation.":
-                  "The LMS recorded the outcome. Coolify submission is not proof of SEH readiness.",
-                {"Operation ID":tracked,"Status":receipt.result?.status||receipt.phase},
-                {kind:"completed"});
-            }else hide();
+              showReceipt(receipt);
+            }
+            // Dismissal is operator-owned. A receipt cannot close an already
+            // visible dialog or undo a previous explicit dismissal.
             tracked="";
           }else{
             logStage(receipt);
@@ -282,15 +325,39 @@
           if(submission.state==="submitting")
             setIndicator(submission.action+" · submitting to LMS","View operation");
         }else{
-          active=false;shown="";lastState=state;
-          dismissedId="";dismissedUntilIdle=false;
-          // A terminal LMS receipt is not permission to erase the visible
-          // results dialog. Keep it open until the operator dismisses it.
-          if(!(lastCompletion && presentation==="completed" && !shade.hidden))hide();
+          active=false;lastState=state;
+          // An LMS restart exposes its most recent incomplete receipt through
+          // operation-state. Retain its diagnostic even if the modal is closed.
+          if(state.last_operation?.result?.status==="INCOMPLETE"){
+            logStage(state.last_operation);
+            logResult(state.last_operation);
+          }
+          // A transient IDLE snapshot cannot dismiss a visible operation or
+          // prove its outcome. Use a matching terminal receipt when available.
+          // Otherwise leave the dialog open, show uncertainty, and allow retry.
+          if(modal.isOpen() && (presentation==="busy" || presentation==="unverified")){
+            const receipt=state.last_operation;
+            const matching=shown && receipt?.operation_id===shown && receipt?.result?.status;
+            if(matching){
+              logStage(receipt);logResult(receipt);
+              lastCompletion={operationId:shown,status:receipt.result.status};
+              const incomplete=receipt.result.status==="INCOMPLETE";
+              showReceipt(receipt,true);
+            }else{
+              log("LMS reports IDLE · previous operation outcome not verified");
+              display("LMS operation outcome unverified",
+                "LMS is currently idle, but no matching terminal receipt confirms the previous operation. Do not assume deployment succeeded or failed.",
+                {"Operation ID":shown||"Not confirmed","Stage":"IDLE / OUTCOME_UNVERIFIED"},
+                {kind:"unverified",retry:true});
+            }
+          }
           if(lastCompletion)setIndicator((lastCompletion.status==="INCOMPLETE"?"LMS operation incomplete":"LMS operation completed · "+lastCompletion.status),"View result");
           else if(state.last_operation?.result?.status==="INCOMPLETE"){
             setIndicator("Previous LMS operation incomplete · "+(state.last_operation.action||"management"),"View receipt");
-          }else indicator.hidden=true;
+          }else if(modal.isOpen())setIndicator("LMS idle · prior operation outcome unverified","View operation");
+          else indicator.hidden=true;
+          // Do not clear dismissedId/dismissedUntilIdle here. An intermittent
+          // IDLE observation must not resurrect a manually closed operation.
         }
         if(wasActive&&!state.busy)onSettled();
       }catch(error){
@@ -301,14 +368,19 @@
         if(tracked || submission?.state==="accepted"){
           log("LMS status temporarily unavailable · operation ID retained");
           setIndicator("LMS operation acknowledged · status unavailable","View operation");
-          if(!submission?.dismissed)
+          if(modal.isOpen() && !submission?.dismissed)
             display("LMS operation status unavailable",
               "LMS accepted this operation, but the current status read failed. Monitoring will retry; do not resubmit deployment.",
               {"Operation ID":tracked||shown,"Stage":"OBSERVATION_UNAVAILABLE"},
               {kind:"notice",retry:true});
         }else if(!submission || !["submitting","failed","unconfirmed"].includes(submission.state)){
-          shown="";hide();
+          log("LMS status observation unavailable · no terminal outcome verified");
           setIndicator("LMS operation state unavailable · status not verified","Check status");
+          if(modal.isOpen() && presentation!=="completed")
+            display("LMS operation status unavailable",
+              "The service or connection was interrupted. The operation outcome is unknown; monitoring will retry automatically.",
+              {"Operation ID":shown||"Not confirmed","Stage":"OBSERVATION_UNAVAILABLE"},
+              {kind:"unverified",retry:true});
         }else if(submission.state==="submitting"){
           log("LMS status observation unavailable · submission still pending");
         }
@@ -339,15 +411,27 @@
           {"Operation":submission.action,"Stage":submission.state.toUpperCase()},
           {kind:submission.state==="submitting"?"busy":"notice",retry:submission.state!=="submitting"});
       }else if(lastCompletion){
-        display(lastCompletion.status==="INCOMPLETE"?"LMS operation incomplete":"LMS management operation completed",
-          lastCompletion.status==="INCOMPLETE"?"The prior outcome was not confirmed. The LMS is idle; the SEH harness owns mutation safety.":
-            "The LMS recorded the outcome. Coolify submission is not proof of SEH readiness.",
+        // Preserve the same diagnosis after a deliberate dismiss-and-reopen.
+        if(lastRecorded?.operationId===lastCompletion.operationId)
+          display(lastCompletion.status==="INCOMPLETE"?"LMS operation incomplete":"LMS management operation completed",
+            "LMS recorded the outcome. Review its causal diagnosis before another operation.",
+            {"Operation ID":lastCompletion.operationId,"Status":lastCompletion.status,
+              ...(lastRecorded.causalDiagnostic?{
+                "Failure code":lastRecorded.causalDiagnostic.error_code,
+                "Failure stage":lastRecorded.causalDiagnostic.failed_stage}:{})},
+            {kind:"completed"});
+        else display(lastCompletion.status==="INCOMPLETE"?"LMS operation incomplete":"LMS management operation completed",
+          "The LMS recorded the outcome. Coolify submission is not proof of SEH readiness.",
           {"Operation ID":lastCompletion.operationId,"Status":lastCompletion.status},
           {kind:"completed"});
       }else if(lastState?.last_operation?.result?.status==="INCOMPLETE"){
         showCurrent(true);
       }else{
-        // A status probe is not a user dismissal: retry without locking the UI.
+        // Reopening is explicit, even while the service cannot be observed.
+        display("LMS operation status unavailable",
+          "A verified operation snapshot is not available. Monitoring will retry; do not infer an outcome from the interruption.",
+          {"Operation ID":tracked||shown||"Not confirmed","Stage":"OBSERVATION_UNAVAILABLE"},
+          {kind:"unverified",retry:true});
         void refresh();
       }
     }
@@ -358,17 +442,30 @@
       setIndicator("Checking LMS operation state", "Check status");
       return refresh();
     }
-    function stop(){
+    function pause(){
+      // A network disconnect is not a navigation or a user dismissal. Stop
+      // polling until reconnection, but retain the operation, log and dialog.
       running=false;generation++;
       if(timer!==null)global.clearTimeout(timer);
-      timer=null;inFlight=false;active=false;tracked="";shown="";lastState=null;lastCompletion=null;
-      dismissedId="";dismissedUntilIdle=false;
-      submission=null;outputLines=[];lastHarnessOutputSeq.clear();outputText.textContent="";
-      lastObservedStage="";lastObservedResult="";
-      hide();indicator.hidden=true;
+      timer=null;inFlight=false;
+      log("LMS connection interrupted · awaiting reconnection");
+      setIndicator("LMS connection unavailable · monitoring paused","View operation");
+      if(modal.isOpen() && presentation!=="completed")
+        display("LMS connection interrupted",
+          "The connection to LMS was lost. The operation outcome is not verified. Monitoring resumes on reconnection.",
+          {"Operation ID":tracked||shown||"Not confirmed","Stage":"CONNECTION_UNAVAILABLE"},
+          {kind:"unverified"});
+    }
+    function stop(){
+      // Explicit controller teardown only; not a service/interruption path.
+      // The host can abandon the monitor when it navigates away.
+      pause();
+      modal.dispose();
+      indicator.remove();
     }
     function track(operationId){
       if(typeof operationId==="string"&&/^[A-Za-z0-9][A-Za-z0-9_.-]{15,127}$/.test(operationId)){
+        if(lastRecorded?.operationId!==operationId)lastRecorded=null;
         tracked=operationId;lastCompletion=null;
         shown=operationId;
         log("LMS acknowledged operation · "+operationId);
@@ -382,7 +479,15 @@
         }
       }
     }
-    return Object.freeze({start,stop,track,begin,settled,refresh,
+    function diagnostics(){
+      // Purely observational: E/W/G must never initiate a network call.
+      const receipt=lastRecorded;
+      return receipt?{...receipt,
+        causalDiagnostic:receipt.causalDiagnostic?{...receipt.causalDiagnostic}:null}:
+        {schema:"mcel.slh.management-evidence.v1",status:"not-observed",
+          operationId:tracked||shown||null,causalDiagnostic:null};
+    }
+    return Object.freeze({start,pause,stop,track,begin,settled,refresh,diagnostics,
       getState:()=>lastState,isActive:()=>active,modal});
   }
   global.McelSlhManagementModal=Object.freeze({create});

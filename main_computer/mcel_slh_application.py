@@ -24,6 +24,7 @@ from main_computer.slh.ports import DEFAULT_SLH_API_PORT
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path("mcel_apps/slh/application.js")
 ASSETS = (
+    "main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js",
     "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
     "main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js",
     "main_computer/web/applications/scripts/mcel-semantic-seh-deployment-ports.js",
@@ -32,6 +33,10 @@ ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-modal-subprogram.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-management-modal.js",
     "main_computer/web/applications/scripts/mcel-semantic-seh-remote-ports.js",
+    "main_computer/web/applications/scripts/mcel-diagnostic-plugins.js",
+    "main_computer/web/applications/scripts/mcel-self-diagnosis.js",
+    "main_computer/web/applications/scripts/mcel-diagnostic-evidence.js",
+    "main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js",
 )
 STYLE = "main_computer/web/applications/styles/mcel-semantic-workbench.css"
 MODAL_STYLE = "main_computer/web/applications/styles/mcel-semantic-modal-subprogram.css"
@@ -204,6 +209,9 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
     payload = json.dumps({"ir": ir, "composition": composition},
                          separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
     css = (repo / STYLE).read_text(encoding="utf-8") + "\n" + (repo / MODAL_STYLE).read_text(encoding="utf-8")
+    # The same semantic diagnostic colors and geometry as the Calculator.
+    css += "\n" + (repo / "main_computer/web/applications/styles/mcel-semantic-color-diagnostics.css").read_text(encoding="utf-8")
+    css += "\n" + (repo / "main_computer/web/applications/styles/mcel-diagnostics-counter-widget.css").read_text(encoding="utf-8")
     if "</style" in css.lower():
         raise SlhApplicationError("Stylesheet contains an HTML closing tag")
     target = "remote-seh" if view == "remote-seh" else "network" if view.startswith("network") else "local"
@@ -258,13 +266,118 @@ const adapter=Object.freeze({{
         "intent:refresh-lifecycle"].includes(req.intentId)) ? port.invoke(req)
         : Promise.reject(Error("LOCAL_AUTHORITY_NOT_SELECTED")))
 }});
+// MCEL operational diagnostics: observational only. Neither this trace nor its
+// session-local history is an identity selection, a service request, or a retry.
+// Never include identity names, bearer tokens, fingerprints or request bodies.
+const diagnosticsKey="mcel.slh.ewg.timeline.v1."+selectedTarget;
+const identityKey="mcel.slh.selected-identity.v2."+selectedTarget;
+const explicitNoneMarker="__EXPLICIT_NONE_V3__";
+const history=(()=>{{
+  try{{const stored=JSON.parse(globalThis.sessionStorage?.getItem(diagnosticsKey)||"[]");
+    return Array.isArray(stored)?stored.slice(-48).filter(item=>item?.schema==="mcel.slh.diagnostic-event.v1"):[];}}
+  catch{{return [];}}
+}})();
+const diagnosticState={{mount:"pending",identityRefresh:"not-attempted",identityStatus:"not-attempted",
+  identityDirectory:"not-observed",restoration:"not-attempted",lifecycleRefresh:"not-attempted",
+  identityAttempts:0,lifecycleAttempts:0}};
+let diagnosticSequence=history.reduce((max,item)=>Math.max(max,Number(item.sequence)||0),0);
+const recordDiagnostic=(stage,outcome,facts={{}})=>{{
+  const entry={{schema:"mcel.slh.diagnostic-event.v1",sequence:++diagnosticSequence,
+    time:new Date().toISOString(),stage,outcome,...facts}};
+  history.push(entry);if(history.length>60)history.splice(0,history.length-60);
+  try{{globalThis.sessionStorage?.setItem(diagnosticsKey,JSON.stringify(history));}}catch{{}}
+}};
+recordDiagnostic("semantic-mount","started");
 let managementOverlay=null;
 const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),data.ir,
   {{capabilities:adapter,composition:data.composition,presentation:"expert",
     navigationChrome:document.getElementById("mcel-slh-navigation-context")}});
-const scopeKey="mcel.slh.selected-identity.v2."+selectedTarget;
+diagnosticState.mount="completed";
+recordDiagnostic("semantic-mount","completed");
+const scopeKey=identityKey;
+const observeSlhDiagnostics=()=>{{
+  const selected=app.readState("state:selected-local-identity")||"";
+  const directory=app.readState("state:local-identities");
+  const identityStatus=app.readState("state:local-identity-status");
+  const lifecycle=app.readState("state:organization-lifecycle");
+  const available=Array.isArray(directory)?directory:[];
+  let remembered=null;
+  try{{remembered=globalThis.sessionStorage?.getItem(scopeKey)??null;}}catch{{}}
+  const form=document.querySelector('form[data-intent="intent:configure-and-enable-organization"]');
+  const formAddress=form?.querySelector('[name="bindAddress"]')?.value||null;
+  const formPort=form?.querySelector('[name="port"]')?.value||null;
+  const verified=diagnosticState.identityDirectory==="AVAILABLE";
+  const rawLifecycle=selectedTarget==="local"?port.lifecycleObservation():null;
+  const lifecycleObserved=diagnosticState.lifecycleRefresh==="completed" &&
+    rawLifecycle?.classification==="observed" &&
+    !!lifecycle?.bindAddress && Number.isInteger(lifecycle?.port) && lifecycle.port>0;
+  const findings=[];
+  if(["failed","refused"].includes(diagnosticState.identityRefresh) ||
+      ["failed","refused"].includes(diagnosticState.identityStatus) ||
+      diagnosticState.identityDirectory==="UNAVAILABLE")
+    findings.push({{code:"slh-startup-identity-observation-unavailable",severity:"warning",status:diagnosticState.identityDirectory}});
+  if(["failed","refused"].includes(diagnosticState.lifecycleRefresh))
+    findings.push({{code:"slh-startup-lifecycle-observation-unavailable",severity:"warning",status:diagnosticState.lifecycleRefresh}});
+  if(remembered==="__NONE__")
+    findings.push({{code:"slh-legacy-none-marker-ambiguous",severity:"warning",status:"ignored-on-restoration"}});
+  if(rawLifecycle && rawLifecycle.classification!=="observed")
+    findings.push({{code:"slh-lifecycle-config-unverified",severity:"warning",
+      status:rawLifecycle.classification}});
+  if(formAddress==="0.0.0.0" && !lifecycleObserved)
+    findings.push({{code:"slh-wildcard-bind-not-observed",severity:"warning",status:"draft-or-unknown"}});
+  const sehManagement=managementOverlay?.diagnostics() ||
+    {{schema:"mcel.slh.management-evidence.v1",status:"not-observed",
+      operationId:null,causalDiagnostic:null}};
+  if(sehManagement.causalDiagnostic)
+    findings.push({{code:"slh-seh-operation-causal-failure",severity:"warning",
+      status:sehManagement.causalDiagnostic.error_code}});
+  return {{schema:"mcel.slh.operational-evidence.v1",target:selectedTarget,
+    capturesConfigurationInputs:true,
+    startup:{{...diagnosticState}},
+    identity:{{directoryState:identityStatus?.state||diagnosticState.identityDirectory,
+      directoryVerified:verified,count:verified?available.length:null,
+      selected:!!selected,selectedInDirectory:verified?available.some(row=>row.deviceId===selected):null,
+      remembered:remembered===null?"absent":remembered===explicitNoneMarker?"explicit-none-marker":
+        remembered==="__NONE__"?"legacy-none-marker":"saved-identity",
+      rememberedInDirectory:verified&&remembered!==null&&
+        ![explicitNoneMarker,"__NONE__"].includes(remembered)?
+        available.some(row=>row.deviceId===remembered):null}},
+    lifecycle:{{refresh:diagnosticState.lifecycleRefresh,
+      state:lifecycle?.state||"not-observed",observedBindAddress:lifecycleObserved?lifecycle.bindAddress:null,
+      observedPort:lifecycleObserved?lifecycle.port:null,
+      rawObservation:rawLifecycle,configurationVerified:lifecycleObserved,
+      renderedBindAddress:formAddress,renderedPort:formPort,
+      renderedDefaultWhileUnobserved:formAddress==="0.0.0.0" && !lifecycleObserved}},
+    sehManagement,timeline:history.slice(),findings}};
+}};
+window.MCELDiagnosticEvidence?.registerOperational("slh",observeSlhDiagnostics);
+window.MCELDiagnosticsCounterWidget?.mountSemantic(data.ir.application.appId,
+  document.getElementById("mcel-workbench"),data.ir,null);
+const observedRead=async intent=>{{
+  recordDiagnostic("observation-dispatch","started",{{intent}});
+  try{{
+    const receipt=await app.execute(intent);
+    const outcome=receipt?.disposition==="completed"?"completed":
+      receipt?.disposition==="refused-before-attempt"?"refused":
+      receipt?.disposition==="failed"?"failed":"incomplete";
+    recordDiagnostic("observation-settled",outcome,{{intent,
+      disposition:String(receipt?.disposition||"unknown").slice(0,80)}});
+    return receipt;
+  }}catch(error){{
+    recordDiagnostic("observation-settled","failed",{{intent,
+      errorClass:String(error?.name||"Error").slice(0,80)}});
+    throw error;
+  }}
+}};
 // Changing signer invalidates both local proof and target-specific tickets.
 // Selection itself is renderer-local: no authentication request is issued.
+// A "None" preference is persisted only from the operator's clear button.
+let operatorDeselection=false;
+const workbench=document.getElementById("mcel-workbench");
+workbench.addEventListener("click",event=>{{
+  if(event.isTrusted && event.target?.closest?.("[data-mcel-deselect]"))
+    operatorDeselection=true;
+}},true);
 const identitySelected=value=>{{
   port.setIdentity(value);
   networkPort.forget();sehPort.forget();
@@ -274,10 +387,20 @@ const identitySelected=value=>{{
     app.setNotebookAuthorization(false,{{scope:"records"}});
     app.setNotebookAuthorization(!!value,{{scope:"records",refresh:false}});
   }}
-  try{{globalThis.sessionStorage?.setItem(scopeKey,value||"__NONE__");}}catch{{}}
+  try{{
+    if(value)globalThis.sessionStorage?.setItem(scopeKey,value);
+    else if(operatorDeselection)globalThis.sessionStorage?.setItem(scopeKey,explicitNoneMarker);
+  }}catch{{}}
+  recordDiagnostic("identity-selection","changed",{{selected:!!value,
+    explicitDeselection:!value&&operatorDeselection,
+    directoryVerified:diagnosticState.identityDirectory==="AVAILABLE"}});
+  operatorDeselection=false;
 }};
 document.getElementById("mcel-workbench").addEventListener("mcel:collection-selection",event=>{{
-  if(event.detail?.stateId==="state:selected-local-identity")identitySelected(event.detail.value||"");
+  if(event.detail?.stateId==="state:selected-local-identity"){{
+    recordDiagnostic("identity-selection","user-selection",{{selected:!!event.detail.value}});
+    identitySelected(event.detail.value||"");
+  }}
 }});
 port.onAuthenticationChanged(authenticated=>{{
   if(selectedTarget==="local")app.setNotebookAuthorization(!!authenticated,{{scope:"records"}});
@@ -286,7 +409,7 @@ networkPort.onConnectionChanged(authenticated=>{{
   if(selectedTarget==="network"){{
     app.setNotebookAuthorization(!!authenticated);
     if(authenticated)void managementOverlay?.start();
-    else managementOverlay?.stop();
+    else managementOverlay?.pause();
   }}
 }});
 sehPort.onConnectionChanged(authenticated=>{{
@@ -318,14 +441,25 @@ if(selectedTarget!=="remote-seh"){{
   }});
   if(selectedTarget==="local")void managementOverlay.start();
 }}
-window.__mcelSlh=Object.freeze({{app,composition:data.composition,managementOverlay}});
+window.__mcelSlh=Object.freeze({{app,composition:data.composition,managementOverlay,
+  diagnostics:observeSlhDiagnostics}});
 const refreshIdentities=async()=>{{
   // Identity discovery and Coolify management both use the resident LMS.
   // Complete the identity observation first; an empty UNAVAILABLE response
   // must never be misrepresented as a verified empty identity directory.
-  const identities=await app.execute("intent:refresh-identities");
-  const status=await app.execute("intent:refresh-identity-status");
+  diagnosticState.identityRefresh="pending";
+  const identities=await observedRead("intent:refresh-identities");
+  diagnosticState.identityRefresh=identities?.disposition==="completed"?"completed":
+    identities?.disposition==="refused-before-attempt"?"refused":"failed";
+  diagnosticState.identityStatus="pending";
+  const status=await observedRead("intent:refresh-identity-status");
+  diagnosticState.identityStatus=status?.disposition==="completed"?"completed":
+    status?.disposition==="refused-before-attempt"?"refused":"failed";
   const summary=app.readState("state:local-identity-status");
+  diagnosticState.identityDirectory=String(summary?.state||"not-observed");
+  recordDiagnostic("identity-directory","observed",{{directoryState:diagnosticState.identityDirectory,
+    directoryCount:Array.isArray(app.readState("state:local-identities"))?
+      app.readState("state:local-identities").length:null}});
   if(identities?.disposition!=="completed" || status?.disposition!=="completed"){{
     message.textContent="Local identity directory unavailable · "+
       String(summary?.explanation||identities?.reason||status?.reason||"observation failed");
@@ -338,49 +472,184 @@ const refreshIdentities=async()=>{{
   }}
   const selected=app.readState("state:selected-local-identity");
   const available=app.readState("state:local-identities")||[];
-  if(available.some(row=>row.deviceId===selected))return true;
+  if(available.some(row=>row.deviceId===selected)){{
+    if(selectedTarget==="local")message.textContent=message.textContent.replace(
+      " · Local identity directory unavailable","");
+    diagnosticState.restoration="already-selected";
+    recordDiagnostic("identity-restoration","already-selected");
+    return true;
+  }}
   let remembered=null;
   try{{remembered=globalThis.sessionStorage?.getItem(scopeKey)??null;}}catch{{}}
   // Explicit deselection is durable for this target; do not resurrect default.
-  if(remembered==="__NONE__"){{identitySelected("");return true;}}
-  const chosen=available.some(row=>row.deviceId===remembered)?remembered:
-    remembered===null?port.preferredIdentity():"";
+  if(remembered===explicitNoneMarker){{
+    diagnosticState.restoration="explicit-none-marker";
+    recordDiagnostic("identity-restoration","none-marker");
+    identitySelected("");return true;
+  }}
+  // Old __NONE__ entries were also written on failed page exits, so they
+  // cannot prove intentional deselection. Migrate to the observed default.
+  const saved=available.some(row=>row.deviceId===remembered)?remembered:null;
+  const chosen=saved||port.preferredIdentity();
+  diagnosticState.restoration=remembered==="__NONE__"?"legacy-none-migrated":
+    chosen?"selection-requested":"not-selected";
+  recordDiagnostic("identity-restoration",diagnosticState.restoration,{{
+    remembered:remembered===null?"absent":remembered==="__NONE__"?"legacy-none-marker":"saved-identity",
+    rememberedInDirectory:!!saved}});
   if(chosen)await app.execute("intent:choose-identity",{{key:chosen}});
   else identitySelected("");
+  if(selectedTarget==="local")message.textContent=message.textContent.replace(
+    " · Local identity directory unavailable","");
   return true;
 }};
-// Store only a non-secret signer name or the explicit None marker.
+// Page exit is not an operator deselection. Failed discovery must not erase
+// the previously remembered signer or create a no-selection preference.
+let leaving=false;
 window.addEventListener("pagehide",()=>{{
-  try{{globalThis.sessionStorage?.setItem(scopeKey,
-    app.readState("state:selected-local-identity")||"__NONE__");}}catch{{}}
+  leaving=true;
+  const selected=app.readState("state:selected-local-identity");
+  const verified=diagnosticState.identityDirectory==="AVAILABLE" &&
+    (app.readState("state:local-identities")||[]).some(row=>row.deviceId===selected);
+  recordDiagnostic("pagehide-selection-persistence",verified?"saved-selection":"preserved-existing",{{
+    directoryVerified:diagnosticState.identityDirectory==="AVAILABLE"}});
+  if(verified)try{{globalThis.sessionStorage?.setItem(scopeKey,selected);}}catch{{}}
 }});
-const refreshLifecycle=async()=>{{
-  const receipt=await app.execute("intent:refresh-lifecycle");
-  if(selectedTarget!=="local" || receipt?.disposition!=="completed")return;
-  const observed=app.readState("state:organization-lifecycle");
-  if(observed?.state)message.textContent="ORG-SLH "+observed.state+" · "+
-    observed.bindAddress+":"+observed.port;
+// Only an observed endpoint (or an explicit, complete operator-entered
+// configuration) may be submitted. These guards have no effect on service
+// mutation authority, which remains in the SLH backend.
+const configForm=document.querySelector('form[data-intent="intent:configure-and-enable-organization"]');
+const draftFields=new Map();
+const observedConfiguration=()=>{{
+  const raw=port.lifecycleObservation();
+  const current=app.readState("state:organization-lifecycle");
+  return diagnosticState.lifecycleRefresh==="completed" &&
+    raw?.classification==="observed" && !!current?.bindAddress &&
+    Number.isInteger(current?.port) && current.port>0;
 }};
-port.onSetupChanged(()=>{{void refreshLifecycle();}});
-// LMS is a single local management authority. Do not race its identity
-// discovery with the SEH deployment inspection on initial page load.
-// This is ordering, not an authorization dependency: deployment still loads
-// when no identity is selected or the directory cannot be verified.
+if(selectedTarget==="local" && configForm){{
+  configForm.addEventListener("input",event=>{{
+    const key=event.target?.name;
+    if(event.isTrusted && ["bindAddress","port"].includes(key))
+      draftFields.set(key,event.target.value);
+  }},true);
+  configForm.addEventListener("submit",event=>{{
+    const address=configForm.elements.namedItem("bindAddress")?.value||"";
+    const portValue=configForm.elements.namedItem("port")?.value||"";
+    const completeDraft=["bindAddress","port"].every(key=>draftFields.has(key));
+    if((!observedConfiguration() && !completeDraft) || !address.trim() ||
+      !/^[0-9]+$/.test(portValue) || Number(portValue)<1 || Number(portValue)>65535){{
+      event.preventDefault();event.stopImmediatePropagation();
+      message.textContent="ORG-SLH configuration unverified · enter both Bind Address and Port explicitly before configuring";
+      recordDiagnostic("configuration-submit","blocked-unverified",{{
+        observed:observedConfiguration(),completeDraft}});
+    }}
+  }},true);
+}}
+const refreshLifecycle=async()=>{{
+  ++diagnosticState.lifecycleAttempts;
+  diagnosticState.lifecycleRefresh="pending";
+  let receipt;
+  try{{receipt=await observedRead("intent:refresh-lifecycle");}}
+  catch(error){{diagnosticState.lifecycleRefresh="failed";
+    recordDiagnostic("lifecycle-hydration","failed",{{errorClass:String(error?.name||"Error").slice(0,80)}});
+    throw error;
+  }}
+  diagnosticState.lifecycleRefresh=receipt?.disposition==="completed"?"completed":
+    receipt?.disposition==="refused-before-attempt"?"refused":"failed";
+  const observedLifecycle=app.readState("state:organization-lifecycle");
+  const raw=port.lifecycleObservation();
+  recordDiagnostic("lifecycle-hydration",diagnosticState.lifecycleRefresh,{{
+    state:String(observedLifecycle?.state||"not-observed").slice(0,80),
+    rawState:raw?.organizationState||"not-observed",
+    serviceState:raw?.serviceState||"not-observed",
+    classification:raw?.classification||"no-response",
+    rawEndpoint:raw?.endpoint||"not-observed",
+    observedBindAddress:observedConfiguration()?observedLifecycle?.bindAddress:null,
+    observedPort:observedConfiguration()?observedLifecycle?.port:null}});
+  if(selectedTarget!=="local")return false;
+  const identityCaveat=diagnosticState.identityDirectory!=="AVAILABLE" ||
+    diagnosticState.identityRefresh!=="completed" ||
+    diagnosticState.identityStatus!=="completed"?
+    " · Local identity directory unavailable":"";
+  if(receipt?.disposition!=="completed" || !observedConfiguration()){{
+    message.textContent="ORG-SLH configuration unverified · "+
+      String(raw?.classification||"observation-unavailable")+identityCaveat;
+    return false;
+  }}
+  // The generic MCEL acceptResult renderer applies authoritative values.
+  // Restore only fields the operator explicitly edited while a read ran.
+  for(const [key,value] of draftFields){{
+    const input=configForm?.elements.namedItem(key);
+    if(input)input.value=value;
+  }}
+  message.textContent="ORG-SLH "+observedLifecycle.state+" · "+
+    observedLifecycle.bindAddress+":"+observedLifecycle.port+identityCaveat;
+  return true;
+}};
+// Independent, bounded recovery lanes. Neither identity nor lifecycle
+// availability is an authorization prerequisite for the other's read.
+const retryDelays=[400,1300,3400];
+let identityRecoveryRun=0,lifecycleRecoveryRun=0;
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const recoverIdentities=async(firstAttempt=false)=>{{
+  const run=++identityRecoveryRun;
+  for(let attempt=0;attempt<=retryDelays.length;attempt++){{
+    if(attempt>0 || !firstAttempt)await sleep(retryDelays[Math.min(attempt===0?0:attempt-1,retryDelays.length-1)]);
+    if(leaving || run!==identityRecoveryRun)return false;
+    ++diagnosticState.identityAttempts;
+    try{{if(await refreshIdentities())return true;}}
+    catch(error){{recordDiagnostic("identity-recovery","failed",{{
+      attempt:attempt+1,errorClass:String(error?.name||"Error").slice(0,80)}});}}
+    recordDiagnostic("identity-recovery","retry-scheduled",{{attempt:attempt+1}});
+  }}
+  return false;
+}};
+const recoverLifecycle=async()=>{{
+  const run=++lifecycleRecoveryRun;
+  for(let attempt=0;attempt<=retryDelays.length;attempt++){{
+    if(attempt)await sleep(retryDelays[attempt-1]);
+    if(leaving || run!==lifecycleRecoveryRun)return false;
+    try{{if(await refreshLifecycle())return true;}}
+    catch(error){{recordDiagnostic("lifecycle-recovery","failed",{{
+      attempt:attempt+1,errorClass:String(error?.name||"Error").slice(0,80)}});}}
+    recordDiagnostic("lifecycle-recovery","retry-scheduled",{{attempt:attempt+1}});
+  }}
+  return false;
+}};
+port.onSetupChanged(action=>{{
+  if(action==="configure-and-enable")draftFields.clear();
+  void recoverLifecycle();
+}});
+const observeOnReturn=()=>{{
+  if(leaving)return;
+  if(diagnosticState.identityDirectory!=="AVAILABLE" ||
+    diagnosticState.identityRefresh!=="completed" || diagnosticState.identityStatus!=="completed")
+    void recoverIdentities();
+  if(selectedTarget==="local")void recoverLifecycle();
+}};
+window.addEventListener("focus",observeOnReturn);
+window.addEventListener("online",observeOnReturn);
+// Initial identity observation first, without delaying lifecycle hydration
+// behind its *retries*. SEH inspection remains independent of signer status.
 void refreshIdentities().then(identitiesAvailable=>{{
-  if(selectedTarget==="local"){{
-    const identityFailure=identitiesAvailable?"":message.textContent;
-    void refreshLifecycle().then(()=>{{
-      if(identityFailure && message.textContent!==identityFailure)message.textContent+=" · "+identityFailure;
-    }});
-  }}else message.textContent=selectedTarget==="remote-seh"?
+  diagnosticState.identityAttempts=1;
+  if(!identitiesAvailable)void recoverIdentities();
+  if(selectedTarget==="local")void recoverLifecycle();
+  else message.textContent=selectedTarget==="remote-seh"?
     "Remote SEH ready to connect · no administrator session":
     "Network SLH ready to connect · no remote session established";
-}},()=>{{message.textContent="Local identity directory unavailable · observation failed";}})
+}},error=>{{
+  diagnosticState.identityRefresh="failed";
+  recordDiagnostic("startup-identity-observation","failed",{{errorClass:String(error?.name||"Error").slice(0,80)}});
+  void recoverIdentities();
+  if(selectedTarget==="local")void recoverLifecycle();
+}})
 .then(()=>app.execute("intent:select-target",{{choice:selectedTarget}}))
 .then(receipt=>{{
   if(selectedTarget==="local" && receipt?.disposition==="completed")
     app.setNotebookAuthorization(true,{{scope:"operations"}});
 }}).catch(error=>{{message.dataset.error="true";
+  recordDiagnostic("startup-initialization","failed",{{errorClass:String(error?.name||"Error").slice(0,80)}});
   message.textContent="SLH initialization unavailable: "+String(error?.message||error);
 }});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
