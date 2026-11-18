@@ -1,0 +1,38 @@
+{
+  "schema": "nanojev.sealed-overlap.raw-geometry-phrases.v1",
+  "purpose": "Independent decoder-free parity/contradiction/omission geometry probes; human-authored diagnostic text, never a contract seal.",
+  "axes": {
+    "authority": {
+      "positive": ["A designated approver possesses authority to permit the operation", "Approval power for the operation rests with a duly empowered delegate"],
+      "negative": ["No designated approver possesses authority to permit the operation", "Approval power for the operation does not rest with any empowered delegate"]
+    },
+    "obligation": {
+      "positive": ["Performance of the stated undertaking is mandatory under these terms", "The contracting party is required to carry out the undertaking"],
+      "negative": ["Performance of the stated undertaking is not mandatory under these terms", "The contracting party is not required to carry out the undertaking"]
+    },
+    "resource": {
+      "positive": ["The work is assigned a finite allotment of computing capacity", "A limited pool of resources is reserved for this operation"],
+      "negative": ["The work is not assigned any allotment of computing capacity", "No resource pool is reserved or allocated for this operation"]
+    },
+    "evidence": {
+      "positive": ["Independent records substantiate the claim under review", "The assertion is supported by traceable observations"],
+      "negative": ["No independent records substantiate the claim under review", "The assertion lacks support from traceable observations"]
+    },
+    "time": {
+      "positive": ["A binding cutoff time restricts when the step may occur", "The agreement establishes a specific completion deadline"],
+      "negative": ["No cutoff time restricts when the step may occur", "The agreement establishes no specific completion deadline"]
+    },
+    "uncertainty": {
+      "positive": ["The resulting condition remains unresolved and uncertain", "Multiple outcomes remain possible on the known facts"],
+      "negative": ["The resulting condition is resolved and certain", "Only one outcome is possible on the known facts"]
+    },
+    "exclusion": {
+      "positive": ["The governing terms prohibit carrying out this operation", "Combining the specified actions is expressly disallowed"],
+      "negative": ["The governing terms do not prohibit carrying out this operation", "Combining the specified actions is expressly allowed"]
+    },
+    "consequence": {
+      "positive": ["Performing the step changes the resulting system condition", "A defined downstream change follows from this operation"],
+      "negative": ["Performing the step does not change the resulting system condition", "No downstream change follows from this operation"]
+    }
+  }
+}

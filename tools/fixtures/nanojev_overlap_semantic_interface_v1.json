@@ -1,0 +1,20 @@
+{
+  "schema": "nanojev.sealed-overlap.semantic-interface-fixture.v1",
+  "scope": "Training-only grammatical augmentation and independently authored surface-form holdout. All clauses contain one explicitly delimited transfer proposition. Gold annotations are evaluation-only.",
+  "augmentation_templates": [
+    "{condition} activates a clause in which {actor} {modal} send the {asset} to {recipient}; the provision records the outcome {consequence}",
+    "A declared outcome is {consequence}; if {condition}, {actor} {modal} transfer the {asset} to {recipient}",
+    "Under {condition}, {consequence} is the consequence specified for {actor} who {modal} deliver the {asset} to {recipient}"
+  ],
+  "fresh_templates": [
+    "The outcome {consequence} is recorded, and following {condition} the supplier {actor} {modal} pass the {asset} to {recipient}",
+    "After {condition}, a {asset} transfer from {actor} to {recipient} is discussed with consequence {consequence}; the supplier {modal} carry it out",
+    "The beneficiary is {recipient} and the supplier is {actor}; after {condition}, the contract states {duty} for transfer of the {asset}, and the result is {consequence}"
+  ],
+  "positive": {"modal": "is required to", "duty": "a duty exists"},
+  "negative": {"modal": "is not required to", "duty": "no duty exists"},
+  "reference_marker": "the same supplier",
+  "new_name_policy": "Uppercase proper-name candidate absent from training vocab; exactly one out-of-vocabulary name with one known counterparty is supported, otherwise fail closed",
+  "compound_condition_policy": "the conjunction of X and Y has been satisfied; exactly two explicitly known atomic conditions; no implicit logical inference",
+  "document_delimiter": " || "
+}

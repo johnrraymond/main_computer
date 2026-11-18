@@ -735,6 +735,14 @@
       --desktop-icon-panel: rgba(45, 212, 191, 0.15);
       --desktop-icon-ink: #031411;
     }
+    .desktop-icon[data-app="slh"] {
+      --desktop-icon-accent: #69baff;
+      --desktop-icon-accent-bright: #b6e0ff;
+      --desktop-icon-border: rgba(105, 186, 255, 0.5);
+      --desktop-icon-glow: rgba(105, 186, 255, 0.42);
+      --desktop-icon-panel: rgba(105, 186, 255, 0.15);
+      --desktop-icon-ink: #071a2d;
+    }
     .desktop-icon strong {
       font-size: 17px;
       color: var(--ink);

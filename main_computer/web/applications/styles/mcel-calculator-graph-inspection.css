@@ -5,8 +5,8 @@
 #mcel-expanded-root [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="inspection"] {
   display:flex!important;flex-direction:column;gap:10px;align-items:stretch;
   width:100%;min-height:100%;max-width:100%;
-  background:transparent!important;border:0!important;border-radius:0!important;
-  padding:0!important;box-shadow:none!important;
+  border:0!important;border-radius:0!important;
+  padding:0!important;
 }
 #mcel-expanded-root [data-mcel-natural-scroller="inspection"] > [data-mcel-purpose="inspection"] > [data-mcel-purpose="results"] {
   width:100%;max-width:100%;min-height:0;flex:0 0 auto;

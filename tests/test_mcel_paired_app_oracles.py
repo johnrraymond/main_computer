@@ -42,15 +42,18 @@ def sample(app, width):
     wide = width >= 980
     x=12
     if app=='task-manager':
-        zones={'controls':dict(x=x,y=40,w=width-24,h=100),
-               'workspace':dict(x=x,y=150,w=width-24 if narrow else width*.6,h=160),
+        zones={'navigator':dict(x=x,y=40,w=width-24 if narrow else 175,h=100),
+               'workspace':dict(x=x,y=150,w=width-24 if narrow else width*.55,h=160),
                'tools':dict(x=x,y=320,w=width-24,h=200),
                'status':dict(x=x,y=530,w=width-24,h=45)}
         if wide:
-            zones['workspace']['w']=width*.60
-            zones['tools'].update(x=x,y=320,w=width-24)
-            zones['details']=dict(x=x+width*.60+12,y=150,w=width*.30,h=160)
+            zones['workspace'].update(x=x+187,y=40,w=width*.55)
+            zones['details']=dict(x=x+187+width*.55+12,y=40,w=width*.22,h=160)
             zones['status']['y']=530
+        elif not narrow:
+            zones['workspace'].update(x=x+187,y=40,w=width-211)
+            zones['details']=dict(x=x,y=530,w=width-24,h=140)
+            zones['status']['y']=680
         else:
             zones['details']=dict(x=x,y=530,w=width-24,h=140)
             zones['status']['y']=680
@@ -119,10 +122,10 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         fixture['zone']['tools']['x']=100
         self.assertIn('tools-not-adjacent-right',oracle.check_layout('code-editor',fixture,1100)['failures'])
 
-    def test_task_controls_below_primary_work_rejected(self):
+    def test_task_navigation_below_primary_work_rejected(self):
         fixture=sample('task-manager',390)
-        fixture['zone']['controls']['y']=170
-        self.assertIn('task-controls-not-before-workspace',oracle.check_layout('task-manager',fixture,390)['failures'])
+        fixture['zone']['navigator']['y']=170
+        self.assertIn('navigation-not-above-workspace',oracle.check_layout('task-manager',fixture,390)['failures'])
 
     def test_task_required_tools_cannot_disappear(self):
         fixture=sample('task-manager',1100)
@@ -259,8 +262,8 @@ class OtherAppOracleUnitTests(unittest.TestCase):
         perturb={
             'file-manager': ('[data-mcel-zone="navigator"]{transform:translateX(350px)!important}',
                              'zones-overlap:navigator:workspace'),
-            'task-manager': ('[data-mcel-zone="controls"]{transform:translateY(250px)!important}',
-                             'task-controls-not-before-workspace'),
+            'task-manager': ('[data-mcel-zone="navigator"]{transform:translateX(400px)!important}',
+                             'zones-overlap:navigator:workspace'),
             'code-editor': ('[data-mcel-zone="tools"]{transform:translateY(300px)!important}',
                             'tools-not-adjacent-right'),
         }

@@ -67,6 +67,7 @@ def test_task_manager_tab_switch_keeps_primary_workspace_bounded():
             page.on('pageerror',lambda e:errors.append(str(e)))
             _open(page,render_semantic_page('task-manager'))
             before=_check(page)
+            page.locator('[data-mcel-purpose="navigation"] [data-value="operations"]').click()
             page.get_by_role('tab',name='Scheduled operations and selected schedule').click()
             after=_check(page)
             assert before['regionIds']==after['regionIds']

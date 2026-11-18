@@ -45,7 +45,7 @@ ATTRS = frozenset({
     'data-mcel-prefer-representation',
     'data-mcel-prefer-sizing', 'data-mcel-prefer-width-group',
     'data-mcel-prefer-align',
-    'data-mcel-when-state', 'data-mcel-when-value',
+    'data-mcel-when-state', 'data-mcel-when-value', 'data-mcel-subview-group',
     'data-mcel-color-role', 'data-mcel-color-surface', 'data-mcel-color-context',
 })
 NATIVE_PURPOSE = {'main':'workspace', 'nav':'navigation', 'aside':'inspection',
@@ -176,6 +176,11 @@ class _SemanticParser(HTMLParser):
                 region['color']={'role':role,'surface':surface,'context':context}
             if priority: region['priority'] = priority
             if when_state: region['visibleWhen'] = {'state': {'ref': when_state}, 'equals': when_value}
+            subview_group = raw.get('data-mcel-subview-group')
+            if subview_group is not None:
+                if not ID_RE.fullmatch(subview_group) or not when_state:
+                    self.fail('MCEL_HTML_SUBVIEW_INVALID', 'Subview grouping requires a valid group and authored mode visibility.')
+                region['subviewGroup'] = subview_group
             if prefs: region['preferences'] = prefs
             self.regions.append(region)
             self.by_name.add(name)

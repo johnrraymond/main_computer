@@ -18,7 +18,7 @@ def _open(browser,width,height=760):
           removeItem:k=>m.delete(k),clear:()=>m.clear()}})}}''')
     page.set_content(render_expanded_page(ROOT,promoted=True))
     assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
-    for js in ('mcel-semantic-presentation-bridge.js','mcel-semantic-chrome-presentation-law.js'):
+    for js in ('mcel-semantic-presentation-bridge.js','mcel-semantic-chrome-presentation-law.js','mcel-unified-presentation-controller.js'):
         page.add_script_tag(path=str(WEB/'scripts'/js))
     return page
 
@@ -191,7 +191,7 @@ def test_lab_iframe_chrome_selector_binds_real_calculator_semantics():
         page.add_style_tag(path=str(WEB/'styles/mcel-lab.css'))
         for name in ('mcel-contract.js','mcel-law-registry.js','mcel-style-law.js','mcel-chrome-law.js',
                      'mcel-semantic-presentation-bridge.js','mcel-semantic-theme-preview.js',
-                     'mcel-semantic-chrome-presentation-law.js'):
+                     'mcel-semantic-chrome-presentation-law.js','mcel-unified-presentation-controller.js'):
             page.add_script_tag(path=str(WEB/'scripts'/name))
         page.add_script_tag(content='''var mcelLabState={semanticThemePreviewEnabled:false,chrome:'chrome-tng-side-rails'};
             var mcelThemeSelect=document.getElementById('mcel-theme-select');

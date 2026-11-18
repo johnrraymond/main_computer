@@ -1,0 +1,38 @@
+{
+  "schema": "nanojev.sealed-overlap.polarity-layer-holdout.v1",
+  "purpose": "Prespecified final-only lexical paraphrases for frozen-Qwen hidden-layer/pooling polarity bakeoff; not contract authorization.",
+  "axes": {
+    "authority": {
+      "positive": ["An authorized official may consent to the proposed procedure", "The power to sanction this procedure belongs to an appointed officer"],
+      "negative": ["An official lacks the authorization needed to consent to this procedure", "The power to sanction this procedure belongs to no appointed officer"]
+    },
+    "obligation": {
+      "positive": ["These provisions impose a duty to perform the specified task", "Completion of this undertaking is a compulsory contractual requirement"],
+      "negative": ["These provisions impose no duty to perform the specified task", "Completion of this undertaking is voluntary rather than a contractual requirement"]
+    },
+    "resource": {
+      "positive": ["A bounded amount of processing capacity has been committed to the task", "The procedure has a designated allocation from the available supply"],
+      "negative": ["No amount of processing capacity has been committed to the task", "The procedure has no designated allocation from the available supply"]
+    },
+    "evidence": {
+      "positive": ["Verifiable documentation corroborates the asserted event", "Observed records provide independent confirmation of the allegation"],
+      "negative": ["No verifiable documentation corroborates the asserted event", "Observed records provide no independent confirmation of the allegation"]
+    },
+    "time": {
+      "positive": ["A mandatory time limit governs completion of the activity", "The procedure must conclude before a stated temporal boundary"],
+      "negative": ["No mandatory time limit governs completion of the activity", "The procedure need not conclude before any stated temporal boundary"]
+    },
+    "uncertainty": {
+      "positive": ["The available evidence leaves the eventual outcome indeterminate", "The final status cannot yet be established with certainty"],
+      "negative": ["The available evidence establishes the eventual outcome without ambiguity", "The final status has been established with certainty"]
+    },
+    "exclusion": {
+      "positive": ["A binding restriction forbids execution of the proposed action", "The rules expressly prevent these two operations from being combined"],
+      "negative": ["No binding restriction forbids execution of the proposed action", "The rules expressly permit these two operations to be combined"]
+    },
+    "consequence": {
+      "positive": ["Executing the proposed step produces a subsequent change of state", "The specified intervention brings about a measurable downstream effect"],
+      "negative": ["Executing the proposed step produces no subsequent change of state", "The specified intervention brings about no measurable downstream effect"]
+    }
+  }
+}

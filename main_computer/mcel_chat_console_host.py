@@ -12,6 +12,7 @@ import re
 from html import escape
 from pathlib import Path
 
+from main_computer.mcel_applications_registry import attach_inert_presentation
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 
@@ -124,7 +125,7 @@ def render_chat_console_page(repo: Path = ROOT, *, promoted: bool = False) -> st
     scripts = calculator_adapter + "\n" + "\n".join(_inline_script((repo / p).read_text(encoding="utf-8")) for p in SCRIPTS)
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     title = "Chat Console" if promoted else "Semantic Chat Console · Candidate"
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title><style>{css}
 body.mcel-chat-page {{margin:0;min-width:0;background:#050605;}}
@@ -152,3 +153,5 @@ body.mcel-chat-page #chat-console-app .chat-console-shell {{min-height:0;}}
      layoutAuthority:"mcel-layout-tree.v1",semanticRegions:ir.surfaces[0].interfaceIntent.regions.length}});
  }}catch(error){{status.hidden=false;status.dataset.error="true";status.textContent="Chat Console refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''
+
+    return attach_inert_presentation(page, repo, "chat-console", "chat-console-app", promoted=promoted)

@@ -125,6 +125,21 @@ def decode_neural_spans(span_logits, span_valid, *, confidence=0.50):
             for first,length_index,label in selection]
 
 
+class OracleInterfaceCoupler(nn.Module):
+    """Oracle-aligned interface: fixed identity default plus learned delta.
+
+    This only changes the new deterministic cutover architecture. Legacy heads
+    do not instantiate the component and retain their exact state schema.
+    """
+    def __init__(self, width):
+        super().__init__()
+        self.base=nn.Linear(width,width,bias=False)
+        self.delta=nn.Linear(width,width,bias=False)
+
+    def forward(self,x):
+        return self.base(x)+self.delta(x)
+
+
 class GamerGraphHead(nn.Module):
     """General typed-graph constructor, initialized in full from the outset.
 
@@ -135,7 +150,7 @@ class GamerGraphHead(nn.Module):
     """
     def __init__(self, hidden_size=1024, width=192, layers=1,
                  latent_slots=16, memory_slots=32, max_operands=MAX_OPERANDS,
-                 max_span_tokens=DEFAULT_MAX_SPAN_TOKENS):
+                 max_span_tokens=DEFAULT_MAX_SPAN_TOKENS,oracle_coupling=False):
         super().__init__()
         if hidden_size < 1 or width < 16 or width % 4 or layers < 1 or latent_slots < 1 or memory_slots < 1 or not 1 <= max_operands <= MAX_OPERANDS or not 1 <= max_span_tokens <= 128:
             raise ValueError('GAMER_GRAPH_INVALID_DIMENSIONS')
@@ -146,6 +161,11 @@ class GamerGraphHead(nn.Module):
         self.memory_slots_count = memory_slots
         self.max_operands = max_operands
         self.max_span_tokens = max_span_tokens
+        self.oracle_coupling = bool(oracle_coupling)
+        self.interface_couplers=(nn.ModuleDict({
+            name:OracleInterfaceCoupler(width) for name in
+            ('G1_G2','G2_G3','G3_G4','G4_G5','G5_G6','G6_G7')})
+            if oracle_coupling else None)
         self.project = nn.Sequential(nn.LayerNorm(hidden_size), nn.Linear(hidden_size, width))
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=width, nhead=4,
@@ -177,7 +197,7 @@ class GamerGraphHead(nn.Module):
         self.memory_write = nn.GRUCell(width, width)
         self.memory_write_gate = nn.Linear(width, 1)
 
-    def encode(self, hidden, memory=None):
+    def encode(self, hidden, memory=None, *, active_stage='G7'):
         if hidden.ndim != 2 or hidden.shape[1] != self.hidden_size or hidden.shape[0] < 1:
             raise ValueError('GAMER_GRAPH_HIDDEN_SHAPE')
         tokens = self.encoder(self.project(hidden.float()).unsqueeze(0)).squeeze(0)
@@ -185,7 +205,10 @@ class GamerGraphHead(nn.Module):
         if memory is not None:
             if memory.ndim != 2 or memory.shape != (self.memory_slots_count, self.width):
                 raise ValueError('GAMER_GRAPH_MEMORY_SHAPE')
-            query = self.memory_query(global_state)
+            source_state=(self.interface_couplers['G5_G6'](global_state)
+                if self.oracle_coupling and STAGES.index(active_stage)>=5
+                else global_state)
+            query = self.memory_query(source_state)
             attention = torch.softmax(self.memory_key(memory) @ query / self.width ** .5, dim=0)
             context = attention @ self.memory_value(memory)
             global_state = global_state + context
@@ -239,7 +262,7 @@ class GamerGraphHead(nn.Module):
         return representations, latent
 
     def forward(self, hidden, *, eligible=None, training_spans=None, memory=None, active_stage='G7'):
-        tokens, global_state = self.encode(hidden, memory=memory)
+        tokens, global_state = self.encode(hidden, memory=memory,active_stage=active_stage)
         span_logits, span_valid = self.scored_spans(tokens, eligible)
         if active_stage not in STAGES:
             raise ValueError('GAMER_GRAPH_UNKNOWN_STAGE')
@@ -253,6 +276,9 @@ class GamerGraphHead(nn.Module):
             spans = training_spans
         if len(spans) > 128:
             raise ValueError('GAMER_GRAPH_TOO_MANY_PREDICTED_OBJECTS')
+        if self.oracle_coupling:
+            tokens=self.interface_couplers['G1_G2'](tokens)
+            global_state=self.interface_couplers['G1_G2'](global_state)
         surface_nodes, latent = self._node_readouts(tokens, global_state, spans)
         # All latent slots exist in the graph network even when gates prohibit
         # them from being decoded. Teacher-forced node slots are never inference inputs.
@@ -262,24 +288,34 @@ class GamerGraphHead(nn.Module):
         right = values.unsqueeze(0).expand(n, n, self.width)
         pair = F.gelu(self.pair_projection(torch.cat((left, right,
                                                       left * right, left - right), -1)))
-        op_queries = self.operand_query(values).reshape(n, self.max_operands, self.width)
-        pointers = torch.einsum('npd,md->npm', op_queries, self.operand_key(values)) / self.width ** .5
+        operator_values=(self.interface_couplers['G3_G4'](values)
+            if self.oracle_coupling and STAGES.index(active_stage)>=3 else values)
+        op_queries = self.operand_query(operator_values).reshape(n, self.max_operands, self.width)
+        pointers = torch.einsum('npd,md->npm', op_queries, self.operand_key(operator_values)) / self.width ** .5
         pointers = torch.cat((pointers,
             self.operand_stop.to(pointers).view(1, -1, 1).expand(n, -1, 1)), -1)
+        objective_state=(self.interface_couplers['G4_G5'](global_state)
+            if self.oracle_coupling and STAGES.index(active_stage)>=4 else global_state)
         objective_choices = self.objective_candidate(torch.cat((values,
-                   global_state.expand(n, -1)), -1)).squeeze(-1)
+                   objective_state.expand(n, -1)), -1)).squeeze(-1)
+        relation_pair=(self.interface_couplers['G2_G3'](pair)
+            if self.oracle_coupling and STAGES.index(active_stage)>=2 else pair)
+        memory_state=(self.interface_couplers['G5_G6'](global_state)
+            if self.oracle_coupling and STAGES.index(active_stage)>=5 else global_state)
+        final_state=(self.interface_couplers['G6_G7'](objective_state)
+            if self.oracle_coupling and STAGES.index(active_stage)>=6 else objective_state)
         return {'span_logits': span_logits, 'span_valid': span_valid, 'spans': spans,
                 'surface_count': len(surface_nodes), 'node_vectors': values,
                 'slot_presence_logits': self.latent_presence(latent),
                 'slot_kind_logits': self.latent_kind(latent),
                 'binding_logits': self.binding(pair),
-                'relationship_logits': self.relationship(pair),
-                'operator_logits': self.operator(values),
+                'relationship_logits': self.relationship(relation_pair),
+                'operator_logits': self.operator(operator_values),
                 'operand_logits': pointers,
-                'objective_logits': self.objective(global_state),
+                'objective_logits': self.objective(final_state),
                 'candidate_logits': objective_choices,
-                'memory_write_proposal': self.memory_write(global_state, global_state),
-                'memory_write_probability': torch.sigmoid(self.memory_write_gate(global_state)),
+                'memory_write_proposal': self.memory_write(memory_state, memory_state),
+                'memory_write_probability': torch.sigmoid(self.memory_write_gate(memory_state)),
                 'global_state': global_state}
 
     def updated_memory(self, old, output, *, authorized=False, slot=None):

@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from main_computer.mcel_applications_registry import attach_inert_presentation
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_slh_target_navigation import TAB_STYLE, target_tabs
 from main_computer.mcel_slh_worker_bridge import (
@@ -26,6 +27,7 @@ SOURCE = Path("mcel_apps/slh/application.js")
 ASSETS = (
     "main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js",
     "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js",
+    "main_computer/web/applications/scripts/mcel-semantic-value-updaters.js",
     "main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js",
     "main_computer/web/applications/scripts/mcel-semantic-seh-deployment-ports.js",
     "main_computer/web/applications/scripts/mcel-semantic-slh-ports.js",
@@ -106,6 +108,15 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
     seh_form = nodes.get("surface-node:slh.connect-remote-seh", {})
     seh_notebooks = [nodes.get("surface-node:slh."+target+"-seh-lifecycle", {})
                      for target in ("local","network")]
+    def declared_updates(tab: dict) -> bool:
+        contract = tab.get("updates") or {}
+        return (contract.get("fields") == tab.get("fields") and
+                set(contract.get("actions", [])) == set(tab.get("actions", {})) and
+                contract.get("status") is True and
+                contract.get("forms") is bool(tab.get("forms")))
+    if (nodes.get("surface-node:slh.organization-identity-notebook", {}).get("updates") !=
+            {"rows": True, "status": True, "retention": True}):
+        raise SlhApplicationError("SLH identity notebook semantic update contract missing")
     if (seh_form.get("nodeKind") != "form" or
         seh_form.get("intent",{}).get("ref") != "intent:connect-remote-seh" or
         seh_form.get("fields") != {"sehUrl":{"kind":"string"}} or
@@ -115,9 +126,11 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
             n.get("tabs",[])[0].get("forms",[])[1].get("choicesFrom",{}).get("name",{}).get("selectedPath") != "selectedController" or
             [tab.get("id") for tab in n.get("tabs",[])] !=
                 ["configuration","deployment","connection","status","diagnostics"] or
+            any(not declared_updates(tab) for tab in n.get("tabs",[])) or
             set(n.get("tabs",[])[2].get("actions",{})) != {"Start","Stop","Restart"} or
             set(n.get("tabs",[])[1].get("actions",{})) != {
-                "Preflight Deploy","Deploy","Preflight Activate","Activate / Resume","Preflight Undeploy","Undeploy"} or
+                "Deploy / Redeploy","Undeploy"} or
+            n.get("tabs",[])[1]["actions"].get("Deploy / Redeploy",{}).get("alwaysEnabled") is not True or
             len(n.get("tabs",[])[0].get("forms",[])) != 2 or
             n.get("tabs",[])[0].get("actions")
             for target,n in zip(("local","network"),seh_notebooks))):
@@ -146,7 +159,7 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "intent:toggle-organization",
         "intent:connect-remote-seh", "intent:disconnect-remote-seh", "intent:read-seh-connection",
         "intent:read-seh-deployment", *{f"intent:seh-deployment-{operation}" for operation in
-          ("register","select","preview-deploy","deploy","preview-activate","activate","preview-undeploy","undeploy")},
+          ("register","select","deploy","undeploy")},
         *{f"intent:seh-connection-{action}" for action in ("start","stop","restart")},
         *{f"intent:read-organization-{name}" for name in ("pending","enrolled","trash","retention")},
         *{f"intent:organization-{name}" for name in ("accept","reject","delete","reactivate","remove")},
@@ -177,7 +190,7 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "effect:read-seh-connection.request":"external-read",
         "effect:read-seh-deployment.request":"external-read",
         **{f"effect:seh-deployment-{operation}.request":"consequential" for operation in
-          ("register","select","preview-deploy","deploy","preview-activate","activate","preview-undeploy","undeploy")},
+          ("register","select","deploy","undeploy")},
         **{f"effect:seh-connection-{action}.request":"consequential" for action in ("start","stop","restart")},
         **{f"effect:read-organization-{name}.request":"external-read" for name in ("pending","enrolled","trash","retention")},
         **{f"effect:organization-{name}.request":"consequential" for name in ("accept","reject","delete","reactivate","remove")},
@@ -188,6 +201,24 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         {x["id"]:x.get("risk") for x in ir.get("capabilities",[])} != expected_capabilities or
         {x["id"]:x.get("risk") for x in ir.get("effects",[])} != expected_effects):
         raise SlhApplicationError("SLH semantic authority boundary refused")
+    # SLH owns its retention and destructive-action text. Generic MCEL
+    # notebooks may omit either feature entirely.
+    identity_notebook = nodes["surface-node:slh.organization-identity-notebook"]
+    identity_notebook["recordLabel"] = "organizational identities"
+    identity_notebook["messages"] = {
+        "unavailable": "Select an identity and establish the target connection to access protected records",
+        "errorPrefix": "Organization records unavailable: ",
+    }
+    identity_notebook["retention"].update({
+        "label": " Remove items after 30 days",
+        "failureLabel": "Retention change refused: ",
+        "loadFailureLabel": "Organization retention policy unavailable: ",
+    })
+    identity_notebook["empty"].update({
+        "label": "Empty Trash",
+        "confirm": "Permanently remove ALL trashed identities? This cannot be undone.",
+        "failureLabel": "Empty Trash refused: ",
+    })
     composition = synthesize_composition(ir, policy="mcel.semantic-structure.p3")
     verify_composition(ir, composition)
     return ir, composition
@@ -218,16 +249,25 @@ def render_slh_page(view: str = "overview", repo: Path = ROOT) -> str:
     initial_view = "worker-bank" if view.endswith("worker-bank") else "overview"
     # Header links are browser-native addresses, not a hand-authored app layout.
     # The entire operational workspace is generated from the semantic IR.
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Secure Local Hub · MCEL</title><style>{css}\n{TAB_STYLE}</style></head>
 <body class="mcel-workbench-page" data-mcel-slh-initial-view="{initial_view}" data-mcel-slh-target="{target}">
 <template id="mcel-slh-navigation-context">{target_tabs(target)}</template>
 <div id="mcel-workbench" aria-label="MCEL generated Secure Local Hub workspace"></div>
 <p id="mcel-workbench-status" role="status">Compiling SLH semantics</p>
+<details id="mcel-slh-org-failure-details" hidden>
+<summary>ORG-SLH failure details</summary>
+<p id="mcel-slh-org-failure-description"></p>
+</details>
 <script type="application/json" id="mcel-generated-data">{payload}</script>
 {''.join(_script(repo, asset) for asset in ASSETS)}
 <script>(function(){{"use strict";
 const message=document.getElementById("mcel-workbench-status");
+// This bootstrap status is outside the semantic workspace; it also must not
+// replace a text node merely because an identical health poll completed.
+const setStatusMessage=value=>{{if(message.textContent!==value)message.textContent=value;}};
+const orgFailureDetails=document.getElementById("mcel-slh-org-failure-details");
+const orgFailureDescription=document.getElementById("mcel-slh-org-failure-description");
 try{{const data=JSON.parse(document.getElementById("mcel-generated-data").textContent);
 const selectedTarget=document.body.dataset.mcelSlhTarget;
 const port=McelSemanticSlhPorts.create({{appId:data.ir.application.appId,initialView:"{initial_view}"}});
@@ -295,6 +335,79 @@ const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-wor
 diagnosticState.mount="completed";
 recordDiagnostic("semantic-mount","completed");
 const scopeKey=identityKey;
+// SLH owns the conditions under which its protected records are requested.
+// MCEL owns only the declared operation, stale-response arbitration, and DOM
+// reconciliation. In particular, mount and auth callbacks cannot issue reads.
+const identityNotebookId="surface-node:slh.organization-identity-notebook";
+const identityNotebookElement=document.querySelector(
+  '[data-mcel-notebook="'+identityNotebookId+'"]');
+let identityNotebookVisible=false,identityNotebookTargetRestored=false;
+let identityNotebookRequestedContext="";
+let identityNotebookAttemptState="idle";
+let identityNotebookAttemptSequence=0;
+let remoteNotebookAuthenticated=false;
+// SLH alone classifies recoverability; MCEL returns the operation result.
+const retryableIdentityRead=reason=>
+  /(?:TRANSPORT_UNAVAILABLE|SERVICE_UNAVAILABLE|INSPECTION_REQUIRED|NETWORK_UNAVAILABLE|TEMPORARILY_UNAVAILABLE|READ_ALREADY_IN_FLIGHT)/.test(String(reason||"").toUpperCase());
+const requestVisibleIdentityRecords=(reactivation=false)=>{{
+  if(leaving || !identityNotebookTargetRestored ||
+     (selectedTarget==="local" && !identityNotebookVisible))return;
+  const selected=app.readState("state:selected-local-identity")||"";
+  const observed=app.readState("state:organization-lifecycle");
+  const identityDirectory=app.readState("state:local-identities");
+  const ready=selectedTarget==="local"
+    ? diagnosticState.identityRefresh==="completed" &&
+      diagnosticState.identityStatus==="completed" &&
+      diagnosticState.identityDirectory==="AVAILABLE" &&
+      Array.isArray(identityDirectory) && identityDirectory.some(row=>row.deviceId===selected) &&
+      diagnosticState.lifecycleRefresh==="completed" && observed?.state==="running"
+    : remoteNotebookAuthenticated;
+  // A periodic readiness inspection may briefly be pending; that is not a
+  // changed identity or a grant to retry a real authorization refusal.
+  if(!ready)return;
+  const context=selectedTarget+":"+(selectedTarget==="local"?selected:"connected");
+  if(identityNotebookRequestedContext===context &&
+     !(reactivation && identityNotebookAttemptState==="retryable-failure"))return;
+  identityNotebookRequestedContext=context;
+  identityNotebookAttemptState="loading";
+  const attempt=++identityNotebookAttemptSequence;
+  // App policy: hydrate Pending, Enrolled, Trash and retention as one ordered
+  // read flight. Auth callbacks may not spawn competing protected reads.
+  void app.activateNotebooks({{scope:"records",notebookId:identityNotebookId,all:true}})
+    .then(results=>{{
+      if(leaving || identityNotebookRequestedContext!==context ||
+         attempt!==identityNotebookAttemptSequence)return;
+      const failure=results.find(result=>result?.disposition!=="completed");
+      identityNotebookAttemptState=!failure?"loaded":
+        retryableIdentityRead(failure.reason)?"retryable-failure":"refused";
+      if(failure)recordDiagnostic("identity-notebook-load",identityNotebookAttemptState,{{
+        disposition:String(failure.disposition||"unknown").slice(0,64)}});
+    }},error=>{{
+      if(identityNotebookRequestedContext===context && attempt===identityNotebookAttemptSequence)
+        identityNotebookAttemptState="refused";
+      recordDiagnostic("identity-notebook-load","unexpected-failure",{{
+        errorClass:String(error?.name||"Error").slice(0,80)}});
+    }});
+}};
+if(identityNotebookElement && typeof IntersectionObserver==="function"){{
+  const observer=new IntersectionObserver(entries=>{{
+    const wasVisible=identityNotebookVisible;
+    identityNotebookVisible=entries.some(entry=>entry.target===identityNotebookElement && entry.isIntersecting);
+    if(identityNotebookVisible)requestVisibleIdentityRecords(!wasVisible);
+  }});
+  observer.observe(identityNotebookElement);
+  window.addEventListener("pagehide",()=>observer.disconnect(),{{once:true}});
+}}else if(identityNotebookElement){{
+  const checkVisible=()=>{{
+    const wasVisible=identityNotebookVisible;
+    const bounds=identityNotebookElement.getBoundingClientRect();
+    identityNotebookVisible=bounds.bottom>0 && bounds.top<window.innerHeight;
+    if(identityNotebookVisible)requestVisibleIdentityRecords(!wasVisible);
+  }};
+  window.addEventListener("scroll",checkVisible,{{passive:true}});
+  window.addEventListener("resize",checkVisible);
+  checkVisible();
+}}
 const observeSlhDiagnostics=()=>{{
   const selected=app.readState("state:selected-local-identity")||"";
   const directory=app.readState("state:local-identities");
@@ -325,12 +438,19 @@ const observeSlhDiagnostics=()=>{{
       status:rawLifecycle.classification}});
   if(formAddress==="0.0.0.0" && !lifecycleObserved)
     findings.push({{code:"slh-wildcard-bind-not-observed",severity:"warning",status:"draft-or-unknown"}});
+  const orgFailure=selectedTarget==="local"?port.organizationFailure():null;
+  if(orgFailure)findings.push({{code:orgFailure.errorCode==="ORG_SLH_BIND_ADDRESS_UNAVAILABLE"?
+    "org-slh-bind-address-unavailable":"org-slh-listener-bind-failed",severity:"error",
+    status:orgFailure.stage,osError:orgFailure.osError}});
   const sehManagement=managementOverlay?.diagnostics() ||
     {{schema:"mcel.slh.management-evidence.v1",status:"not-observed",
       operationId:null,causalDiagnostic:null}};
   if(sehManagement.causalDiagnostic)
     findings.push({{code:"slh-seh-operation-causal-failure",severity:"warning",
       status:sehManagement.causalDiagnostic.error_code}});
+  if(sehManagement.preflight?.errorCode)
+    findings.push({{code:"slh-seh-preflight-unavailable",severity:"warning",
+      status:sehManagement.preflight.errorCode}});
   return {{schema:"mcel.slh.operational-evidence.v1",target:selectedTarget,
     capturesConfigurationInputs:true,
     startup:{{...diagnosticState}},
@@ -348,6 +468,7 @@ const observeSlhDiagnostics=()=>{{
       rawObservation:rawLifecycle,configurationVerified:lifecycleObserved,
       renderedBindAddress:formAddress,renderedPort:formPort,
       renderedDefaultWhileUnobserved:formAddress==="0.0.0.0" && !lifecycleObserved}},
+    organizationService:{{state:lifecycle?.state||"not-observed",failure:orgFailure}},
     sehManagement,timeline:history.slice(),findings}};
 }};
 window.MCELDiagnosticEvidence?.registerOperational("slh",observeSlhDiagnostics);
@@ -384,8 +505,12 @@ const identitySelected=value=>{{
   // Signer changes invalidate protected organization records, but must not
   // withdraw local LMS management authority or erase its Coolify projection.
   if(selectedTarget==="local"){{
-    app.setNotebookAuthorization(false,{{scope:"records"}});
+    app.setNotebookAuthorization(false,{{scope:"records",refresh:false}});
     app.setNotebookAuthorization(!!value,{{scope:"records",refresh:false}});
+    identityNotebookRequestedContext="";
+    identityNotebookAttemptState="idle";
+    ++identityNotebookAttemptSequence;
+    requestVisibleIdentityRecords();
   }}
   try{{
     if(value)globalThis.sessionStorage?.setItem(scopeKey,value);
@@ -402,25 +527,46 @@ document.getElementById("mcel-workbench").addEventListener("mcel:collection-sele
     identitySelected(event.detail.value||"");
   }}
 }});
+let sehConnectionAuthenticated=false;
 port.onAuthenticationChanged(authenticated=>{{
-  if(selectedTarget==="local")app.setNotebookAuthorization(!!authenticated,{{scope:"records"}});
+  sehConnectionAuthenticated=!!authenticated;
+  if(selectedTarget==="local")
+    app.setNotebookAuthorization(!!authenticated,{{scope:"records",refresh:false}});
 }});
 networkPort.onConnectionChanged(authenticated=>{{
   if(selectedTarget==="network"){{
-    app.setNotebookAuthorization(!!authenticated);
+    app.setNotebookAuthorization(!!authenticated,{{scope:"operations"}});
+    app.setNotebookAuthorization(!!authenticated,{{scope:"records",refresh:false}});
+    remoteNotebookAuthenticated=!!authenticated;
+    if(!authenticated){{
+      identityNotebookRequestedContext="";
+      identityNotebookAttemptState="idle";
+      ++identityNotebookAttemptSequence;
+    }}
+    requestVisibleIdentityRecords();
     if(authenticated)void managementOverlay?.start();
     else managementOverlay?.pause();
   }}
 }});
 sehPort.onConnectionChanged(authenticated=>{{
-  if(selectedTarget==="remote-seh")app.setNotebookAuthorization(!!authenticated);
+  if(selectedTarget==="remote-seh"){{
+    app.setNotebookAuthorization(!!authenticated,{{scope:"operations"}});
+    app.setNotebookAuthorization(!!authenticated,{{scope:"records",refresh:false}});
+    remoteNotebookAuthenticated=!!authenticated;
+    if(!authenticated){{
+      identityNotebookRequestedContext="";
+      identityNotebookAttemptState="idle";
+      ++identityNotebookAttemptSequence;
+    }}
+    requestVisibleIdentityRecords();
+  }}
 }});
 if(selectedTarget!=="remote-seh"){{
   const managementPort=selectedTarget==="local"?port:networkPort;
   managementOverlay=McelSlhManagementModal.create({{
     host:document.getElementById("mcel-workbench"),
     request:(operation,args)=>managementPort.managementRequest(operation,args),
-    onSettled:()=>{{void app.execute("intent:read-seh-deployment");}}
+    onSettled:receipt=>{{managementPort.releaseRecordedOperation(receipt);void app.execute("intent:read-seh-deployment");}}
   }});
   managementPort.onManagementChanged(receipt=>{{
     if(receipt?.operationId)managementOverlay.track(receipt.operationId);
@@ -430,13 +576,18 @@ if(selectedTarget!=="remote-seh"){{
   // backend preflight or HTTP request. The LMS snapshot later takes over.
   document.getElementById("mcel-workbench").addEventListener("mcel:parity-operation",event=>{{
     const intent=event.detail?.intentId;
-    if(!["intent:seh-deployment-deploy","intent:seh-deployment-activate","intent:seh-deployment-undeploy"].includes(intent))return;
-    if(event.detail.phase==="dispatch")managementOverlay.begin(intent,
-      intent.endsWith("undeploy")?"Undeploy SEH":intent.endsWith("activate")?"Activate SEH":"Deploy SEH");
+    const action=[
+      ["intent:seh-deployment-deploy","Deploy / Redeploy SEH",false],
+      ["intent:seh-deployment-undeploy","Undeploy SEH",false]
+    ].find(row=>row[0]===intent);
+    if(!action)return;
+    if(event.detail.phase==="dispatch")managementOverlay.begin(intent,action[1],action[2]);
     if(event.detail.phase==="settled"){{
       const receipt=app.receipts().at(-1);
       managementOverlay.settled(intent,event.detail.disposition,
-        receipt?.intentId===intent?receipt.reason:"");
+        receipt?.intentId===intent?receipt.reason:"",
+        action[2]&&event.detail.disposition==="completed"?
+          app.readState("state:seh-deployment-receipt"):null);
     }}
   }});
   if(selectedTarget==="local")void managementOverlay.start();
@@ -457,6 +608,7 @@ const refreshIdentities=async()=>{{
     status?.disposition==="refused-before-attempt"?"refused":"failed";
   const summary=app.readState("state:local-identity-status");
   diagnosticState.identityDirectory=String(summary?.state||"not-observed");
+  requestVisibleIdentityRecords();
   recordDiagnostic("identity-directory","observed",{{directoryState:diagnosticState.identityDirectory,
     directoryCount:Array.isArray(app.readState("state:local-identities"))?
       app.readState("state:local-identities").length:null}});
@@ -545,6 +697,32 @@ if(selectedTarget==="local" && configForm){{
     }}
   }},true);
 }}
+let lastHealthFailureKey="";
+const displayServiceHealth=()=>{{
+  const failure=selectedTarget==="local"?port.organizationFailure():null;
+  const key=failure?failure.errorCode+":"+failure.bindAddress+":"+failure.port+":"+failure.osError:"";
+  if(key!==lastHealthFailureKey){{
+    recordDiagnostic("organization-service-health",failure?"failure-observed":"recovered",
+      failure?{{errorCode:failure.errorCode,stage:failure.stage,osError:failure.osError,
+        bindAddress:failure.bindAddress,port:failure.port,
+        restartCount:failure.restartCount,restartLimitReached:failure.restartLimitReached}}:{{}});
+    lastHealthFailureKey=key;
+  }}
+  if(orgFailureDetails.hidden!==!failure)orgFailureDetails.hidden=!failure;
+  const errorState=failure?"true":"false";
+  if(message.dataset.error!==errorState)message.dataset.error=errorState;
+  if(!failure){{if(orgFailureDescription.textContent)orgFailureDescription.textContent="";return false;}}
+  const osLabel=failure.osError===null?"OS error unavailable":
+    (failure.osError===10049?"WinError 10049":"OS error "+failure.osError);
+  setStatusMessage("ORG-SLH failed to start · Listener bind failed ("+osLabel+") · "+
+    failure.bindAddress+":"+failure.port);
+  orgFailureDescription.textContent=failure.explanation+" Stage: "+failure.stage+
+    ". Configured listener: "+failure.bindAddress+":"+failure.port+
+    ". "+osLabel+". Restart attempts: "+(failure.restartCount??"unverified")+
+    (failure.restartLimitReached?"; restart limit reached.":".")+
+    " Check the computer's currently assigned IPv4 addresses; change the binding explicitly if needed.";
+  return true;
+}};
 const refreshLifecycle=async()=>{{
   ++diagnosticState.lifecycleAttempts;
   diagnosticState.lifecycleRefresh="pending";
@@ -558,6 +736,8 @@ const refreshLifecycle=async()=>{{
     receipt?.disposition==="refused-before-attempt"?"refused":"failed";
   const observedLifecycle=app.readState("state:organization-lifecycle");
   const raw=port.lifecycleObservation();
+  const serviceFailed=displayServiceHealth();
+  requestVisibleIdentityRecords();
   recordDiagnostic("lifecycle-hydration",diagnosticState.lifecycleRefresh,{{
     state:String(observedLifecycle?.state||"not-observed").slice(0,80),
     rawState:raw?.organizationState||"not-observed",
@@ -572,18 +752,18 @@ const refreshLifecycle=async()=>{{
     diagnosticState.identityStatus!=="completed"?
     " · Local identity directory unavailable":"";
   if(receipt?.disposition!=="completed" || !observedConfiguration()){{
-    message.textContent="ORG-SLH configuration unverified · "+
-      String(raw?.classification||"observation-unavailable")+identityCaveat;
+    if(!serviceFailed)setStatusMessage("ORG-SLH configuration unverified · "+
+      String(raw?.classification||"observation-unavailable")+identityCaveat);
     return false;
   }}
   // The generic MCEL acceptResult renderer applies authoritative values.
   // Restore only fields the operator explicitly edited while a read ran.
   for(const [key,value] of draftFields){{
     const input=configForm?.elements.namedItem(key);
-    if(input)input.value=value;
+    if(input && input.value!==String(value))input.value=value;
   }}
-  message.textContent="ORG-SLH "+observedLifecycle.state+" · "+
-    observedLifecycle.bindAddress+":"+observedLifecycle.port+identityCaveat;
+  if(!serviceFailed)setStatusMessage("ORG-SLH "+observedLifecycle.state+" · "+
+    observedLifecycle.bindAddress+":"+observedLifecycle.port+identityCaveat);
   return true;
 }};
 // Independent, bounded recovery lanes. Neither identity nor lifecycle
@@ -620,15 +800,46 @@ port.onSetupChanged(action=>{{
   if(action==="configure-and-enable")draftFields.clear();
   void recoverLifecycle();
 }});
+// One read-only SEH observation flight for both focus and periodic refresh.
+// Skip overlapping scheduled reads and stop scheduling when the page exits.
+let sehObservationPending=false;
+const refreshSehObservations=async()=>{{
+  if(leaving || selectedTarget!=="local" || document.visibilityState==="hidden" ||
+     sehObservationPending)return;
+  sehObservationPending=true;
+  try{{
+    const intents=["intent:read-seh-deployment"];
+    // Read connection status only after an explicit administrator authentication.
+    // Polling must never trigger a new signer challenge or login.
+    if(sehConnectionAuthenticated)intents.push("intent:read-seh-connection");
+    const results=await Promise.allSettled(intents.map(intent=>app.execute(intent)));
+    results.forEach((result,index)=>{{
+      if(result.status==="rejected" || result.value?.disposition!=="completed")
+        recordDiagnostic("seh-observation","unavailable",{{intent:intents[index],
+          errorClass:result.status==="rejected"?
+            String(result.reason?.name||"Error").slice(0,80):
+            String(result.value?.disposition||"unknown").slice(0,80)}});
+    }});
+  }}finally{{sehObservationPending=false;}}
+}};
 const observeOnReturn=()=>{{
   if(leaving)return;
+  requestVisibleIdentityRecords(true);
   if(diagnosticState.identityDirectory!=="AVAILABLE" ||
     diagnosticState.identityRefresh!=="completed" || diagnosticState.identityStatus!=="completed")
     void recoverIdentities();
-  if(selectedTarget==="local")void recoverLifecycle();
+  if(selectedTarget==="local"){{void recoverLifecycle();void refreshSehObservations();}}
 }};
 window.addEventListener("focus",observeOnReturn);
 window.addEventListener("online",observeOnReturn);
+const healthPoll=selectedTarget==="local"?window.setInterval(()=>{{
+  if(!leaving && document.visibilityState!=="hidden"){{
+    if(diagnosticState.lifecycleRefresh!=="pending")
+      void refreshLifecycle().catch(()=>{{}});
+    void refreshSehObservations();
+  }}
+}},15000):null;
+window.addEventListener("pagehide",()=>{{if(healthPoll!==null)window.clearInterval(healthPoll);}});
 // Initial identity observation first, without delaying lifecycle hydration
 // behind its *retries*. SEH inspection remains independent of signer status.
 void refreshIdentities().then(identitiesAvailable=>{{
@@ -646,14 +857,21 @@ void refreshIdentities().then(identitiesAvailable=>{{
 }})
 .then(()=>app.execute("intent:select-target",{{choice:selectedTarget}}))
 .then(receipt=>{{
-  if(selectedTarget==="local" && receipt?.disposition==="completed")
-    app.setNotebookAuthorization(true,{{scope:"operations"}});
+  if(receipt?.disposition==="completed"){{
+    identityNotebookTargetRestored=true;
+    if(selectedTarget==="local"){{
+      app.setNotebookAuthorization(true,{{scope:"operations"}});
+      void refreshSehObservations();
+    }}
+    requestVisibleIdentityRecords();
+  }}
 }}).catch(error=>{{message.dataset.error="true";
   recordDiagnostic("startup-initialization","failed",{{errorClass:String(error?.name||"Error").slice(0,80)}});
   message.textContent="SLH initialization unavailable: "+String(error?.message||error);
 }});
 }}catch(error){{message.dataset.error="true";message.textContent="SLH semantic mount refused: "+String(error?.message||error);}}
 }})();</script></body></html>'''
+    return attach_inert_presentation(page, repo, "slh", "mcel-workbench", promoted=True)
 
 
 def _local_status(*, port: int = DEFAULT_SLH_API_PORT, timeout: float = 1.5) -> tuple[str, dict]:
@@ -738,6 +956,39 @@ def _state(raw: object, *, default: str = "NOT_OBSERVED") -> str:
     return str(value)[:80] if isinstance(value, str) and value else default
 
 
+def _project_organization_failure(org: dict) -> dict | None:
+    """Allowlisted local health evidence; never pass raw stderr or exceptions to MCEL."""
+    failure = org.get("failure")
+    if not isinstance(failure, dict) or org.get("state") not in ("failed", "stopped_unexpectedly"):
+        return None
+    if (failure.get("error_code") not in
+        ("ORG_SLH_BIND_ADDRESS_UNAVAILABLE", "ORG_SLH_LISTENER_BIND_FAILED") or
+        failure.get("stage") != "LISTENER_BIND" or
+        failure.get("bind_host") != org.get("bind_host") or
+        failure.get("api_port") != org.get("api_port")):
+        return None
+    code = failure["error_code"]
+    number = failure.get("os_error")
+    if number is not None and (type(number) is not int or number < 0 or number > 65535):
+        number = None
+    count = failure.get("restart_count")
+    if type(count) is not int or count < 0 or count > 10000:
+        count = None
+    return {
+        "errorCode": code,
+        "stage": "LISTENER_BIND",
+        "bindAddress": str(org["bind_host"])[:45],
+        "port": org["api_port"],
+        "osError": number,
+        "explanation": ("The configured bind address is not assigned to this computer."
+                        if code == "ORG_SLH_BIND_ADDRESS_UNAVAILABLE"
+                        else "The configured listener could not bind."),
+        "restartCount": count,
+        "restartLimitReached": failure.get("restart_limit_reached") is True,
+        "observedAt": str(failure.get("observed_at") or "")[:40],
+    }
+
+
 def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
                 worker_client: OrganizationWorkerClient | None = None) -> dict:
     """Observe one fixed loopback service. A missing service is not an empty fleet."""
@@ -758,6 +1009,7 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
     network = "UNVERIFIED"
     tls = "UNVERIFIED"
     credential = "NOT_VERIFIED"
+    organization_failure = None
     if condition == "RUNNING":
         init = _state(payload.get("initialization"), default="NOT_OBSERVED")
         if init == "NOT_OBSERVED" and isinstance(payload.get("initialization"), dict):
@@ -775,6 +1027,7 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
         elif init == "INITIALIZED" and admin in ("MISSING", "NO_ACTIVE_DEVICE", "INCONSISTENT"):
             established = "REQUIRES_RECOVERY"
         if isinstance(org, dict):
+            organization_failure = _project_organization_failure(org)
             if org.get("configured") is False and organization == "not_configured":
                 endpoint, network = "NOT_CONFIGURED", "NOT_CONFIGURED"
             elif org.get("configured") is True:
@@ -816,6 +1069,9 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
         next_step = "Select an LMS-SLH identity and click Login Administrator to establish the local organization and sign in."
     elif established == "UNVERIFIED":
         next_step = "Organization or administrator establishment is unverified. Diagnose authority records before administering."
+    elif organization_failure:
+        next_step = ("Check the computer's currently assigned IPv4 addresses and the configured ORG-SLH listener; "
+                     "update the binding explicitly if it has changed.")
     elif organization == "not_configured":
         next_step = "Configure the Organization Service binding with an enrolled administrator identity."
     elif organization == "disabled":
@@ -861,6 +1117,7 @@ def observe_slh(view: str, *, probe=_local_status, admin_token: str = "",
                      "nextStep": next_step, "networkGuidance": network_guidance,
                      "observationState": "OBSERVED" if condition == "RUNNING" else "UNAVAILABLE",
                      "observedAt": observed_at, "source": source, "explanation": explanation},
+        "organizationFailure": organization_failure,
         "health": [
             {"id": "local", "subject": "Local management service", "state": condition,
              "source": "Control plane: 127.0.0.1:8897 (loopback only)"},

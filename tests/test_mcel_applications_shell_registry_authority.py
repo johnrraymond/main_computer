@@ -27,7 +27,7 @@ def test_hash_source_paths_stay_portable_on_windows_and_posix():
 def test_legacy_launcher_owns_display_labels_and_order_not_registry_copy():
     original = host._read_registry(host.ROOT)
     reference = host.legacy_desktop_reference()["launcher"]
-    assert len(original["apps"]) == len(reference) == 21
+    assert len(original["apps"]) == len(reference) == 22
     # A registry's stale/non-authoritative display labels must not fail the
     # shell or overwrite legacy launcher labels, but all routes still match.
     changed = deepcopy(original)

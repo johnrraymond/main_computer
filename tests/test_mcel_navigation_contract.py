@@ -48,8 +48,8 @@ def test_destination_requires_all_native_opening_modes():
 def test_promoted_shell_exposes_canonical_href_for_every_launcher_link():
     _, catalog = compile_applications_shell()
     page = render_applications_shell_candidate(canonical_promoted=True)
-    assert page.count('class="desktop-icon"') == 20
-    assert page.count('data-mcel-destination-id="applications.') == 20
+    assert page.count('class="desktop-icon"') == 21
+    assert page.count('data-mcel-destination-id="applications.') == 21
     for app in catalog['apps']:
         assert f'href="{app["route"]}"' in page or app['id'] == 'desktop'
     assert 'data-shell-launch="chat-console" data-mcel-destination-id="applications.chat-console" href="/applications/chat-console"' in page

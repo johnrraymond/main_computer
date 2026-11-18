@@ -329,7 +329,7 @@ def browser_comparison(repo:Path)->dict:
         page.locator('[data-mcel-mode-tabs] button[data-value="all-processes"]').click()
         page.locator('form[data-intent="intent:refresh-all"] button[type=submit]').click()
         _await_receipt(page,'refresh-all')
-        page.locator(f'[data-record-key="{key}"]:visible').first.locator('button[data-select-key]').click()
+        page.locator(f'[data-record-key="{key}"][data-mcel-row-selectable]:visible').first.click()
         _click(page,'kill-process');_await_receipt(page,'kill-process','command-returned')
         kill=_requests(page,'/action')[-1]['body']
         _scenario(cases,'kill','generation-bound-kill','kill_pid',kill.get('action'),

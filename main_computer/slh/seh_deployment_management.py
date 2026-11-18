@@ -94,7 +94,7 @@ def _public_only(data):
 class SLHSEHDeploymentManager:
     def __init__(self, *, root: Path | None = None, network: str = 'mainnet',
                  control: SEHControl | None = None, harness_runner=None,
-                 state_dir: Path | None = None):
+                 state_dir: Path | None = None, runtime_probe=None):
         st.ident(network, 'network')
         if network not in ('mainnet', 'testnet', 'test', 'dev'):
             raise ValueError('Unsupported SEH network')
@@ -106,6 +106,7 @@ class SLHSEHDeploymentManager:
         self.state_dir = Path(state_dir or slh_state_dir()).resolve()
         self.control = control or SEHControl(self.root)
         self.harness_runner = harness_runner
+        self.runtime_probe = runtime_probe
         from .seh_management_journal import ManagementJournal
         self.operations = ManagementJournal(self.root,self.network)
 
@@ -153,6 +154,24 @@ class SLHSEHDeploymentManager:
         if operational.get('undeployed') is True:
             return 'UNDEPLOYED'
         if operational.get('application_uuid'):
+            # A live public relay is not proof of which Coolify UUID serves it.
+            # Report only what the existing bounded /healthz probe establishes.
+            if self.network == 'mainnet':
+                from tools.seh_control.git_deployment import (
+                    DEFAULT_PUBLIC_URL, SEHGitError, _public_runtime_probe)
+                public_url = operational.get('public_url') or DEFAULT_PUBLIC_URL
+                if isinstance(public_url, str) and public_url.rstrip('/') == DEFAULT_PUBLIC_URL:
+                    try:
+                        observed = (self.runtime_probe or _public_runtime_probe)(DEFAULT_PUBLIC_URL)
+                    except (SEHGitError, OSError, TimeoutError, ValueError):
+                        observed = None
+                    if isinstance(observed, dict):
+                        if observed.get('status') == 'PUBLIC_RUNTIME_PRESENT':
+                            return ('PUBLIC_RUNTIME_PRESENT_SLH_CONNECTED' if
+                                    observed.get('slh_connected') is True else
+                                    'PUBLIC_RUNTIME_PRESENT_SLH_DISCONNECTED')
+                        if observed.get('status') == 'PUBLIC_RUNTIME_UNAVAILABLE':
+                            return 'APPLICATION_REGISTERED_RUNTIME_UNAVAILABLE'
             return 'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED'
         return 'TARGET_SELECTED'
 
@@ -359,88 +378,14 @@ class SLHSEHDeploymentManager:
                 if not execute:
                     return run_action_for(action,False)
                 validate_generation()
-                # The canonical operational record, not the browser, decides
-                # whether Deploy creates a replacement or resumes activation.
-                # A registered UUID must NEVER be passed to deploy-seh again.
-                chosen_action = action
-                if action == 'deploy-seh':
-                    phase = self.inspect({})['deployment_phase']
-                    if phase == 'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED':
-                        chosen_action = 'activate-seh'
-                    # No canonical history must still be refused by the existing
-                    # deploy-seh harness; LMS never invents a first-time path.
-                def preflight(harness_action, *, stage):
-                    self.operations.update_stage(operation_id,stage)
-                    try:
-                        preview = run_action_for(harness_action,False)
-                    except Exception as exc:
-                        return {'status':'REFUSED',
-                                'error_code':'SEH_' + ('ACTIVATION' if harness_action=='activate-seh' else 'DEPLOYMENT') + '_PREFLIGHT_UNAVAILABLE',
-                                'error_type':type(exc).__name__, 'remote_mutation':False}
-                    if preview.get('status') != 'PLAN_ONLY' or (
-                            harness_action == 'undeploy-seh' and preview.get('ready_for_undeploy') is not True):
-                        # Preserve the canonical disabled-deployment gate's
-                        # precise refusal in the durable LMS operation result.
-                        # Do not pass through arbitrary untrusted harness codes.
-                        error_code = ('SEH_CANONICAL_DEPLOYMENT_DISABLED'
-                            if harness_action == 'activate-seh' and
-                            preview.get('status') == 'REFUSED' and
-                            preview.get('error_code') == 'SEH_CANONICAL_DEPLOYMENT_DISABLED'
-                            else 'SEH_' + ('ACTIVATION' if harness_action=='activate-seh' else 'DEPLOYMENT') + '_PREFLIGHT_REFUSED')
-                        return {'status':'REFUSED',
-                                'error_code':error_code,
-                                'preflight_status':str(preview.get('status','UNKNOWN'))[:100],
-                                'remote_mutation':False}
-                    return None
-                def activate(deployment_result=None):
-                    declined = preflight('activate-seh',stage='ACTIVATION_PREFLIGHT')
-                    if declined:
-                        if deployment_result is None:
-                            return declined
-                        # The deployment already changed the remote state;
-                        # never claim a preflight-only refusal or safe retry.
-                        return {'status':'DEPLOYMENT_REGISTERED_ACTIVATION_REFUSED',
-                                'error_code':declined['error_code'],
-                                'activation_preflight_status':declined.get('preflight_status','UNAVAILABLE'),
-                                'deployment_status':deployment_result['status'],
-                                'application_uuid':deployment_result.get('application_uuid'),
-                                'remote_mutation':deployment_result.get('remote_mutation','UNKNOWN')}
-                    validate_generation()
-                    self.operations.update_stage(operation_id,'ACTIVATION_EXECUTING')
-                    activated = run_action_for('activate-seh',True)
-                    if deployment_result is not None:
-                        return {**activated, 'deployment_status':deployment_result['status'],
-                                'deployment_remote_mutation':deployment_result.get('remote_mutation','UNKNOWN'),
-                                'application_uuid':activated.get('application_uuid') or deployment_result.get('application_uuid')}
-                    return activated
-                if chosen_action == 'activate-seh':
-                    if self.inspect({})['deployment_phase'] != 'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED':
-                        return {'status':'REFUSED', 'error_code':'SEH_ACTIVATION_NOT_ELIGIBLE',
-                                'remote_mutation':False}
-                    return activate()
-                declined = preflight(chosen_action,stage='PREFLIGHT_EXECUTING')
-                if declined:
-                    return declined
-                validate_generation()
+                # The SEH harness owns its entire state machine: admission,
+                # registered-application resume, build and runtime verification,
+                # activation, and (for undeploy) signed disconnect and deletion.
+                # LMS does not split a single operator request into multiple
+                # preflight/activation harness invocations: that could race a
+                # just-created Coolify build or make a valid resume look unsafe.
                 self.operations.update_stage(operation_id,'MUTATION_EXECUTING')
-                result = run_action_for(chosen_action,True)
-                # A queued canonical application is NOT runtime-verified. LMS
-                # keeps the same operation ID, then invokes the existing
-                # activation harness with its own read-only admission gate.
-                if (action == 'deploy-seh' and
-                        result.get('status') == 'REPLACEMENT_QUEUED_NOT_VERIFIED' and
-                        type(result.get('application_uuid')) is str and
-                        result['application_uuid']):
-                    # Read back the exact new UUID before authorizing activation.
-                    # A queue acknowledgement alone cannot prove canonical ownership.
-                    observed = self.inspect({})
-                    live = (observed.get('deployment') or {}).get('deployment') or {}
-                    if (observed['deployment_phase'] != 'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED' or
-                            live.get('application_uuid') != result['application_uuid']):
-                        return {**result, 'status':'DEPLOYMENT_QUEUED_ACTIVATION_PENDING',
-                                'activation_reason':'CANONICAL_APPLICATION_READBACK_UNVERIFIED'}
-                    return activate(result)
-                return result
+                return run_action_for(action,True)
             if not execute:
                 return invoke()
             from .seh_management_journal import ManagementJournalError

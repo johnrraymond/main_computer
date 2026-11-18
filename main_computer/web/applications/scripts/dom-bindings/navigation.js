@@ -24,7 +24,8 @@
       "website-builder": ["Website Builder", "Manage site manifests, save website files, and publish local Docker lanes.", "Website Builder is running."],
       "mcel-lab": ["MCEL Lab", "App blueprint and point-inspection workbench is ready.", "MCEL Lab mounts inspectable app previews and records selected-element evidence."],
       worker: ["Worker", "Configure remote AI use and local AI rental behavior.", "Worker configuration is ready."],
-      wallet: ["Wallet", "Standalone wallet connect/disconnect workbench is ready.", "Wallet connection workbench is running."]
+      wallet: ["Wallet", "Standalone wallet connect/disconnect workbench is ready.", "Wallet connection workbench is running."],
+      slh: ["Secure Local Hub", "Local workers, network and external relay management.", "Secure Local Hub is ready."]
     };
     const desktopApps = [
       {app: "webgl", glyph: "G", title: "Game Surface", summary: "project preview"},
@@ -46,7 +47,8 @@
       {app: "website-builder", glyph: "W", title: "Website Builder", summary: "site manager"},
       {app: "mcel-lab", glyph: "M", title: "MCEL Lab", summary: "semantic compiler"},
       {app: "worker", glyph: "A", title: "Worker", summary: "AI rental config"},
-      {app: "wallet", glyph: "W", title: "Wallet", summary: "connect hooks"}
+      {app: "wallet", glyph: "W", title: "Wallet", summary: "connect hooks"},
+      {app: "slh", glyph: "H", title: "Secure Local Hub", summary: "local worker hub"}
     ];
     const routeableApps = new Set(Object.keys(appCopy));
     const applicationRouteAliases = {"layout-builder": "game-editor", "web-test-bed": "mcel-lab"};

@@ -155,7 +155,7 @@ def test_durable_harness_receipt_prevents_reexecution_after_response_loss(tmp_pa
     new_process=SLHSEHDeploymentManager(root=root,harness_runner=harness)
     second=new_process.harness(body)
     assert second['replayed_receipt'] is True
-    assert len(invokes)==2  # preflight + mutation, each admitted once
+    assert len(invokes)==1  # one complete harness lifecycle invocation
     state=new_process.operation_status(body['operation_id'])
     assert state['phase']=='RECORDED' and state['principal']=='local-machine'
     with pytest.raises(Exception,match='SEH_OPERATION_ID_CONFLICT'):
@@ -179,7 +179,7 @@ def test_lost_harness_response_records_incomplete_without_global_busy_or_retry(t
     assert receipt['result']['remote_mutation']=='UNKNOWN'
     other=SLHSEHDeploymentManager(root=root,harness_runner=error_harness)
     assert other.harness(body)['status']=='INCOMPLETE'
-    assert len(calls)==2  # preflight succeeded, mutation failed once
+    assert len(calls)==1  # one harness lifecycle invocation failed once
     assert other.operation_status(body['operation_id'])['phase']=='RECORDED'
     state=other.operation_snapshot()
     assert state['state']=='IDLE' and state['busy'] is False
@@ -222,12 +222,12 @@ def test_remote_admin_principal_is_bound_into_lms_receipt(services):
     assert code==200 and response['status']=='ACCEPTED'
     receipt=_await_receipt(services.manager,body['operation_id'])
     assert receipt['principal']=='owner-device'
-    assert len(invocations)==2  # preflight and actual mutation
+    assert len(invocations)==1  # one complete harness lifecycle invocation
     # Losing the response and replaying the same ID reuses the durable receipt.
     code,response=send(services.org.server_port,'POST',path,body,
         headers={'Authorization':'Bearer good'})
     assert code==200 and response['replayed_receipt'] is True
-    assert len(invocations)==2
+    assert len(invocations)==1
     # A local OS caller cannot claim the remote administrator's receipt.
     local=LMSManagementClient(port=services.lms.server_port)
     with pytest.raises(LMSForwardingError,match='SEH_OPERATION_ID_CONFLICT'):

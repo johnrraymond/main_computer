@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 STYLESHEET = ROOT / 'main_computer/web/applications/styles/chat-console.css'
 CALCULATOR_STYLESHEET = ROOT / 'main_computer/web/applications/styles/calculator.css'
-MCEL_EXPERT_STYLESHEET = ROOT / 'main_computer/web/applications/styles/mcel-semantic-expert.css'
+MCEL_BACKGROUND_STYLESHEET = ROOT / 'main_computer/web/applications/styles/mcel-semantic-workbench.css'
 SEMANTIC_CSS = ROOT / 'main_computer/web/applications/styles/mcel-semantic-chat-console.css'
 SEMANTIC_RUNTIME = ROOT / 'main_computer/web/applications/scripts/mcel-semantic-chat-console.js'
 SEMANTIC_CONTRACT = 'mcel.chat-console.composition.v1'
@@ -265,7 +265,7 @@ def fixture_sample(browser, context: str, width: int, *, css: str | None = None,
         page.add_style_tag(content=STYLESHEET.read_text(encoding='utf-8') if css is None else css)
         if context=='embedded':
             page.add_style_tag(content=CALCULATOR_STYLESHEET.read_text(encoding='utf-8'))
-            page.add_style_tag(content=MCEL_EXPERT_STYLESHEET.read_text(encoding='utf-8'))
+            page.add_style_tag(content=MCEL_BACKGROUND_STYLESHEET.read_text(encoding='utf-8'))
         if repair_css:page.add_style_tag(content=repair_css)
         if semantic:
             page.add_style_tag(content=SEMANTIC_CSS.read_text(encoding='utf-8'))
@@ -298,7 +298,7 @@ def fixture_resize_sequence(browser, context: str, widths: tuple[int, ...],
         page.add_style_tag(content=STYLESHEET.read_text(encoding='utf-8'))
         if context=='embedded':
             page.add_style_tag(content=CALCULATOR_STYLESHEET.read_text(encoding='utf-8'))
-            page.add_style_tag(content=MCEL_EXPERT_STYLESHEET.read_text(encoding='utf-8'))
+            page.add_style_tag(content=MCEL_BACKGROUND_STYLESHEET.read_text(encoding='utf-8'))
         if repair_css:page.add_style_tag(content=repair_css)
         if semantic:
             page.add_style_tag(content=SEMANTIC_CSS.read_text(encoding='utf-8'))
@@ -744,7 +744,7 @@ def main(argv=None) -> int:
         finally:browser.close()
     counts={key:sum(x['status']==key for x in results) for key in ('PASS','FAIL','INCOMPLETE')}
     status='FAIL' if counts['FAIL'] else 'INCOMPLETE' if counts['INCOMPLETE'] else 'PASS'
-    fingerprint_paths=(STYLESHEET,CALCULATOR_STYLESHEET,MCEL_EXPERT_STYLESHEET,SEMANTIC_CSS,SEMANTIC_RUNTIME,
+    fingerprint_paths=(STYLESHEET,CALCULATOR_STYLESHEET,MCEL_BACKGROUND_STYLESHEET,SEMANTIC_CSS,SEMANTIC_RUNTIME,
         ROOT/'main_computer/web/applications.html',
         ROOT/'main_computer/web/applications/apps/chat-console.html',
         ROOT/'main_computer/web/applications/scripts/chat-console.js',

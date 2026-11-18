@@ -14,7 +14,7 @@ EXPECTED_REGION_ZONES = {
         'inspection': 'tools', 'status': 'status',
     },
     'task-manager': {
-        'query': 'controls', 'processes': 'workspace', 'all': 'workspace',
+        'views': 'navigator', 'processes': 'workspace', 'all': 'workspace',
         'connections': 'workspace', 'hardware': 'workspace',
         'selected': 'details', 'schedules': 'tools', 'assistant': 'tools',
         'operations': 'tools', 'status': 'status',
@@ -129,10 +129,7 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
         errors.append('status-before-workspace-end')
     if app not in ('file-manager','task-manager') and status and tools and status['y'] < tools['y']+tools['h']-2:
         errors.append('status-before-tools-end')
-    if app=='task-manager':
-        if controls and work and not (controls['y']+controls['h']<=work['y']+2):
-            errors.append('task-controls-not-before-workspace')
-    elif nav and work:
+    if nav and work:
         if rung=='narrow':
             if not (nav['y']+nav['h']<=work['y']+2):errors.append('navigation-not-above-workspace')
         elif not (nav['x']+nav['w']<=work['x']+2):
@@ -202,10 +199,18 @@ def check_layout(app: str, observed: dict, width: int, *, interactions: dict | N
 # Executed on both the composed candidate and the actual hosted (unplanned)
 # presentation. This is independent of source plans and CSS selectors for layout
 # authority; it measures populated records against their containing workspace.
+def choose_task_view(browser_page, mode: str) -> None:
+    # The navigation region is the operator-facing view selector. Older
+    # candidates without authored navigation retain their select fallback.
+    target=browser_page.locator('[data-mcel-purpose="navigation"] [data-mcel-mode-tabs] [data-value="'+mode+'"]')
+    if target.count():target.first.click(timeout=5000)
+    else:browser_page.locator('select[data-intent="intent:switch-view"]').select_option(mode,timeout=5000)
+
+
 def populated_monitor_collection_oracle(browser_page, width: int) -> dict:
     failures=[]
     try:
-        browser_page.locator('select[data-intent="intent:switch-view"]').select_option('connections',timeout=5000)
+        choose_task_view(browser_page,'connections')
         browser_page.locator('form[data-intent="intent:refresh-connections"] button[type="submit"]').click(timeout=5000)
         browser_page.wait_for_function("""() => Array.isArray(window.__mcelWorkbench?.app?.readState('state:connections')) &&
           window.__mcelWorkbench.app.readState('state:connections').length >= 2 &&
@@ -342,7 +347,7 @@ def browser_oracle(browser_page, app: str, width: int) -> dict:
         if app=='task-manager':
             readings={}
             for mode, region in TASK_VIEWS.items():
-                browser_page.locator('select[data-intent="intent:switch-view"]').select_option(mode,timeout=5000)
+                choose_task_view(browser_page,mode)
                 browser_page.wait_for_function('(m)=>window.__mcelWorkbench.app.readState("state:view")===m',arg=mode)
                 names=browser_page.evaluate('''() => [...document.querySelectorAll('[data-mcel-region]')]
                   .filter(el=>['processes','all','connections','hardware'].includes(el.dataset.mcelRegion.split('.').pop())

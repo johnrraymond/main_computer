@@ -2031,6 +2031,70 @@ def redeploy_canonical_runtime(root: Path, network: str, *, execute: bool = Fals
             pause(min(poll_s, max(0, deadline - now())))
 
 
+def _recovery_candidates(apps: list[dict]) -> list[dict]:
+    """Find possible SEH owners; unrelated Coolify applications are irrelevant."""
+    return [app for app in apps if app.get('name') == CANONICAL_APPLICATION_NAME or
+            'external.greatlibrary.io' in str(app.get('domains') or '')]
+
+
+def _recovery_candidate_ids(candidates: list[dict]) -> tuple[str, ...]:
+    """Compare candidate identity independent of listing order or live status."""
+    # Invalid UUIDs cannot authorize adoption; they must not evade a race check.
+    return tuple(sorted(app['uuid'] if isinstance(app.get('uuid'), str) else ''
+                        for app in candidates))
+
+
+# Only deployment identity/configuration participates in the adoption CAS.
+# Coolify may refresh status, timestamps, and other observational fields when
+# environment variables are patched, without changing who owns the service.
+_ADOPTION_IDENTITY_FIELDS = (
+    'uuid', 'id', 'name', 'description',
+    'project_uuid', 'project_id', 'environment_uuid', 'environment_id',
+    'environment_name', 'server_uuid', 'server_id',
+    'git_branch', 'git_commit_sha', 'dockerfile_location',
+    'build_pack', 'base_directory',
+)
+
+
+def _adoption_application_identity(app: dict) -> dict:
+    from tools.seh_control.dns_probe import domain_hosts
+
+    env = app.get('environment')
+    nested = env if isinstance(env, dict) else {}
+    sources = (app.get('git_repository'), app.get('repository'), app.get('git_full_url'))
+    return {
+        **{field: app.get(field) for field in _ADOPTION_IDENTITY_FIELDS},
+        'environment': {field: nested.get(field) for field in ('id', 'uuid', 'name')},
+        'repository': tuple(sorted({_github_repository(raw) for raw in sources
+                                    if isinstance(raw, str) and raw.strip()})),
+        'public_domain_hosts': tuple(domain_hosts(app)),
+    }
+
+
+def _adoption_incomplete(changed: dict, operation: str, exc: Exception) -> dict:
+    """Attribute a post-Coolify failure without exposing OS or connector secrets.
+
+    SEHGitError text is authored by this module's redacted Coolify adapter and
+    its fixed verification checks. Never stringify arbitrary OS/state errors.
+    No Git repair command is inferred from the generic SEHGitError class.
+    """
+    domain = ('LOCAL_SEH_STATE' if operation == 'seh_local_state_write'
+              else 'CANONICAL_IDENTITY' if operation.startswith(('canonical_', 'verified_'))
+              else 'COOLIFY')
+    reason = (str(exc) if isinstance(exc, (SEHGitError, st.SEHIdentityError,
+                                            ds.SEHDeploymentStateError)) else
+              f'{domain} verification/write failed ({type(exc).__name__})')
+    return {**changed, 'status': 'INCOMPLETE',
+            'failed_stage': 'seh_deployment_state_commit_or_trust',
+            'failed_operation': operation,
+            'error_domain': domain,
+            'error_code': 'SEH_' + operation.removeprefix('seh_').upper() + '_FAILED',
+            'error_class': type(exc).__name__,
+            'reason': reason,
+            **({'git_repair_command': exc.git_command}
+               if isinstance(exc, SEHGitPublicationError) and exc.git_command else {})}
+
+
 def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
                                           state_dir: Path, client=None, source=None,
                                           repo_root: Path | None = None) -> dict:
@@ -2062,8 +2126,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
     # An earlier recovery may have completed creation and trust binding before
     # SEH local state was committed. One such orphan can be resumed, but only
     # after independent placement, source, ownership and live key checks.
-    candidates = [a for a in apps if a.get('name') == CANONICAL_APPLICATION_NAME or
-                  'external.greatlibrary.io' in str(a.get('domains') or '')]
+    candidates = _recovery_candidates(apps)
     if len(candidates) > 1:
         raise SEHGitError('Coolify has multiple possible SEH applications; refusing duplicate creation')
     checkpoint = _recovery_checkpoint(state_dir)
@@ -2115,8 +2178,15 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
         raise SEHGitError('SEH controller identity or deployment changed during recovery')
     if _registered_application(remote, old_uuid) is not None:
         raise SEHGitError('Former Coolify UUID reappeared; refusing creation')
-    if _items(_api(remote, 'GET', '/api/v1/applications'), 'applications') != apps:
-        raise SEHGitError('Coolify application topology changed during recovery')
+    current_apps = _items(_api(remote, 'GET', '/api/v1/applications'), 'applications')
+    # Only SEH ownership and the former UUID are relevant to this mutation.
+    # Coolify changes unrelated status fields, inventory order, and other apps
+    # without changing the authority to recreate this one SEH application.
+    # Never ignore a newly appeared SEH candidate or a resurrected old UUID.
+    if any(app.get('uuid') == old_uuid for app in current_apps):
+        raise SEHGitError('Former Coolify UUID reappeared; refusing creation')
+    if _recovery_candidate_ids(_recovery_candidates(current_apps)) != _recovery_candidate_ids(candidates):
+        raise SEHGitError('Coolify SEH application topology changed during recovery')
 
     # A duplicate is not authority. A previously created app must have the
     # canonical provenance and exact current signing-key trust to be adopted.
@@ -2180,17 +2250,23 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
                     'error_class': type(exc).__name__}
     changed = {**out, 'application_uuid': new_uuid, 'remote_mutation': not resumed,
                'recovery_action': ('ADOPT_VERIFIED_APPLICATION' if resumed else 'CREATED_APPLICATION')}
+    operation = 'coolify_application_readback'
     try:
         app = _registered_application(remote, new_uuid)
         if app is None:
             raise SEHGitError('New application not available for readback')
+        operation = 'coolify_placement_verification'
         _verify_application_placement(remote, app, place)
+        operation = 'coolify_git_source_verification'
         _verify_canonical_source(app)
+        operation = 'coolify_ownership_verification'
         if _verify_canonical_metadata(app) != 'CANONICAL':
             raise SEHGitError('New application metadata does not match canonical service')
+        operation = 'coolify_git_revision_verification'
         if app.get('git_branch') not in (None, published['branch']) or \
                 app.get('git_commit_sha') not in (None, published['revision']):
             raise SEHGitError('New application Git source revision changed before trust binding')
+        operation = 'coolify_public_domain_verification'
         domains = domain_hosts(app)
         if domains != ['external.greatlibrary.io']:
             raise SEHGitError('New Coolify application public domain could not be verified')
@@ -2198,11 +2274,14 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
             'SEH_PUBLIC_ORIGIN': DEFAULT_PUBLIC_URL,
             'SEH_AUDIT_MODE': 'metadata_only', 'SEH_PORT': '8080',
             'SEH_SLH_PUBLIC_KEY_B64': public}
+        operation = 'coolify_environment_inspection'
         existing_rows = _items(_api(remote, 'GET', f'/api/v1/applications/{new_uuid}/envs'), 'envs')
+        operation = 'coolify_preexisting_trust_guard'
         if not resumed and _trust_snapshot(remote, new_uuid):
             raise SEHGitError('New application has preexisting remote trust; refusing overwrite')
         # Write only absent variables on a receipt-backed retry, preserving
         # any previously installed matching trust values.
+        operation = 'coolify_environment_validation'
         absent = {}
         for key, value in env_data.items():
             rows_for_key = [row for row in existing_rows if row.get('key') == key
@@ -2217,11 +2296,13 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
             elif value not in (rows_for_key[0].get('real_value'), rows_for_key[0].get('value')):
                 raise SEHGitError('SEH runtime environment changed before recovery: ' + key)
         if absent:
+            operation = 'coolify_environment_write'
             _api(remote, 'PATCH', f'/api/v1/applications/{new_uuid}/envs/bulk',
                  {'data': [{'key': key, 'value': value, 'is_literal': True,
                             'is_preview': False, 'is_runtime': True,
                             'is_buildtime': False, 'is_multiline': False}
                            for key, value in absent.items()]})
+        operation = 'coolify_environment_readback'
         rows = _items(_api(remote, 'GET', f'/api/v1/applications/{new_uuid}/envs'), 'envs')
         if any(row.get('key') == 'SEH_ORGANIZATION_ID' and row.get('is_preview') is not True
                for row in rows):
@@ -2240,12 +2321,46 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
         # Adopt into SEH's own durable lifecycle file. The verified Mother
         # controller identity is read-only; unrelated Mother generations do
         # not alter or authorize SEH deployment decisions.
+        operation = 'canonical_state_readback'
         newer, _, _, _ = _canonical_selection(root, network)
         if (_operational_binding(newer) != _operational_binding(record) or
                 newer['deployment'].get('application_uuid') != old_uuid):
             raise SEHGitError('SEH controller identity or UUID changed after Coolify creation')
-        if _registered_application(remote, new_uuid) != app:
-            raise SEHGitError('New Coolify application changed before SEH adoption')
+        operation = 'coolify_adoption_identity_verification'
+        adoption_app = _registered_application(remote, new_uuid)
+        if adoption_app is None:
+            raise SEHGitError('Replacement application disappeared before SEH adoption')
+        # Recheck every authority-bearing property; never accept a changed
+        # placement, source, owner, domain, or pinned revision. Dynamic Coolify
+        # status and timestamps are intentionally outside this comparison.
+        _verify_application_placement(remote, adoption_app, place)
+        _verify_canonical_source(adoption_app)
+        if _verify_canonical_metadata(adoption_app) != 'CANONICAL':
+            raise SEHGitError('Replacement SEH ownership changed before adoption')
+        if (adoption_app.get('git_branch') not in (None, published['branch']) or
+                adoption_app.get('git_commit_sha') not in (None, published['revision']) or
+                domain_hosts(adoption_app) != ['external.greatlibrary.io'] or
+                _adoption_application_identity(adoption_app) != _adoption_application_identity(app)):
+            raise SEHGitError('New Coolify application deployment identity changed before SEH adoption')
+        # Trust is an independently verified environment binding, not a field
+        # of the general-purpose Coolify application response.
+        operation = 'coolify_trust_adoption_readback'
+        adoption_rows = _items(_api(remote, 'GET', f'/api/v1/applications/{new_uuid}/envs'), 'envs')
+        if any(row.get('key') == 'SEH_ORGANIZATION_ID' and row.get('is_preview') is not True
+               for row in adoption_rows):
+            raise SEHGitError('Obsolete organization identity appeared before adoption')
+        for key, value in env_data.items():
+            if key == 'SEH_SLH_PUBLIC_KEY_B64':
+                trusted = (_diagnostic_env_value(adoption_rows, key) ==
+                           {'state': 'VISIBLE', 'value': value})
+            else:
+                matches = [row for row in adoption_rows if row.get('key') == key
+                           and row.get('is_preview') is not True]
+                trusted = (len(matches) == 1 and value in
+                           (matches[0].get('real_value'), matches[0].get('value')))
+            if not trusted:
+                raise SEHGitError('New SEH environment changed before adoption: ' + key)
+        operation = 'verified_identity_readback'
         _, _, identity_doc = st.read(root, network, 'deployment-identity-read')
         identity_record = st.deployment_record(identity_doc, network)
         if identity_record is None or ds.identity_binding(identity_record) != ds.identity_binding(record):
@@ -2260,6 +2375,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
         # The UUID-scoped undeploy receipt remains as independent audit evidence.
         successor.pop('undeployed', None)
         successor.pop('undeployed_at', None)
+        operation = 'seh_local_state_write'
         committed = ds.write(root, network, identity_record,
                              expected_uuid=old_uuid, deployment=successor)
         changed['seh_deployment_revision'] = committed['revision']
@@ -2269,9 +2385,7 @@ def _restore_deleted_unlocked(root: Path, network: str, *, execute: bool,
                 'failed_stage': 'identity_readback_unavailable',
                 'identity_error_code': exc.code, 'identity_retry_class': exc.retry_class}
     except (SEHGitError, st.SEHIdentityError, ds.SEHDeploymentStateError, OSError) as exc:
-        return {**changed, 'status': 'INCOMPLETE',
-                'failed_stage': 'seh_deployment_state_commit_or_trust',
-                'error_class': type(exc).__name__}
+        return _adoption_incomplete(changed, operation, exc)
 
     # Persist the submission intent BEFORE calling Coolify. A lost POST
     # acknowledgment must not cause a second speculative forced build.

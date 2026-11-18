@@ -129,7 +129,7 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
     for i, region in enumerate(regions):
         if not isinstance(region, Mapping):
             continue
-        valid = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource','purpose','tasks','content','priority','preferences','staticContent','visibleWhen','color'}
+        valid = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource','purpose','tasks','content','priority','preferences','staticContent','visibleWhen','color','subviewGroup'}
         required = {'id','kind','nativeTag','parentId','ordinal','members','htmlSource'}
         if set(region)-valid or not required <= set(region):
             errors.append(f'regions[{i}] has unknown or missing properties')
@@ -166,6 +166,12 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
                 not isinstance(when.get('state'),Mapping) or set(when['state']) != {'ref'} or
                 not isinstance(when['state'].get('ref'),str) or not isinstance(when.get('equals'),str)):
                 errors.append(f'regions[{i}] has invalid conditional visibility')
+        if 'subviewGroup' in region:
+            group = region['subviewGroup']
+            if (not isinstance(group, str) or
+                not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', group) or
+                'visibleWhen' not in region):
+                errors.append(f'regions[{i}] has invalid authored subview group')
         if 'content' in region:
             content=region['content']
             if not isinstance(content, Mapping) or set(content) != {'kind','ref'} or content.get('kind') not in CONTENT or not isinstance(content.get('ref'),str):

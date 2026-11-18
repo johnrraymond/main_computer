@@ -23,24 +23,23 @@ def _storage(page):
 def _page(browser, viewport=None):
     page=browser.new_page(viewport=viewport or {'width':980,'height':740},device_scale_factor=.75)
     _storage(page)
-    page.set_content(render_expanded_page(ROOT,promoted=True))
+    page.set_content(render_expanded_page(ROOT,promoted=True).replace('</head>',
+        '<script>window.__mcelSemanticColorLabPreview=true;</script></head>'))
     assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
     return page
 
 
-def test_authored_calculator_color_is_complete_and_contains_no_physical_palette():
+def test_calculator_semantics_contain_no_application_authored_color_instructions():
     ir=compile_expanded(ROOT)
     surface=ir['surfaces'][0]
     regions=surface['interfaceIntent']['regions']
     nodes=surface['nodes']
     assert len(regions)==13 and len(nodes)==14
-    assert all('color' in x for x in [*regions,*nodes])
-    assert all(set(x['color']) <= {'role','surface','context','consequence','selection','operation'}
-               for x in [*regions,*nodes])
-    assert all(x['color']['role'].startswith(('surface.','text.','navigation.','action.'))
-               for x in [*regions,*nodes])
-    assert next(x['color']['role'] for x in nodes if x['id'].endswith('arithmetic-expression'))=='action.evaluate'
-    assert all('#' not in str(x['color']) and 'rgb' not in str(x['color']) for x in [*regions,*nodes])
+    assert all('color' not in x for x in [*regions,*nodes])
+    source=(ROOT/'tools/fixtures/mcel_calculator_expanded/application.js').read_text()
+    markup=(ROOT/'tools/fixtures/mcel_calculator_expanded/application.html').read_text()
+    assert 'color:' not in source and 'data-mcel-color-' not in markup
+
 
 
 def test_all_generated_calculator_controls_have_authorized_roles_and_actions_work():
@@ -61,7 +60,7 @@ def test_all_generated_calculator_controls_have_authorized_roles_and_actions_wor
             })''')
             assert report['root'] and not report['missing'], (width,report)
             assert report['report']['status']=='applied' and report['report']['coverage']=='source-complete',report
-            assert report['report']['authored']==27 and report['report']['legacy']==0,report
+            assert report['report']['authored']==0 and report['report']['inferred']==27 and report['report']['legacy']==0,report
             assert report['submit']=='action.evaluate',report
             assert report['keypad']['clear']=='action.clear' and report['keypad']['+']=='action.operator',report
             assert report['keypad']['7']=='action.input' and report['keypad']['submit']=='action.evaluate',report

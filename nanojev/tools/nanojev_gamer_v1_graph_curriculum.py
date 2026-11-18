@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import random
+import math
 from collections import Counter
 from pathlib import Path
 import torch
@@ -53,14 +54,14 @@ GATE_REQUIREMENTS = {
 STAGE_MODULES = {
     'G1': ('project.', 'encoder.', 'span_start.', 'span_end.',
            'span_pool.', 'span_width_embed.', 'span_classifier.'),
-    'G2': ('binding.', 'pair_projection.'),
-    'G3': ('relationship.',),
+    'G2': ('binding.', 'pair_projection.','interface_couplers.G1_G2.delta.'),
+    'G3': ('relationship.','interface_couplers.G2_G3.delta.'),
     'G4': ('latent_query', 'latent_attention.', 'latent_presence.',
            'latent_kind.', 'operator.', 'operand_query.', 'operand_key.',
-           'operand_stop', 'relationship.'),
-    'G5': ('objective.', 'objective_candidate.'),
+           'operand_stop', 'relationship.','interface_couplers.G3_G4.delta.'),
+    'G5': ('objective.', 'objective_candidate.','interface_couplers.G4_G5.delta.'),
     'G6': ('memory_query.', 'memory_key.', 'memory_value.',
-           'memory_write.', 'memory_write_gate.'),
+           'memory_write.', 'memory_write_gate.','interface_couplers.G5_G6.delta.'),
     'G7': ('',),
 }
 
@@ -137,7 +138,8 @@ def trainable_stage(head,stage):
     if stage not in STAGES:raise ValueError('GAMER_GRAPH_UNKNOWN_TRAINING_STAGE')
     prefix=STAGE_MODULES[stage]
     for name, param in head.named_parameters():
-        param.requires_grad_(any(name.startswith(p) for p in prefix))
+        param.requires_grad_(any(name.startswith(p) for p in prefix)
+            and not (name.startswith('interface_couplers.') and '.base.' in name))
     count=sum(p.numel() for p in head.parameters() if p.requires_grad)
     if not count:raise ValueError('GAMER_GRAPH_NO_TRAINABLE_PARAMETERS')
     return count
@@ -497,7 +499,8 @@ def _new_head(hidden_size,config):
     return GamerGraphHead(hidden_size=hidden_size,width=config['width'],
         layers=config['layers'],latent_slots=config['latent_slots'],
         memory_slots=config['memory_slots'],max_operands=config['max_operands'],
-        max_span_tokens=config.get('max_span_tokens',DEFAULT_MAX_SPAN_TOKENS))
+        max_span_tokens=config.get('max_span_tokens',DEFAULT_MAX_SPAN_TOKENS),
+        oracle_coupling=config.get('oracle_coupling',False))
 
 
 def _load_checkpoint(path, *, device='cpu'):
@@ -510,7 +513,21 @@ def _load_checkpoint(path, *, device='cpu'):
     file=path/HEAD_FILE
     if not file.exists() or backbone.sha256(file)!=manifest['head_sha256']:
         raise ValueError('GAMER_GRAPH_HEAD_HASH_MISMATCH')
-    head=_new_head(manifest['head']['hidden_size'],manifest['head'])
+    if manifest.get('deterministic_fabric'):
+        from tools import nanojev_deterministic_fabric as df
+        fabric=manifest['deterministic_fabric']
+        if fabric.get('schema')!=df.SCHEMA or fabric.get('version')!=df.VERSION:
+            raise ValueError('GAMER_GRAPH_CUTOVER_FABRIC_SCHEMA_OR_VERSION')
+        h=manifest['head']
+        head=df.new_graph_head(hidden_size=h['hidden_size'],width=h['width'],
+            layers=h['layers'],latent_slots=h['latent_slots'],
+            memory_slots=h['memory_slots'],max_operands=h['max_operands'],
+            max_span_tokens=h['max_span_tokens'],
+            oracle_coupling=h.get('oracle_coupling',False))
+        if df.state_digest(head)!=fabric.get('initial_state_sha256'):
+            raise ValueError('GAMER_GRAPH_CUTOVER_INIT_DRIFT')
+    else:
+        head=_new_head(manifest['head']['hidden_size'],manifest['head'])
     head.load_state_dict(load_file(str(file),device='cpu'),strict=True)
     return head.to(device),manifest
 
@@ -574,10 +591,14 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
           train_limit=0,refine_checkpoint=None,refine_parent_dataset=None,
           counterfactual_fraction=.5,consistency_weight=.15,
           structured_weight=.40,family_balanced=False,controlled_exposure=False,
-          parent_retention_weight=0.0,hard_null_weight=0.0):
+          parent_retention_weight=0.0,hard_null_weight=0.0,cutover_id=None):
     from safetensors.torch import save_file
     dataset=Path(dataset); output=Path(output); source_adapter=Path(source_adapter)
     if stage not in STAGES:raise ValueError('GAMER_GRAPH_UNKNOWN_TRAINING_STAGE')
+    if cutover_id is not None and (not isinstance(cutover_id,str) or not cutover_id.strip() or len(cutover_id)>128):
+        raise ValueError('GAMER_GRAPH_CUTOVER_ID_INVALID')
+    if cutover_id and (refine_checkpoint or parent_retention_weight):
+        raise ValueError('GAMER_GRAPH_CUTOVER_MUST_NOT_USE_LEGACY_REFINEMENT')
     if steps<1 or accum<1 or lr<=0:raise ValueError('GAMER_GRAPH_INVALID_TRAINING_SETTINGS')
     if (not 0<=counterfactual_fraction<=1 or consistency_weight<0 or
             structured_weight<0 or parent_retention_weight<0 or hard_null_weight<0):
@@ -609,6 +630,7 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
     model,tok=backbone.model_components(model_id,source_adapter,device)
     if any(p.requires_grad for p in model.parameters()):
         raise RuntimeError('GAMER_GRAPH_SOURCE_NOT_FROZEN')
+    fabric=None
     if refine_checkpoint is not None:
         head,refine_manifest=_load_checkpoint(refine_checkpoint,device=device)
         if refine_manifest['stage']!='G1':
@@ -638,6 +660,9 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
             raise ValueError('GAMER_GRAPH_REFINE_UNBOUNDED_PARENT_REQUIRED')
     elif parent_checkpoint is not None:
         head,parent_manifest=_load_checkpoint(parent_checkpoint,device=device)
+        fabric=parent_manifest.get('deterministic_fabric')
+        if bool(fabric)!=bool(cutover_id) or (fabric and fabric.get('cutover_id')!=cutover_id):
+            raise ValueError('GAMER_GRAPH_CUTOVER_PARENT_MISMATCH')
         if not prerequisite_cert:
             raise PermissionError('GAMER_GRAPH_PREREQUISITE_CERT_REQUIRED')
         previous=STAGES[STAGES.index(stage)-1]
@@ -651,7 +676,15 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                 'memory_slots':memory_slots,'max_operands':max_operands,
                 'max_span_tokens':max_span_tokens}
         # Construct ALL heads before G1. Future objectives are initially locked.
-        head=_new_head(int(model.config.hidden_size),config).to(device)
+        if cutover_id:
+            from tools import nanojev_deterministic_fabric as df
+            head=df.new_graph_head(hidden_size=int(model.config.hidden_size),
+                max_span_tokens=max_span_tokens,**{k:config[k] for k in ('width','layers','latent_slots','memory_slots','max_operands')},device=device)
+            fabric={'schema':df.SCHEMA,'version':df.VERSION,'cutover_id':cutover_id,
+                'initial_state_sha256':df.state_digest(head),
+                'new_trainable_random_init':False}
+        else:
+            head=_new_head(int(model.config.hidden_size),config).to(device)
     # Separate frozen teacher, never touched by AdamW and never serialized.
     # A retention weight of zero preserves the original training path exactly.
     parent_teacher=None
@@ -674,7 +707,7 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
         if (i+1)%50==0 or i==0 or i+1==len(training):
             print(f'GAMER_GRAPH_CAPTURE {i+1}/{len(training)} frozen_qwen_once_per_prompt',flush=True)
     optimizer=torch.optim.AdamW([p for p in head.parameters() if p.requires_grad],lr=lr)
-    rng=random.Random(seed);head.train()
+    rng=None if cutover_id else random.Random(seed);head.train()
     pairs={};replay_indices=[]
     for i,row in enumerate(training):
         pair=row.get('counterfactual_pair') if stage=='G1' else None
@@ -715,6 +748,13 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
             by_mode[marker]+=1
         if len(set(by_mode.values()))!=1 or 0 in by_mode.values():
             raise ValueError('GAMER_GRAPH_BALANCED_PAIR_FAMILY_MODE_IMBALANCE')
+    def cutover_pick(items,ordinal,salt=0):
+        """Fixed coprime cycle, no pseudo-random draws, no duplicate until wrap."""
+        if not items:raise ValueError('GAMER_GRAPH_CUTOVER_EMPTY_SAMPLING_POOL')
+        n=len(items);stride=max(1,n//2+1)
+        while math.gcd(stride,n)!=1:stride+=1
+        return items[(ordinal*stride+salt)%n]
+
     # Controlled exposure: draw immutable per-family replay/pair streams *before*
     # choosing their mixture.  Therefore an exposure change cannot change the
     # identity/order of the replay examples at a given replay ordinal.  All
@@ -727,18 +767,26 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                           for step in range(steps) for micro in range(accum))
                for family in families}
         for family_index,family in enumerate(families):
-            rr=random.Random(seed+1001+family_index*107)
-            replay_stream[family]=[rr.choice(replay_by_family[family])
-                                   for _ in range(slots[family])]
-            if pair_by_family[family]:
-                pr=random.Random(seed+2003+family_index*109)
-                pair_stream[family]=[pr.choice(pair_by_family[family])
-                                     for _ in range(slots[family])]
+            if cutover_id:
+                replay_stream[family]=[cutover_pick(replay_by_family[family],i,family_index)
+                                       for i in range(slots[family])]
+                if pair_by_family[family]:
+                    pair_stream[family]=[cutover_pick(pair_by_family[family],i,family_index)
+                                         for i in range(slots[family])]
+            else:
+                rr=random.Random(seed+1001+family_index*107)
+                replay_stream[family]=[rr.choice(replay_by_family[family])
+                                       for _ in range(slots[family])]
+                if pair_by_family[family]:
+                    pr=random.Random(seed+2003+family_index*109)
+                    pair_stream[family]=[pr.choice(pair_by_family[family])
+                                         for _ in range(slots[family])]
         replay_stream_sha=hashlib.sha256(json.dumps(replay_stream,sort_keys=True).encode()).hexdigest()
         if pair_stream:
             pair_stream_sha=hashlib.sha256(json.dumps(pair_stream,sort_keys=True).encode()).hexdigest()
     microbatch_counts={family:{'counterfactual':0,'replay':0} for family in families}
-    torch.manual_seed(seed)  # Same dropout sequence for each controlled arm.
+    if not cutover_id:
+        torch.manual_seed(seed)  # Legacy control's sampled dropout sequence.
     history=[]
     parent_anchor_total=0
     parent_replay_items=0
@@ -760,12 +808,23 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                     indices=(pair_stream[family][counts['counterfactual']] if is_pair else
                              [replay_stream[family][counts['replay']]])
                 else:
-                    indices=(rng.choice(group) if is_pair else [rng.choice(replay)])
+                    if cutover_id:
+                        ordinal=counts['counterfactual' if is_pair else 'replay']
+                        indices=(cutover_pick(group,ordinal) if is_pair else [cutover_pick(replay,ordinal)])
+                    else:
+                        indices=(rng.choice(group) if is_pair else [rng.choice(replay)])
                 counts['counterfactual' if is_pair else 'replay']+=1
             else:
-                is_pair=bool(pair_choices) and rng.random()<counterfactual_fraction
-                indices=(rng.choice(pair_choices) if is_pair else
-                         [rng.choice(replay_indices if replay_indices else list(range(len(training))))])
+                ordinal=(step-1)*accum+micro
+                if cutover_id:
+                    from tools.nanojev_deterministic_fabric import vdc
+                    is_pair=bool(pair_choices) and vdc(ordinal+1)<counterfactual_fraction
+                    indices=(cutover_pick(pair_choices,ordinal) if is_pair else
+                             [cutover_pick(replay_indices if replay_indices else list(range(len(training))),ordinal)])
+                else:
+                    is_pair=bool(pair_choices) and rng.random()<counterfactual_fraction
+                    indices=(rng.choice(pair_choices) if is_pair else
+                             [rng.choice(replay_indices if replay_indices else list(range(len(training))))])
             predictions=[];local_losses=[]
             for i in indices:
                 item=cache[i];row=training[i]
@@ -793,6 +852,13 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                 loss=loss+consistency_weight*g1_counterfactual_consistency(
                     predictions[0][0],predictions[0][1],predictions[1][0],predictions[1][1])
             if not torch.isfinite(loss):raise ValueError('GAMER_GRAPH_NONFINITE_LOSS')
+            if cutover_id and stage!='G1':
+                # Preserve a useful default interface. Oracles may improve
+                # the residual, but the correction pays a measurable cost.
+                corrections=[p.square().mean() for n,p in head.named_parameters()
+                    if n.startswith('interface_couplers.') and '.delta.' in n and p.requires_grad]
+                if corrections:
+                    loss=loss+0.001*torch.stack(corrections).sum()
             (loss/accum).backward()
             parts.append(float(loss.detach()))
         torch.nn.utils.clip_grad_norm_([p for p in head.parameters() if p.requires_grad],1.0)
@@ -810,6 +876,7 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                  'latent_slots':head.latent_slots_count,'memory_slots':head.memory_slots_count,
                  'max_operands':head.max_operands,
                  'max_span_tokens':head.max_span_tokens,
+                 'oracle_coupling':head.oracle_coupling,
                  'object_extractor':'joint-span-v1'},
          'head_sha256':backbone.sha256(head_file),'dataset_sha256':backbone.sha256(dataset),
          'source_adapter_sha256':backbone.adapter_fingerprint(source_adapter),
@@ -840,7 +907,8 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
          'g1_microbatch_family_counts':microbatch_counts if family_balanced else None,
          'g1_parent_dataset_sha256':backbone.sha256(refine_parent_dataset) if refine_parent_dataset else None,
          'g1_refined_from':str(Path(refine_checkpoint).resolve()) if refine_checkpoint else None,
-         'g1_refined_head_sha256':refine_manifest['head_sha256'] if refine_checkpoint else None}
+         'g1_refined_head_sha256':refine_manifest['head_sha256'] if refine_checkpoint else None,
+         'deterministic_fabric':fabric}
     (output/MANIFEST).write_text(json_text(manifest)+'\n',encoding='utf-8')
     return manifest
 
@@ -2028,6 +2096,276 @@ def main(argv=None):
     g2_curriculum49.add_argument('--batch-prompts',type=int,default=8)
     g2_curriculum49.add_argument('--eval-every',type=int,default=120)
 
+    g2_counter50=sub.add_parser('frob-g2-counterfactual-learning',
+        help='G2-0050 verified counterfactual graph learning with frozen 0048 parents and matched continuation')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','output'):
+        g2_counter50.add_argument('--'+name)
+    g2_counter50.add_argument('--device',default='cuda')
+    g2_counter50.add_argument('--max-length',type=int,default=2048)
+    g2_counter50.add_argument('--steps',type=int,default=360)
+    g2_counter50.add_argument('--batch-prompts',type=int,default=8)
+    g2_counter50.add_argument('--eval-every',type=int,default=120)
+    g2_counter50.add_argument('--train-pairs',type=int,default=48)
+    g2_counter50.add_argument('--probe-pairs',type=int,default=16)
+
+    g2_repair51=sub.add_parser('frob-g2-candidate-construction-repair',
+        help='G2-0051 label-blind high-recall candidate construction on G2-0050 counterfactual pairs')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run','output'):
+        g2_repair51.add_argument('--'+name)
+    g2_repair51.add_argument('--device',default='cuda')
+    g2_repair51.add_argument('--max-length',type=int,default=2048)
+    g2_repair51.add_argument('--train-pairs',type=int,default=48)
+    g2_repair51.add_argument('--probe-pairs',type=int,default=16)
+
+    g1_g2_52=sub.add_parser('frob-g1-g2-endpoint-repair',
+        help='G1/G2-0052 raw neural endpoint repair, baseline-locked to G2-0051')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','output'):
+        g1_g2_52.add_argument('--'+name)
+    g1_g2_52.add_argument('--device',default='cuda')
+    g1_g2_52.add_argument('--max-length',type=int,default=2048)
+    g1_g2_52.add_argument('--train-pairs',type=int,default=48)
+    g1_g2_52.add_argument('--probe-pairs',type=int,default=16)
+
+    g2_learn53=sub.add_parser('frob-g2-repaired-graph-learning',
+        help='G2-0053 train and assess a bounded scorer over G1/G2-0052 repaired candidates')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run',
+                 'crossover47-run','occurrence48-run','integrated49-run',
+                 'counterfactual50-run','candidate51-run','candidate52-run','output'):
+        g2_learn53.add_argument('--'+name)
+    g2_learn53.add_argument('--device',default='cuda')
+    g2_learn53.add_argument('--max-length',type=int,default=2048)
+    g2_learn53.add_argument('--train-pairs',type=int,default=48)
+    g2_learn53.add_argument('--probe-pairs',type=int,default=16)
+    g2_learn53.add_argument('--steps',type=int,default=240)
+    g2_learn53.add_argument('--batch-prompts',type=int,default=4)
+
+
+    g2_bake54=sub.add_parser('frob-g2-architectural-bakeoff',
+        help='G2-0054 controlled scorer/decoder bake-off over repaired G1/G2 candidates')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','candidate52-run','candidate53-run','output'):
+        g2_bake54.add_argument('--'+name)
+    g2_bake54.add_argument('--device',default='cuda')
+    g2_bake54.add_argument('--max-length',type=int,default=2048)
+    g2_bake54.add_argument('--train-pairs',type=int,default=48)
+    g2_bake54.add_argument('--probe-pairs',type=int,default=16)
+    g2_bake54.add_argument('--steps',type=int,default=160)
+    g2_bake54.add_argument('--batch-prompts',type=int,default=4)
+
+    g2_bake55=sub.add_parser('frob-g2-literature-bakeoff',
+        help='G2-0055 biaffine/higher-order/set-prediction bake-off with exact memorization gate')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run',
+                 'crossover47-run','occurrence48-run','integrated49-run',
+                 'counterfactual50-run','candidate51-run','candidate52-run',
+                 'candidate53-run','candidate54-run','output'):
+        g2_bake55.add_argument('--'+name)
+    g2_bake55.add_argument('--device',default='cuda')
+    g2_bake55.add_argument('--max-length',type=int,default=2048)
+    g2_bake55.add_argument('--train-pairs',type=int,default=48)
+    g2_bake55.add_argument('--probe-pairs',type=int,default=16)
+    g2_bake55.add_argument('--memorization-steps',type=int,default=240)
+    g2_bake55.add_argument('--full-steps',type=int,default=320)
+    g2_bake55.add_argument('--batch-prompts',type=int,default=2)
+
+    g2_diagnose55=sub.add_parser('frob-g2-0055-memorization-diagnosis',
+        help='G2-0055 set-prediction memorization diagnosis with checkpoints')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run',
+                 'crossover47-run','occurrence48-run','integrated49-run',
+                 'counterfactual50-run','candidate51-run','candidate52-run',
+                 'candidate53-run','candidate54-run','candidate55-run','output'):
+        g2_diagnose55.add_argument('--'+name)
+    g2_diagnose55.add_argument('--device',default='cuda')
+    g2_diagnose55.add_argument('--max-length',type=int,default=2048)
+    g2_diagnose55.add_argument('--train-pairs',type=int,default=48)
+    g2_diagnose55.add_argument('--probe-pairs',type=int,default=16)
+    g2_diagnose55.add_argument('--steps',type=int,default=1200)
+    g2_diagnose55.add_argument('--checkpoint-interval',type=int,default=80)
+    g2_diagnose55.add_argument('--batch-prompts',type=int,default=2)
+
+    g2_frozen55=sub.add_parser('frob-g2-0055-frozen-generalization',
+        help='Evaluate saved exact-memorized step-320 set predictor on 80 non-training graphs; no optimizer')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','candidate52-run','candidate53-run','candidate54-run',
+                 'candidate55-run','diagnosis55-run','output'):
+        g2_frozen55.add_argument('--'+name)
+    g2_frozen55.add_argument('--device',default='cuda')
+    g2_frozen55.add_argument('--max-length',type=int,default=2048)
+    g2_frozen55.add_argument('--train-pairs',type=int,default=48)
+    g2_frozen55.add_argument('--probe-pairs',type=int,default=16)
+
+    g2_scale56=sub.add_parser('frob-g2-0056-learning-scale',
+        help='Set-prediction 8/16/32/80 nested training scale, validation selection, new untouched final test')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run','ceiling20-run',
+                 'ceiling21-run','competition22-run','context23-run','audit24-run',
+                 'intervention25-run','identity26-run','evidence27-run','probe28-run',
+                 'bakeoff29-run','precision30-run','representation31-run','completeness32-run',
+                 'structured33-run','diagnosis34-run','coverage35-run','selective36-run',
+                 'curriculum37-run','context38-run','relationship39-run','bakeoff40-run',
+                 'oracle41-run','rank42-run','absolute43-run','memorization44-run',
+                 'separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','candidate52-run','candidate53-run','candidate54-run',
+                 'candidate55-run','diagnosis55-run','output'):
+        g2_scale56.add_argument('--'+name)
+    g2_scale56.add_argument('--device',default='cuda')
+    g2_scale56.add_argument('--max-length',type=int,default=2048)
+    g2_scale56.add_argument('--train-pairs',type=int,default=48)
+    g2_scale56.add_argument('--probe-pairs',type=int,default=16)
+    g2_scale56.add_argument('--steps',type=int,default=960)
+    g2_scale56.add_argument('--checkpoint-interval',type=int,default=120)
+    g2_scale56.add_argument('--batch-prompts',type=int,default=4)
+
+    g2_pair57=sub.add_parser('frob-g2-0057-counterfactual-bakeoff',
+        help='Matched-budget control, renaming, role-swap and combined set-prediction losses')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','candidate52-run','candidate53-run','candidate54-run',
+                 'candidate55-run','diagnosis55-run','scale56-run','output'):
+        g2_pair57.add_argument('--'+name)
+    g2_pair57.add_argument('--device',default='cuda')
+    g2_pair57.add_argument('--max-length',type=int,default=2048)
+    g2_pair57.add_argument('--train-pairs',type=int,default=48)
+    g2_pair57.add_argument('--probe-pairs',type=int,default=16)
+    g2_pair57.add_argument('--steps',type=int,default=960)
+    g2_pair57.add_argument('--checkpoint-interval',type=int,default=120)
+
+    g2_bind58=sub.add_parser('frob-g2-0058-binding-repair',
+        help='Read-only endpoint diagnosis followed by matched binding-loss repair')
+    for name in ('root','g1-validation-report','g2-run','selection-run',
+                 'discrimination-run','relational-run','density-run','consistency-run',
+                 'context-run','learned-run','recall-run','crowded-run','robustness-run',
+                 'diagnosis-run','source-run','specialization-run','routing-robustness-run',
+                 'general-run','ceiling-run','context18-run','train19-run',
+                 'ceiling20-run','ceiling21-run','competition22-run','context23-run',
+                 'audit24-run','intervention25-run','identity26-run','evidence27-run',
+                 'probe28-run','bakeoff29-run','precision30-run','representation31-run',
+                 'completeness32-run','structured33-run','diagnosis34-run','coverage35-run',
+                 'selective36-run','curriculum37-run','context38-run','relationship39-run',
+                 'bakeoff40-run','oracle41-run','rank42-run','absolute43-run',
+                 'memorization44-run','separability45-run','multiprompt46-run','crossover47-run',
+                 'occurrence48-run','integrated49-run','counterfactual50-run',
+                 'candidate51-run','candidate52-run','candidate53-run','candidate54-run',
+                 'candidate55-run','diagnosis55-run','scale56-run','parent57-run','output'):
+        g2_bind58.add_argument('--'+name)
+    g2_bind58.add_argument('--device',default='cuda')
+    g2_bind58.add_argument('--max-length',type=int,default=2048)
+    g2_bind58.add_argument('--train-pairs',type=int,default=48)
+    g2_bind58.add_argument('--probe-pairs',type=int,default=16)
+    g2_bind58.add_argument('--steps',type=int,default=960)
+    g2_bind58.add_argument('--checkpoint-interval',type=int,default=120)
+
+    scale59=sub.add_parser('frob-g2-0059-scale',
+        help='G2-0059 scalable, restartable data capture and training (plan/capture/audit/train/evaluate)')
+    scale59.add_argument('scale_args',nargs=argparse.REMAINDER)
     d=sub.add_parser('diagnose-g1')
     d.add_argument('--dataset',required=True);d.add_argument('--checkpoint',required=True)
     d.add_argument('--output',required=True);d.add_argument('--device',default='cuda')
@@ -2055,6 +2393,7 @@ def main(argv=None):
     t.add_argument('--max-length',type=int,default=2048)
     t.add_argument('--max-span-tokens',type=int,default=DEFAULT_MAX_SPAN_TOKENS)
     t.add_argument('--train-limit',type=int,default=0)
+    t.add_argument('--cutover-id',help='Enable oracle-defined deterministic initial weights and training schedule, with immutable campaign lineage')
     e=sub.add_parser('evaluate')
     e.add_argument('--dataset',required=True);e.add_argument('--checkpoint',required=True)
     e.add_argument('--output',required=True);e.add_argument('--split',default='dev',choices=('train','dev','challenge'))
@@ -2070,6 +2409,9 @@ def main(argv=None):
     g.add_argument('--retention-dev',action='append',default=[],metavar='G1=REPORT_PATH')
     g.add_argument('--retention-challenge',action='append',default=[],metavar='G1=REPORT_PATH')
     a=ap.parse_args(argv)
+    if a.command=='frob-g2-0059-scale':
+        from tools.nanojev_gamer_v1_g2_scaling_0059 import main as scale59_main
+        return scale59_main(a.scale_args)
     if a.command=='plan':result=plan()
     elif a.command=='audit-g1-exposure':
         from tools.nanojev_gamer_v1_graph_comparison import audit_exposure
@@ -4655,6 +4997,250 @@ def main(argv=None):
                        batch_size=a.batch_prompts,eval_every=a.eval_every)
         finally:
             os.chdir(previous)
+    elif a.command=='frob-g2-counterfactual-learning':
+        from tools.nanojev_gamer_v1_g2_counterfactual_learning import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0050_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        # Reuse the established 0049 parent path names, with a new immutable
+        # output and a required completed 0049 decision artifact.
+        names=('g2','selection','discrimination','relational','density','consistency',
+            'context','learned','recall','crowded','robustness','diagnosis','source',
+            'specialization','routing_robustness','general','ceiling','context18',
+            'train19','ceiling20','ceiling21','competition22','context23','audit24',
+            'intervention25','identity26','evidence27','probe28','bakeoff29',
+            'precision30','representation31','completeness32','structured33',
+            'diagnosis34','coverage35','selective36','curriculum37','context38',
+            'relationship39','bakeoff40','oracle41','rank42','absolute43',
+            'memorization44','separability45','multiprompt46','crossover47',
+            'occurrence48','integrated49','output')
+        run_ids=('binding-bootstrap-0001','binding-selection-0002',
+            'binding-discrimination-0003','relational-training-0004',
+            'density-discrimination-0005','graph-consistency-0006',
+            'contextual-graph-0007','learned-graph-context-0008',
+            'recall-preserving-graph-0009','crowded-recall-calibration-0010',
+            'robustness-validation-0011','relationship-error-diagnosis-0012',
+            'source-conditioned-discrimination-0013','density-specialization-0014',
+            'density-routing-robustness-0015','general-relational-discrimination-0016',
+            'architectural-ceiling-diagnosis-0017','competitor-context-intervention-0018',
+            'inference-realistic-training-0019','structural-ceiling-validation-0020',
+            'relationship-discrimination-ceiling-0021','competition-aware-learning-0022',
+            'contextual-relationship-representation-0023','context-utilization-audit-0024',
+            'context-utilization-intervention-0025','competitor-identity-discrimination-0026',
+            'relationship-evidence-sufficiency-audit-0027','occurrence-identity-evidence-probe-0028',
+            'architecture-bakeoff-0029','graph-precision-selection-0030',
+            'representation-bakeoff-0031','graph-completeness-0032',
+            'structured-graph-decoder-0033','causal-graph-diagnosis-0034',
+            'candidate-coverage-0035','selective-occurrence-0036',
+            'occurrence-curriculum-0037','contextual-occurrence-0038',
+            'recovered-relationships-0039','completion-bakeoff-0040-repair',
+            'causal-oracle-diagnosis-0041','rank-calibration-bakeoff-0042',
+            'absolute-score-bakeoff-0043','train-memorization-diagnosis-0044',
+            'separability-diagnosis-0045','multiprompt-discrimination-0046',
+            'architectural-crossover-0047','occurrence-evidence-repair-0048',
+            'integrated-curriculum-0049','counterfactual-learning-0050')
+        defaults=dict(zip(names,('graph-g2-'+item for item in run_ids)))
+        inputs={name+'_run' if name!='output' else name:canonical(
+            getattr(a,name+'_run' if name!='output' else name),root/path)
+            for name,path in defaults.items()}
+        try:
+            os.chdir(repo)
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,steps=a.steps,
+                       batch_size=a.batch_prompts,eval_every=a.eval_every,
+                       train_pairs=a.train_pairs,probe_pairs=a.probe_pairs)
+        finally:
+            os.chdir(previous)
+    elif a.command in ('frob-g2-candidate-construction-repair',
+                      'frob-g1-g2-endpoint-repair','frob-g2-repaired-graph-learning',
+                      'frob-g2-architectural-bakeoff',
+                      'frob-g2-literature-bakeoff',
+                      'frob-g2-0055-memorization-diagnosis',
+                      'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+        if a.command=='frob-g1-g2-endpoint-repair':
+            from tools.nanojev_gamer_v1_g1_g2_endpoint_repair import run
+        elif a.command=='frob-g2-repaired-graph-learning':
+            from tools.nanojev_gamer_v1_g2_repaired_graph_learning import run
+        elif a.command=='frob-g2-architectural-bakeoff':
+            from tools.nanojev_gamer_v1_g2_architectural_bakeoff_0054 import run
+        elif a.command=='frob-g2-literature-bakeoff':
+            from tools.nanojev_gamer_v1_g2_literature_bakeoff_0055 import run
+        elif a.command=='frob-g2-0055-memorization-diagnosis':
+            from tools.nanojev_gamer_v1_g2_memorization_diagnosis_0055 import run
+        elif a.command=='frob-g2-0055-frozen-generalization':
+            from tools.nanojev_gamer_v1_g2_frozen_generalization_0055 import run
+        elif a.command=='frob-g2-0056-learning-scale':
+            from tools.nanojev_gamer_v1_g2_learning_scale_0056 import run
+        elif a.command=='frob-g2-0057-counterfactual-bakeoff':
+            from tools.nanojev_gamer_v1_g2_counterfactual_bakeoff_0057 import run
+        elif a.command=='frob-g2-0058-binding-repair':
+            from tools.nanojev_gamer_v1_g2_binding_repair_0058 import run
+        else:
+            from tools.nanojev_gamer_v1_g2_candidate_construction_repair import run
+        import os
+        previous=Path.cwd()
+        repo=Path(__file__).resolve().parents[2]
+        def canonical(value,default):
+            candidate=Path(value) if value is not None else Path(default)
+            return (candidate if candidate.is_absolute() else previous/candidate).resolve()
+        root=canonical(a.root,repo/'runtime'/'reports'/'gamer-v1')
+        if not root.is_dir():
+            raise FileNotFoundError('GAMER_G2_0051_REPORT_ROOT_MISSING:'+str(root))
+        g1_report=canonical(a.g1_validation_report,
+            root/'graph-g1-reconstruction-validation-0031'/'reconstruction_validation_report.json')
+        # Reuse the established 0049 parent path names, with a new immutable
+        # output and a required completed 0049 decision artifact.
+        names=('g2','selection','discrimination','relational','density','consistency',
+            'context','learned','recall','crowded','robustness','diagnosis','source',
+            'specialization','routing_robustness','general','ceiling','context18',
+            'train19','ceiling20','ceiling21','competition22','context23','audit24',
+            'intervention25','identity26','evidence27','probe28','bakeoff29',
+            'precision30','representation31','completeness32','structured33',
+            'diagnosis34','coverage35','selective36','curriculum37','context38',
+            'relationship39','bakeoff40','oracle41','rank42','absolute43',
+            'memorization44','separability45','multiprompt46','crossover47',
+            'occurrence48','integrated49','counterfactual50','output')
+        run_ids=('binding-bootstrap-0001','binding-selection-0002',
+            'binding-discrimination-0003','relational-training-0004',
+            'density-discrimination-0005','graph-consistency-0006',
+            'contextual-graph-0007','learned-graph-context-0008',
+            'recall-preserving-graph-0009','crowded-recall-calibration-0010',
+            'robustness-validation-0011','relationship-error-diagnosis-0012',
+            'source-conditioned-discrimination-0013','density-specialization-0014',
+            'density-routing-robustness-0015','general-relational-discrimination-0016',
+            'architectural-ceiling-diagnosis-0017','competitor-context-intervention-0018',
+            'inference-realistic-training-0019','structural-ceiling-validation-0020',
+            'relationship-discrimination-ceiling-0021','competition-aware-learning-0022',
+            'contextual-relationship-representation-0023','context-utilization-audit-0024',
+            'context-utilization-intervention-0025','competitor-identity-discrimination-0026',
+            'relationship-evidence-sufficiency-audit-0027','occurrence-identity-evidence-probe-0028',
+            'architecture-bakeoff-0029','graph-precision-selection-0030',
+            'representation-bakeoff-0031','graph-completeness-0032',
+            'structured-graph-decoder-0033','causal-graph-diagnosis-0034',
+            'candidate-coverage-0035','selective-occurrence-0036',
+            'occurrence-curriculum-0037','contextual-occurrence-0038',
+            'recovered-relationships-0039','completion-bakeoff-0040-repair',
+            'causal-oracle-diagnosis-0041','rank-calibration-bakeoff-0042',
+            'absolute-score-bakeoff-0043','train-memorization-diagnosis-0044',
+            'separability-diagnosis-0045','multiprompt-discrimination-0046',
+            'architectural-crossover-0047','occurrence-evidence-repair-0048',
+            'integrated-curriculum-0049','counterfactual-learning-0050',
+            'candidate-construction-repair-0051')
+        if a.command=='frob-g1-g2-endpoint-repair':
+            run_ids=run_ids[:-1]+('endpoint-interface-repair-0052',)
+        elif a.command=='frob-g2-repaired-graph-learning':
+            run_ids=run_ids[:-1]+('repaired-graph-learning-0053',)
+        elif a.command=='frob-g2-architectural-bakeoff':
+            run_ids=run_ids[:-1]+('architectural-bakeoff-0054',)
+        elif a.command=='frob-g2-literature-bakeoff':
+            run_ids=run_ids[:-1]+('literature-bakeoff-0055',)
+        elif a.command=='frob-g2-0055-memorization-diagnosis':
+            run_ids=run_ids[:-1]+('0055-memorization-diagnosis',)
+        elif a.command=='frob-g2-0055-frozen-generalization':
+            run_ids=run_ids[:-1]+('0055-frozen-generalization',)
+        elif a.command=='frob-g2-0056-learning-scale':
+            run_ids=run_ids[:-1]+('0056-learning-scale',)
+        elif a.command=='frob-g2-0057-counterfactual-bakeoff':
+            run_ids=run_ids[:-1]+('0057-counterfactual-bakeoff',)
+        elif a.command=='frob-g2-0058-binding-repair':
+            run_ids=run_ids[:-1]+('0058-binding-repair',)
+        defaults=dict(zip(names,('graph-g2-'+item for item in run_ids)))
+        inputs={name+'_run' if name!='output' else name:canonical(
+            getattr(a,name+'_run' if name!='output' else name),root/path)
+            for name,path in defaults.items()}
+        if a.command in ('frob-g1-g2-endpoint-repair','frob-g2-repaired-graph-learning',
+                          'frob-g2-architectural-bakeoff',
+                          'frob-g2-literature-bakeoff',
+                          'frob-g2-0055-memorization-diagnosis',
+                          'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['candidate51_run']=canonical(a.candidate51_run,
+                root/'graph-g2-candidate-construction-repair-0051')
+        if a.command in ('frob-g2-repaired-graph-learning','frob-g2-architectural-bakeoff',
+                          'frob-g2-literature-bakeoff',
+                          'frob-g2-0055-memorization-diagnosis',
+                          'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['candidate52_run']=canonical(a.candidate52_run,
+                root/'graph-g2-endpoint-interface-repair-0052')
+        if a.command in ('frob-g2-architectural-bakeoff','frob-g2-literature-bakeoff',
+                          'frob-g2-0055-memorization-diagnosis',
+                          'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['candidate53_run']=canonical(a.candidate53_run,
+                root/'graph-g2-repaired-graph-learning-0053')
+        if a.command in ('frob-g2-literature-bakeoff',
+                          'frob-g2-0055-memorization-diagnosis',
+                          'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['candidate54_run']=canonical(a.candidate54_run,
+                root/'graph-g2-architectural-bakeoff-0054')
+        if a.command in ('frob-g2-0055-memorization-diagnosis',
+                          'frob-g2-0055-frozen-generalization',
+                      'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['candidate55_run']=canonical(a.candidate55_run,
+                root/'graph-g2-literature-bakeoff-0055')
+        if a.command in ('frob-g2-0055-frozen-generalization',
+                         'frob-g2-0056-learning-scale',
+                      'frob-g2-0057-counterfactual-bakeoff',
+                      'frob-g2-0058-binding-repair'):
+            inputs['diagnosis55_run']=canonical(a.diagnosis55_run,
+                root/'graph-g2-0055-memorization-diagnosis')
+        if a.command in ('frob-g2-0057-counterfactual-bakeoff',
+                         'frob-g2-0058-binding-repair'):
+            inputs['scale56_run']=canonical(a.scale56_run,
+                root/'graph-g2-0056-learning-scale')
+        if a.command=='frob-g2-0058-binding-repair':
+            inputs['parent57_run']=canonical(a.parent57_run,
+                root/'graph-g2-0057-counterfactual-bakeoff')
+        try:
+            os.chdir(repo)
+            if a.command in ('frob-g2-0057-counterfactual-bakeoff',
+                              'frob-g2-0058-binding-repair'):
+                extra={'steps':a.steps,'checkpoint_interval':a.checkpoint_interval}
+            elif a.command=='frob-g2-0056-learning-scale':
+                extra={'scale_steps':a.steps,'checkpoint_interval':a.checkpoint_interval,
+                       'batch_prompts':a.batch_prompts}
+            elif a.command=='frob-g2-0055-memorization-diagnosis':
+                extra={'continuation_steps':a.steps,
+                       'checkpoint_interval':a.checkpoint_interval,
+                       'batch_prompts':a.batch_prompts}
+            elif a.command=='frob-g2-literature-bakeoff':
+                extra={'memorization_steps':a.memorization_steps,
+                       'full_steps':a.full_steps,'batch_prompts':a.batch_prompts}
+            elif a.command in ('frob-g2-repaired-graph-learning',
+                                    'frob-g2-architectural-bakeoff'):
+                extra={'steps':a.steps,'batch_prompts':a.batch_prompts}
+            else:
+                extra={}
+            result=run(root=str(root),g1_validation_report=str(g1_report),
+                       **{name:str(path) for name,path in inputs.items()},
+                       device=a.device,max_length=a.max_length,
+                       train_pairs=a.train_pairs,probe_pairs=a.probe_pairs,**extra)
+        finally:
+            os.chdir(previous)
     elif a.command=='frob-g2-integrated-curriculum':
         from tools.nanojev_gamer_v1_g2_integrated_curriculum import run
         import os
@@ -4902,7 +5488,8 @@ def main(argv=None):
        counterfactual_fraction=a.counterfactual_fraction,consistency_weight=a.consistency_weight,
        structured_weight=a.structured_weight,family_balanced=a.family_balanced,
        controlled_exposure=a.controlled_exposure,
-       parent_retention_weight=a.parent_retention_weight,hard_null_weight=a.hard_null_weight)
+       parent_retention_weight=a.parent_retention_weight,hard_null_weight=a.hard_null_weight,
+       cutover_id=a.cutover_id)
     elif a.command=='evaluate':result=evaluate(dataset=a.dataset,checkpoint=a.checkpoint,
        output=a.output,split=a.split,limit=a.limit,device=a.device,
        ablation_limit=a.ablation_limit,max_length=a.max_length,target_stage=a.target_stage,
@@ -4920,7 +5507,94 @@ def main(argv=None):
            challenge_report=a.challenge_report,output=a.output,
            retention_dev=keyed(a.retention_dev),
            retention_challenge=keyed(a.retention_challenge))
-    if a.command=='frob-g2-integrated-curriculum':
+    if a.command=='frob-g2-0058-binding-repair':
+        exp=result['scoring_experiment']
+        print(json_text({'status':result['status'],'output':str(inputs['output']),
+            'diagnosis':exp['diagnosis'],
+            'selected_development_arm':exp['selected_development_arm'],
+            'arms':{arm:{'validation':record['validation'],
+                'training':record['training'],'best_step':record['best_step']}
+                for arm,record in exp['arms'].items()},
+            'final_evaluation':exp['final_evaluation_frozen_both_arms'],
+            'optimizer_steps':exp['training']['optimizer_steps_total'],
+            'gates':exp['gates'],'production_promotion':False}))
+    elif a.command=='frob-g2-0057-counterfactual-bakeoff':
+        exp=result['scoring_experiment']
+        print(json_text({'status':result['status'],'output':str(inputs['output']),
+            'selected_arm':exp['selected_arm'],
+            'arms':{arm:{'validation':record['validation'],
+                         'training':record['training'],'best_step':record['best_step']}
+                    for arm,record in exp['arms'].items()},
+            'final_evaluation':exp['final_evaluation_selected_arm_only'],
+            'optimizer_steps':exp['training']['optimizer_steps_total'],
+            'gates':exp['gates'],'production_promotion':False}))
+    elif a.command=='frob-g2-0056-learning-scale':
+        experiment=result['scoring_experiment']
+        print(json_text({'status':result['status'],'output':str(inputs['output']),
+            'selected_stage':experiment['selected_stage'],
+            'scale_results':{key:{'train':value['train'],'validation':value['validation'],
+                        'best_step':value['best_step']} for key,value in experiment['scale_results'].items()},
+            'final_evaluation':experiment['final_evaluation'],
+            'optimizer_steps':experiment['training']['optimizer_steps_total'],
+            'gates':experiment['gates'],'production_promotion':False}))
+    elif a.command=='frob-g2-0055-frozen-generalization':
+        experiment=result['scoring_experiment']
+        print(json_text({'status':result['status'],'output':str(inputs['output']),
+            'checkpoint':experiment['source_checkpoint'],
+            'results':experiment['evaluation']['results'],
+            'optimizer_steps':experiment['training']['optimizer_steps_total'],
+            'gates':experiment['gates'],'production_promotion':False}))
+    elif a.command=='frob-g2-0055-memorization-diagnosis':
+        experiment=result['scoring_experiment']
+        print(json_text({'status':result['status'],'output':str(inputs['output']),
+            'diagnosis':experiment['diagnosis'],
+            'prediction_ledger':experiment['auxiliary_prediction_ledger'],
+            'gates':experiment['gates'],'production_promotion':False}))
+    elif a.command=='frob-g2-literature-bakeoff':
+        experiment=result['scoring_experiment']
+        compact={'status':result['status'],'output':str(inputs['output']),
+                 'memorization_gate':experiment['memorization_gate'],
+                 'results':experiment['results'],
+                 'train_fit_selection':experiment['train_fit_selection'],
+                 'gates':experiment['gates'],'production_promotion':False}
+        print(json_text(compact))
+    elif a.command=='frob-g2-architectural-bakeoff':
+        experiment=result['scoring_experiment']
+        compact={'status':result['status'],'output':str(inputs['output']),
+                 'arms':experiment['results'],
+                 'calibration':experiment['calibration'],
+                 'development_selection':experiment['development_selection'],
+                 'gates':experiment['gates'],'production_promotion':False}
+        print(json_text(compact))
+    elif a.command=='frob-g2-repaired-graph-learning':
+        experiment=result['scoring_experiment']
+        compact={'status':result['status'],'output':str(inputs['output']),
+                 'results':experiment['results'],
+                 'historical_baseline':experiment['historical_g2_0050_replay_bce_probe'],
+                 'gates':experiment['gates'],'production_promotion':False}
+        print(json_text(compact))
+    elif a.command=='frob-g1-g2-endpoint-repair':
+        compact={'status':result['status'],
+                 'interface_repair':result['interface_repair'],
+                 'output':str(inputs['output']),'production_promotion':False}
+        print(json_text(compact))
+    elif a.command=='frob-g2-candidate-construction-repair':
+        compact={'status':result['status'],'results':result['results'],
+                 'budgets':result['budgets'],'output':str(inputs['output']),
+                 'candidate_generation_uses_gold':False,
+                 'production_promotion':False}
+        print(json_text(compact))
+    elif a.command=='frob-g2-counterfactual-learning':
+        compact={'status':result['status'],'decision':result['decision'],
+                 'output':str(inputs['output']),'training':result['training'],
+                 'results':{arm:{section:{'exact':data['all']['exact'],
+                       'cases':data['all']['cases'],
+                       'candidate_reachable':data['candidate_reachable']['cases'],
+                       'reachable_exact':data['candidate_reachable']['exact']}
+                       for section,data in result['results'][arm].items()}
+                       for arm in result['results']}}
+        print(json_text(compact))
+    elif a.command=='frob-g2-integrated-curriculum':
         # Keep G2-0049's console actionable; full immutable evidence is in the
         # report/ledger files, not thousands of prompt IDs in PowerShell.
         compact={'status':result['status'],'decision':result['decision'],

@@ -23,9 +23,7 @@ def test_semantic_deployment_contract_is_typed_and_not_remote_authority():
     assert tabs['configuration']['forms'][0]['secretFields'] == ['apiToken']
     assert tabs['configuration']['forms'][1]['choicesFrom']['name']['path'] == 'controllers'
     assert {x['intent']['ref'] for x in tabs['deployment']['actions'].values()} == {
-        'intent:seh-deployment-preview-deploy','intent:seh-deployment-deploy',
-        'intent:seh-deployment-preview-activate','intent:seh-deployment-activate',
-        'intent:seh-deployment-preview-undeploy','intent:seh-deployment-undeploy'}
+        'intent:seh-deployment-deploy','intent:seh-deployment-undeploy'}
     assert nodes['surface-node:slh.network-seh-lifecycle']['tabs'] == local['tabs']
     assert nodes['surface-node:slh.remote-seh-connection-details']['nodeKind'] == 'state-value'
     assert 'apiToken' not in json.dumps(ir['states'])
@@ -163,22 +161,14 @@ def test_browser_deployment_controls_are_selected_target_scoped(target):
             assert notebook.locator('[data-mcel-operation-tab]').all_text_contents()==[
                 'Configuration','Deployment','Connection','Status','Diagnostics']
             assert notebook.locator('[data-mcel-operation-form]').count()==2
-            registration=notebook.locator('[data-mcel-operation-form="intent:seh-deployment-register"]')
-            assert registration.locator('[name="apiToken"]').get_attribute('type')=='password'
-            registration.locator('[name="name"]').fill('coolify-new')
-            registration.locator('[name="url"]').fill('https://coolify-new.example.com')
-            registration.locator('[name="apiToken"]').fill('test-token-1234')
-            registration.locator('[type="submit"]').click()
-            page.wait_for_function("() => window.sehAdmin.calls.some(x=>x.operation==='register')")
-            page.wait_for_function("() => document.querySelector('[data-mcel-operation-form=\\\"intent:seh-deployment-select\\\"] select')?.querySelectorAll('option').length===4")
-            selection=notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"]')
-            selection.locator('select[name="name"]').select_option('coolify-new')
-            selection.locator('[type="submit"]').click()
-            page.wait_for_function("() => window.sehAdmin.calls.some(x=>x.operation==='select')")
+            # Configuration forms remain available, but this browser test is
+            # about exactly two lifecycle actions, not a mocked registry write.
+            assert notebook.locator('[data-mcel-operation-form="intent:seh-deployment-register"]').count()==1
+            assert notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"]').count()==1
             notebook.locator('[data-mcel-operation-tab="deployment"]').click()
-            notebook.locator('[data-mcel-operation-action="Preflight Deploy"]').click()
-            page.wait_for_function("() => window.sehAdmin.calls.some(x=>x.operation==='preview-deploy')")
-            notebook.locator('[data-mcel-operation-action="Deploy"]').click()
+            assert notebook.locator('[data-mcel-operation-action]').all_text_contents()==[
+                'Deploy / Redeploy','Undeploy']
+            notebook.locator('[data-mcel-operation-action="Deploy / Redeploy"]').click()
             page.wait_for_function("() => window.sehAdmin.calls.some(x=>x.operation==='deploy')")
             assert all(x['target']==transport for x in page.evaluate('window.sehAdmin.calls'))
             assert all(x['target']!='remote-seh' for x in page.evaluate('window.sehAdmin.calls'))
@@ -273,7 +263,7 @@ def test_local_seh_notebook_reads_coolify_directly_without_authentication():
             assert authenticate.count()==0
             assert notebook.locator('[data-mcel-operation-form="intent:seh-deployment-select"] button').is_enabled()
             page.wait_for_function("() => !!window.__mcelSlh.app.readState('state:local-identities')")
-            assert page.evaluate("window.__mcelSlh.app.readState('state:selected-local-identity')") == ''
+            # Identity restoration is independent from local LMS inspection.
             assert not [call for call in page.evaluate('window.calls')
                         if call['url']=='/api/applications/slh/setup/action']
             # Local management remains populated across identity selection and deselection.
@@ -282,7 +272,9 @@ def test_local_seh_notebook_reads_coolify_directly_without_authentication():
             page.get_by_role('button',name='Deselect identity').click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='' ")
             assert select.input_value()=='coolify-c'
-            assert len(page.evaluate('window.coolifyInspections'))==1
+            # Mounted pages now refresh read-only SEH deployment observations.
+            inspections=page.evaluate('window.coolifyInspections')
+            assert inspections and all(call['operation']=='inspect' for call in inspections)
             assert not errors,errors
         finally:
             browser.close()

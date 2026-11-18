@@ -91,6 +91,7 @@ def test_lab_app_selector_reuses_one_live_presentation_pipeline():
             frame.__fixture=doc;
           };
         }""")
+        page.add_script_tag(path=str(WEB / 'scripts/mcel-unified-presentation-controller.js'))
         page.add_script_tag(content=prefix)
         result=page.evaluate("""() => {
           enableMcelSemanticThemePreview();
@@ -129,7 +130,11 @@ def test_three_other_operational_applications_accept_tng_and_theme_without_rails
         browser = _chrome(p, None)
         for name in ('file-manager', 'task-manager', 'code-editor'):
             page = browser.new_page(viewport={'width':1100,'height':740})
-            page.set_content(render_semantic_page(name, ROOT, promoted=True))
+            # This harness uses an inline page rather than the Lab's
+            # ?mcel_lab_theme_preview=1 iframe route.
+            html = render_semantic_page(name, ROOT, promoted=True)
+            html = html.replace('</head>', '<script>window.__mcelSemanticColorLabPreview=true;</script></head>')
+            page.set_content(html)
             assert page.locator('#mcel-workbench-status').inner_text()=='Semantic application ready'
             for script in ('mcel-semantic-presentation-bridge.js',
                            'mcel-semantic-theme-preview.js', 'mcel-semantic-chrome-presentation-law.js'):

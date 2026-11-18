@@ -187,7 +187,7 @@ def test_real_viewport_routes_local_and_network_targets_without_cross_target_fal
     origin=f'http://127.0.0.1:{server.server_port}'
     try:
         for path,target in [('/applications/slh/local','local'),('/applications/slh/network','network')]:
-            with urlopen(origin+path,timeout=15) as response:
+            with urlopen(origin+path+"?mcel-shell-child=1",timeout=15) as response:
                 assert response.status==200
                 html=response.read().decode('utf-8')
                 assert f'data-slh-target="{target}" aria-selected="true"' in html

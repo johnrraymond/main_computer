@@ -1,0 +1,268 @@
+{
+  "schema": "nanojev.sealed-overlap.contrast-paraphrases.v1",
+  "description": "Authored toy calibration phrases; positive/negative polarity is scoped solely to each human-defined axis. No vocabulary additions or authoritative contracts.",
+  "phases": {
+    "train": {
+      "authority": {
+        "positive": [
+          "A valid signatory approves the operation",
+          "The actor possesses permission to proceed",
+          "An empowered representative authorizes execution"
+        ],
+        "negative": [
+          "A valid signatory does not approve the operation",
+          "The actor possesses no permission to proceed",
+          "An empowered representative does not authorize execution"
+        ]
+      },
+      "obligation": {
+        "positive": [
+          "The participant must fulfill a binding contractual duty",
+          "An enforceable commitment requires the party to act",
+          "The agreement compels completion of the undertaking"
+        ],
+        "negative": [
+          "The participant has no binding contractual duty to fulfill",
+          "No enforceable commitment requires the party to act",
+          "The agreement does not compel completion of the undertaking"
+        ]
+      },
+      "resource": {
+        "positive": [
+          "The operation draws upon a finite resource allocation",
+          "The step transfers control of a scarce asset",
+          "Limited computing capacity is reserved for the job"
+        ],
+        "negative": [
+          "The operation draws upon no finite resource allocation",
+          "The step does not transfer control of a scarce asset",
+          "No limited computing capacity is reserved for the job"
+        ]
+      },
+      "evidence": {
+        "positive": [
+          "Auditable records substantiate the asserted claim",
+          "Independent observations support the proposition",
+          "Documentary proof establishes support for the request"
+        ],
+        "negative": [
+          "Auditable records do not substantiate the asserted claim",
+          "Independent observations do not support the proposition",
+          "Documentary proof does not establish support for the request"
+        ]
+      },
+      "time": {
+        "positive": [
+          "A specified deadline limits when the task may complete",
+          "The authorization remains valid only during a time window",
+          "The work must follow a defined temporal ordering"
+        ],
+        "negative": [
+          "No specified deadline limits when the task may complete",
+          "The authorization has no time window limiting validity",
+          "The work has no defined temporal ordering"
+        ]
+      },
+      "uncertainty": {
+        "positive": [
+          "Several outcomes remain plausible because the result is unknown",
+          "Available observations leave the decision unresolved",
+          "The interpretation of the current state remains ambiguous"
+        ],
+        "negative": [
+          "The result is known and no alternative outcome remains plausible",
+          "Available observations completely resolve the decision",
+          "The interpretation of the current state is unambiguous"
+        ]
+      },
+      "exclusion": {
+        "positive": [
+          "A binding restriction prohibits the two actions from coexisting",
+          "The proposed operation is explicitly disallowed",
+          "The governing conditions make the requested states incompatible"
+        ],
+        "negative": [
+          "No restriction prohibits the two actions from coexisting",
+          "The proposed operation is explicitly allowed",
+          "The governing conditions allow the requested states together"
+        ]
+      },
+      "consequence": {
+        "positive": [
+          "Performing the action causes a specified state change",
+          "Execution produces a defined downstream effect",
+          "The contractual step alters the resulting condition"
+        ],
+        "negative": [
+          "Performing the action causes no state change",
+          "Execution produces no downstream effect",
+          "The contractual step leaves the resulting condition unchanged"
+        ]
+      }
+    },
+    "selection": {
+      "authority": {
+        "positive": [
+          "A recognized delegate has granted approval for this act",
+          "The requested action is authorized by an empowered principal"
+        ],
+        "negative": [
+          "A recognized delegate has withheld approval for this act",
+          "The requested action is not authorized by an empowered principal"
+        ]
+      },
+      "obligation": {
+        "positive": [
+          "The governing terms require mandatory performance by the signer",
+          "A legally binding promise imposes a duty of execution"
+        ],
+        "negative": [
+          "The governing terms do not require mandatory performance by the signer",
+          "No legally binding promise imposes a duty of execution"
+        ]
+      },
+      "resource": {
+        "positive": [
+          "The transaction consumes a bounded pool of available capacity",
+          "A restricted allotment of resources changes ownership"
+        ],
+        "negative": [
+          "The transaction consumes no bounded pool of available capacity",
+          "No restricted allotment of resources changes ownership"
+        ]
+      },
+      "evidence": {
+        "positive": [
+          "Reproducible measurements corroborate the finding",
+          "A traceable record supplies support for the assertion"
+        ],
+        "negative": [
+          "Reproducible measurements do not corroborate the finding",
+          "No traceable record supplies support for the assertion"
+        ]
+      },
+      "time": {
+        "positive": [
+          "A fixed cutoff governs completion of the action",
+          "The task operates under an expiring validity period"
+        ],
+        "negative": [
+          "No fixed cutoff governs completion of the action",
+          "The task operates without an expiring validity period"
+        ]
+      },
+      "uncertainty": {
+        "positive": [
+          "Present facts do not determine a unique outcome",
+          "More than one explanation fits the incomplete record"
+        ],
+        "negative": [
+          "Present facts determine a unique outcome",
+          "Exactly one explanation fits the complete record"
+        ]
+      },
+      "exclusion": {
+        "positive": [
+          "A prohibition rules out the requested joint action",
+          "The two states cannot simultaneously satisfy the applicable constraint"
+        ],
+        "negative": [
+          "No prohibition rules out the requested joint action",
+          "The two states can simultaneously satisfy the applicable constraint"
+        ]
+      },
+      "consequence": {
+        "positive": [
+          "Completing the transaction changes what happens afterward",
+          "The operation yields a measurable transition of state"
+        ],
+        "negative": [
+          "Completing the transaction does not change what happens afterward",
+          "The operation yields no transition of state"
+        ]
+      }
+    },
+    "final": {
+      "authority": {
+        "positive": [
+          "A competent official has issued valid consent",
+          "Execution carries explicit authorization from the rightful decision maker"
+        ],
+        "negative": [
+          "A competent official has not issued valid consent",
+          "Execution lacks authorization from the rightful decision maker"
+        ]
+      },
+      "obligation": {
+        "positive": [
+          "The participant is obligated to deliver the promised work",
+          "A compulsory commitment has been imposed upon the party"
+        ],
+        "negative": [
+          "The participant is not obligated to deliver the promised work",
+          "No compulsory commitment has been imposed upon the party"
+        ]
+      },
+      "resource": {
+        "positive": [
+          "A scarce operational asset is committed to execution",
+          "The work receives an explicitly limited resource budget"
+        ],
+        "negative": [
+          "No scarce operational asset is committed to execution",
+          "The work receives no limited resource budget"
+        ]
+      },
+      "evidence": {
+        "positive": [
+          "Verified observations back the claim being evaluated",
+          "An inspectable proof record justifies the stated conclusion"
+        ],
+        "negative": [
+          "Verified observations do not back the claim being evaluated",
+          "No inspectable proof record justifies the stated conclusion"
+        ]
+      },
+      "time": {
+        "positive": [
+          "Execution is restricted to an explicitly scheduled interval",
+          "A binding temporal limit applies to the step"
+        ],
+        "negative": [
+          "Execution is not restricted to any scheduled interval",
+          "No binding temporal limit applies to the step"
+        ]
+      },
+      "uncertainty": {
+        "positive": [
+          "The probability of the eventual result remains unresolved",
+          "The evidence leaves multiple interpretations open"
+        ],
+        "negative": [
+          "The eventual result is known with no remaining uncertainty",
+          "The evidence settles one interpretation conclusively"
+        ]
+      },
+      "exclusion": {
+        "positive": [
+          "The agreement forbids performing the specified combination",
+          "An incompatibility rule excludes joint operation"
+        ],
+        "negative": [
+          "The agreement permits performing the specified combination",
+          "No incompatibility rule excludes joint operation"
+        ]
+      },
+      "consequence": {
+        "positive": [
+          "The specified action produces a binding subsequent outcome",
+          "A causal effect follows directly from performing the step"
+        ],
+        "negative": [
+          "The specified action produces no change in subsequent outcome",
+          "No causal effect follows from performing the step"
+        ]
+      }
+    }
+  }
+}

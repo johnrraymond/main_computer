@@ -104,7 +104,7 @@ def test_refuses_undeclared_views_and_unvalidated_local_observation():
 def test_native_routes_and_fixed_read_api_are_reachable(host):
     for route, expected in (("/applications/slh", "overview"),
                             ("/applications/slh/workers", "worker-bank")):
-        with urlopen(host + route, timeout=20) as response:
+        with urlopen(host + route + "?mcel-shell-child=1", timeout=20) as response:
             document = response.read().decode()
         assert f'data-mcel-slh-initial-view="{expected}"' in document
         assert '"worker-bank":"/applications/slh/local/workers"' in document

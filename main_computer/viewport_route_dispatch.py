@@ -1903,6 +1903,7 @@ _SEMANTIC_TASK_TABS = {
     "all-processes": "all-processes",
     "connections": "connections",
     "hardware": "cpu-gpu",
+    "operations": "operations",
 }
 
 
@@ -1977,26 +1978,6 @@ def dispatch_get(self) -> None:
         return
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
-        return
-    # Source-authored, generated MCEL SLH first slice. It is deliberately not
-    # registered with the existing 21-app launcher until its acceptance phase.
-    if route_path in {"/applications/slh", "/applications/slh/local",
-                      "/applications/slh/workers", "/applications/slh/local/workers",
-                      "/applications/slh/network", "/applications/slh/network/workers",
-                      "/applications/slh/remote-seh"}:
-        if not _hard_halt_client_is_local(self):
-            self._send_json({"ok": False, "error": "SLH application is local-only."}, HTTPStatus.FORBIDDEN)
-            return
-        from main_computer.mcel_slh_application import ROUTES, SlhApplicationError, render_slh_page
-        try:
-            page = render_slh_page(ROUTES[route_path])
-        except SlhApplicationError as exc:
-            # A broken semantic source must not terminate an HTTP request with
-            # an empty response. No SLH startup or configuration is attempted.
-            self.server.signal("mcel-slh-render-failed", path=route_path, error=str(exc))
-            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "SLH semantic application unavailable")
-            return
-        self._send_text(page, "text/html; charset=utf-8")
         return
     if route_path == "/api/applications/slh/identities":
         # This is identity metadata, not an authorization or signing endpoint.
@@ -2078,6 +2059,26 @@ def dispatch_get(self) -> None:
             from main_computer.mcel_applications_shell_host import render_applications_shell_candidate
             self._send_text(render_applications_shell_candidate(canonical_promoted=True), "text/html; charset=utf-8")
             return
+    # Native SLH application: the shared shell now owns its launcher.
+    # This block is reached only for the canonical native iframe child.
+    if route_path in {"/applications/slh", "/applications/slh/local",
+                      "/applications/slh/workers", "/applications/slh/local/workers",
+                      "/applications/slh/network", "/applications/slh/network/workers",
+                      "/applications/slh/remote-seh"}:
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "SLH application is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_slh_application import ROUTES, SlhApplicationError, render_slh_page
+        try:
+            page = render_slh_page(ROUTES[route_path])
+        except SlhApplicationError as exc:
+            # A broken semantic source must not terminate an HTTP request with
+            # an empty response. No SLH startup or configuration is attempted.
+            self.server.signal("mcel-slh-render-failed", path=route_path, error=str(exc))
+            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "SLH semantic application unavailable")
+            return
+        self._send_text(page, "text/html; charset=utf-8")
+        return
     # Promotion is a route replacement, not a second embedded panel in the
     # incumbent SPA. Keep the local-only authority boundary of the accepted
     # semantic routes and leave their opt-in URLs available for diagnosis.

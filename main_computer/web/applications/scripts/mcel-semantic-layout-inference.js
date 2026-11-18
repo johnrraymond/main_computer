@@ -1820,6 +1820,8 @@
     const surface=make("div",{"data-mcel-workspace-layout":"", "data-mcel-layout-rung":"wide"});
     const panels=[];
     const zoneHosts=new Map();
+    const modeSubtabs=new Map((plan.zones.find(zone=>zone.id==="workspace")?.modeSubtabs||[])
+      .map(spec=>[spec.equals,spec]));
     let stopped=false, lastRung="", scheduled=false;
     for (const zone of plan.zones) {
       const holder=make("section",{"data-mcel-zone":zone.id,"data-mcel-zone-kind":zone.kind});
@@ -1878,9 +1880,55 @@
             row.append(regionElements.get(pair.source),regionElements.get(pair.result));
             group.append(row);assigned.add(pair.source);assigned.add(pair.result);
           }
-          for(const id of mode.unpaired){
-            if(assigned.has(id)||!zone.members.includes(id))fail("workspace-mode-unpaired-coverage");
-            group.append(regionElements.get(id));assigned.add(id);
+          const subviews=modeSubtabs.get(mode.equals);
+          if(subviews){
+            if(mode.pairs.length || mode.unpaired.length!==subviews.members.length ||
+                mode.unpaired.some((id,i)=>id!==subviews.members[i]))
+              fail("workspace-mode-subtab-coverage");
+            const tablist=make("div",{role:"tablist","aria-label":"Workspace subviews",
+              "data-mcel-workspace-subtabs":""});
+            const controls=[];
+            const suffix=String(plan.fingerprint).slice(-12);
+            const activate=(index,focus=false)=>{
+              controls.forEach(({button,panel},i)=>{
+                const selected=i===index;
+                button.setAttribute("aria-selected",String(selected));
+                button.tabIndex=selected?0:-1;
+                panel.hidden=!selected;
+              });
+              if(focus)controls[index].button.focus();
+            };
+            subviews.members.forEach((id,i)=>{
+              if(assigned.has(id)||!zone.members.includes(id))fail("workspace-mode-subtab-unassigned");
+              const region=regionElements.get(id);
+              const title=region.querySelector("h2,h3,h4")?.textContent?.trim() || id.split(".").pop().replace(/[-_]/g," ");
+              const tabId="mcel-subtab-"+suffix+"-"+i;
+              const panelId="mcel-subpanel-"+suffix+"-"+i;
+              const button=make("button",{type:"button",id:tabId,role:"tab",
+                "aria-controls":panelId,"aria-selected":"false"});
+              button.textContent=title;
+              const panel=make("div",{id:panelId,role:"tabpanel","aria-labelledby":tabId,
+                "data-mcel-workspace-subview":""});
+              panel.append(region);
+              tablist.append(button);
+              controls.push({button,panel});panels.push(panel);
+              button.addEventListener("click",()=>activate(i));
+              button.addEventListener("keydown",event=>{
+                const step=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:0;
+                const next=event.key==="Home"?0:event.key==="End"?controls.length-1:
+                  step?(i+step+controls.length)%controls.length:null;
+                if(next!==null){event.preventDefault();activate(next,true);}
+              });
+            });
+            group.append(tablist);
+            controls.forEach(({panel})=>group.append(panel));
+            subviews.members.forEach(id=>assigned.add(id));
+            activate(0);
+          }else{
+            for(const id of mode.unpaired){
+              if(assigned.has(id)||!zone.members.includes(id))fail("workspace-mode-unpaired-coverage");
+              group.append(regionElements.get(id));assigned.add(id);
+            }
           }
           holder.append(group);
         }

@@ -18,8 +18,8 @@ def _sample():
 def test_original_reference_is_pinned_and_has_all_glyphs():
     source=legacy_desktop_reference()
     assert source['source_sha256'] == oracle.PINNED_SOURCE_SHA256
-    assert len(source['icons']) == 20
-    assert len(source['svg']) == 20
+    assert len(source['icons']) == 21
+    assert len(source['svg']) == 21
     assert [x['app'] for x in source['icons']][0:3] == ['webgl','astrometric','calculator']
     assert source['svg']['calculator'].count('<path') >= 1
 
@@ -27,14 +27,14 @@ def test_original_reference_is_pinned_and_has_all_glyphs():
 def test_reference_fixture_does_not_reuse_candidate_runtime():
     source=legacy_desktop_reference()
     html=oracle.legacy_fixture(source)
-    assert html.count('class="desktop-icon"') == 20
+    assert html.count('class="desktop-icon"') == 21
     assert 'mcel-applications-shell' not in html
     assert 'data-shell-launch=' not in html
 
 
 def test_candidate_restores_original_icons_without_promoting_route():
     html=render_applications_shell_candidate()
-    assert html.count('class="desktop-icon"') == 20
+    assert html.count('class="desktop-icon"') == 21
     assert 'data-shell-launch="calculator"' in html
     assert 'data-shell-launch="chat-console"' in html
     assert 'class="desktop-overlay desktop-home"' in html
@@ -75,7 +75,7 @@ def test_browser_source_to_shell_parity_at_four_viewports(tmp_path):
     report=oracle.run(mode='causal',output=tmp_path)
     assert report['status'] == 'PASS', report
     assert [r['width'] for r in report['results']] == [390,500,1040,1440]
-    assert all(r['reference_icons'] == r['candidate_icons'] == 20 for r in report['results'])
+    assert all(r['reference_icons'] == r['candidate_icons'] == 21 for r in report['results'])
     assert all(abs(r['first_app_hover']['left']) <= 3 for r in report['results'])
     assert all(r['first_app_hover']['dismissed_after_navigation'] != 'true' for r in report['results'])
     assert all('first-hover-expanded' in r['first_app_hover']['diagnostic_kinds'] for r in report['results'])
@@ -86,7 +86,7 @@ def test_browser_source_to_shell_parity_at_four_viewports(tmp_path):
 def test_original_launcher_reference_is_not_a_candidate_clone():
     html = oracle.legacy_launcher_fixture()
     assert 'class="panel launcher"' in html
-    assert html.count('class="app-card ready') == 21
+    assert html.count('class="app-card ready') == 22
     assert 'href="/applications/chat-console"' in html
     assert 'mcel-shell-app-card' not in html
     assert 'mcel-applications-shell' not in html

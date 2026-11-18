@@ -1,0 +1,22 @@
+{
+  "schema": "nanojev.sealed-overlap.semantic-interface-repair-fixture.v1",
+  "scope": "Controlled grammatical intervention and genuinely fresh relational holdout; fixed clause delimiter, closed training vocabulary, no inferred labels supplied to the decoder",
+  "targeted_training_templates": [
+    "The receiving party is {recipient} while the supplier is {actor}; the asset to be delivered is the {asset}; upon {condition}, {duty}, and the consequence recorded is {consequence}",
+    "Transfer of the {asset} to {recipient} from {actor} is specified after {condition}; the obligation language {duty}, and the result designated is {consequence}",
+    "For {asset} delivery, the beneficiary is {recipient} and {actor} is named as supplier; once {condition}, the clause {modal} act, with {consequence} stated as the outcome"
+  ],
+  "new_holdout_templates": [
+    "The actor is {actor} and the recipient is {recipient}; the item of transfer is {asset}; once {condition}, {duty}, with {consequence} stipulated as outcome",
+    "For {recipient}, delivery from {actor} of {asset} is contemplated upon {condition}; the supplier {modal} complete the delivery, and the resulting consequence is {consequence}",
+    "If {condition}, {recipient} is identified as beneficiary of {asset} supplied by {actor}; {duty} for that delivery, and the named outcome is {consequence}",
+    "Outcome {consequence} governs the proposed {asset} handover from {actor} to {recipient} after {condition}; the agreement says {duty} for that handover"
+  ],
+  "positive": {"modal": "is required to", "duty": "a duty exists"},
+  "negative": {"modal": "is not required to", "duty": "no duty exists"},
+  "reference_markers": ["the same supplier", "that supplier", "the immediately previous supplier"],
+  "new_actors": ["Nessa", "Quilla", "Uma", "Ravel", "Deryn"],
+  "new_recipients": ["Vero", "Jalen", "Oris", "Tovia", "Karel"],
+  "boolean_condition_grammar": "(A and (B or not C))",
+  "document_delimiter": " || "
+}

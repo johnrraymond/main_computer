@@ -20,7 +20,9 @@ def run(hosted_url: str|None=None) -> int:
         checks['authorityUnchanged']={e['risk'] for e in ir['effects']}=={'external-read'}
         html=render_expanded_page()
         checks['genericExpertPresentation']='mcel-semantic-expert.css' not in html and 'data-mcel-expression-pad' in html and "presentation:'expert'" in html
-        checks['noAuthoredFixedLayout']='grid-template-areas' not in html and 'semantic-calculator-expanded' not in (ROOT/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text()
+        background=(ROOT/'main_computer/web/applications/styles/mcel-semantic-workbench.css').read_text()
+        calculator_css=background.split('/* Calculator semantic background rules (formerly expert.css). */',1)[1]
+        checks['noAuthoredFixedLayout']='grid-template-areas' not in html and 'semantic-calculator-expanded' not in calculator_css
     except Exception as exc:
         issues.append(str(exc))
         for k in ['pairedSemanticCompilation','layoutFreeSource','computeTaskAvailable','authorityUnchanged','genericExpertPresentation','noAuthoredFixedLayout']:checks.setdefault(k,False)

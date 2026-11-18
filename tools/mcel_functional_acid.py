@@ -56,6 +56,20 @@ CORE_SUITES = {
     'projection-and-interaction': ('tests/test_mcel_notebook_projection.py',),
     'element-behavior-audit': ('tests/test_mcel_element_behavior_audit.py', 'tests/test_mcel_core_toolkit_runtime_probe.py',
                                'tests/test_mcel_file_basket_runtime_probe.py'),
+    # Keep process boundaries: these browser suites have been observed to
+    # stall when combined, but pass individually. Their evidence remains
+    # independent and explicit in the functional report.
+    'architecture-execution-gates': (
+        'tests/test_mcel_architecture_correctness_gates.py',
+        'tests/test_mcel_patch3_framework_generalization.py'),
+    'authentication-and-recovery': ('tests/test_mcel_patch2_auth_recovery.py',),
+    'notebook-async-reconciliation': ('tests/test_mcel_record_notebook_async_reconciliation.py',),
+    'live-harness-safety': ('tests/test_mcel_functional_live_acceptance.py',),
+    # Four-app parity suites remain part of --mode full; they have independent
+    # known baseline failures in this snapshot, unrelated to live verification.
+    # The four real-host workflows are checked by the guarded live lane.
+    'slh-deployment-functional': ('tests/test_mcel_slh_seh_deployment_ui.py',),
+    'slh-operation-reactivity': ('tests/test_mcel_operation_notebook_outcome_reactivity.py',),
 }
 
 
@@ -603,9 +617,17 @@ def _prepare_output(output: Path) -> Path | None:
 
 
 def run(repo: Path, *, output: Path, mode: str='core', baseline: Path | None=None,
-        approve: bool=False, chromium: str | None=None, timeout: int=180) -> dict[str, Any]:
+        approve: bool=False, chromium: str | None=None, timeout: int=180,
+        live_host_url: str | None=None, live_protected_reads: bool=False) -> dict[str, Any]:
     if mode not in ('core','full','inventory'):
         raise ValueError('Invalid mode')
+    if live_protected_reads and not live_host_url:
+        raise ValueError('Protected live reads require --live-host-url')
+    if live_host_url:
+        from tools.mcel_v1_four_app_hosted_acceptance import validate_loopback_base
+        validate_loopback_base(live_host_url)
+    if live_host_url and mode == 'inventory':
+        raise ValueError('Inventory mode cannot claim live functional acceptance')
     legacy_archive = _prepare_output(output)
     before = {p['path']:p['sha256'] for p in inventory_modules(repo)}
     report = {'schema':SCHEMA, 'generatedAt':datetime.now(timezone.utc).isoformat(),
@@ -657,6 +679,20 @@ def run(repo: Path, *, output: Path, mode: str='core', baseline: Path | None=Non
     else:
         report['obligations'].append(result('browser-functional-proof','UNVERIFIED',
             details='Inventory mode intentionally does not execute browser tests'))
+    # An explicit opt-in joins actual-host evidence to the SAME functional
+    # report, rather than allowing mocked Chromium proof to count as live.
+    # Requested live checks fail the battery if unavailable/incomplete.
+    if live_host_url:
+        from tools.mcel_functional_live_acceptance import run as run_live
+        live_report = run_live(live_host_url, output / 'live' / 'report.json',
+                               protected_reads=live_protected_reads)
+        report['live'] = live_report
+        report['suites'].append(result('real-host-five-app-readonly',
+            'PASS' if live_report['status'] == 'PASS_LIVE_READ_ONLY' else 'FAIL',
+            details='Real loopback browser; no mocks, write operations or remote host',
+            evidence={'apps': live_report['apps'], 'protectedReads': live_protected_reads}))
+    else:
+        report['live'] = {'status': 'NOT_REQUESTED', 'scope': 'no-live-host-provided'}
     report['modules'] = inventory_modules(repo)
     after = {p['path']:p['sha256'] for p in report['modules']}
     report['checks'].append(result('source-immutable','PASS' if before==after else 'FAIL',
@@ -795,6 +831,9 @@ def main(argv: list[str] | None=None) -> int:
                         help='Capture candidate PNGs for human review; DOES NOT certify visual quality')
     parser.add_argument('--chromium-executable')
     parser.add_argument('--timeout-seconds',type=int,default=180)
+    parser.add_argument('--live-host-url', help='Opt in to actual-host read-only testing; requires loopback URL')
+    parser.add_argument('--live-protected-reads', action='store_true',
+                        help='Also authenticate and read SLH Pending/Enrolled/Trash; no mutations')
     args=parser.parse_args(argv)
     if args.approve_baselines and not args.baseline_dir:
         parser.error('--approve-baselines requires --baseline-dir')
@@ -803,7 +842,8 @@ def main(argv: list[str] | None=None) -> int:
                      not args.output.is_absolute() else args.output,
                      mode=args.mode,baseline=args.baseline_dir,
                      approve=args.approve_baselines,chromium=args.chromium_executable,
-                     timeout=args.timeout_seconds)
+                     timeout=args.timeout_seconds,live_host_url=args.live_host_url,
+                     live_protected_reads=args.live_protected_reads)
     except (OSError,ValueError) as exc:
         parser.error(str(exc))
     print(f"MCEL_FUNCTIONAL_ACID_{report['status']}: {report['counts']}")

@@ -213,7 +213,7 @@ var McelSemanticPresentationBridge = (() => {
   // Modern MCEL operational runtimes expose their canonical node and region
   // identities directly in the mounted DOM. The host has no legacy selector-
   // based semanticSurface and MUST NOT be matched by labels or CSS classes.
-  function observeRuntimePresentationTargets({ir = null, root = null} = {}) {
+  function observeRuntimePresentationTargets({ir = null, root = null, composition = null} = {}) {
     const rejected = (reason, diagnostics = [reason]) => ({status: "unresolved", reason,
       targets: [], diagnostics, expectedControls: 0, expectedRegions: 0});
     if (ir?.schema !== "mcel.application-ir.v1") return rejected("Canonical application IR required");
@@ -225,12 +225,14 @@ var McelSemanticPresentationBridge = (() => {
       return rejected("Mounted operational runtime root required");
     const surface = surfaces[0];
     const nodes = surface.nodes.filter(node => ["control", "form"].includes(node?.nodeKind));
-    const regions = surface.interfaceIntent.regions;
-    if (!nodes.length || !regions.length)
-      return rejected("Canonical operational controls/forms and regions required");
+    const regions = composition?.schema === "mcel.generated-composition.v1"
+      ? records(composition.regions) : surface.interfaceIntent.regions;
+    if (!regions.length)
+      return rejected("Canonical operational semantic regions required");
     const byAttribute = (attribute) => {
       const index = new Map();
-      for (const element of root.querySelectorAll(`[${attribute}]`)) {
+      for (const element of [...(root.hasAttribute?.(attribute) ? [root] : []),
+          ...root.querySelectorAll(`[${attribute}]`)]) {
         const id = element.getAttribute(attribute);
         if (!index.has(id)) index.set(id, []);
         index.get(id).push(element);
@@ -238,7 +240,7 @@ var McelSemanticPresentationBridge = (() => {
       return index;
     };
     const renderedNodes = byAttribute("data-mcel-node");
-    const renderedRegions = byAttribute("data-mcel-region");
+    const renderedRegions = byAttribute(nodes.length ? "data-mcel-region" : "data-mcel-region-id");
     const intents = new Map(records(ir.intents).map(intent => [intent.id, intent]));
     const targets = [], diagnostics = [];
     for (const region of regions) {
@@ -265,9 +267,23 @@ var McelSemanticPresentationBridge = (() => {
         risk: str(intent.risk), element: hits[0],
         runtimeDisabled: Boolean(hits[0].querySelector(":disabled,[aria-disabled=true]"))});
     }
+    if (!nodes.length && !diagnostics.length) {
+      // Region-only MCEL hosts can expose native controls without fabricating
+      // operational intents. Exact region membership supplies the source
+      // relationship; native tag/role supplies only physical control type.
+      const regionOwners = new Set(targets.filter(item=>item.kind==="region").map(item=>item.element));
+      const selector='button,input,select,textarea,[role="button"],[role="tab"],[role="switch"],[role="textbox"],[role="combobox"]';
+      for (const element of root.querySelectorAll(selector)) {
+        const parent = element.closest('[data-mcel-region-id]');
+        if (!parent || !regionOwners.has(parent)) continue;
+        targets.push({kind:"control",nodeKind:"native-control",id:"native:"+targets.length,
+          element,operationKind:"native",risk:"unspecified",sourceRegion:parent.getAttribute('data-mcel-region-id')});
+      }
+    }
     return {status: diagnostics.length ? "unresolved" : "source-bound",
       reason: diagnostics[0] || "", targets, diagnostics,
-      expectedControls: nodes.length, expectedRegions: regions.length};
+      expectedControls: nodes.length || targets.filter(item=>item.kind==="control").length,
+      expectedRegions: regions.length};
   }
 
   return Object.freeze({schema, observeCompatibility, observePresentationTargets, observeRuntimePresentationTargets});

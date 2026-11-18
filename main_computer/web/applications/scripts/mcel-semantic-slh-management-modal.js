@@ -233,13 +233,22 @@
     }
     // MCEL dispatch happens synchronously on the operator click, before an
     // authorization request, preflight, or LMS HTTP response can complete.
-    function begin(intentId,action){
-      submission={intentId,action,state:"submitting",dismissed:false};
+    function begin(intentId,action,preview=false){
+      submission={intentId,action,preview:preview===true,state:"submitting",dismissed:false};
       tracked="";shown="";lastCompletion=null;lastObservedStage="";lastObservedResult="";
       outputLines=[];lastHarnessOutputSeq.clear();outputText.textContent="";
       lastRecorded=null;
       dismissedId="";dismissedUntilIdle=false;
       log("MCEL · "+action+" requested");
+      if(submission.preview){
+        log("MCEL · Running read-only harness preflight; no LMS operation ID expected");
+        setIndicator(action+" · checking", "View preflight");
+        display(action+" running",
+          "This is a read-only preflight. No SEH deployment change has been requested.",
+          {"Operation":action,"Stage":"PREFLIGHT","Operation ID":"Not applicable"},
+          {kind:"notice"});
+        return;
+      }
       log("MCEL · Submitting to LMS; waiting for operation acknowledgement");
       setIndicator(action+" · submitting to LMS", "View operation");
       display("Submitting "+action,
@@ -247,9 +256,41 @@
         {"Operation":action,"Stage":"SUBMITTING","Operation ID":"Not assigned by LMS"},
         {kind:"busy",cancelable:false});
     }
-    function settled(intentId,disposition,reason=""){
+    function settled(intentId,disposition,reason="",result=null){
       if(!submission || submission.intentId!==intentId)return;
-      if(disposition!=="completed"){
+      if(submission.preview){
+        // Preview is a synchronous, read-only harness operation, not a durable
+        // LMS deployment job. Never wait for an operation ID or claim a mutation.
+        const completed=disposition==="completed";
+        const outcome=completed && typeof result?.outcome==="string"
+          ? result.outcome.slice(0,100):"";
+        const error=completed?"":String(reason||disposition||"PREFLIGHT_FAILED")
+          .replace(/[^A-Za-z0-9_:.-]/g,"").slice(0,180);
+        const refused=completed && outcome.toUpperCase()==="REFUSED";
+        submission.state=completed?(refused?"preview-refused":"preview-completed"):"preview-failed";
+        submission.outcome=outcome||null;submission.errorCode=error||null;
+        const title=submission.action+(completed?(refused?" refused":" completed"):" failed");
+        const explanation=completed
+          ? "Read-only preflight returned. This did not deploy or undeploy the SEH."
+          : "The preflight request failed before an outcome could be verified. No undeploy authorization was obtained.";
+        const fields={"Operation":submission.action,"Stage":"PREFLIGHT",
+          ...(completed?{"Result":outcome||"COMPLETED"}:{"Error":error})};
+        submission.previewView={title,explanation,fields};
+        log("MCEL · "+(completed?"Preflight result · "+(outcome||"COMPLETED"):
+          "Preflight failed · "+error));
+        setIndicator(submission.action+(completed?" · "+(outcome||"completed"):" · failed"),"View preflight");
+        if(!submission.dismissed)display(title,explanation,fields,{kind:completed?"completed":"notice"});
+        return;
+      }
+      if(disposition!=="completed" && tracked){
+        // The HTTP/semantic acknowledgement may fail after LMS has accepted
+        // this exact operation. A tracked ID is stronger evidence than the
+        // transport disposition; do not report the accepted job as a failed
+        // submission or stop monitoring its outcome.
+        submission.state="accepted";
+        log("MCEL acknowledgement interrupted · LMS operation accepted · "+tracked);
+        setIndicator(submission.action+" · LMS accepted · monitoring", "View operation");
+      }else if(disposition!=="completed"){
         submission.state="failed";
         const code=String(reason||disposition||"REQUEST_REFUSED").slice(0,180);
         log("MCEL submission failed · "+code);
@@ -305,6 +346,9 @@
             logStage(receipt);logResult(receipt);
             lastCompletion={operationId:tracked,status:receipt.result?.status||receipt.phase};
             if(submission)submission.state="completed";
+            // A terminal receipt is proof that the ID may be retired. Other
+            // action attempts with the same arguments must get a new ID.
+            onSettled({operationId:tracked,phase:receipt.phase});
             const incomplete=receipt.result?.status==="INCOMPLETE";
             setIndicator(incomplete?"LMS operation incomplete":"LMS operation completed · "+(receipt.result?.status||receipt.phase),"View result");
             if(!submission?.dismissed && !dismissedUntilIdle && dismissedId!==tracked){
@@ -318,6 +362,12 @@
             // A receipt can still be ACCEPTED while the latest snapshot is IDLE.
             // Keep watching rather than fabricating completion.
           }
+        }else if(submission?.preview){
+          // Polling the durable LMS operation journal cannot settle a read-only
+          // preflight and must not replace its own visible result with IDLE.
+          active=false;
+          if(submission.state==="submitting")
+            setIndicator(submission.action+" · checking", "View preflight");
         }else if(submission && ["submitting","failed","unconfirmed"].includes(submission.state)){
           active=false;
           // Do not erase the click-driven modal while preflight is still
@@ -400,7 +450,14 @@
       // while leaving the underlying operation untouched.
       if(submission)submission.dismissed=false;
       dismissedId="";dismissedUntilIdle=false;
-      if(lastState?.state==="BUSY"){
+      if(submission?.preview && lastState?.state!=="BUSY"){
+        const view=submission.previewView;
+        if(view)display(view.title,view.explanation,view.fields,
+          {kind:submission.state==="preview-completed"?"completed":"notice"});
+        else display(submission.action+" running",
+          "Read-only preflight request pending. No deployment mutation has been requested.",
+          {"Operation":submission.action,"Stage":"PREFLIGHT"},{kind:"notice"});
+      }else if(lastState?.state==="BUSY"){
         showCurrent(true);
       }else if(submission && ["submitting","failed","unconfirmed"].includes(submission.state)){
         const title=submission.state==="submitting"?"Submitting "+submission.action:
@@ -450,7 +507,7 @@
       timer=null;inFlight=false;
       log("LMS connection interrupted · awaiting reconnection");
       setIndicator("LMS connection unavailable · monitoring paused","View operation");
-      if(modal.isOpen() && presentation!=="completed")
+      if(modal.isOpen() && presentation!=="completed" && !submission?.preview)
         display("LMS connection interrupted",
           "The connection to LMS was lost. The operation outcome is not verified. Monitoring resumes on reconnection.",
           {"Operation ID":tracked||shown||"Not confirmed","Stage":"CONNECTION_UNAVAILABLE"},
@@ -482,10 +539,14 @@
     function diagnostics(){
       // Purely observational: E/W/G must never initiate a network call.
       const receipt=lastRecorded;
+      const preflight=submission?.preview?{
+        action:submission.action,intentId:submission.intentId,
+        state:submission.state,outcome:submission.outcome||null,
+        errorCode:submission.errorCode||null}:null;
       return receipt?{...receipt,
-        causalDiagnostic:receipt.causalDiagnostic?{...receipt.causalDiagnostic}:null}:
+        preflight,causalDiagnostic:receipt.causalDiagnostic?{...receipt.causalDiagnostic}:null}:
         {schema:"mcel.slh.management-evidence.v1",status:"not-observed",
-          operationId:tracked||shown||null,causalDiagnostic:null};
+          operationId:tracked||shown||null,preflight,causalDiagnostic:null};
     }
     return Object.freeze({start,pause,stop,track,begin,settled,refresh,diagnostics,
       getState:()=>lastState,isActive:()=>active,modal});

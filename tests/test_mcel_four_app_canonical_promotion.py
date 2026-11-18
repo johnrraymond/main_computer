@@ -65,6 +65,7 @@ def test_canonical_resolver_does_not_change_unrelated_routes():
             )
         assert _semantic_canonical_route(f"/{prefix}/task-manager/connections") == ("task-manager", "connections")
         assert _semantic_canonical_route(f"/{prefix}/task-manager/hardware") == ("task-manager", "cpu-gpu")
+        assert _semantic_canonical_route(f"/{prefix}/task-manager/operations") == ("task-manager", "operations")
         assert _semantic_canonical_route(f"/{prefix}/mcel-lab") is None
         assert _semantic_canonical_route(f"/{prefix}/task-manager/bogus") is None
         assert _semantic_canonical_route(f"/{prefix}/code-editor/other") is None
@@ -103,6 +104,7 @@ def test_legacy_shell_remains_for_desktop_and_unpromoted_apps(local_viewport):
     ("all-processes", "all-processes"),
     ("connections", "connections"),
     ("hardware", "cpu-gpu"),
+    ("operations", "operations"),
 ])
 def test_task_manager_existing_bookmarked_views_are_preserved(local_viewport, tab, view):
     with urlopen(f"{local_viewport}/applications/task-manager/{tab}?mcel-shell-child=1", timeout=15) as response:

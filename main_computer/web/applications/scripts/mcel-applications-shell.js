@@ -25,7 +25,7 @@
     ir = JSON.parse(irTag.textContent);
     catalog = JSON.parse(catalogTag.textContent);
   } catch (e) { return refuse("compiled-source-or-registry-invalid"); }
-  const expected = ["application", "masthead", "shell", "launcher", "workspace", "application-mount", "status"];
+  const expected = ["application", "shell", "launcher", "workspace", "application-mount", "status"];
   const regionIds = new Set(ir?.surfaces?.[0]?.interfaceIntent?.regions?.map(r => r.id) || []);
   if (ir?.application?.appId !== "semantic-applications-shell" ||
       ir?.layouts?.[0]?.layoutTree?.schema !== "mcel.layout-tree.v1" ||

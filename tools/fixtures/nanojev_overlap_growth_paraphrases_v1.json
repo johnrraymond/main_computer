@@ -1,0 +1,24 @@
+{
+  "schema": "nanojev.sealed-overlap.growth-paraphrase-probes.v1",
+  "description": "Separately authored diagnostic paraphrases. Selection and final pools are disjoint from original human phrases and first factorial probes. This fixture does not authorize any contract meaning.",
+  "selection": {
+    "authority": ["The designated agent is empowered to give approval", "A valid delegation permits this actor to proceed"],
+    "obligation": ["The terms make this performance compulsory", "An enforceable undertaking requires completion"],
+    "resource": ["Execution draws from an explicitly bounded allocation", "The process assigns control over a finite supply"],
+    "evidence": ["Supporting records establish the basis for the claim", "A checkable observation substantiates the assertion"],
+    "time": ["The action is allowed only during the specified period", "The required step must precede an established endpoint"],
+    "uncertainty": ["The available data do not uniquely determine the outcome", "Several outcomes remain plausible on present knowledge"],
+    "exclusion": ["The rule expressly prevents the states from occurring together", "These alternatives cannot both satisfy the agreement"],
+    "consequence": ["Performing the operation causes the system to enter another state", "The specified action induces a contractual result"]
+  },
+  "final": {
+    "authority": ["Approval rests with a specifically empowered decision maker", "An authorized delegate can validate the proposed action"],
+    "obligation": ["Compliance calls for performance of a mandatory duty", "The responsible party must discharge an enforceable promise"],
+    "resource": ["The job uses a scarce pool of available capacity", "Ownership of limited assets is reassigned by this step"],
+    "evidence": ["The asserted fact is backed by independently inspectable records", "Documentary support establishes what was observed"],
+    "time": ["Validity ends when the agreed temporal boundary is reached", "Processing must take place before the prescribed instant"],
+    "uncertainty": ["The information available leaves the final state indeterminate", "One cannot yet resolve which of several possible results applies"],
+    "exclusion": ["A formal restriction rules out their simultaneous occurrence", "The requested operation conflicts with a binding prohibition"],
+    "consequence": ["The operation has a defined effect on the resulting system state", "An enforceable outcome follows when the specified step occurs"]
+  }
+}

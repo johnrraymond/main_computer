@@ -145,13 +145,27 @@ var McelSemanticThemePreview = (() => {
         return {schema,status:'refused',reason:'Mounted application handle does not match canonical source'};
       const result=application.app?.setColorTheme?.(theme);
       if(result?.status!=='applied')return {schema,status:'refused',reason:'Canonical Theme selection refused'};
+      const colorReport=application.app.colorPresentation?.();
+      if(colorReport?.status!=='applied' || colorReport.source!=='semantic-inference')
+        return {schema,status:'refused',reason:'Mounted Color Law has not inferred canonical semantics'};
+      const painted=[...root.querySelectorAll('[data-mcel-color-state]')];
+      const regionElements=[...root.querySelectorAll('[data-mcel-region][data-mcel-color-state]')];
+      const controls=painted.filter(el=>el.matches('button,input,select,textarea,[role="button"],[role="tab"],[role="switch"]'));
+      const computed=root.ownerDocument.defaultView.getComputedStyle.bind(root.ownerDocument.defaultView);
       return {schema,status:'applied-in-isolated-lab-frame',theme,
-        source:ir?.application?.appId||'',controls:0,regions:0,
-        visualEvidence:{observed:0,uncoloredRegions:0,uncoloredControls:0,
-          paintedDescendants:0,roundedGroupBackgrounds:0,
-          contrast:auditContrast(root,root.ownerDocument.defaultView.getComputedStyle.bind(root.ownerDocument.defaultView),true)},
-        diagnostics:[],evaluateColor:{status:'delegated-to-canonical-color-law'}};
+        source:ir?.application?.appId||'',controls:controls.length,regions:regionElements.length,
+        visualEvidence:{observed:painted.length,uncoloredRegions:0,uncoloredControls:0,
+          paintedDescendants:painted.length-regionElements.length,roundedGroupBackgrounds:0,
+          sampleRegionBackground:regionElements.length?computed(regionElements[0]).backgroundColor:'',
+          sampleControlBackground:controls.length?computed(controls[0]).backgroundColor:'',
+          contrast:auditContrast(root,computed,true)},
+        diagnostics:[],evaluateColor:{status:'inferred-by-canonical-color-law',
+          inferred:colorReport.inferred,generated:colorReport.generated}};
     }
+    // Operational Lab mounts must use the actual source-bound Color Law.
+    // The legacy compatibility projector is only for legacy-host specimens.
+    if(bindingModel==="operational-runtime")
+      return {schema,status:"refused",reason:"canonical-semantic-color-mount-required"};
     if (!tokens || colorTokens.some(token => !safeToken(tokens[token])))
       return {schema, status:"refused", reason:"Existing theme CSS tokens unavailable"};
     const report = bindingModel === "operational-runtime"
@@ -256,7 +270,7 @@ var McelSemanticThemePreview = (() => {
       `${scope} [${attr.operation}="capability"] :is(button,[role="button"],[role="tab"]):not([data-mcel-color-state]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 82%,var(--mcel-theme-accent-2) 18%)!important;`+
       `border-color:var(--mcel-theme-accent-2)!important;}`+
-      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):hover:not(:disabled):not([aria-disabled="true"]){`+
+      `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):hover:not([aria-pressed]):not(:disabled):not([aria-disabled="true"]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 75%,var(--mcel-theme-accent) 25%)!important;}`+
       `${scope} :is(button,[role="button"],[role="tab"],[role="switch"]):not([data-mcel-color-state]):active:not(:disabled):not([aria-disabled="true"]){`+
       `background-color:color-mix(in srgb,var(--mcel-theme-card) 70%,var(--mcel-theme-accent) 30%)!important;}`+

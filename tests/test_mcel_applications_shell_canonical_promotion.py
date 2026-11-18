@@ -39,7 +39,7 @@ def read(host, path):
 def test_compiled_canonical_shell_cannot_claim_child_effects():
     ir, registry = compile_applications_shell()
     assert not ir["capabilities"] and not ir["intents"] and not ir["effects"]
-    assert len(registry["apps"]) == 21
+    assert len(registry["apps"]) == 22
     page = render_applications_shell_candidate(canonical_promoted=True)
     assert 'data-mcel-shell-canonical-promoted="true"' in page
     assert 'id="mcel-shell-launcher-panel"' in page

@@ -55,7 +55,7 @@ def test_panel_and_all_three_buttons_absent(view):
             page.evaluate('''() => {
                 window.calls=[];
                 window.fetch=async (url,options={}) => {
-                    window.calls.push({url,method:options.method||'GET'});
+                    window.calls.push({url,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
                     if(url.endsWith('/identities'))return {ok:true,json:async()=>({
                       schema:'mcel.slh.identities.v4b',state:'AVAILABLE',defaultDeviceId:'one',
                       identities:[{deviceId:'one',label:'Default',fingerprint:'a'.repeat(64),
@@ -80,7 +80,18 @@ def test_panel_and_all_three_buttons_absent(view):
                 assert control.is_visible() is (view=='overview')
             assert page.get_by_role('button',name='Reset inputs').count()==0
             assert page.locator('[data-mcel-notebook]').count() == 1
-            assert all(call['method'] == 'GET' for call in page.evaluate('window.calls'))
+            # A visible protected notebook may initiate authentication and
+            # read-only inspection. No organization mutation is authorized by
+            # mounting the page or observing the notebook.
+            calls=page.evaluate('window.calls')
+            for call in calls:
+                if call['method']=='GET':continue
+                assert (call['url']=='/api/applications/slh/setup/action' and
+                        call['body']['action']=='authenticate') or (
+                        call['url']=='/api/applications/slh/identity-notebook' and
+                        str(call['body'].get('operation','')).startswith('read-')) or (
+                        call['url']=='/api/applications/slh/seh/deployment' and
+                        call['body'].get('operation') in ('inspect','operation-state','operation-status'))
             assert not errors, errors
         finally:
             browser.close()

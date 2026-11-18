@@ -17,6 +17,7 @@ import threading
 import time
 
 from .organization_process import stop_recorded_process, verified_launched_pid
+from .organization_failure import read_listener_bind_failure, clear_listener_bind_failure
 from .organization_state import (read_config, save_config, initialize_disabled,
                                  validate_config, OrganizationConfigError)
 from .authority import SLHError, SLHAuthority
@@ -121,6 +122,9 @@ class OrganizationController:
                 service_pid = None
             listening = running and self._listening(config)
             if listening:
+                # Verified TLS listener readiness, not merely process existence,
+                # is the only recovery event that clears the old failure.
+                clear_listener_bind_failure(self.directory)
                 state = 'running'
             elif running:
                 state = 'starting'
@@ -134,6 +138,11 @@ class OrganizationController:
                 state = 'disabled'
             else:
                 state = 'not_configured'
+            failure = (read_listener_bind_failure(self.directory, config)
+                       if state in ('failed', 'stopped_unexpectedly') and config['enabled'] else None)
+            if failure is not None:
+                failure = {**failure, 'restart_limit_reached':
+                           len(self._restarts) >= 3, 'restart_count': len(self._restarts)}
             return {'configured': config['configured'], 'enabled': config['enabled'],
                     'state': state, 'listening': listening,
                     # An observed local TLS handshake proves only local readiness;
@@ -146,7 +155,8 @@ class OrganizationController:
                     'api_port': config['api_port'] if config['configured'] else None,
                     'worker_port': config['worker_port'] if config['workers_enabled'] else None,
                     'workers_enabled': config['workers_enabled'],
-                    'seh_enabled': config['seh_enabled'], 'last_error': self._last_error}
+                    'seh_enabled': config['seh_enabled'], 'last_error': self._last_error,
+                    'failure': failure}
 
     def config(self):
         with self._lock:

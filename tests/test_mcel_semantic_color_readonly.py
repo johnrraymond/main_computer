@@ -33,7 +33,7 @@ def test_source_contract_is_non_mutating_and_uses_existing_theme_authority():
     assert "applyMcelSemanticThemePreview(\"theme-change\");" in lab
     assert "renderMcelSemanticColorInspector();" in lab
     # This patch neither migrates consumers nor edits the old projector.
-    assert "McelSemanticThemePreview.apply" in lab
+    assert "McelUnifiedPresentationController?.applyLabTheme" in lab
     assert "window.McelLabStyleLaw" in (ROOT / "main_computer/web/applications.html").read_text(encoding="utf-8") or \
         "applications/scripts/mcel-style-law.js" in (ROOT / "main_computer/web/applications.html").read_text(encoding="utf-8")
 

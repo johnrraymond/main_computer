@@ -10,7 +10,6 @@ const SHELL_LAYOUT = {
     id: "applications-root", selector: ".mcel-applications-shell", role: "group",
     maxColumns: 1, gap: 0, verifyControls: false,
     children: [
-      { id: "masthead", selector: ".mcel-shell-masthead", role: "region", verifyControls: false },
       { id: "shell", selector: ".mcel-shell-content", role: "group", maxColumns: 2,
         gap: 0, verifyControls: false,
         variants: [

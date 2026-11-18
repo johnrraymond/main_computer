@@ -16,12 +16,22 @@ var McelSemanticChromePresentationLaw = (() => {
   const tokens = ["--mcel-theme-chrome-primary", "--mcel-theme-chrome-inset",
     "--mcel-theme-chrome-glass", "--mcel-theme-chrome-phosphor"];
   const mounts = new WeakMap();
+  // A DOM-root owner survives duplicated script evaluations and same-origin
+  // Lab iframe controllers. No second realm may leave a second set of rails.
+  const realmOwner = Symbol("mcel-chrome-owner");
+  const ownerProperty = "__mcelChromePresentationOwner";
   const wearSurfaceAttr = "data-mcel-tng-wear-surface";
   const wearGlintAttr = "data-mcel-tng-wear-glint";
   const wearPositionAttr = "data-mcel-tng-wear-position";
   const materialAttr = "data-mcel-chrome-material";
   const materialOwnerAttr = "data-mcel-chrome-material-owner";
-  const controlSelector = 'button, input, select, textarea, [role="button"]';
+  // Native buttons and accessible interactive widgets receive raised material.
+  // <details><summary> already exposes its disclosure affordance with a caret;
+  // adding button bevels, shadows, or wear to that summary duplicates the
+  // indicator. It remains keyboard-operable but is not a raised control.
+  const controlSelector = 'button, input, select, textarea, ' +
+    '[role="button"], [role="tab"], [role="switch"], ' +
+    '[role="textbox"], [role="combobox"]';
   const fieldTypesExcluded = new Set(["hidden", "checkbox", "radio", "file", "range", "color", "image"]);
   const controlMaterialSelector = `[${materialAttr}="raised-control"], [${materialAttr}="emissive-control"]`;
 
@@ -67,13 +77,37 @@ var McelSemanticChromePresentationLaw = (() => {
     return {dark: texture(false), glint: texture(true)};
   }
   const wearTextures = buildWearTextures();
+  /* One repeating 8x8 pixel tile, not stacked textures: a single bright
+     phosphor pixel and an irregular, dim pixel field between the hot points.
+     The SVG uses the Theme Law's phosphor pigment and crisp, one-pixel cells;
+     a deterministic pattern avoids noisy repainting on hover or mouse-down. */
+  function buildStippleTexture(phosphor) {
+    const pixels = [];
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const hot = x === 0 && y === 0;
+        const grain = (x * 37 + y * 61 + x * y * 17 + (x ^ y) * 11 + x * x + y * y * 3) % 19;
+        if (!hot && grain % 7 === 0) continue;
+        const opacity = hot ? "0.35" : (0.042 + (grain % 9) * 0.008).toFixed(3);
+        pixels.push(`<rect x="${x}" y="${y}" width="1" height="1" ` +
+          `fill="${phosphor}" fill-opacity="${opacity}"/>`);
+      }
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" ` +
+      `viewBox="0 0 8 8" shape-rendering="crispEdges">${pixels.join("")}</svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  }
   // The bars use only the horizontal space made available by the existing
   // semantic Layout. No new row, top/bottom band, or resize observer exists.
   const css = `
     /* One directional light for TNG material. Material overlays may change
        luminance, but never replace Color Law foreground/background/border
        values or the Theme-defined rail/purple/glass palette. */
-    [${rootAttr}="${profileId}"] { --mcel-tng-light-angle: 145deg; }
+    [${rootAttr}="${profileId}"] {
+      --mcel-tng-light-angle: 145deg;
+      /* The workspace and tactile controls inherit one Theme-colored SVG
+         stipple tile through --mcel-tng-stipple, set by apply(). */
+    }
     /* The existing Calculator canvas is the glass display field. This
        paints a fixed, extremely fine phosphor grid and mild internal light
        without another DOM layer, pointer handler, or geometry pass. */
@@ -83,15 +117,13 @@ var McelSemanticChromePresentationLaw = (() => {
       background-image:
         radial-gradient(ellipse 66% 65% at 53% 37%,
           color-mix(in srgb, var(--mcel-tng-phosphor) 8%, transparent), transparent 100%),
-        radial-gradient(circle,
-          color-mix(in srgb, var(--mcel-tng-phosphor) 35%, transparent) 0 0.65px,
-          transparent 0.95px),
+        var(--mcel-tng-stipple),
         linear-gradient(135deg,
           color-mix(in srgb, var(--mcel-tng-glass) 94%, white),
           var(--mcel-tng-glass) 30%,
           color-mix(in srgb, var(--mcel-tng-glass) 94%, black)),
         linear-gradient(var(--mcel-tng-glass), var(--mcel-tng-glass));
-      background-size: 100% 100%, 5px 5px, 100% 100%, 100% 100%;
+      background-size: 100% 100%, 8px 8px, 100% 100%, 100% 100%;
     }
     /* A tactile finish for EXISTING canonical controls. Color Law continues
        to own every button's foreground/background/border color and state.
@@ -105,7 +137,11 @@ var McelSemanticChromePresentationLaw = (() => {
         color-mix(in srgb, white 7%, transparent) 21%,
         transparent 48%,
         color-mix(in srgb, black 11%, transparent) 72%,
-        color-mix(in srgb, black 30%, transparent) 100%) !important;
+        color-mix(in srgb, black 30%, transparent) 100%),
+        var(--mcel-tng-stipple) !important;
+      /* One 8px tile remains unchanged through hover, held and latched
+         states; only the button's directional lighting and bevel move. */
+      background-size: 100% 100%, 8px 8px !important;
       box-shadow:
         inset 1px 1px 0 color-mix(in srgb, white 47%, transparent),
         inset 2px 2px 2px color-mix(in srgb, white 9%, transparent),
@@ -115,50 +151,49 @@ var McelSemanticChromePresentationLaw = (() => {
     }
     /* Native :hover/:active transitions. No JS recoloring, no change to
        the runtime's selected, disabled or operational state. */
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):hover:not(:disabled):not([aria-disabled="true"]) {
+    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):hover:not(:active):not([aria-pressed]):not(:disabled):not([aria-disabled="true"]) {
       background-image: linear-gradient(var(--mcel-tng-light-angle),
         color-mix(in srgb, white 30%, transparent) 0%,
         color-mix(in srgb, white 12%, transparent) 22%,
         transparent 48%,
         color-mix(in srgb, black 9%, transparent) 75%,
-        color-mix(in srgb, black 24%, transparent) 100%) !important;
+        color-mix(in srgb, black 24%, transparent) 100%),
+        var(--mcel-tng-stipple) !important;
       box-shadow:
         inset 1px 1px 0 color-mix(in srgb, white 64%, transparent),
         inset -2px -2px 3px color-mix(in srgb, black 46%, transparent),
         0 0 7px color-mix(in srgb, currentColor 22%, transparent),
         2px 3px 3px color-mix(in srgb, black 34%, transparent) !important;
     }
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):active:not(:disabled):not([aria-disabled="true"]) {
+    /* A latched toggle has the very same recessed face as a held-down
+       momentary button. The :is(:active, ...) selector must remain on the
+       CONTROL itself: adding whitespace would select its descendants instead.
+       Hover must never override its semantic state. */
+    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):is(:active, [aria-pressed="true"], [aria-selected="true"]):not(:disabled):not([aria-disabled="true"]) {
       /* Invert the bevel, not the external light direction. */
       background-image: linear-gradient(var(--mcel-tng-light-angle),
         color-mix(in srgb, black 34%, transparent),
         color-mix(in srgb, black 14%, transparent) 34%,
         transparent 63%,
-        color-mix(in srgb, white 8%, transparent)) !important;
+        color-mix(in srgb, white 8%, transparent)),
+        var(--mcel-tng-stipple) !important;
       box-shadow:
         inset 3px 3px 6px color-mix(in srgb, black 68%, transparent),
         inset -1px -1px 1px color-mix(in srgb, white 15%, transparent) !important;
-    }
-    /* The selected MODE button retains its Color Law selection palette;
-       only its recessed material edge becomes more legible. */
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector})
-      :is([aria-pressed="true"], [aria-selected="true"]):not(:active) {
-      box-shadow:
-        inset 0 1px 0 color-mix(in srgb, white 34%, transparent),
-        inset 0 -2px 3px color-mix(in srgb, black 38%, transparent),
-        0 0 5px color-mix(in srgb, currentColor 18%, transparent) !important;
+      /* The face must snap inward on mouse-down, even for a brief click.
+         The ordinary raised/hover transition resumes after release. */
+      transition: none !important;
     }
     /* Operationally significant buttons borrow a subtle emissive halo
        from the Theme's existing TNG phosphor token. The actual action
        colors, hover colors, focus outline and contrast remain Color Law's. */
-    [${rootAttr}="${profileId}"] [${materialAttr}="emissive-control"]:not(:active) {
+    [${rootAttr}="${profileId}"] [${materialAttr}="emissive-control"]:not(:active):not([aria-pressed="true"]):not([aria-selected="true"]) {
       box-shadow:
         inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
         inset 0 -2px 2px color-mix(in srgb, black 37%, transparent),
         0 0 7px color-mix(in srgb, var(--mcel-tng-phosphor) 34%, transparent) !important;
     }
-    [${rootAttr}="${profileId}"] [${materialAttr}="emissive-control"]
-      :hover:not(:active):not(:disabled) {
+    [${rootAttr}="${profileId}"] [${materialAttr}="emissive-control"]:hover:not(:active):not([aria-pressed]):not(:disabled) {
       box-shadow:
         inset 0 1px 0 color-mix(in srgb, white 39%, transparent),
         inset 0 -2px 2px color-mix(in srgb, black 30%, transparent),
@@ -216,7 +251,7 @@ var McelSemanticChromePresentationLaw = (() => {
     [${rootAttr}="${profileId}"] [${wearSurfaceAttr}="button"] > [${wearGlintAttr}] {
       opacity: calc(var(--mcel-tng-wear-light, .85) * .28) !important;
     }
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):hover:not(:disabled):not([aria-disabled="true"])
+    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):hover:not(:active):not([aria-pressed]):not(:disabled):not([aria-disabled="true"])
       > [${wearSurfaceAttr}="button"] > [${wearGlintAttr}] {
       opacity: var(--mcel-tng-wear-light, .85) !important;
     }
@@ -224,7 +259,7 @@ var McelSemanticChromePresentationLaw = (() => {
        light remains at 145 degrees, but the inset face now catches reflected
        scratches toward the opposing (lower-right) corner. Preserve the SAME
        grain/scratch coordinates rather than moving or regenerating defects. */
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):active:not(:disabled):not([aria-disabled="true"])
+    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):is(:active, [aria-pressed="true"], [aria-selected="true"]):not(:disabled):not([aria-disabled="true"])
       > [${wearSurfaceAttr}="button"] {
       opacity: calc(var(--mcel-tng-wear-base, .48) * 1.12) !important;
       -webkit-mask-image: linear-gradient(var(--mcel-tng-light-angle, 145deg),
@@ -232,7 +267,7 @@ var McelSemanticChromePresentationLaw = (() => {
       mask-image: linear-gradient(var(--mcel-tng-light-angle, 145deg),
         rgba(0,0,0,.35) 0%, rgba(0,0,0,.70) 35%, black 75%) !important;
     }
-    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):active:not(:disabled):not([aria-disabled="true"])
+    [${rootAttr}="${profileId}"] :is(${controlMaterialSelector}):is(:active, [aria-pressed="true"], [aria-selected="true"]):not(:disabled):not([aria-disabled="true"])
       > [${wearSurfaceAttr}="button"] > [${wearGlintAttr}] {
       -webkit-mask-image: linear-gradient(var(--mcel-tng-light-angle, 145deg),
         rgba(0,0,0,.02) 0%, rgba(0,0,0,.18) 30%,
@@ -421,31 +456,41 @@ var McelSemanticChromePresentationLaw = (() => {
       if (element !== root && root.contains(element) && !decorative(element))
         assignments.set(element, material);
     };
-    const regionMaterials = {
-      "mode-control": "housing", "input": "housing", "inspection": "housing",
-      "assistance": "housing", "status": "housing", "navigation": "housing",
-      "results": "instrument-glass", "output": "instrument-glass"
-    };
+    // Every verified non-workspace region is a physical housing unless its
+    // purpose explicitly denotes a readout. Thus new semantic purposes (such
+    // as query-controls and commands) cannot silently lose Chrome treatment.
     for (const region of regions) {
       const purpose = region.element.getAttribute("data-mcel-purpose") || region.role;
-      if (regionMaterials[purpose]) offer(region.element, regionMaterials[purpose]);
+      const material = purpose === "workspace" ? null :
+        ["results", "output"].includes(purpose) ? "instrument-glass" : "housing";
+      if (material) offer(region.element, material);
     }
-    // Descendants of exact source-bound regions and nodes are allowed to
-    // inherit their *physical* type from native HTML semantics. The root
-    // workspace is not a catch-all: diagnostics and unrelated DOM stay clean.
-    const scopes = new Set([...regions.filter(t => t.element !== root &&
-      (t.element.getAttribute("data-mcel-purpose") || t.role) !== "workspace"),
-      ...nodes].map(t => t.element));
+    // The source-bound workspace is the *application* boundary, not an
+    // untrusted page-wide selector. Runtime-rendered tabs, document actions,
+    // disclosures and refresh controls can live directly under a workspace,
+    // without their own IR node or non-workspace region. Their *physical*
+    // material is derived from native/accessible HTML semantics; their intent
+    // and capability are never inferred or changed by Chrome.
+    const scopes = new Set([...regions, ...nodes]
+      .map(target => target.element).filter(element => element !== root));
     for (const scope of scopes) {
       const controls = [scope, ...scope.querySelectorAll(controlSelector)];
       for (const element of controls) {
         if (!element.matches(controlSelector) || decorative(element)) continue;
-        const tag = element.localName, type = (element.getAttribute("type") || "text").toLowerCase();
-        if (tag === "button" || element.getAttribute("role") === "button" ||
+        const tag = element.localName;
+        const type = (element.getAttribute("type") || "text").toLowerCase();
+        const role = element.getAttribute("role") || "";
+        // A disclosure caret is its own indicator, even if authored with
+        // an extra interactive role. Never elevate a native summary.
+        if (tag === "summary" && element.parentElement?.localName === "details") continue;
+        // Choice and system-specific inputs keep native/browser material.
+        if (tag === "input" && fieldTypesExcluded.has(type)) continue;
+        if (tag === "button" ||
+            ["button", "tab", "switch"].includes(role) ||
             (tag === "input" && ["button", "submit", "reset"].includes(type))) {
           offer(element, type === "submit" ? "emissive-control" : "raised-control");
-        } else if ((tag === "input" && !fieldTypesExcluded.has(type)) ||
-                   tag === "textarea" || tag === "select") {
+        } else if (tag === "input" || tag === "textarea" || tag === "select" ||
+                   ["textbox", "combobox"].includes(role)) {
           offer(element, "recessed-field");
         }
       }
@@ -512,7 +557,11 @@ var McelSemanticChromePresentationLaw = (() => {
         }
         if (element.getAttribute(materialAttr) !== material)
           element.setAttribute(materialAttr, material);
-        element.setAttribute(materialOwnerAttr, profileId);
+        // Reconciliation is driven by child insertion, including new activity
+        // receipts. Do not restamp every existing material owner on each read:
+        // those redundant mutations can wake other presentation observers.
+        if (element.getAttribute(materialOwnerAttr) !== profileId)
+          element.setAttribute(materialOwnerAttr, profileId);
         if (material === "raised-control" || material === "emissive-control")
           attachWear(element, "button", index++);
       }
@@ -545,8 +594,14 @@ var McelSemanticChromePresentationLaw = (() => {
     };
   }
   function clear(root) {
+    if(!root) return 0;
+    const foreign=root[ownerProperty];
+    let removedForeign=0;
+    if(foreign && foreign.owner!==realmOwner && typeof foreign.clear==="function") {
+      removedForeign=foreign.clear(root);
+    }
     const prior = mounts.get(root);
-    if (!prior) return 0;
+    if (!prior) return removedForeign;
     prior.materials.clear();
     for (const rail of prior.rails) rail.remove();
     prior.unit?.removeAttribute(unitAttr);
@@ -555,7 +610,8 @@ var McelSemanticChromePresentationLaw = (() => {
     for (const [name, previous] of prior.originalVariables)
       restoreVariable(root, name, previous);
     mounts.delete(root);
-    return prior.rails.length;
+    if(root[ownerProperty]?.owner===realmOwner)delete root[ownerProperty];
+    return prior.rails.length+removedForeign;
   }
   function findPrimaryUnit({root, ir, bridge}) {
     const report = bridge?.observeRuntimePresentationTargets?.({root,ir});
@@ -587,6 +643,9 @@ var McelSemanticChromePresentationLaw = (() => {
       clear(root);
       return {schema,status:"refused",reason:"Theme has no canonical Chrome palette"};
     }
+    // Take over any earlier presentation law instance on this same physical
+    // root before material classification. This includes a parent Lab realm.
+    if(root[ownerProperty] && root[ownerProperty].owner!==realmOwner)clear(root);
     // Source-bound material assignment is required; the special TNG rails
     // are optional if the mounted application's geometry has no rail host.
     const materialsReady=resolveMaterialTargets({root,ir,bridge});
@@ -609,7 +668,8 @@ var McelSemanticChromePresentationLaw = (() => {
       ["--mcel-tng-rail-primary",palette[tokens[0]]],
       ["--mcel-tng-rail-inset",palette[tokens[1]]],
       ["--mcel-tng-glass",palette[tokens[2]]],
-      ["--mcel-tng-phosphor",palette[tokens[3]]]
+      ["--mcel-tng-phosphor",palette[tokens[3]]],
+      ["--mcel-tng-stipple",buildStippleTexture(palette[tokens[3]])]
     ];
     const originalVariables=new Map(vars.map(([name])=>[name,{
       value:root.style.getPropertyValue(name),priority:root.style.getPropertyPriority(name)
@@ -630,6 +690,7 @@ var McelSemanticChromePresentationLaw = (() => {
     }) : [];
     const materials=mountMaterials({root,ir,bridge,rails});
     mounts.set(root,{unit,workspace,rails,originalVariables,materials});
+    root[ownerProperty]={owner:realmOwner,clear};
     return {schema,status:"applied",profile,theme,rails:rails.length,purpleInsets:rails.length,
       displayMaterial:"black-glass-pixel",railMaterial:"clean-molded",
       source:ir?.application?.appId||"",targetPurpose:unit ? "eligible-primary-workspace" : "none",

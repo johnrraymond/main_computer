@@ -1,0 +1,14 @@
+{
+  "schema": "nanojev.sealed-overlap.human-space.v1",
+  "description": "Explicitly human-chosen toy axes and calibration surfaces. This is a diagnostic test space, not an approved production contract.",
+  "dimensions": [
+    {"id": "authority", "definition": "Who has permission to authorize an action", "phrases": ["The actor has delegated authorization", "An authorized signer approves the request", "Permission is explicitly granted", "The responsible officer has issued consent"]},
+    {"id": "obligation", "definition": "A binding duty or enforceable commitment", "phrases": ["A party has an enforceable duty", "A required commitment remains outstanding", "The agreement imposes a binding obligation", "Someone is required to perform"]},
+    {"id": "resource", "definition": "Use, ownership, or allocation of scarce resources", "phrases": ["The transaction allocates limited compute", "A scarce asset is being transferred", "The work consumes budgeted resources", "The parties assign resource ownership"]},
+    {"id": "evidence", "definition": "Observations or proofs supporting a claim", "phrases": ["The claim requires an audit trail", "Recorded observations serve as evidence", "A verifiable proof accompanies the request", "The proposal depends on documented facts"]},
+    {"id": "time", "definition": "Temporal order, deadline, duration, or validity window", "phrases": ["The action must occur before a deadline", "The permission expires at a fixed time", "The sequence has a time constraint", "The agreement specifies an execution window"]},
+    {"id": "uncertainty", "definition": "Ambiguity, probability, or incomplete knowledge", "phrases": ["The outcome is not yet known", "Several interpretations remain possible", "The evidence leaves uncertainty unresolved", "The decision depends on a probability estimate"]},
+    {"id": "exclusion", "definition": "A prohibition, incompatibility, or disallowed overlap", "phrases": ["The two actions cannot be combined", "The contract forbids this operation", "The requested state is explicitly excluded", "The conditions are mutually incompatible"]},
+    {"id": "consequence", "definition": "Changes in a state caused by an action", "phrases": ["The action changes the resulting state", "The contract specifies a downstream effect", "A transition follows the operation", "The decision has an enforceable consequence"]}
+  ]
+}

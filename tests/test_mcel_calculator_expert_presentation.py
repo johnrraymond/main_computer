@@ -106,7 +106,8 @@ def test_responsive_semantic_workbench_no_horizontal_overflow(browser,width):
     finally:p.close()
 
 def test_generic_expert_layout_policy_has_no_app_specific_branches():
-    css=(ROOT/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text()
+    css=(ROOT/'main_computer/web/applications/styles/mcel-semantic-workbench.css').read_text()
+    css=css.split('/* Calculator semantic background rules (formerly expert.css). */',1)[1]
     js=(ROOT/'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js').read_text()
     # Source comments may describe a named fixture; selectors must remain
     # generic and must never branch on a particular application identity.

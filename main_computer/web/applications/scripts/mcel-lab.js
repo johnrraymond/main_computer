@@ -152,6 +152,20 @@
           `${bindings.targets.filter(t => t.kind === 'region').length}/${bindings.expectedRegions} regions. ${bindings.reason || ''}`};
       return {status: 'ready', doc, root, ir: source, bindingModel: 'operational-runtime'};
     }
+    function mcelLabPresentationInput(source) {
+      // Canonical route identity, not the IR's internal compiler identifier.
+      // The registry remains the policy authority; Lab selectors are explicit
+      // local preview choices and never enable deployed rollout.
+      const appId = selectedMcelSemanticPreviewApp().route.split('/').pop();
+      const theme = window.McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
+      const formChoice = (typeof mcelFormPresentationSelect !== 'undefined' ? mcelFormPresentationSelect?.value : null) || mcelLabState.formPresentation || 'form-current';
+      const chromeChoice = (typeof mcelChromeSelect !== 'undefined' ? mcelChromeSelect?.value : null) || mcelLabState.chrome || 'chrome-strict-hierarchy';
+      const form = window.McelSemanticFormPresentationLaw?.normalize?.(formChoice) || formChoice;
+      const chrome = window.McelLabChromeLaw?.normalizeChrome?.(chromeChoice) || chromeChoice;
+      return {root:source.root, ir:source.ir, appId,
+        profiles:{theme,form,chrome}, bindingModel:source.bindingModel,
+        bridge:window.McelSemanticPresentationBridge, styleLaw:window.McelLabStyleLaw};
+    }
     function applyMcelSemanticThemePreview(reason = 'theme-change') {
       const frame = mcelSemanticThemeFrame();
       if (!mcelLabState.semanticThemePreviewEnabled || !frame || frame.hidden) return {status: 'inactive'};
@@ -164,10 +178,9 @@
       // Both hosts use the same named Color Law palette. The Lab's site
       // preview CSS is no longer an independent semantic color authority.
       const palette = window.McelLabStyleLaw.themePaletteFor(theme);
-      const result = window.McelSemanticThemePreview.apply({
-        root: observation.root, ir: observation.ir, bindingModel: observation.bindingModel,
-        bridge: window.McelSemanticPresentationBridge, styleLaw: window.McelLabStyleLaw, theme, tokens: palette
-      });
+      const result = window.McelUnifiedPresentationController?.applyLabTheme({
+        ...mcelLabPresentationInput(observation),theme,tokens:palette
+      }) || {status:'refused',reason:'unified-presentation-controller-unavailable'};
       if (result.status === 'applied-in-isolated-lab-frame') {
         stopMcelSemanticThemeMountWatch();
         showMcelSemanticThemeEvidence(result);
@@ -186,8 +199,9 @@
       const law = window.McelSemanticFormPresentationLaw;
       if (!law || source.status !== 'ready') return {status:'refused',reason:source.reason || 'Form Presentation Law unavailable'};
       const form = law.normalize(mcelFormPresentationSelect?.value || mcelLabState.formPresentation);
-      const result = law.apply({root:source.root,ir:source.ir,
-        bridge:window.McelSemanticPresentationBridge,bindingModel:source.bindingModel,profile:form});
+      const result = window.McelUnifiedPresentationController?.applyLabForm({
+        ...mcelLabPresentationInput(source),profile:form
+      }) || {status:'refused',reason:'unified-presentation-controller-unavailable'};
       const evidence = document.getElementById('mcel-semantic-form-presentation-evidence');
       if (evidence) evidence.textContent = result.status === 'applied-in-isolated-lab-frame'
         ? `Form: ${form} · ${result.shapedElements} source-bound shapes · ${result.roundedGroupBackgrounds} rounded groups · `+
@@ -204,8 +218,9 @@
       if (!law || source.status !== "ready") return {status:"refused",reason:source.reason || "Chrome Presentation Law unavailable"};
       const profile = window.McelLabChromeLaw.normalizeChrome(mcelChromeSelect?.value || mcelLabState.chrome);
       const theme = window.McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
-      const result = law.apply({root:source.root,ir:source.ir,bridge:window.McelSemanticPresentationBridge,
-        profile,theme,styleLaw:window.McelLabStyleLaw});
+      const result = window.McelUnifiedPresentationController?.applyLabChrome({
+        ...mcelLabPresentationInput(source),profile,theme
+      }) || {status:'refused',reason:'unified-presentation-controller-unavailable'};
       const evidence = document.getElementById("mcel-semantic-chrome-presentation-evidence");
       if (evidence) evidence.textContent = result.status === "applied"
         ? `Chrome: ${window.McelLabChromeLaw.chromeLabel(profile)} · ${result.rails} inert rails (optional) · ${Object.values(result.materialCoverage?.materials || {}).reduce((count, value) => count + value, 0)} material targets (${reason})`

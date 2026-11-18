@@ -18,11 +18,18 @@ def _lab_fixture():
 
 def test_lab_uses_explicit_native_shell_child_and_mounted_ir():
     src = (WEB / 'scripts/mcel-lab.js').read_text(encoding='utf-8')
-    assert "'/applications/calculator?mcel-shell-child=1&mcel_lab_theme_preview=1'" in src
-    assert "getElementById('mcel-expanded-ir')" in src
-    assert "getElementById('mcel-expanded-root')" in src
-    assert "source?.application?.appId !== 'semantic-calculator-expanded'" in src
+    # The Lab now selects among four fixed canonical application routes.
+    # The old single-Calculator literal is no longer its navigation contract.
+    for app, route in (('calculator', '/applications/calculator'),
+                       ('file-manager', '/applications/file-explorer'),
+                       ('task-manager', '/applications/task-manager'),
+                       ('code-editor', '/applications/code-editor')):
+        assert f'route: "{route}"' in src, app
+    assert 'getElementById(selected.irId)' in src
+    assert 'getElementById(selected.rootId)' in src
+    assert 'source?.application?.appId !== selected.appId' in src
     assert "observeRuntimePresentationTargets({ir: source, root})" in src
+    assert 'frame.src = `${selected.route}?mcel-shell-child=1&mcel_lab_theme_preview=1`' in src
     assert "frame.src = '/applications/calculator?mcel_lab_theme_preview=1'" not in src
 
 
@@ -51,7 +58,7 @@ def test_browser_real_promoted_calculator_preview_theme_switches_and_keeps_seman
             page.add_style_tag(path=str(WEB / 'styles/mcel-lab.css'))
             for script in ('mcel-contract.js','mcel-law-registry.js','mcel-style-law.js',
                            'mcel-semantic-presentation-bridge.js','mcel-semantic-theme-preview.js',
-                           'mcel-diagnostic-plugins.js'):
+                           'mcel-unified-presentation-controller.js','mcel-diagnostic-plugins.js'):
                 page.add_script_tag(path=str(WEB / 'scripts' / script))
             page.add_script_tag(content=(
                 '''var mcelLabState={semanticThemePreviewEnabled:false};

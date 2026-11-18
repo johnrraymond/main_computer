@@ -1,6 +1,6 @@
 """Fail-closed cross-application blast-radius gate for MCEL negotiation (experimental).
 
-Enumerates the canonical 21-destination inventory and runs the real semantic
+Enumerates the canonical 22-destination inventory and runs the real semantic
 hosts in Chromium, in addition to the canonical parent shell. It explicitly
 separates a genuine negotiation trial from a structural no-touch guard. An app
 with no general solver contract is UNSUPPORTED, never silently declared PASS.
@@ -18,6 +18,7 @@ from main_computer.mcel_applications_shell_host import compile_applications_shel
 from main_computer.mcel_calculator_expanded_host import compile_expanded, render_expanded_page
 from main_computer.mcel_chat_console_host import compile_chat_console, render_chat_console_page
 from main_computer.mcel_semantic_other_apps_host import compile_semantic_app, render_semantic_page
+from main_computer.mcel_slh_application import compile_slh_application, render_slh_page
 from tools.mcel_composition_negotiation_smoke import SmokeRefusal, negotiate
 from tools.mcel_general_negotiation_smoke import NegotiationRefusal, negotiate_application, trial_browser_geometry
 
@@ -28,6 +29,7 @@ SEMANTIC_LOADERS = {
     'task-manager': (lambda: compile_semantic_app('task-manager'), lambda: render_semantic_page('task-manager')),
     'code-editor': (lambda: compile_semantic_app('code-editor'), lambda: render_semantic_page('code-editor')),
     'chat-console': (compile_chat_console, render_chat_console_page),
+    'slh': (lambda: compile_slh_application()[0], render_slh_page),
 }
 READY = {
     'calculator': ('#mcel-expanded-diagnostic', 'Semantic Calculator ready'),
@@ -35,6 +37,7 @@ READY = {
     'task-manager': ('#mcel-workbench-status', 'Semantic candidate ready'),
     'code-editor': ('#mcel-workbench-status', 'Semantic candidate ready'),
     'chat-console': ('body[data-mcel-chat-ready="true"]', None),
+    'slh': ('#mcel-workbench-status', None),
     'slh-local': ('#mcel-workbench-status', None),
     'slh-network': ('#mcel-workbench-status', None),
 }
@@ -106,7 +109,7 @@ def _semantic_browser(browser, app: str, html: str, width: int, *, screenshots: 
         page.set_content(html, wait_until='domcontentloaded', timeout=20000)
         selector, expected = READY[app]
         ready = page.locator(selector).count() == 1 and (expected is None or page.locator(selector).inner_text() == expected)
-        if app.startswith('slh-'):
+        if app == 'slh' or app.startswith('slh-'):
             ready = ready and page.evaluate('Boolean(window.__mcelSlh)') and page.locator(selector).get_attribute('data-error') != 'true'
         graph_before=None
         if mode == 'graphing':
@@ -220,7 +223,7 @@ def run_battery(*, browser: bool = False, screenshots: Path | None = None) -> di
     """Inventory-closed blast-radius smoke. A guard pass is not solver coverage."""
     _, registry = compile_applications_shell()
     apps = registry['apps']
-    if len(apps) != 21 or len({a['id'] for a in apps}) != 21:
+    if len(apps) != 22 or len({a['id'] for a in apps}) != 22:
         raise AssertionError('canonical shell inventory changed; do not skip destinations')
     if {a['id'] for a in apps if a['mount']=='semantic'} != set(SEMANTIC_LOADERS):
         raise AssertionError('semantic implementation inventory has changed; extend smoke first')
@@ -229,7 +232,6 @@ def run_battery(*, browser: bool = False, screenshots: Path | None = None) -> di
               'apps':[], 'auxiliary':[], 'shell':[], 'semanticBrowser':[], 'legacyBrowser':[], 'limitations':[]}
     pages={}
     legacy_fragments={}
-    from main_computer.mcel_slh_application import compile_slh_application, render_slh_page
     slh_ir, _slh_composition = compile_slh_application()
     for name, view in (('slh-local','overview'),('slh-network','network')):
         page=render_slh_page(view)

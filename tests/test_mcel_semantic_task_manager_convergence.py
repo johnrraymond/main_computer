@@ -33,8 +33,20 @@ def test_paired_semantic_contract_matches_p3_except_source_provenance():
     assert len(paired['intents']) == len(p3['intents']) == 19
     assert len(paired['provenance']['frontend']['sourceFiles']) == 2
     assert not paired['layouts']
+    # The promoted paired view has one additional presentation destination,
+    # "operations". Apart from that enum extension, its P3 authority contract
+    # (including every effect) must remain strictly identical.
+    def without_operations_choice(value):
+        if isinstance(value, dict):
+            return {key: without_operations_choice(v) for key, v in value.items()
+                    if key != 'source'}
+        if isinstance(value, list):
+            if value == ['server-processes','all-processes','connections','cpu-gpu','operations']:
+                return value[:-1]
+            return [without_operations_choice(v) for v in value]
+        return value
     for key in ('states', 'capabilities', 'intents', 'effects'):
-        left = {v['id']: _without_source(v) for v in paired[key]}
+        left = {v['id']: without_operations_choice(v) for v in paired[key]}
         right = {v['id']: _without_source(v) for v in p3[key]}
         assert left == right, f'Operational IR discrepancy in {key}'
     hierarchy = paired['surfaces'][0]['interfaceIntent']['hierarchy']
@@ -61,7 +73,12 @@ def _page(browser, lab, width=1100):
 
 
 def _show_workflow(page, locator):
-    """Reveal a composed tool tab before testing the same authorized operation."""
+    """Navigate into the existing authorized operation, without replacing its intent."""
+    subview = locator.evaluate('el => el.closest("[data-mcel-workspace-subview]")?.id || null')
+    if subview:
+        page.locator('[data-mcel-purpose="navigation"] [data-value="operations"]').click()
+        page.locator(f'[data-mcel-workspace-subtabs] [aria-controls="{subview}"]').click()
+        return
     owner = locator.evaluate('el => el.closest("[data-mcel-tool-panel]")?.id || null')
     if owner:
         page.locator(f'[data-mcel-tool-tabs] [aria-controls="{owner}"]').click()
@@ -236,6 +253,7 @@ def test_paired_real_http_failures_are_not_success(browser, isolated_task_http):
         _tool_click(page, 'terminate-process')
         _contract_receipt(page, 'terminate-process', 'failed')
         assert not lab.effects
+        page.locator('[data-mcel-purpose="navigation"] [data-value="server-processes"]').click()
         monitor = page.locator('form[data-intent="intent:refresh"]')
         monitor.locator('[name="limit"]').fill('99999')
         monitor.locator('button[type=submit]').click()

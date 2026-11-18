@@ -86,7 +86,7 @@ def test_responsive_browser_interaction(browser,app,width):
             page.locator('form[data-intent="intent:refresh"] input[name="query"]').fill('server')
             page.locator('form[data-intent="intent:refresh"] button[type="submit"]').click()
             page.locator('[data-collection] [data-record-field="name"]').get_by_text('server').wait_for()
-            page.locator('[data-record-key="123:2026-10-31T12:00"] button').click()
+            page.locator('[data-record-key="123:2026-10-31T12:00"][data-mcel-row-selectable]').click()
             assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected")')=='123:2026-10-31T12:00'
             # Startup now performs an initial read-only overview. The explicit
             # operator query must remain distinct from that startup snapshot.

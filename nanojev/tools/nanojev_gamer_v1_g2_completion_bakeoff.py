@@ -155,6 +155,44 @@ def policy_candidates():
             for arm in ARMS for params in (COUNT_GRID if arm=='cardinality' else SET_GRID)]
 
 
+def _capture_candidate_repair_batch(rows, tag, *, include_raw_g1,
+                                    capture, state, acceptors, acceptor_policies,
+                                    device, max_length, assert_all_frozen):
+    """The actual G2-0051/0052 candidate-capture path, callable in integration tests.
+
+    Reuse the SAME frozen G1 hidden-state bundle for accepted-occurrence replay
+    and raw-span recovery. Never consult author labels when building candidates.
+    """
+    from tools import nanojev_gamer_v1_g2_candidate_construction_repair as repair51
+    if (not rows or any(row.get('split')!='train' or
+            row.get('annotation_provenance')!='AUTHOR_MARKED_IN_SOURCE_GENERATOR'
+            for row in rows)):
+        raise ValueError('GAMER_G2_0051_TRAIN_CAPTURE_ONLY')
+    captured=capture(rows,tag)
+    if len(captured)!=len(rows):
+        raise ValueError('GAMER_G2_0051_CAPTURE_ROW_COUNT')
+    for row,record in zip(rows,captured):
+        evidence,(prepared,hidden,eligible)=x38.freeze_context_case(
+            row,state['head'],state['model'],state['tokenizer'],
+            device=device,max_length=max_length)
+        spans=x39.chosen_spans(evidence,acceptors,acceptor_policies,SOURCE_SEED)
+        if base.predicted_anchors(spans,prepared)!=record['recovered']['anchors']:
+            raise ValueError('GAMER_G2_0051_FROZEN_G1_REPLAY_DRIFT')
+        record['candidate_repair']=repair51.candidates_for_record(
+            record,evidence,state['allowed'])
+        if include_raw_g1:
+            with torch.inference_mode():
+                raw=state['head'](hidden,eligible=eligible,active_stage='G1')
+            # Frozen G1 evidence and original token offsets; no gold graph.
+            record['g1_raw_interface']={
+                'span_logits':raw['span_logits'].detach().float().cpu(),
+                'span_valid':raw['span_valid'].detach().bool().cpu(),
+                'prepared':prepared,'allowed':state['allowed'],
+                'hidden':hidden.detach().to(device='cpu',dtype=torch.float16).contiguous()}
+    assert_all_frozen()
+    return captured
+
+
 def build_case(row,state,parent31,relationship_nets,acceptors,acceptor_policies,
                relationship_policy,*,device):
     """All inference completes without reading the author-supplied gold edges."""
@@ -681,6 +719,22 @@ def run(*,precision30_run,representation31_run,completeness32_run,structured33_r
                 evaluated[split]=cases
             assert_all_frozen()
             return evaluated
+        def capture_counterfactual_train_rows(rows, tag='g2_0050_counterfactual'):
+            # A private diagnostic hook: all new material must be author-annotated
+            # TRAIN rows. The capture uses the same frozen Qwen/G1/G2 parents
+            # and label-blind candidate generation as the original cohorts.
+            if (not rows or any(row.get('split')!='train' or
+                    row.get('annotation_provenance')!='AUTHOR_MARKED_IN_SOURCE_GENERATOR'
+                    for row in rows)):
+                raise ValueError('GAMER_G2_0050_TRAIN_CAPTURE_ONLY')
+            captured=capture(rows,tag)
+            assert_all_frozen()
+            return captured
+        def capture_candidate_repair_rows(rows, tag='g2_0051_candidate_repair', *, include_raw_g1=False):
+            return _capture_candidate_repair_batch(rows, tag,
+                include_raw_g1=include_raw_g1, capture=capture, state=state,
+                acceptors=acceptors, acceptor_policies=acceptor_policies,
+                device=device, max_length=max_length, assert_all_frozen=assert_all_frozen)
         assert_all_frozen()
         return diagnostic_callback(training=training,fitting=fitting,auditing=auditing,
             training_frontier=training_frontier,fit_frontier=fit_frontier,
@@ -688,7 +742,9 @@ def run(*,precision30_run,representation31_run,completeness32_run,structured33_r
             fit_rows=fit40,audit_rows=audit40,
             meta={'train_mining':train_mining,'fit_mining':fit_mining},pol33=pol33,
             parent33_models=nets33,post_selection_dev_capture=post_selection_dev_capture,
-            assert_all_frozen=assert_all_frozen)
+            assert_all_frozen=assert_all_frozen,
+            capture_counterfactual_train_rows=capture_counterfactual_train_rows,
+            capture_candidate_repair_rows=capture_candidate_repair_rows)
     no_opportunity=not fit_frontier['all'].get('repairable')
     if no_opportunity:
         # The decoder cannot fix a graph absent from its candidate inventory.

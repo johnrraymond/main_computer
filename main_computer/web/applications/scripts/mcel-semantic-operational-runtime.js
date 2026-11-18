@@ -100,6 +100,8 @@
     assert((ir.surfaces || []).length === 1, "single-semantic-surface-required");
     const surface = ir.surfaces[0];
     const generated = composition !== undefined;
+    const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
+      .map(i=>ref(i.viewTransition.target)));
     if (generated) {
       assert(!surface.interfaceIntent?.hierarchy && !surface.htmlBindings && !(ir.layouts || []).length,
         "generated-layout-source-not-independent");
@@ -124,8 +126,6 @@
       const authoredTaskIds=new Set((surface.interfaceIntent?.regions||[])
         .filter(r=>["task","commands","inspector"].includes(r.role))
         .map(r=>"interface-region:generated-"+(r.role==="inspector"?"inspection":r.role)+"-"+r.id.split(".").pop()));
-      const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
-        .map(i=>ref(i.viewTransition.target)));
       for (const n of surface.nodes || []) {
         if(n.visibleWhen)validateVisibility(n.visibleWhen,states,modeStates);
         if(n.enabledWhen){
@@ -280,6 +280,23 @@
         }
       }
       assert(["form","control","state-value","collection","record-notebook","operation-notebook","plot","operation-evidence","document-editor","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
+      if(n.nodeKind==="operation-evidence" && own(n,"activityEntries")){
+        assert(Array.isArray(n.activityEntries),"invalid-activity-entries:"+n.id);
+        const keys=new Set();
+        const dispositions=new Set(["completed","accepted-deferred","command-returned",
+          "recorded","refused","refused-before-attempt","failed","cancelled","unknown"]);
+        for(const item of n.activityEntries){
+          assert(item && item.kind==="activity-entry" && ["info","warn","error"].includes(item.severity) &&
+            typeof item.message==="string" && item.message.trim().length>0 && item.message.length<=200 &&
+            intents.get(ref(item.intent))?.operationKind==="capability" &&
+            Array.isArray(item.dispositions) && item.dispositions.length>0 &&
+            item.dispositions.every(d=>dispositions.has(d)),"invalid-activity-entry:"+n.id);
+          for(const disposition of item.dispositions){
+            const key=ref(item.intent)+":"+disposition;
+            assert(!keys.has(key),"duplicate-activity-entry:"+n.id);keys.add(key);
+          }
+        }
+      }
       if (n.intent) assert(intents.has(ref(n.intent)), "unbound-intent:" + n.id);
       for(const item of n.resetOutputs||[]){
         const target=states.get(ref(item.state));
@@ -288,6 +305,17 @@
           item.value.length<=4096,"invalid-control-reset:"+n.id);
       }
       if (n.state) assert(states.has(ref(n.state)), "unbound-state:" + n.id);
+      if(n.rowLayout){
+        const layout=n.rowLayout, fields=n.fields||[];
+        const ordered=[...(layout.identity||[]),layout.description,...(layout.metadata||[])];
+        assert(n.nodeKind==="collection" && layout.selectOnRow===true &&
+          Array.isArray(layout.identity) && layout.identity.length>=1 && layout.identity.length<=3 &&
+          Array.isArray(layout.metadata) && layout.metadata.length<=4 &&
+          typeof layout.description==="string" && n.selectionIntent &&
+          ordered.length===fields.length && new Set(ordered).size===ordered.length &&
+          ordered.every(f=>typeof f==="string" && fields.includes(f)),
+          "invalid-collection-row-layout:"+n.id);
+      }
       if (n.selectionIntent) assert(intents.has(ref(n.selectionIntent)), "unbound-selection:" + n.id);
       if(n.clearable)assert(n.nodeKind==="collection" && n.selectionIntent &&
         intents.get(ref(n.selectionIntent))?.collectionSelection?.empty==="clear",
@@ -310,17 +338,29 @@
           for(const action of Object.values(tab.actions||{})){
             const intent=intents.get(ref(action.intent));
             assert(intent?.risk==="consequential" && intent.input?.length===1 &&
-              intent.input[0].sourceName==="recordId" && intent.input[0].schema?.kind==="string",
+              typeof intent.input[0].sourceName==="string" && intent.input[0].sourceName.length>0 &&
+              intent.input[0].schema?.kind==="string",
               "invalid-notebook-action:"+n.id);
           }
         }
-        const policy=states.get(ref(n.retention?.state)), readPolicy=intents.get(ref(n.retention?.refresh));
-        const updatePolicy=intents.get(ref(n.retention?.update)), empty=intents.get(ref(n.empty));
-        assert(policy?.authority==="derived" && policy.schema?.fields?.enabled?.kind==="boolean" &&
-          readPolicy?.risk==="external-read" && readPolicy.resultBindings?.some(b=>ref(b.target)===policy.id) &&
-          updatePolicy?.risk==="consequential" && updatePolicy.input?.length===1 &&
-          updatePolicy.input[0].schema?.kind==="boolean" && empty?.risk==="consequential" &&
-          empty.input?.length===0,"invalid-notebook-retention:"+n.id);
+        if(n.updates)assert(n.updates.rows===true && n.updates.status===true &&
+          Object.keys(n.updates).every(key=>["rows","status","retention"].includes(key)) &&
+          (!own(n.updates,"retention") || (n.updates.retention===true && !!n.retention)),
+          "invalid-notebook-updates:"+n.id);
+        if(n.retention){
+          const policy=states.get(ref(n.retention.state)), readPolicy=intents.get(ref(n.retention.refresh));
+          const updatePolicy=intents.get(ref(n.retention.update));
+          assert(policy?.authority==="derived" && policy.schema?.fields?.enabled?.kind==="boolean" &&
+            readPolicy?.risk==="external-read" && readPolicy.resultBindings?.some(b=>ref(b.target)===policy.id) &&
+            updatePolicy?.risk==="consequential" && updatePolicy.input?.length===1 &&
+            updatePolicy.input[0].schema?.kind==="boolean",
+            "invalid-notebook-retention:"+n.id);
+        }
+        if(n.empty){
+          const empty=intents.get(ref(n.empty));
+          assert(empty?.risk==="consequential" && empty.input?.length===0,
+            "invalid-notebook-empty:"+n.id);
+        }
       }
       if (n.nodeKind === "operation-notebook") {
         assert(typeof n.title==="string" && n.title.length>0 && n.title.length<=120 &&
@@ -346,19 +386,44 @@
             (tab.note===undefined || typeof tab.note==="string" && tab.note.length<=400),
             "invalid-operation-notebook-tab:" + n.id);
           seen.add(tab.id);
+          if(tab.updates)assert(Array.isArray(tab.updates.fields) &&
+            tab.updates.fields.length===tab.fields.length &&
+            tab.updates.fields.every(field=>tab.fields.includes(field)) &&
+            Array.isArray(tab.updates.actions) &&
+            tab.updates.status===true && typeof tab.updates.forms==="boolean" &&
+            tab.updates.forms===!!tab.forms?.length &&
+            Object.keys(tab.updates).length===4,
+            "invalid-operation-notebook-updates:"+n.id+":"+tab.id);
           assert(tab.actions && typeof tab.actions==="object" && !Array.isArray(tab.actions) &&
             Object.keys(tab.actions).length<=6,"invalid-operation-notebook-actions:" + n.id);
+          if(tab.updates)assert(tab.updates.actions.length===Object.keys(tab.actions).length &&
+            tab.updates.actions.every(label=>Object.hasOwn(tab.actions,label)),
+            "invalid-operation-notebook-update-actions:"+n.id+":"+tab.id);
           for(const [label,action] of Object.entries(tab.actions)){
             const intent=intents.get(ref(action?.intent));
             assert(label.length>0 && label.length<=40 && intent?.operationKind==="capability" &&
               intent.risk==="consequential" && intent.input?.length===0 &&
+              (action.alwaysEnabled===undefined || action.alwaysEnabled===true) &&
+              !(action.alwaysEnabled && action.enabledWhen) &&
               (action.confirm===undefined || typeof action.confirm==="string" && action.confirm.length<=240),
               "invalid-operation-notebook-action:" + n.id);
+            if(action.enabledWhen)validateVisibility(action.enabledWhen,states,modeStates);
           }
         }
       }
       if (n.nodeKind === "state-value") assert(states.has(ref(n.value?.state)), "unbound-display:" + n.id);
       if (n.nodeKind === "document-editor") {
+        if(n.externalJob){
+          const job=n.externalJob,launch=intents.get(ref(job.launchIntent)),refresh=intents.get(ref(job.statusIntent));
+          assert(launch?.operationKind==="capability" && launch.risk==="consequential" &&
+            refresh?.operationKind==="capability" && refresh.risk==="external-read" &&
+            typeof job.pathArgument==="string" &&
+            launch.requestArguments?.some(a=>a.name===job.pathArgument) &&
+            typeof job.filesArgument==="string" &&
+            launch.input?.some(a=>a.sourceName===job.filesArgument && a.schema?.kind==="string") &&
+            [job.pendingStatus,job.unverifiedStatus,job.acceptedPrefix].every(s=>typeof s==="string" && s.length>0),
+            "invalid-document-external-job:"+n.id);
+        }
         const source=states.get(ref(n.contentState)), path=states.get(ref(n.path)), draft=states.get(ref(n.draft));
         assert(source?.schema?.kind==="string" && source.authority==="derived" &&
           path?.schema?.kind==="string" && path.authority==="renderer-local" &&
@@ -454,18 +519,43 @@
     assert(root && root.nodeType === 1, "missing-root");
     assert(!root.hasAttribute("data-mcel-semantic-operational"), "already-mounted");
     const c = contract(ir, options.composition); // Refuse before modifying DOM.
-    // Any authored semantic color declaration must be validated against the
-    // canonical Color Law before this renderer mutates a single DOM node.
-    const colorPlan=global.McelSemanticColorPresentation?.validate({ir,law:global.McelLabStyleLaw,
-      composition:options.composition});
-    if(colorPlan && colorPlan.status!=="valid")fail("semantic-color-"+colorPlan.reason);
-    if(!colorPlan && ((ir.surfaces?.[0]?.nodes||[]).some(n=>n.color) ||
-        (ir.surfaces?.[0]?.interfaceIntent?.regions||[]).some(r=>r.color)))
-      fail("semantic-color-presentation-engine-missing");
-    if(colorPlan?.authored && !(options.colorPalette ||
-        global.McelLabStyleLaw?.themePaletteFor?.(options.colorTheme||"default") ||
-        global.McelLabStyleLaw?.semanticPaletteFor?.(root,global.getComputedStyle?.bind(global))))
-      fail("semantic-color-theme-palette-missing");
+    // The inference engine uses one canonical IR contract across all apps.
+    // The Lab enables preview on its iframe route; deployed routes only
+    // activate when the shared application-registry rollout permits it.
+    const isLabPreview = global.__mcelSemanticColorLabPreview === true ||
+      new URLSearchParams(global.location?.search || "").get("mcel_lab_theme_preview") === "1";
+    const selected = global.__mcelSystemPresentationSelection;
+    const activeSelection = selected?.schema === "mcel.presentation-selection.v1" &&
+      selected.eligible === true && selected.rolloutEnabled === true &&
+      selected.profiles && typeof selected.profiles.theme === "string" ? selected : null;
+    const inferColor = isLabPreview || !!activeSelection;
+    const controller = global.McelUnifiedPresentationController;
+    // Existence must be checked, never inferred from undefined === undefined.
+    const colorLaw = controller && typeof controller.mountOperationalColor === "function" &&
+      typeof controller.refreshOperationalColor === "function" ? controller :
+      global.McelSemanticColorPresentation;
+    const usingController = !!controller && colorLaw === controller;
+    const colorPlan = inferColor
+      ? (usingController
+          ? colorLaw.validateOperationalColor({ir,law:global.McelLabStyleLaw,composition:options.composition,inference:true})
+          : colorLaw?.validate({ir,law:global.McelLabStyleLaw,composition:options.composition,inference:true}))
+      : null;
+    // Presentation is non-operational. A missing or refusing Theme law must
+    // never prevent the semantic application from mounting (including SLH).
+    // Record the condition; the shared controller reports partial coverage.
+    // A supplied but invalid semantic contract is a source error, not a
+    // missing optional palette. Keep canonical pre-mount validation intact.
+    if (colorPlan && colorPlan.status !== "valid")
+      fail("semantic-color-"+colorPlan.reason);
+    const colorReady = !inferColor ? false : !!colorPlan && colorPlan.status === "valid" &&
+      !!(options.colorPalette ||
+        global.McelLabStyleLaw?.themePaletteFor?.(activeSelection?.profiles.theme||options.colorTheme||"default") ||
+        global.McelLabStyleLaw?.semanticPaletteFor?.(root,global.getComputedStyle?.bind(global)));
+    if (inferColor && !colorReady) {
+      global.__mcelPresentationDiagnostic = {status:"refused", property:"theme",
+        reason:!colorPlan ? "semantic-color-inference-engine-missing" :
+          colorPlan.status!=="valid" ? "semantic-color-"+colorPlan.reason : "semantic-color-theme-palette-missing"};
+    }
     const workspacePlan = workspaceContract(ir, c, options.workspacePlan);
     if (workspacePlan) assert(global.McelSemanticLayoutInference?.mountWorkspacePlan,
       "workspace-layout-engine-missing");
@@ -474,6 +564,10 @@
     const port = options.capabilities || {};
     const expert = options.presentation === "expert";
     const state = new Map(), observedTimes=new Map(), receipts = [], displays = new Map();
+    // UI history is bounded. The sequence remains monotonic even after eviction;
+    // authoritative durable evidence, when needed, belongs to the capability.
+    const receiptLimit=256;
+    let nextReceiptSequence=0;
     const directoryForms = new Set();
     const folderTrees = new Map();
     // Read-only navigation dependencies are identified by source/target state,
@@ -485,12 +579,19 @@
     const taskRefreshPeriodMs = 5000;
     const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
     const conditionedNodes=new Map(), sharedFieldInputs=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
+    const recordRenderSignatures=new WeakMap(), receiptRenderSignatures=new WeakMap();
+    const declaredUpdates=[...c.nodes.values()].some(node=>!!node.updates);
+    let lastLayoutFingerprint=null;
     const pendingConsequential=new Set();
     let serial = 0, disposed = false;
     let refreshTimer = null, initialRefreshTimer = null, refreshBusy = false, refreshEnabled = true;
     let inferredLayout=null, generatedResizeObserver=null, generatedResizeListener=null;
     let plannedLayout=null,colorPresentation=null;
     const colorOperations=new Set(),colorOutcomes=new Map();
+    // All promoted registry apps dispatch Color Law updates through the one
+    // controller. Isolated experimental runtimes retain the legacy adapter.
+    const refreshColor = () => usingController
+      ? colorLaw.refreshOperationalColor(root) : colorPresentation?.refresh();
     let scheduleGeneratedLayout=()=>{};
     const rememberedInputs = new Map();
     const chatControllers=[];
@@ -529,17 +630,36 @@
     const enabled = n => !n?.enabledWhen || conditionSatisfied(n.enabledWhen);
     function notify() {
       for (const [r,el] of regionHosts) {
-        if (r.visibleWhen) el.hidden = read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
+        if(r.visibleWhen){
+          const hidden=read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
+          if(el.hidden!==hidden)el.hidden=hidden;
+        }
       }
-      for (const [n, el] of conditionedNodes) el.hidden = !applicable(n);
+      for (const [n, el] of conditionedNodes){
+        const hidden=!applicable(n);if(el.hidden!==hidden)el.hidden=hidden;
+      }
       if(c.generated)for(const [r,el] of regionHosts)if(r.recipe!=="root" && r.members?.length) {
-        el.hidden=r.members.every(member=>{
+        const hidden=r.members.every(member=>{
           const node=c.nodes.get(ref(member));
           return !!node?.visibleWhen && !applicable(node);
         });
+        if(el.hidden!==hidden)el.hidden=hidden;
       }
-      for (const [n, host] of selectedRecordHosts) updateSelectedRecord(n,host);
-      for (const [n, host] of typedRecordHosts) updateTypedRecord(n,host);
+      for (const [n, host] of selectedRecordHosts){
+        const selections=[...c.intents.values()].filter(i=>i.collectionSelection &&
+          ref(i.collectionSelection.target)===ref(n.value.state));
+        const signature=JSON.stringify([read(ref(n.value.state)),...selections.map(i=>
+          read(ref(i.collectionSelection.source)))]);
+        if(recordRenderSignatures.get(host)!==signature){
+          updateSelectedRecord(n,host);recordRenderSignatures.set(host,signature);
+        }
+      }
+      for (const [n, host] of typedRecordHosts){
+        const signature=JSON.stringify(read(ref(n.value.state)));
+        if(!recordRenderSignatures.has(host) || recordRenderSignatures.get(host)!==signature){
+          updateTypedRecord(n,host);recordRenderSignatures.set(host,signature);
+        }
+      }
       for (const [id, elements] of displays) for (const el of elements) {
         const value = read(id);
         // A bounded, inert image result is a generic semantic visualization.
@@ -560,15 +680,27 @@
           const caption=elt("p",{"role":"status"},viewport.status+" · "+viewport.width+"×"+viewport.height);
           const log=elt("pre",{"data-mcel-sandboxed-log":""});
           log.textContent=viewport.logs.join("\n");
-          el.replaceChildren(img,caption,log);
-        }else el.textContent = value === undefined ? "" : (value !== null && typeof value === "object" ? JSON.stringify(value,null,2) : String(value));
+          if(el.querySelector('[data-mcel-sandboxed-image]')?.getAttribute('src')!==viewport.png ||
+            el.querySelector('[data-mcel-sandboxed-log]')?.textContent!==viewport.logs.join("\n"))
+            el.replaceChildren(img,caption,log);
+        }else {
+          const next=value === undefined ? "" : (value !== null && typeof value === "object" ? JSON.stringify(value,null,2) : String(value));
+          if(el.textContent!==next || el.querySelector('[data-mcel-sandboxed-image]'))el.textContent=next;
+        }
       }
       for (const view of tabSwitchers) {
         const selected=read(view.stateId);
         view.select.value=selected === undefined ? view.select.value : selected;
         for (const button of view.buttons) {
           const active = button.dataset.value === selected;
-          button.setAttribute("aria-pressed",String(active));
+          if(button.getAttribute("aria-pressed")!==String(active))
+            button.setAttribute("aria-pressed",String(active));
+          if(button.tagName==="A"){
+            if(active && button.getAttribute("aria-current")!=="page")
+              button.setAttribute("aria-current","page");
+            else if(!active && button.hasAttribute("aria-current"))
+              button.removeAttribute("aria-current");
+          }
         }
       }
       for (const [n, host] of collectionHosts) updateCollection(n,host);
@@ -578,47 +710,93 @@
       for (const [n, host] of plotHosts) updatePlot(n, host);
       for (const [n, session] of documentHosts) updateDocument(n,session);
       for(const {button,intent,node} of [...actionButtons,...guardedFormButtons]){
-        button.disabled=!enabled(node) || (intent.requestArguments||[]).some(arg=>{
+        const disabled=!enabled(node) || (intent.requestArguments||[]).some(arg=>{
           const value=read(ref(arg.state));return value===undefined || value===null || (value==="" && arg.allowEmpty!==true);
         });
-        if(node?.enabledWhen)button.setAttribute("aria-disabled",String(button.disabled));
+        if(button.disabled!==disabled)button.disabled=disabled;
+        if(node?.enabledWhen && button.getAttribute("aria-disabled")!==String(disabled))
+          button.setAttribute("aria-disabled",String(disabled));
         if(node?.labelByState){
           const descriptor=node.labelByState, record=read(ref(descriptor.state));
           const value=descriptor.path?record?.[descriptor.path]:record;
           const label=descriptor.labels?.[value] ?? descriptor.fallback;
-          if(typeof label==="string")button.textContent=label;
+          if(typeof label==="string" && button.textContent!==label)button.textContent=label;
         }
       }
-      colorPresentation?.refresh();
-      for (const host of receiptHosts) {
-        const recent = expert ? receipts.filter(r => c.intents.get(r.intentId)?.operationKind === "capability").slice(-6).reverse() : receipts;
-        const list = host.list || host;
-        list.replaceChildren(...recent.map(r => {
-          const nodes=[...c.nodes.values()].filter(n=>ref(n.intent)===r.intentId);
-          // A receipt is evidence, not an available action. Preserve the
-          // legacy intent selector while applicable; retired conditional
-          // actions retain their auditable receipt under a distinct attribute.
-          const attrs={"data-operation-intent":r.intentId,"data-disposition":r.disposition};
-          if(!nodes.length || nodes.some(applicable))attrs["data-intent"]=r.intentId;
-          return elt("li",attrs,fmt(r.intentId) + ": " + r.disposition +
-            (r.reason ? " (" + r.reason + ")" : ""));
-        }));
-        if (host.details) {
-          host.summary.textContent = recent.length ? "Activity · " + recent.length + " recent operation" + (recent.length===1 ? "" : "s") : "Activity · No operations yet";
-          if (host.latest) {
-            // Consequential requests are more decision-relevant than page-load
-            // observations. Do not let a following read refresh overwrite the
-            // latest setup/disable result; retain the actual error reason.
-            const operations=receipts.filter(r=>c.intents.get(r.intentId)?.operationKind==="capability");
-            const latest=[...operations].reverse().find(r=>c.intents.get(r.intentId)?.risk==="consequential") || operations.at(-1);
-            host.latest.querySelector('[data-mcel-request-result]').textContent=latest
-              ? fmt(latest.intentId)+": "+latest.disposition+(latest.reason?" ("+latest.reason+")":"")
-              : "No request yet";
+      refreshColor();
+      renderActivities();
+      if(c.generated){
+        if(!declaredUpdates)scheduleGeneratedLayout();
+        else {
+          const fingerprint=JSON.stringify({regions:[...regionHosts].map(([r,el])=>
+            [r.id,el.hidden,el.childElementCount,el.scrollHeight,el.clientHeight]),
+            tabs:[...notebooks.values(),...operationNotebooks.values()].map(session=>session.active)});
+          if(lastLayoutFingerprint!==fingerprint){
+            lastLayoutFingerprint=fingerprint;scheduleGeneratedLayout();
           }
-          if (recent.some(r => r.disposition === "failed" || r.disposition === "refused-before-attempt")) host.details.open=true;
         }
       }
-      if(c.generated)scheduleGeneratedLayout();
+    }
+    // Activity is a generic receipt view. The app may author a specific set of
+    // intent/outcome reports using dsl.activity.info/warn/error. Without such
+    // declarations the legacy receipt feed remains available as Info entries.
+    // Severity and relevance are never inferred from an intent's risk or name.
+    function renderActivities() {
+      for (const host of receiptHosts) {
+        const all = [];
+        for(let i=receipts.length-1;i>=0;i--){
+          const r=receipts[i],intent=c.intents.get(r.intentId);
+          if(expert && intent?.operationKind!=="capability")continue;
+          const declaration=host.rules ? host.rules.get(r.intentId+":"+r.disposition) : null;
+          if(host.rules && !declaration)continue;
+          const severity=declaration?.severity||"info";
+          const message=declaration?.message || (fmt(r.intentId)+": "+r.disposition);
+          all.push({receipt:r,severity,message:message+(r.reason?" ("+r.reason+")":"")});
+        }
+        // Severity visibility is three independent user-owned choices, not a
+        // cumulative threshold. No filter action removes a receipt from history.
+        const shown=all.filter(item=>host.levels.has(item.severity));
+        const signature=JSON.stringify(shown.map(({receipt:r,severity,message})=>[
+          r.sequence,severity,message,[...c.nodes.values()].filter(n=>ref(n.intent)===r.intentId).some(applicable)]));
+        if(receiptRenderSignatures.get(host.list)!==signature){
+          // Maintain a stable DOM node per receipt, even across filter changes.
+          const rows=[];
+          for(const {receipt:r,severity,message} of shown){
+            let row=host.rows.get(r.sequence);
+            const nodes=[...c.nodes.values()].filter(n=>ref(n.intent)===r.intentId);
+            const attrs={"data-operation-intent":r.intentId,"data-disposition":r.disposition,
+              "data-activity-severity":severity};
+            if(!nodes.length || nodes.some(applicable))attrs["data-intent"]=r.intentId;
+            if(!row){
+              row=elt("li",attrs);
+              row.append(elt("span",{"data-activity-level":""},severity.toUpperCase()),
+                elt("span",{"data-activity-message":""}," "+message));
+              host.rows.set(r.sequence,row);
+            } else if(attrs["data-intent"]===undefined)row.removeAttribute("data-intent");
+            else if(row.getAttribute("data-intent")!==r.intentId)row.setAttribute("data-intent",r.intentId);
+            rows.push(row);
+          }
+          // The newest matching receipt is always the first child; unchanged
+          // rows retain their identity, focus, and theme ownership.
+          const desired=new Set(rows);
+          for(const child of [...host.list.children])if(!desired.has(child))child.remove();
+          for(let i=0;i<rows.length;i++)if(host.list.children[i]!==rows[i])
+            host.list.insertBefore(rows[i],host.list.children[i]||null);
+          receiptRenderSignatures.set(host.list,signature);
+        }
+        if(host.summary){
+          const summary=!all.length ? "Activity · No operations yet" :
+            host.levels.size===3 ? "Activity · "+all.length+" recent operation"+(all.length===1?"":"s") :
+              "Activity · "+shown.length+" of "+all.length+" operations";
+          if(host.summary.textContent!==summary)host.summary.textContent=summary;
+        }
+        if(host.latest){
+          const result=host.latest.querySelector('[data-mcel-request-result]');
+          const latest=all[0]?.message||"No request yet";
+          if(result && result.textContent!==latest)result.textContent=latest;
+        }
+        // Receipts and filter updates never alter the user's disclosure state.
+      }
     }
     function traceOperation(intentId,phase,disposition) {
       if (typeof global.CustomEvent !== "function") return;
@@ -626,10 +804,28 @@
         detail:{appId:ir.application.appId,intentId,phase,disposition}}));
     }
     function receipt(intent, disposition, reason="") {
-      const r = Object.freeze({sequence:receipts.length+1,intentId:intent.id,disposition,reason});
+      const r = Object.freeze({sequence:++nextReceiptSequence,intentId:intent.id,disposition,reason});
+      // Record reads can also originate outside the notebook (for example a
+      // programmatic inspect). A valid current result must reconcile its
+      // notebook message as well as its data; a superseded result does neither.
+      for(const session of notebooks.values()){
+        if(!session.available)continue;
+        const active=session.node.tabs.find(t=>t.id===session.active);
+        if(ref(active?.refresh)!==intent.id)continue;
+        if(disposition==="completed")session.error="";
+        else if(["failed","refused-before-attempt"].includes(disposition)){
+          state.delete(ref(active.state));
+          session.error=(session.node.messages?.errorPrefix||"Records unavailable: ")+String(reason||disposition);
+        }
+      }
       colorOutcomes.set(intent.id, disposition === "completed" ? "succeeded" :
         disposition === "failed" || disposition === "refused-before-attempt" ? "failed" : "idle");
-      receipts.push(r); notify(); traceOperation(intent.id,"settled",disposition); return r;
+      receipts.push(r);
+      if(receipts.length>receiptLimit)receipts.splice(0,receipts.length-receiptLimit);
+      // DOM-row caches must not retain evicted receipts indefinitely.
+      for(const host of receiptHosts)for(const key of host.rows.keys())
+        if(key<=nextReceiptSequence-receiptLimit)host.rows.delete(key);
+      notify(); traceOperation(intent.id,"settled",disposition); return r;
     }
     function parseInput(s, element) {
       const raw = element.value;
@@ -639,16 +835,52 @@
       return raw;
     }
     let identityContextEpoch=0;
+    // Record-notebook authorization has its own generation. Revoking it must
+    // invalidate protected reads without cancelling unrelated operations.
+    let recordAuthorizationEpoch=0;
+    // An external caller and a notebook may request the same protected read.
+    // Track requests before authorization (which may emit an authentication
+    // callback), not only after the port has been authorized.
+    const notebookReadRuns=new Map();
+    let notebookReadSequence=0;
+    const notebookReadPending=id=>notebookReadRuns.get(id)?.context===identityContextEpoch;
+    // One application declaration controls both the button's disabled state
+    // and direct dispatch. MCEL evaluates conditions; the application owns them.
+    function operationActionEnabled(session,tab,action){
+      return !!action.alwaysEnabled || (session.available && !session.busy && !session.error &&
+        applicable(session.node) && !!read(ref(tab.state)) &&
+        (!action.enabledWhen || conditionSatisfied(action.enabledWhen)));
+    }
+    function operationActionDispatchAllowed(intentId){
+      let declared=false;
+      for(const session of operationNotebooks.values())for(const tab of session.node.tabs){
+        for(const action of Object.values(tab.actions||{})){
+          if(ref(action.intent)!==intentId)continue;
+          declared=true;
+          if(operationActionEnabled(session,tab,action))return true;
+        }
+      }
+      // Intents not declared as operation-notebook actions retain their own
+      // contracts (including application-initiated reads and other operations).
+      return !declared;
+    }
     async function execute(id, given={}) {
       assert(!disposed, "disposed");
       const intent = c.intents.get(id); assert(intent,"unknown-intent:"+id);
       traceOperation(id,"dispatch","");
       let attempted = false;
+      let notebookReadToken=null;
+      let ownsConsequential=false;
+      let ownsColorOperation=false;
+      let recordScopedRead=false;
+      let requestRecordAuthorizationEpoch=recordAuthorizationEpoch;
       try {
         // The same declarative applicability gate governs the generated
         // control and programmatic execute(). This is NOT backend authority.
         const controls=[...c.nodes.values()].filter(n=>ref(n.intent)===id);
         if(controls.length && !controls.some(n=>applicable(n) && enabled(n)))
+          fail("operational-condition-not-satisfied");
+        if(!operationActionDispatchAllowed(id))
           fail("operational-condition-not-satisfied");
         const input = {};
         for (const parameter of intent.input || []) {
@@ -752,6 +984,7 @@
         if(intent.risk === "consequential") {
           assert(!pendingConsequential.has(id),"consequential-request-already-pending");
           pendingConsequential.add(id);
+          ownsConsequential=true;
         }
         const e = c.effects.get(ref(intent.effectRefs[0]));
         const cap = c.capabilities.get(ref(e.authority));
@@ -770,18 +1003,17 @@
         assert(Object.keys(args).length === Object.keys(op.inputs || {}).length,"undeclared-operation-argument");
         // The renderer owns drafts, while the port owns source authority.
         // Verify both before permitting a document mutation or an Aider job.
-        if(id==="intent:run-aider"){
-          const files=String(args.files||"").trim()
-            ? String(args.files).split(/[\n,]+/).map(x=>x.trim()).filter(Boolean)
-            : [args.path];
-          assert(files.includes(args.path),"aider-current-file-required");
-          for(const [,session] of documentHosts){
-            assert(!session.savePending,"source-write-in-progress");
-            for(const file of files){
-              const tab=session.tabs.get(file);
-              if(tab)assert(!tab.dirty && !tab.conflict && !tab.aiderPending,
-                "aider-file-has-unsaved-or-conflicted-draft:"+file);
-            }
+        for(const [node,session] of documentHosts){
+          const job=node.externalJob;
+          if(!job || ref(job.launchIntent)!==id)continue;
+          const path=args[job.pathArgument],raw=String(args[job.filesArgument]||"");
+          const files=raw.trim()?raw.split(/[\n,]+/).map(x=>x.trim()).filter(Boolean):[path];
+          assert(files.includes(path),"document-job-current-file-required");
+          assert(!session.savePending,"source-write-in-progress");
+          for(const file of files){
+            const tab=session.tabs.get(file);
+            if(tab)assert(!tab.dirty && !tab.conflict && !tab.aiderPending,
+              "document-job-file-has-unsaved-or-conflicted-draft:"+file);
           }
         }
         if(intent.risk==="source-write"){
@@ -798,17 +1030,32 @@
           capabilityId:cap.id,operation:op.name,runtimeMethod:op.runtimeMethod,risk:e.risk,arguments:clone(args)});
         assert(typeof port.authorize === "function" && typeof port.invoke === "function", "capability-port-not-installed");
         const requestContextEpoch=identityContextEpoch;
+        recordScopedRead=intent.risk==="external-read" && [...notebooks.values()].some(session=>
+          session.node.tabs.some(tab=>ref(tab.refresh)===id) ||
+          (session.node.retention && ref(session.node.retention.refresh)===id));
+        requestRecordAuthorizationEpoch=recordAuthorizationEpoch;
+        if(recordScopedRead){
+          notebookReadToken=++notebookReadSequence;
+          notebookReadRuns.set(id,{token:notebookReadToken,context:requestContextEpoch});
+        }
+        const obsoleteNotebookRead=()=>notebookReadToken!==null &&
+          notebookReadRuns.get(id)?.token!==notebookReadToken;
+        const revokedRecordRead=()=>recordScopedRead &&
+          requestRecordAuthorizationEpoch!==recordAuthorizationEpoch;
         // This is operational state already owned by the runtime, not a
         // browser pointer event. The Color Law may project it as pending.
-        colorOperations.add(id);colorOutcomes.delete(id);colorPresentation?.refresh();
+        colorOperations.add(id);ownsColorOperation=true;
+        colorOutcomes.delete(id);refreshColor();
         const granted = await port.authorize(request);
-        if(requestContextEpoch!==identityContextEpoch)return {disposition:"superseded"};
+        if(requestContextEpoch!==identityContextEpoch || obsoleteNotebookRead() ||
+           revokedRecordRead())return {disposition:"superseded"};
         assert(granted === true,"authority-denied");
         const run = ++serial; current.set(id,run);
         for (const binding of intent.resultBindings || []) targetRuns.set(ref(binding.target),run);
         attempted = true;
         const value = await port.invoke(request);
-        if(requestContextEpoch!==identityContextEpoch)return {disposition:"superseded"};
+        if(requestContextEpoch!==identityContextEpoch || obsoleteNotebookRead() ||
+           revokedRecordRead())return {disposition:"superseded"};
         // A root-scoped read belongs to the exact selected root that issued it.
         // A late response from a previous root must never repopulate a new
         // root's collection, inspection, or navigation authority.
@@ -868,13 +1115,14 @@
             session.mountedPath="";
             session.dirty=tab.dirty;
             state.set(ref(node.draft),tab.draft);
-          } else if(id==="intent:run-aider"){
+          } else if(node.externalJob && ref(node.externalJob.launchIntent)===id){
             for(const [path,tab] of session.tabs){
-              if(port.documentWriteStatus?.(path)!=="aider-pending")continue;
+              if(port.documentWriteStatus?.(path)!==node.externalJob.pendingStatus)continue;
               tab.aiderPending=true;tab.editable=false;
               if(session.activePath===path){
                 session.editable=false;
-                session.status.textContent="Aider accepted; job still running. Refresh Aider jobs before reopening source.";
+                session.status.textContent=node.externalJob.acceptedMessage||
+                  "External job accepted; verify completion before reopening source.";
                 global.MainComputerMonacoAdapter?.setModel?.({path,value:tab.draft,readOnly:true});
               }
             }
@@ -947,18 +1195,22 @@
         notify();
         // On a terminal Aider job receipt, reread the current affected file
         // through the original port. Never assume job acceptance means success.
-        if(id==="intent:aider-jobs")for(const [node,session] of documentHosts){
+        for(const [node,session] of documentHosts){
+          if(!node.externalJob || ref(node.externalJob.statusIntent)!==id)continue;
           const path=session.activePath,tab=session.tabs.get(path);
-          if(tab?.aiderPending && port.documentWriteStatus?.(path)!=="aider-pending" &&
+          if(tab?.aiderPending && port.documentWriteStatus?.(path)!==node.externalJob.pendingStatus &&
              read(ref(node.path))===path){
             tab.aiderPending=false;session.mountedPath="";
             void execute(ref(node.loadIntent));
           }
         }
-        const disposition = id==="intent:run-aider" && typeof value==="string" &&
-          value.startsWith("Aider job accepted (not completed): ")?"accepted-deferred":
+        const jobDeclaration=[...documentHosts.keys()].map(n=>n.externalJob)
+          .find(job=>job && ref(job.launchIntent)===id);
+        const disposition = jobDeclaration && typeof value==="string" &&
+          value.startsWith(jobDeclaration.acceptedPrefix)?"accepted-deferred":
           (intent.risk === "consequential" && value && typeof value === "object" &&
-          ["accepted-deferred","command-returned","recorded","unknown","refused"].includes(value.outcome))
+          ["accepted-deferred","command-returned","recorded","unknown","refused",
+           "refused-before-attempt","failed","cancelled"].includes(value.outcome))
           ? value.outcome : "completed";
         const completed=receipt(intent,disposition,
           disposition === "completed" ? "" :
@@ -1009,9 +1261,17 @@
         }
         return completed;
       } catch (ex) {
-        if(id==="intent:run-aider")for(const [node,session] of documentHosts){
+        // An obsolete protected read must not publish a late failure after a
+        // newer read or a changed identity has already taken ownership.
+        if(notebookReadToken!==null &&
+            (notebookReadRuns.get(id)?.token!==notebookReadToken ||
+             notebookReadRuns.get(id)?.context!==identityContextEpoch ||
+             requestRecordAuthorizationEpoch!==recordAuthorizationEpoch))
+          return {disposition:"superseded"};
+        for(const [node,session] of documentHosts){
+          if(!node.externalJob || ref(node.externalJob.launchIntent)!==id)continue;
           for(const [path,tab] of session.tabs){
-            if(port.documentWriteStatus?.(path)!=="aider-outcome-unverified")continue;
+            if(port.documentWriteStatus?.(path)!==node.externalJob.unverifiedStatus)continue;
             tab.aiderPending=true;tab.editable=false;
             if(session.activePath===path){
               session.editable=false;
@@ -1028,9 +1288,13 @@
         const reason = String(ex?.message || ex).replace(/^MCEL_OPERATIONAL_REFUSED:/,"");
         return receipt(intent, attempted ? "failed" : "refused-before-attempt", reason);
       } finally {
-        pendingConsequential.delete(id);
-        colorOperations.delete(id);
-        colorPresentation?.refresh();
+        if(notebookReadToken!==null && notebookReadRuns.get(id)?.token===notebookReadToken)
+          notebookReadRuns.delete(id);
+        // A rejected duplicate never acquired either resource: it must not
+        // unlock the original invocation or erase its pending color state.
+        if(ownsConsequential)pendingConsequential.delete(id);
+        if(ownsColorOperation)colorOperations.delete(id);
+        refreshColor();
       }
     }
     function renderInput(name,schema,displayLabel) {
@@ -1051,32 +1315,146 @@
       const root=elt("section",{"data-mcel-notebook":n.id,"aria-label":n.title});
       const tabs=elt("div",{"role":"tablist","data-mcel-notebook-tabs":"","aria-label":n.title});
       const records=elt("div",{"data-mcel-notebook-scroll":"","role":"tabpanel"});
-      const status=elt("p",{"role":"status","data-mcel-notebook-status":""},"Select an identity and establish the target connection to access protected records");
+      const status=elt("p",{"role":"status","data-mcel-notebook-status":""},(n.messages?.unavailable||"Select a context to access records"));
       const footer=elt("div",{"data-mcel-notebook-footer":""});
-      const policyLabel=elt("label",{"data-mcel-notebook-policy":""});
-      const checkbox=elt("input",{type:"checkbox","data-mcel-notebook-retention":""});
-      policyLabel.append(checkbox,document.createTextNode(" Remove items after 30 days"));
-      const empty=elt("button",{type:"button","data-mcel-notebook-empty":""},"Empty Trash");
-      footer.append(policyLabel,empty);root.append(tabs,records,status,footer);holder.append(root);
-      const session={node:n,root,records,status,checkbox,empty,footer,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:""};
+      const policyLabel=n.retention ? elt("label",{"data-mcel-notebook-policy":""}) : null;
+      const checkbox=n.retention ? elt("input",{type:"checkbox","data-mcel-notebook-retention":""}) : null;
+      if(policyLabel){
+        policyLabel.append(checkbox,document.createTextNode(n.retention.label||" Enable retention"));
+        footer.append(policyLabel);
+      }
+      const empty=n.empty ? elt("button",{type:"button","data-mcel-notebook-empty":""},
+        n.empty.label||"Clear records") : null;
+      if(empty)footer.append(empty);
+      root.append(tabs,records,status);
+      if(policyLabel||empty)root.append(footer);
+      holder.append(root);
+      const session={node:n,root,records,status,checkbox,empty,footer,active:n.tabs[0].id,
+        available:false,busy:false,epoch:0,readRevision:0,refreshTask:null,
+        refreshScope:"",loading:false,error:""};
       notebooks.set(n,session);
       const selected=()=>n.tabs.find(t=>t.id===session.active);
       const footerTab=n.tabs[n.tabs.length-1];
+      // Keyed record rows and their dynamic fields are explicitly authored by
+      // the application. Routine observations do not remount tabs or rows.
+      session.renderedTab=null;
+      session.rows=new Map();
+      session.rowUpdaters=new Map();
+      function redrawDeclaredNotebook(){
+        const tab=selected();
+        if(session.renderedTab!==tab.id){
+          for(const updater of session.rowUpdaters.values())updater.dispose();
+          session.rows.clear();session.rowUpdaters.clear();
+          session.renderedTab=tab.id;
+          tabs.replaceChildren(...n.tabs.map(t=>{
+            const button=elt("button",{type:"button",role:"tab","data-mcel-notebook-tab":t.id,
+              "aria-selected":String(session.active===t.id)},t.label);
+            button.addEventListener("click",()=>{
+              if(session.active!==t.id){
+                session.active=t.id;++session.readRevision;
+                session.loading=false;session.error="";redraw();
+              }
+              // Clicking the already-selected default tab is a real activation:
+              // it can initiate the protected read without a remount.
+              if(session.available)void refreshNotebook(session);
+            });return button;
+          }));
+          records.setAttribute("aria-label",tab.label+" "+(n.recordLabel||"records"));
+          records.replaceChildren();
+        }
+        const data=read(ref(tab.state));
+        const statusValue=!session.available?
+          (n.messages?.unavailable||"Select a context to access records"):
+          session.error?session.error:
+          session.loading && !Array.isArray(data)?"Loading "+tab.label+" records":
+          !Array.isArray(data)?"Select "+tab.label+" to request records":
+          data.length?"":"No "+tab.label.toLowerCase()+" records";
+        if(status.textContent!==statusValue)status.textContent=statusValue;
+        const observed=session.available && Array.isArray(data)?data:[];
+        const next=new Map(), ordered=[];
+        for(const item of observed){
+          const key=String(item[tab.key]);
+          let row=session.rows.get(key);
+          if(!row){
+            row=elt("div",{"data-mcel-record-row":"","data-record-key":key});
+            for(const field of tab.fields){
+              row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field),
+                "data-mcel-updatable":"text","data-mcel-update-key":"field:"+field},
+                plainValue(item[field])));
+            }
+            const actions=elt("div",{"data-mcel-notebook-row-actions":""});
+            for(const [label,action] of Object.entries(tab.actions||{})){
+              const button=elt("button",{type:"button","data-mcel-notebook-action":label},label);
+              button.disabled=session.busy;
+              button.addEventListener("click",async()=>{
+                if(session.busy||!session.available)return;
+                const selectedItem=row.__mcelRecord;
+                if(action.confirm && (typeof global.confirm!=="function" ||
+                  !global.confirm(action.confirm+"\n\n"+String(selectedItem[tab.key]))))return;
+                session.busy=true;redraw();
+                const epoch=session.epoch;
+                try{
+                  const receipt=await execute(ref(action.intent),{[c.intents.get(ref(action.intent)).input[0].sourceName]:String(selectedItem[tab.key])});
+                  if(epoch!==session.epoch)return;
+                  if(receipt?.disposition!=="completed"){
+                    session.error="Operation refused: "+String(receipt?.reason||receipt?.disposition||"UNKNOWN");return;
+                  }
+                  session.error="";await refreshNotebook(session,true);
+                }finally{session.busy=false;redraw();}
+              });actions.append(button);
+            }
+            row.append(actions);
+            session.rowUpdaters.set(key,global.McelSemanticValueUpdaters.mount(row));
+          }
+          row.__mcelRecord=item;
+          const proposed={};
+          for(const field of tab.fields)proposed["field:"+field]=plainValue(item[field]);
+          session.rowUpdaters.get(key).update(proposed);
+          for(const button of row.querySelectorAll('[data-mcel-notebook-action]'))
+            if(button.disabled!==session.busy)button.disabled=session.busy;
+          next.set(key,row);ordered.push(row);
+        }
+        for(let i=0;i<ordered.length;i++)if(records.children[i]!==ordered[i])
+          records.insertBefore(ordered[i],records.children[i]||null);
+        for(const [key,row] of session.rows)if(!next.has(key)){
+          session.rowUpdaters.get(key)?.dispose();session.rowUpdaters.delete(key);row.remove();
+        }
+        session.rows=next;
+        if(checkbox){
+          const policy=read(ref(n.retention.state));
+          const checked=policy?.enabled===true;
+          if(checkbox.checked!==checked)checkbox.checked=checked;
+          const disabled=!session.available||session.busy||typeof policy?.enabled!=="boolean";
+          if(checkbox.disabled!==disabled)checkbox.disabled=disabled;
+        }
+        if(empty){
+          const emptyDisabled=!session.available||session.busy||
+            !Array.isArray(read(ref(footerTab.state)))||!read(ref(footerTab.state))?.length;
+          if(empty.disabled!==emptyDisabled)empty.disabled=emptyDisabled;
+        }
+        if(footer.hidden!==(session.active!==footerTab.id))footer.hidden=session.active!==footerTab.id;
+      }
       function redraw(){
+        if(n.updates){redrawDeclaredNotebook();return;}
         tabs.replaceChildren(...n.tabs.map(t=>{
           const button=elt("button",{type:"button",role:"tab","data-mcel-notebook-tab":t.id,
             "aria-selected":String(session.active===t.id)},t.label);
           button.addEventListener("click",()=>{
-            session.active=t.id;redraw();if(session.available)void refreshNotebook(session);
+            if(session.active!==t.id){
+              session.active=t.id;++session.readRevision;
+              session.loading=false;session.error="";redraw();
+            }
+            if(session.available)void refreshNotebook(session);
           });return button;
         }));
         const tab=selected();
-        records.setAttribute("aria-label",tab.label+" organizational identities");
+        records.setAttribute("aria-label",tab.label+" "+(n.recordLabel||"records"));
         records.replaceChildren();
         const data=read(ref(tab.state));
-        if(!session.available)status.textContent="Select an identity and establish the target connection to access protected records";
+        if(!session.available)status.textContent=(n.messages?.unavailable||"Select a context to access records");
         else if(session.error)status.textContent=session.error;
-        else if(!Array.isArray(data))status.textContent="Select "+tab.label+" to request protected organization records";
+        else if(session.loading && !Array.isArray(data))status.textContent="Loading "+tab.label+" records";
+        else if(!Array.isArray(data))status.textContent="Select "+tab.label+" to request records";
         else status.textContent=data.length?"": "No "+tab.label.toLowerCase()+" records";
         if(session.available && Array.isArray(data))for(const item of data){
           const row=elt("div",{"data-mcel-record-row":"","data-record-key":String(item[tab.key])});
@@ -1094,7 +1472,7 @@
               session.busy=true;redraw();
               const epoch=session.epoch;
               try{
-                const receipt=await execute(ref(action.intent),{recordId:String(item[tab.key])});
+                const receipt=await execute(ref(action.intent),{[c.intents.get(ref(action.intent)).input[0].sourceName]:String(item[tab.key])});
                 if(epoch!==session.epoch)return;
                 if(receipt?.disposition!=="completed"){
                   session.error="Operation refused: "+String(receipt?.reason||receipt?.disposition||"UNKNOWN");return;
@@ -1105,84 +1483,212 @@
           }
           row.append(actions);records.append(row);
         }
-        const policy=read(ref(n.retention.state));
-        checkbox.checked=policy?.enabled===true;
-        checkbox.disabled=!session.available||session.busy||typeof policy?.enabled!=="boolean";
-        empty.disabled=!session.available||session.busy||!Array.isArray(read(ref(footerTab.state)))||
-          !read(ref(footerTab.state))?.length;
+        if(checkbox){
+          const policy=read(ref(n.retention.state));
+          checkbox.checked=policy?.enabled===true;
+          checkbox.disabled=!session.available||session.busy||typeof policy?.enabled!=="boolean";
+        }
+        if(empty)empty.disabled=!session.available||session.busy||
+          !Array.isArray(read(ref(footerTab.state)))||!read(ref(footerTab.state))?.length;
         footer.hidden=session.active!==footerTab.id;
       }
       session.redraw=redraw;
-      checkbox.addEventListener("change",async()=>{
+      // Visibility, identity selection, and loading policy belong to the
+      // application. MCEL never infers an authorized read from a mount.
+      checkbox?.addEventListener("change",async()=>{
         if(!session.available||session.busy)return;
         const requested=checkbox.checked;session.busy=true;redraw();
         try{
           const receipt=await execute(ref(n.retention.update),{enabled:requested});
-          if(receipt?.disposition!=="completed")session.error="Retention change refused: "+String(receipt?.reason||receipt?.disposition);
+          if(receipt?.disposition!=="completed")session.error=
+            (n.retention.failureLabel||"Retention change refused: ")+String(receipt?.reason||receipt?.disposition);
           else session.error="";
           await execute(ref(n.retention.refresh));
         }finally{session.busy=false;redraw();}
       });
-      empty.addEventListener("click",async()=>{
+      empty?.addEventListener("click",async()=>{
         if(session.busy||!session.available||!read(ref(footerTab.state))?.length)return;
-        if(typeof global.confirm!=="function" || !global.confirm("Permanently remove ALL trashed identities? This cannot be undone."))return;
+        if(typeof global.confirm!=="function" || !global.confirm(
+          n.empty.confirm||"Clear these records? This cannot be undone."))return;
         session.busy=true;redraw();
         try{
           const receipt=await execute(ref(n.empty));
-          if(receipt?.disposition!=="completed")session.error="Empty Trash refused: "+String(receipt?.reason||receipt?.disposition);
+          if(receipt?.disposition!=="completed")session.error=
+            (n.empty.failureLabel||"Clear records refused: ")+String(receipt?.reason||receipt?.disposition);
           else {session.error="";await refreshNotebook(session,true);}
         }finally{session.busy=false;redraw();}
       });
       redraw();
     }
-    async function refreshNotebook(session,all=false){
-      if(!session.available)return;
-      const epoch=session.epoch;
+    function refreshNotebook(session,all=false,options={}){
+      if(!session.available)return Promise.resolve({disposition:"unavailable"});
+      const epoch=session.epoch,active=session.active;
+      const scope=active+":"+(all?"all":"active");
+      // Repeated activation/authorization notifications reuse a matching
+      // request instead of launching competing observations.
+      if(session.refreshTask && session.refreshScope===scope && session.refreshEpoch===epoch)
+        return session.refreshTask;
+      const revision=++session.readRevision;
+      const current=()=>session.epoch===epoch && session.readRevision===revision &&
+        session.active===active;
       const n=session.node;
-      const tabs=all?n.tabs:[n.tabs.find(t=>t.id===session.active)];
-      for(const t of tabs){
-        const receipt=await execute(ref(t.refresh));
-        if(epoch!==session.epoch)return;
-        if(receipt?.disposition!=="completed"){
-          state.delete(ref(t.state));
-          session.error="Organization records unavailable: "+String(receipt?.reason||receipt?.disposition||"AUTH_REQUIRED");
-          session.redraw();
-          return;
+      session.loading=true;session.error="";session.redraw();
+      const run=async()=>{
+        try{
+          const tabs=all?n.tabs:[n.tabs.find(t=>t.id===active)];
+          for(const tab of tabs){
+            const target=ref(tab.state),intentId=ref(tab.refresh);
+            if(options.onlyMissing && (Array.isArray(read(target)) ||
+                options.skipInFlight && notebookReadPending(intentId)))continue;
+            const outcome=await execute(intentId);
+            if(!current())return {disposition:"superseded"};
+            if(outcome?.disposition==="superseded"){
+              // A newer request owns both the value and any failure. Stop
+              // this batch: later unrelated reads must not clear its status.
+              return outcome;
+            }
+            if(outcome?.disposition!=="completed"){
+              state.delete(target);
+              session.error=(n.messages?.errorPrefix||"Records unavailable: ")+
+                String(outcome?.reason||outcome?.disposition||"AUTH_REQUIRED");
+              return {disposition:outcome?.disposition||"failed",reason:outcome?.reason||""};
+            }
+          }
+          if(n.retention && (all || active===n.tabs[n.tabs.length-1].id)){
+            const policy=ref(n.retention.state),intentId=ref(n.retention.refresh);
+            if(!(options.onlyMissing && (read(policy)!==undefined ||
+                options.skipInFlight && notebookReadPending(intentId)))){
+              const outcome=await execute(intentId);
+              if(!current())return {disposition:"superseded"};
+              if(outcome?.disposition==="superseded")return outcome;
+              if(outcome?.disposition!=="completed"){
+                state.delete(policy);
+                session.error=(n.retention.loadFailureLabel||"Retention policy unavailable: ")+
+                  String(outcome?.reason||outcome?.disposition||"AUTH_REQUIRED");
+                return {disposition:outcome?.disposition||"failed",reason:outcome?.reason||""};
+              }
+            }
+          }
+          if(current())session.error="";
+          return {disposition:"completed"};
+        }finally{
+          if(current()){
+            session.loading=false;
+            session.redraw();
+          }
         }
-      }
-      if(all||session.active===n.tabs[n.tabs.length-1].id){
-        const policyReceipt=await execute(ref(n.retention.refresh));
-        if(epoch!==session.epoch)return;
-        if(policyReceipt?.disposition!=="completed"){
-          state.delete(ref(n.retention.state));
-          session.error="Organization retention policy unavailable: "+String(policyReceipt?.reason||policyReceipt?.disposition||"AUTH_REQUIRED");
-          session.redraw();
-          return;
-        }
-      }
-      if(epoch===session.epoch){session.error="";session.redraw();}
+      };
+      const task=run();
+      session.refreshTask=task;session.refreshScope=scope;session.refreshEpoch=epoch;
+      void task.finally(()=>{
+        if(session.refreshTask===task)session.refreshTask=null;
+      });
+      return task;
     }
-    function changeNotebookAuthorization(available, options={}){
-      // Record notebooks use selected-identity authority; operation notebooks
-      // may use an independent local service authority. Preserve the default
-      // all-notebook behavior for existing connected/remote transports.
+    // Explicit request from the application, not implicit viewport or auth
+    // policy. The renderer owns deduplication, request freshness, and updates.
+    function activateNotebooks(options={}){
+      if(options.scope==="operations")return Promise.resolve([]);
+      const tasks=[];
+      for(const session of notebooks.values()){
+        if(options.notebookId && session.node.id!==options.notebookId)continue;
+        if(!session.available || session.busy){
+          tasks.push(Promise.resolve({disposition:"unavailable"}));
+          continue;
+        }
+        const tab=session.node.tabs.find(t=>t.id===session.active);
+        if(!tab)continue;
+        const intentId=ref(tab.refresh);
+        if(options.all===true){
+          // A batch executes sequentially. Never start another batch while an
+          // independently dispatched notebook read is in flight, since its
+          // newer read token would supersede the old protected read.
+          if(session.refreshTask || session.node.tabs.some(t=>notebookReadPending(ref(t.refresh))) ||
+             (session.node.retention && notebookReadPending(ref(session.node.retention.refresh)))){
+            tasks.push(Promise.resolve({disposition:"in-flight",reason:"READ_ALREADY_IN_FLIGHT"}));
+            continue;
+          }
+          if(options.force!==true && session.node.tabs.every(t=>Array.isArray(read(ref(t.state)))) &&
+              (!session.node.retention || read(ref(session.node.retention.state))!==undefined)){
+            tasks.push(Promise.resolve({disposition:"completed"}));
+            continue;
+          }
+          tasks.push(refreshNotebook(session,true,{onlyMissing:options.force!==true,skipInFlight:true}));
+          continue;
+        }
+        if(options.force!==true && notebookReadPending(intentId)){
+          tasks.push(Promise.resolve({disposition:"in-flight",reason:"READ_ALREADY_IN_FLIGHT"}));
+          continue;
+        }
+        if(options.force!==true && Array.isArray(read(ref(tab.state)))){
+          tasks.push(Promise.resolve({disposition:"completed"}));
+          continue;
+        }
+        tasks.push(refreshNotebook(session,false,{onlyMissing:options.force!==true,skipInFlight:true}));
+      }
+      // A generic completion receipt allows applications to own recovery
+      // policy. MCEL makes no decision about which failures deserve retry.
+      return Promise.all(tasks);
+    }
+    function changeNotebookAuthorization(available,options={}){
+      // Withdrawing the record authorization context invalidates in-flight
+      // protected responses before they can repopulate cleared state. A new
+      // authorization generation cannot revive an earlier request.
+      if(options.scope!=="operations" && (!available || options.reset===true))
+        ++recordAuthorizationEpoch;
+      // Local signer selection establishes eligibility to request records,
+      // not proof of administrator authentication. The port remains the sole
+      // authority for all protected reads and mutations.
       if(options.scope!=="records")for(const session of operationNotebooks.values()){
         ++session.epoch;session.available=!!available;session.busy=false;session.error="";
+        session.operationMessage="";session.readFailure=null;
         for(const tab of session.node.tabs)state.delete(ref(tab.state));
         session.redraw();
         if(available && options.refresh!==false && applicable(session.node))void refreshOperationNotebook(session);
       }
       if(options.scope!=="operations")for(const session of notebooks.values()){
-        ++session.epoch;session.available=!!available;session.busy=false;session.error="";
-        {
+        const next=!!available,changed=session.available!==next;
+        if(changed || options.reset===true){
+          ++session.epoch;++session.readRevision;
+          session.available=next;session.busy=false;session.loading=false;session.error="";
+          session.refreshTask=null;
           for(const tab of session.node.tabs)state.delete(ref(tab.state));
-          state.delete(ref(session.node.retention.state));
+          if(session.node.retention)state.delete(ref(session.node.retention.state));
         }
         session.redraw();
-        if(available && options.refresh!==false)void refreshNotebook(session,true);
+        // Availability is presentation/eligibility, not a command to issue
+        // protected requests. An application can explicitly request hydration
+        // with activateNotebooks; login callbacks must not race the read that
+        // caused the callback.
+        if(next && options.refresh===true)
+          void refreshNotebook(session,false,{onlyMissing:true,skipInFlight:true});
       }
     }
     const operationNotebooks=new Map();
+    // A capability acknowledgement is not its final execution receipt.
+    // Keep outcome messages separate from observation/authentication errors:
+    // neither a deferred acceptance nor a terminal refusal should become a
+    // sticky UI permission gate for an unrelated subsequent operation.
+    const acknowledgedOperationDispositions=new Set([
+      "accepted-deferred","command-returned","recorded"
+    ]);
+    function reconcileNotebookOutcome(session,receipt){
+      const disposition=receipt?.disposition;
+      if(disposition==="superseded")return null;
+      if(disposition==="completed"){
+        session.operationMessage="";
+        return true;
+      }
+      const reason=String(receipt?.reason||disposition||"UNKNOWN");
+      if(acknowledgedOperationDispositions.has(disposition))
+        session.operationMessage="Operation acknowledged; completion not yet verified: "+reason;
+      else if(disposition==="refused" || disposition==="refused-before-attempt")
+        session.operationMessage="Operation refused: "+reason;
+      else if(disposition==="failed")session.operationMessage="Operation failed: "+reason;
+      else if(disposition==="cancelled")session.operationMessage="Operation cancelled: "+reason;
+      else session.operationMessage="Operation outcome unverified: "+reason;
+      return false;
+    }
     function renderOperationNotebook(n,holder){
       const root=elt("section",{"data-mcel-operation-notebook":n.id,"aria-label":n.title});
       const tabs=elt("div",{"role":"tablist","data-mcel-operation-tabs":"","aria-label":n.title});
@@ -1192,49 +1698,136 @@
       root.append(elt("h3",{},n.title),tabs);
       if(signIn)root.append(signIn);
       root.append(body,status);holder.append(root);
-      const session={node:n,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:"",redraw:null};
+      const session={node:n,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:"",
+        operationMessage:"",redraw:null,renderedTab:null,semanticUpdater:null,
+        formBindings:[],readFailure:null};
       operationNotebooks.set(n,session);
+      // The application, not MCEL, declares each tab's changing semantic
+      // fields, actions, status and forms. An observation never rebuilds an
+      // already-mounted tab with this contract.
+      const updatingValues=tab=>!!tab.updates;
+      function operationStatus(tab,observation){
+        const result=tab.receipt?read(ref(tab.receipt)):null;
+        const label=result&&typeof result.outcome==="string"?
+          result.outcome+": "+String(result.message||""):"";
+        return !session.available?
+          (session.error||"Select an identity to access protected deployment information"):
+          session.error||(!observation?"Operation status unavailable":session.operationMessage||label);
+      }
       function redraw(){
         if(signIn){
-          signIn.hidden=session.available || !applicable(n);
-          signIn.disabled=session.busy || !applicable(n);
+          const hidden=session.available || !applicable(n);
+          const disabled=session.busy || !applicable(n);
+          if(signIn.hidden!==hidden)signIn.hidden=hidden;
+          if(signIn.disabled!==disabled)signIn.disabled=disabled;
         }
         const tab=n.tabs.find(t=>t.id===session.active);
+        // A newer successful observation resolves a prior transient read
+        // failure even if the successful read came from background polling.
+        const failure=session.readFailure;
+        if(failure && failure.stateId===ref(tab.state) &&
+           read(failure.stateId)!==failure.observation){
+          if(session.error===failure.message)session.error="";
+          session.readFailure=null;
+        }
+        if(updatingValues(tab) && session.renderedTab===tab.id){
+          if(!session.semanticUpdater)
+            session.semanticUpdater=global.McelSemanticValueUpdaters.mount(root);
+          const observation=read(ref(tab.state));
+          // A failed observation may leave the last verified display visible,
+          // but ordinary consequential controls require a verified observation.
+          // An application-declared always-enabled action is an exception.
+          const allowed=session.available && !session.busy && !session.error &&
+            applicable(n) && !!observation;
+          const proposed={"notebook:status":operationStatus(tab,observation)};
+          for(const field of tab.updates.fields)
+            proposed["field:"+field]=plainValue(observation?.[field]);
+          for(const label of tab.updates.actions){
+            const action=tab.actions[label];
+            proposed["action:"+label]=!operationActionEnabled(session,tab,action);
+          }
+          session.semanticUpdater.update(proposed);
+          // Form controls and their choices are also application-declared
+          // dynamic elements. Preserve typed input and select DOM on reads.
+          if(tab.updates.forms)for(const {submit,choices} of session.formBindings){
+            if(submit.disabled!==!allowed)submit.disabled=!allowed;
+            for(const {input,choice} of choices){
+              const source=read(ref(choice.state));
+              const rows=source?.[choice.path];
+              const options=Array.isArray(rows)?rows.filter(row=>
+                typeof row?.[choice.valueKey]==="string" &&
+                typeof row?.[choice.labelKey]==="string") : [];
+              const expected=[{value:"",label:"Select a saved controller"},
+                ...options.map(row=>({value:row[choice.valueKey],label:row[choice.labelKey]}))];
+              const existing=[...input.options];
+              if(existing.length!==expected.length || expected.some((item,i)=>
+                existing[i]?.value!==item.value || existing[i]?.textContent!==item.label)){
+                const previous=input.value;
+                input.replaceChildren(...expected.map(item=>elt("option",{value:item.value},item.label)));
+                if(expected.some(item=>item.value===previous))input.value=previous;
+              }
+              // Only an observed change in the selected controller changes a
+              // user's selection; repeated reads never reset their choice.
+              const observed=choice.selectedPath?source?.[choice.selectedPath]:"";
+              if(input.__mcelObservedSelection!==observed){
+                input.__mcelObservedSelection=observed;
+                if(typeof observed==="string" && [...input.options].some(o=>o.value===observed))
+                  input.value=observed;
+              }
+            }
+          }
+          return;
+        }
+        session.semanticUpdater?.dispose();session.semanticUpdater=null;
+        session.formBindings=[];
+        session.renderedTab=tab.id;
         tabs.replaceChildren(...n.tabs.map(t=>{
           const button=elt("button",{type:"button",role:"tab","data-mcel-operation-tab":t.id,
             "aria-selected":String(t.id===session.active)},t.label);
           button.addEventListener("click",()=>{
             if(session.busy)return;
-            session.active=t.id;redraw();
+            session.active=t.id;session.error="";session.readFailure=null;
+            session.operationMessage="";redraw();
             if(session.available && applicable(n))void refreshOperationNotebook(session);
           });return button;
         }));
         body.replaceChildren();
         const observation=read(ref(tab.state));
+        const marked=updatingValues(tab);
         const fields=elt("dl",{"data-mcel-operation-fields":""});
-        if(observation && typeof observation==="object" && !Array.isArray(observation)){
+        if((observation && typeof observation==="object" && !Array.isArray(observation)) ||
+            marked){
           for(const field of tab.fields){
-            fields.append(elt("dt",{},fmt(field)),elt("dd",{"data-mcel-operation-field":field},plainValue(observation[field])));
+            fields.append(elt("dt",{},fmt(field)),elt("dd",{
+              "data-mcel-operation-field":field,
+              ...(marked?{"data-mcel-updatable":"text","data-mcel-update-key":"field:"+field}:{})
+            },plainValue(observation?.[field])));
           }
         }
         body.append(fields);
         if(tab.note)body.append(elt("p",{"data-mcel-operation-note":""},tab.note));
         const actions=elt("div",{"data-mcel-operation-actions":""});
         for(const [label,action] of Object.entries(tab.actions||{})){
-          const button=elt("button",{type:"button","data-mcel-operation-action":label},label);
-          button.disabled=!session.available||session.busy||!applicable(n)||!observation;
+          const button=elt("button",{type:"button","data-mcel-operation-action":label,
+            ...(marked?{"data-mcel-updatable":"disabled","data-mcel-update-key":"action:"+label}:{})},label);
+          button.disabled=!operationActionEnabled(session,tab,action);
           button.addEventListener("click",async()=>{
-            if(button.disabled||session.busy||!session.available||!applicable(n))return;
+            // A declared always-enabled action is an attempt, not an authorization
+            // grant. Dispatch even without a fresh observation; the capability
+            // implementation owns refusal and concurrency policy.
+            if(!action.alwaysEnabled &&
+                (button.disabled||session.busy||!session.available||!applicable(n)))return;
             if(action.confirm && (typeof global.confirm!=="function" || !global.confirm(action.confirm)))return;
+            session.operationMessage="";
+            // Dispatch checks the current semantic gate synchronously before
+            // the click's presentation-only busy flag is raised.
+            const pending=execute(ref(action.intent));
             session.busy=true;redraw();const epoch=session.epoch;
             try{
-              const receipt=await execute(ref(action.intent));
+              const receipt=await pending;
               if(epoch!==session.epoch)return;
-              if(receipt?.disposition!=="completed"){
-                session.error="Operation refused: "+String(receipt?.reason||receipt?.disposition||"UNKNOWN");
-              }else{
-                session.error="";await refreshOperationNotebook(session);
-              }
+              if(reconcileNotebookOutcome(session,receipt))
+                await refreshOperationNotebook(session);
             }finally{if(epoch===session.epoch){session.busy=false;redraw();}}
           });
           actions.append(button);
@@ -1262,6 +1855,7 @@
               const selected=choice.selectedPath?read(ref(choice.state))?.[choice.selectedPath]:"";
               if(typeof selected==="string" && [...input.options].some(o=>o.value===selected))
                 input.value=selected;
+              input.__mcelObservedSelection=selected;
               field.append(input);
             }else{
               const built=renderInput(name,arg.schema);field=built.wrap;input=built.input;
@@ -1273,8 +1867,12 @@
             inputs[name]=input;form.append(field);
           }
           const submit=elt("button",{type:"submit"},spec.submitLabel);
-          submit.disabled=!session.available||session.busy||!applicable(n)||!observation;
+          submit.disabled=!session.available||session.busy||!!session.error||
+            !applicable(n)||!observation;
           form.append(submit);
+          if(marked)session.formBindings.push({submit,choices:Object.entries(inputs)
+            .filter(([name])=>!!spec.choicesFrom?.[name])
+            .map(([name,input])=>({input,choice:spec.choicesFrom[name]}))});
           form.addEventListener("submit",async event=>{
             event.preventDefault();
             if(submit.disabled||session.busy||!session.available||!applicable(n))return;
@@ -1285,23 +1883,23 @@
                 arg.schema.kind==="integer"?Number(field.value):field.value;
             }
             if(spec.confirm&&(typeof global.confirm!=="function"||!global.confirm(spec.confirm)))return;
+            session.operationMessage="";
+            const pending=execute(ref(spec.intent),given);
             session.busy=true;const epoch=session.epoch;redraw();
             try{
-              const receipt=await execute(ref(spec.intent),given);
+              const receipt=await pending;
               if(epoch!==session.epoch)return;
-              session.error=receipt?.disposition==="completed"?"":
-                "Operation refused: "+String(receipt?.reason||receipt?.disposition||"UNKNOWN");
-              if(!session.error)await refreshOperationNotebook(session);
+              if(reconcileNotebookOutcome(session,receipt))
+                await refreshOperationNotebook(session);
             }finally{if(epoch===session.epoch){session.busy=false;redraw();}}
           });
           body.append(form);
         }
-        const result=tab.receipt?read(ref(tab.receipt)):null;
-        const label=result&&typeof result.outcome==="string"?
-          result.outcome+": "+String(result.message||""):"";
-        status.textContent=!session.available?
-          (session.error||"Select an identity to access protected deployment information"):
-          session.error||(!observation?"Operation status unavailable":label);
+        if(marked && tab.updates.status){
+          status.setAttribute("data-mcel-updatable","text");
+          status.setAttribute("data-mcel-update-key","notebook:status");
+        }
+        status.textContent=operationStatus(tab,observation);
       }
       if(signIn)signIn.addEventListener("click",async()=>{
         if(signIn.disabled || session.busy || session.available || !applicable(n))return;
@@ -1321,25 +1919,31 @@
     async function refreshOperationNotebook(session){
       if(!session.available||!applicable(session.node))return;
       const epoch=session.epoch,tab=session.node.tabs.find(t=>t.id===session.active);
+      const stateId=ref(tab.state),before=read(stateId);
       const result=await execute(ref(tab.refresh));
-      if(epoch!==session.epoch)return;
-      if(result?.disposition!=="completed"){
-        state.delete(ref(tab.state));
-        session.error="Connection status unavailable: "+String(result?.reason||result?.disposition||"AUTH_REQUIRED");
-      }else session.error="";
+      // Tab switches and authorization changes supersede this read's UI
+      // status; the shared capability runtime arbitrates actual responses.
+      if(epoch!==session.epoch || session.active!==tab.id)return;
+      const after=read(stateId);
+      if(result?.disposition==="completed" || after!==before){
+        session.error="";session.readFailure=null;
+      }else if(result?.disposition!=="superseded"){
+        // A transient failed read is not a revocation. Keep the last
+        // verified observation in place, explicitly marked as historical,
+        // and disable its ordinary actions until the next successful observation.
+        // Explicitly always-enabled actions remain clickable.
+        // Explicit authorization changes still invalidate state above.
+        const reason=String(result?.reason||result?.disposition||"AUTH_REQUIRED");
+        session.error=before===undefined?
+          "Observation unavailable: "+reason:
+          "Observation refresh failed; showing last observed values (read-only): "+reason;
+        session.readFailure={stateId,observation:after,message:session.error};
+      }
       session.redraw();
     }
     const deselectionControls=new Set();
-    function markGeneratedColor(element,role,surface,context="form",consequence="unspecified") {
-      element.setAttribute("data-mcel-generated-color-role",role);
-      element.setAttribute("data-mcel-generated-color-surface",surface);
-      element.setAttribute("data-mcel-generated-color-context",context);
-      if(consequence!=="unspecified")element.setAttribute("data-mcel-generated-color-consequence",consequence);
-      return element;
-    }
     function renderNode(n) {
       const holder=elt("div",{"data-mcel-node":n.id,"data-node-kind":n.nodeKind});
-      if(n.color) holder.setAttribute("data-mcel-authored-color",n.color.role);
 
       if(n.visibleWhen)conditionedNodes.set(n,holder);
       if (n.nodeKind === "state-value") {
@@ -1358,18 +1962,42 @@
           typedRecordHosts.set(n,el);
         } else {if (!displays.has(id)) displays.set(id,[]); displays.get(id).push(el);}
       } else if (n.nodeKind === "operation-evidence") {
-        const ol=elt("ol",{"aria-label":"Operation receipts"});
-        if (expert) {
-          const details=elt("details",{"data-mcel-activity":""}),summary=elt("summary",{},"Activity · No operations yet");
+        const ol=elt("ol",{"aria-label":"Operation receipts","data-mcel-activity-history":""});
+        const filterBar=elt("div",{"data-mcel-activity-filters":"",role:"group",
+          "aria-label":"Show activity levels"});
+        const rules=Array.isArray(n.activityEntries) ? new Map() : null;
+        if(rules)for(const entry of n.activityEntries)for(const disposition of entry.dispositions)
+          rules.set(ref(entry.intent)+":"+disposition,entry);
+        const host={node:n,list:ol,levels:new Set(["info","warn","error"]),
+          rules,rows:new Map(),summary:null,latest:null};
+        for(const [level,label] of [["info","Info"],["warn","Warn"],["error","Error"]]){
+          const button=elt("button",{type:"button","data-mcel-activity-level-toggle":level,
+            "aria-pressed":"true"},label);
+          button.addEventListener("click",()=>{
+            if(host.levels.has(level))host.levels.delete(level);
+            else host.levels.add(level);
+            button.setAttribute("aria-pressed",String(host.levels.has(level)));
+            renderActivities();
+          });
+          filterBar.append(button);
+        }
+        if(expert){
+          const details=elt("details",{"data-mcel-activity":""}),
+            summary=elt("summary",{},"Activity · No operations yet");
+          host.summary=summary;
           const latest=c.generated && [...c.regions.values()].some(r=>r.purpose==="inspection")
             ? elt("section",{"data-mcel-latest-request":"","aria-label":"Latest operation"}) : null;
           if(latest){
             latest.append(elt("h3",{},"Latest request"),
               elt("p",{"data-mcel-request-result":"","role":"status"},"No request yet"));
-            holder.append(latest);
+            holder.append(latest);host.latest=latest;
           }
-          details.append(summary,ol);holder.append(details);receiptHosts.push({details,summary,list:ol,latest});
-        } else {holder.append(ol);receiptHosts.push(ol);}
+          details.append(summary,filterBar,ol);holder.append(details);
+        } else {
+          const activity=elt("section",{"data-mcel-activity":""});
+          activity.append(filterBar,ol);holder.append(activity);
+        }
+        receiptHosts.push(host);
       } else if (n.nodeKind === "record-notebook") {
         renderNotebook(n,holder);
       } else if (n.nodeKind === "operation-notebook") {
@@ -1379,7 +2007,12 @@
         // Structured multi-field monitoring collections are primary records,
         // not narrow navigation widgets. This presentation hint is derived
         // from IR purpose/tasks/fields, never from an application or region ID.
-        if(region?.purpose==="workspace" && region.tasks?.includes("monitor") &&
+        if(n.rowLayout){
+          list.setAttribute("data-mcel-structured-list","");
+          list.setAttribute("data-mcel-row-layout","identity-description-metadata");
+          list.setAttribute("role","listbox");
+          list.setAttribute("aria-label",region?.semanticTitle||"Selectable records");
+        }else if(region?.purpose==="workspace" && region.tasks?.includes("monitor") &&
            Array.isArray(n.fields) && n.fields.length>=4){
           list.setAttribute("data-mcel-structured-list","");
           list.style.setProperty("--mcel-list-columns",String(n.fields.length));
@@ -1397,8 +2030,8 @@
             holder.append(empty);
             const refresh=()=>{
               const value=read(ref(selection.collectionSelection.target));
-              clear.disabled=!value;
-              empty.hidden=!!value;
+              if(clear.disabled!==!value)clear.disabled=!value;
+              if(empty.hidden!==!!value)empty.hidden=!!value;
             };
             deselectionControls.add(refresh);
           }
@@ -1563,7 +2196,6 @@
             item.input.value=String(n.defaults[k]);
             item.input.defaultValue=String(n.defaults[k]);
           }
-          markGeneratedColor(item.input,"surface.control","control","form");
           form.append(item.wrap);controls[k]=item.input;
           const mappedState=ref(n.fieldState?.[k]);
           if(mappedState){
@@ -1596,7 +2228,6 @@
         }
         if (intent) {
           const button=elt("button",{type:"submit"},n.submitLabel || fmt(intent.sourceName || intent.id));
-          markGeneratedColor(button,n.color?.role||"action.generic","control","form","routine");
           form.append(button);guardedFormButtons.push({button,intent});
         } else {
           // An unbound form is a configuration draft, never an executable
@@ -1608,11 +2239,10 @@
         const operationStatus=(intent?.risk==="consequential")
           ? elt("p",{role:"status","data-mcel-form-result":n.id},"") : null;
         if(operationStatus)form.append(operationStatus);
-        if (intent && n.resetControl!==false && n.defaults && Object.keys(n.defaults).length) form.append(markGeneratedColor(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"),
-              "action.reset","control","form","routine"));
+        if (intent && n.resetControl!==false && n.defaults && Object.keys(n.defaults).length)
+          form.append(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
         if(n.clearIntent){
           const button=elt("button",{type:"button","data-mcel-clear-intent":ref(n.clearIntent)},"Clear expression and result");
-          markGeneratedColor(button,"action.clear","control","form","routine");
           button.addEventListener("click",()=>{
             for(const [key,input] of Object.entries(controls)){
               input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));
@@ -1625,8 +2255,6 @@
           const tools=elt("div",{"data-mcel-expression-editor":"","role":"group","aria-label":"Expression editor"});
           const append=(label,action,token="")=>{
             const btn=elt("button",{type:"button","data-editor-action":action,"data-editor-token":token},label);
-            markGeneratedColor(btn,action==="clear"||action==="backspace"?
-              "action.clear":"action.input","control","toolbar","routine");
             btn.addEventListener("click",()=>void execute(ref(n.editor.intent),{
               expression:controls.expression.value,action,token,
               selectionStart:controls.expression.selectionStart??controls.expression.value.length,
@@ -1665,12 +2293,6 @@
             ['0','0'],['.','.'],['%','%'],['+','+'],['=','submit']];
           for (const [label,action] of keys) {
             const key=elt("button",{type:"button","data-pad-action":action,"aria-label":action === "submit" ? "Evaluate expression" : action === "clear" ? "Clear expression" : action === "backspace" ? "Backspace" : "Insert " + label},label);
-            // The renderer already knows each key's operation, so this is
-            // a semantic contract, never a label-to-color translation.
-            markGeneratedColor(key,action==="submit"?"action.evaluate":
-              action==="clear"||action==="backspace"?"action.clear":
-              ["+","-","*","/"].includes(action)?"action.operator":"action.input",
-              "control","toolbar","routine");
             key.addEventListener("click",()=>{
               if (action === "submit") {form.requestSubmit();return;}
               const from=field.selectionStart ?? field.value.length, to=field.selectionEnd ?? from;
@@ -1715,14 +2337,24 @@
         if (intent.viewTransition && params.length===1 && Array.isArray(params[0].schema?.enum)) {
           const item=renderInput(params[0].sourceName,params[0].schema,fmt(ref(intent.viewTransition.target)));
           item.input.setAttribute("data-intent",intent.id);
-          markGeneratedColor(item.input,"navigation.item","navigation","navigation");
           item.input.addEventListener("change",()=>void execute(intent.id,{[params[0].sourceName]:item.input.value}));
-          holder.append(item.wrap);
+          // When the author declares a navigation landmark, its individual
+          // semantic destinations are the control. Keep the selector as a
+          // private event/state adapter instead of displaying duplicate UI.
+          const navigationSwitcher=expert && region?.purpose==="navigation" &&
+            params[0].schema.enum.length<=6;
+          if(navigationSwitcher){
+            // Keep the canonical source control mounted as a hidden state
+            // adapter. Color Law must bind the intent's operation status here,
+            // not to the first visible navigation destination.
+            item.input.setAttribute("data-mcel-navigation-state-adapter","");
+            item.wrap.hidden=true;
+            holder.append(item.wrap);
+          } else holder.append(item.wrap);
           if (expert && params[0].schema.enum.length <= 6) {
             const bar=elt("div",{"role":"group","aria-label":"Application "+fmt(ref(intent.viewTransition.target))+"s","data-mcel-mode-tabs":""});
             // Group semantics belong to the container; item semantics belong
             // to the individual switchers. Pointer interaction is not inherited.
-            markGeneratedColor(bar,"navigation.group","navigation","navigation");
             const buttons=[];
             for (const value of params[0].schema.enum) {
               // A host may supply canonical browser addresses for semantic
@@ -1731,9 +2363,13 @@
               const route=options.navigationRoutes?.[value];
               assert(!route || (typeof route==="string" && /^\/(?!\/)[A-Za-z0-9/_-]*$/.test(route)),
                 "invalid-canonical-navigation-route");
-              const tab=route ? elt("a",{href:route,role:"button","data-value":value,
-                "aria-pressed":"false"},fmt(value)) :
-                elt("button",{type:"button","data-value":value,"aria-pressed":"false"},fmt(value));
+              // Every generated destination executes this source intent. Keep
+              // the binding on the actual interactive element so the Color
+              // Law can resolve it even when the backing selector is hidden.
+              const tab=route ? elt("a",{href:route,role:"button","data-intent":intent.id,
+                "data-value":value,"aria-pressed":"false"},fmt(value)) :
+                elt("button",{type:"button","data-intent":intent.id,
+                  "data-value":value,"aria-pressed":"false"},fmt(value));
               tab.addEventListener("click",event=>{
                 if(route) {
                   // Native modified clicks, window-opening and copy-link remain
@@ -1747,7 +2383,6 @@
                 item.input.value=value;
                 item.input.dispatchEvent(new Event("change",{bubbles:true}));
               });
-              markGeneratedColor(tab,"navigation.item","navigation","navigation");
               buttons.push(tab);bar.append(tab);
             }
             holder.append(bar);tabSwitchers.push({stateId:ref(intent.viewTransition.target),select:item.input,buttons});
@@ -1849,16 +2484,18 @@
       session.label.textContent=session.activePath || "No document opened";
       session.close.disabled=!session.activePath || session.savePending;
       const aiderStatus=session.activePath && port.documentWriteStatus?.(session.activePath);
-      const pendingAider=aiderStatus==="aider-pending" || aiderStatus==="aider-outcome-unverified";
+      const jobPolicy=n.externalJob;
+      const pendingAider=!!jobPolicy &&
+        [jobPolicy.pendingStatus,jobPolicy.unverifiedStatus].includes(aiderStatus);
       const lostAuthority=aiderStatus==="reopen-required" && session.tabs.has(session.activePath);
       session.save.disabled=!session.editable || session.savePending || session.conflict || pendingAider || lostAuthority || !session.dirty || !session.activePath || selectedMismatch;
       session.discard.disabled=session.savePending || !session.dirty || !session.activePath || selectedMismatch;
       updateDocumentTabs(n,session);
       session.status.dataset.mcelDocumentDirty=String(session.dirty);
       if(pendingAider){
-        session.status.textContent=aiderStatus==="aider-outcome-unverified"
-          ? "Aider submission outcome unverified. Source writes are blocked for this session."
-          : "Aider job pending. Refresh Aider jobs before reopening source; saving is blocked.";
+        session.status.textContent=aiderStatus===jobPolicy.unverifiedStatus
+          ? (jobPolicy.unverifiedMessage||"Job outcome unverified; source writes blocked.")
+          : (jobPolicy.pendingMessage||"Job pending; source writes blocked.");
       }else if(session.conflict){
         session.status.textContent="Source changed outside this tab. Copy your draft before closing; saving is blocked.";
       }else if(lostAuthority){
@@ -1884,7 +2521,8 @@
         onChange:content=>{
           if(session.starting)return;
           if(session.activePath!==openingPath || session.conflict ||
-             ["aider-pending","aider-outcome-unverified"].includes(port.documentWriteStatus?.(openingPath)))return;
+             (jobPolicy && [jobPolicy.pendingStatus,jobPolicy.unverifiedStatus]
+               .includes(port.documentWriteStatus?.(openingPath))))return;
           state.set(ref(n.draft),content);session.dirty=content!==session.loadedValue;
           const tab=session.tabs.get(openingPath);
           if(tab){tab.draft=content;tab.dirty=session.dirty;}
@@ -2268,7 +2906,9 @@
     function updateGeneratedCollection(n,holder,list) {
       if(!Array.isArray(list)) {
         keyedCollectionRows.delete(holder);
-        holder.replaceChildren(elt("p",{"role":"status"},"No observation loaded. Use the query above to retrieve records."));
+        const message="No observation loaded. Use the query above to retrieve records.";
+        if(holder.textContent!==message || holder.querySelector('[data-record-key]'))
+          holder.replaceChildren(elt("p",{"role":"status"},message));
         return;
       }
       const selection=n.selectionIntent && c.intents.get(ref(n.selectionIntent));
@@ -2286,23 +2926,54 @@
         const key=String(record[n.key]);
         let row=existing.get(key);
         if(!row) {
-          row=elt("div",{"data-record-key":key,"data-mcel-record-row":""});
+          const rowSelection=!!n.rowLayout?.selectOnRow && !!selection?.collectionSelection;
+          row=elt("div",{"data-record-key":key,"data-mcel-record-row":"",
+            ...(rowSelection?{role:"option",tabindex:"0","data-mcel-row-selectable":"",
+              "data-select-key":key}:{})});
           const navList=!!holder.closest('[data-mcel-purpose="navigation"]');
-          for(const field of n.fields || [])if(!(navList && field===n.fields[0]))
-            row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)}));
+          if(n.rowLayout){
+            const identity=elt("div",{"data-mcel-row-identity":""});
+            const description=elt("div",{"data-mcel-row-description":""});
+            const metadata=elt("div",{"data-mcel-row-metadata":""});
+            for(const field of n.fields||[]){
+              const role=n.rowLayout.identity.includes(field)?"identity":
+                field===n.rowLayout.description?"description":"metadata";
+              const cell=elt("span",{"data-record-field":field,"data-field-label":fmt(field),
+                "data-mcel-field-role":role});
+              ({identity,description,metadata})[role].append(cell);
+            }
+            row.append(identity,description,metadata);
+          }else{
+            for(const field of n.fields || [])if(!(navList && field===n.fields[0]))
+              row.append(elt("span",{"data-record-field":field,"data-field-label":fmt(field)}));
+          }
           if(selection?.collectionSelection){
             const parameter=selection.input.find(p=>p.id===ref(selection.collectionSelection.input));
-            const choose=elt("button",{type:"button","data-select-key":key},"Select");
-            choose.addEventListener("click",()=>void execute(selection.id,{[parameter.sourceName]:key}));
-            row.append(choose);
+            if(rowSelection){
+              const selectRow=()=>void execute(selection.id,{[parameter.sourceName]:key});
+              row.addEventListener("click",event=>{
+                if(event.target.closest("button,a,input,select,textarea,summary,details"))return;
+                selectRow();
+              });
+              row.addEventListener("keydown",event=>{
+                if(event.target!==row || (event.key!=="Enter" && event.key!==" "))return;
+                event.preventDefault();selectRow();
+              });
+            }else{
+              const choose=elt("button",{type:"button","data-select-key":key},"Select");
+              choose.addEventListener("click",()=>void execute(selection.id,{[parameter.sourceName]:key}));
+              row.append(choose);
+            }
           }
-          const expand=elt("details",{"data-mcel-inline-details":key});
-          expand.append(elt("summary",{},"More details"),elt("dl",{"data-mcel-detail-fields":""}));
-          row.append(expand);
+          if(!n.rowLayout){
+            const expand=elt("details",{"data-mcel-inline-details":key});
+            expand.append(elt("summary",{},"More details"),elt("dl",{"data-mcel-detail-fields":""}));
+            row.append(expand);
+          }
         }
         for(const field of n.fields || []) {
           const el=[...row.querySelectorAll("[data-record-field]")].find(e=>e.getAttribute("data-record-field")===field);
-          if(el)el.textContent=plainValue(record[field]);
+          if(el){const value=plainValue(record[field]);if(el.textContent!==value)el.textContent=value;}
         }
         if(n.roleFrom){
           const source=read(ref(n.roleFrom.state));
@@ -2310,21 +2981,31 @@
           const verified=matched?.[n.roleFrom.roleField]==="admin";
           let badge=row.querySelector("[data-mcel-verified-role]");
           if(!badge){badge=elt("span",{"data-mcel-verified-role":""});row.append(badge);}
-          badge.textContent=verified?"Administrator":"Role not verified";
-          badge.setAttribute("data-role-verified",String(verified));
+          const roleText=verified?"Administrator":"Role not verified";
+          if(badge.textContent!==roleText)badge.textContent=roleText;
+          if(badge.getAttribute("data-role-verified")!==String(verified))
+            badge.setAttribute("data-role-verified",String(verified));
         }
         const expanded=row.querySelector("[data-mcel-inline-details]");
-        const more=Object.entries(record).filter(([key])=>key!==n.key && !(n.fields||[]).includes(key));
-        expanded.hidden=!more.length;
-        const detail=expanded.querySelector("[data-mcel-detail-fields]");
-        if(expanded.open || !detail.childElementCount){
-          detail.replaceChildren(...more.flatMap(([key,val])=>[elt("dt",{},fmt(key)),elt("dd",{},plainValue(val))]));
+        if(expanded){
+          const more=Object.entries(record).filter(([key])=>key!==n.key && !(n.fields||[]).includes(key));
+          expanded.hidden=!more.length;
+          const detail=expanded.querySelector("[data-mcel-detail-fields]");
+          const detailsSignature=JSON.stringify(more);
+          if((expanded.open || !detail.childElementCount) &&
+              detail.__mcelDetailsSignature!==detailsSignature){
+            detail.replaceChildren(...more.flatMap(([key,val])=>[elt("dt",{},fmt(key)),elt("dd",{},plainValue(val))]));
+            detail.__mcelDetailsSignature=detailsSignature;
+          }
         }
         const inNavigation=!!holder.closest('[data-mcel-purpose="navigation"]');
         const chooseButton=row.querySelector("button[data-select-key]");
-        if(chooseButton && inNavigation)chooseButton.textContent=
-          plainValue(record[n.fields?.[0]] ?? key);
-        row.setAttribute("aria-selected",String(selectionValue!==undefined && selectionValue!=="" && key===String(selectionValue)));
+        if(chooseButton && inNavigation){
+          const label=plainValue(record[n.fields?.[0]] ?? key);
+          if(chooseButton.textContent!==label)chooseButton.textContent=label;
+        }
+        const selected=String(selectionValue!==undefined && selectionValue!=="" && key===String(selectionValue));
+        if(row.getAttribute("aria-selected")!==selected)row.setAttribute("aria-selected",selected);
         next.set(key,row);ordered.push(row);
       }
       // Insert only moved or newly observed nodes. Unchanged nodes never leave
@@ -2333,7 +3014,9 @@
         holder.insertBefore(ordered[i],holder.children[i]||null);
       for(const [key,row] of existing)if(!next.has(key))row.remove();
       if(!ordered.length) {
-        holder.replaceChildren(elt("p",{"role":"status"},"No records match the current observation."));
+        const message="No records match the current observation.";
+        if(holder.textContent!==message || holder.querySelector('[data-record-key]'))
+          holder.replaceChildren(elt("p",{"role":"status"},message));
       }else{
         for(const child of [...holder.children])if(!child.hasAttribute("data-record-key"))child.remove();
       }
@@ -2347,7 +3030,7 @@
     }
     function updateCollection(n,holder) {
       const list=read(ref(n.state));
-      if(c.generated){updateGeneratedCollection(n,holder,list);return;}
+      if(c.generated || n.rowLayout){updateGeneratedCollection(n,holder,list);return;}
       holder.replaceChildren();
       if (!Array.isArray(list)) {
         if(folderTrees.has(n))directoryNavigationHost(n)
@@ -2691,14 +3374,18 @@
       chatControllers.push(controller);
     }
     root.setAttribute("data-mcel-semantic-operational",ir.application.appId);
-    // One canonical source→role→Theme binding for all authored records.
-    // Legacy source records remain unmigrated and receive NO new paint.
-    if(colorPlan?.authored) {
-      colorPresentation=global.McelSemanticColorPresentation.mount({root,ir,
-        law:global.McelLabStyleLaw,theme:options.colorTheme||"default",
-        palette:options.colorPalette||null,
-        operationForIntent:id=>colorOperations.has(id)?"pending":colorOutcomes.get(id)||"idle"});
-      if(colorPresentation.status!=="applied")fail("semantic-color-"+colorPresentation.status);
+    // Semantic Color Law: the same canonical source→meaning→Theme binding
+    // is applied to every operational mount, regardless of application ID.
+    if(colorReady && colorPlan?.declarations?.length) {
+      const colorInput = {root,ir,law:global.McelLabStyleLaw,
+        theme:activeSelection?.profiles.theme || options.colorTheme || "default",palette:options.colorPalette||null,
+        operationForIntent:id=>colorOperations.has(id)?"pending":colorOutcomes.get(id)||"idle",
+        inference:true,composition:options.composition||null};
+      colorPresentation = usingController
+        ? colorLaw.mountOperationalColor(colorInput) : colorLaw.mount(colorInput);
+      if(colorPresentation?.status!=="applied")
+        global.__mcelPresentationDiagnostic = {status:"refused",property:"theme",
+          reason:"semantic-color-"+(colorPresentation?.status||"unavailable")};
     }
     if (expert) root.setAttribute("data-mcel-presentation","expert");
     notify();
@@ -2762,18 +3449,39 @@
         global.addEventListener("resize",generatedResizeListener);
       }
     }
+    // The presentation controller is part of the operational MCEL runtime.
+    // Apply only after semantic DOM and layout have mounted. A presentation
+    // refusal is diagnostic, never an operational application exception.
+    if (activeSelection && usingController) {
+      try {
+        global.__mcelPresentationReport = controller.applyOperationalPresentation({
+          root, ir, composition:options.composition||null,
+          appId: activeSelection.appId, profiles: activeSelection.profiles
+        });
+      } catch (error) {
+        global.__mcelPresentationReport = {status:"refused", reason:String(error)};
+      }
+    }
     installMonitorRefresh();
     // The incumbent automatically discovers and lists its preferred root.
     // Equivalent read-only startup is safe only with one unambiguous,
     // source-declared navigation chain; all requests pass the same port gates.
     if(navigationRoots.length===1)void execute(navigationRoots[0].loader.id);
-    return Object.freeze({execute,setNotebookAuthorization:changeNotebookAuthorization,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
+    return Object.freeze({execute,setNotebookAuthorization:changeNotebookAuthorization,activateNotebooks,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
-      colorPresentation:()=>colorPresentation?.report?.() ||
+      colorPresentation:()=> (usingController
+        ? colorLaw.operationalColorReport(root) : colorPresentation?.report?.()) ||
         {schema:"mcel.semantic-color-presentation.v1",status:"legacy-unmigrated",authored:0},
-      setColorTheme:(theme,palette)=>colorPresentation?.setTheme?.(theme,palette) ||
-        {status:"legacy-unmigrated"},
-      unmount:()=>{disposed=true;colorPresentation?.unmount();if(refreshTimer!==null)global.clearInterval?.(refreshTimer);
+      setColorTheme:(theme,palette)=> (usingController
+        ? colorLaw.setOperationalColorTheme(root,theme,palette)
+        : colorPresentation?.setTheme?.(theme,palette)) || {status:"legacy-unmigrated"},
+      unmount:()=>{disposed=true;
+        for(const session of operationNotebooks.values())session.semanticUpdater?.dispose();
+        if(usingController)
+          colorLaw.releaseOperationalColor(root);
+        else colorPresentation?.unmount();
+        global.McelUnifiedPresentationController?.release(root);
+        if(refreshTimer!==null)global.clearInterval?.(refreshTimer);
         if(initialRefreshTimer!==null)global.clearTimeout?.(initialRefreshTimer);
         plannedLayout?.unmount();
         generatedResizeObserver?.disconnect();

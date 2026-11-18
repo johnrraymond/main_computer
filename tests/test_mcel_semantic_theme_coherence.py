@@ -45,7 +45,7 @@ def test_browser_semantic_theme_uses_one_coherent_palette_without_layout_changes
                              + fixture + '</body></html>')
             page.add_style_tag(path=str(WEB / "styles/mcel-lab.css"))
             for script in ("mcel-contract.js", "mcel-law-registry.js", "mcel-style-law.js",
-                           "mcel-semantic-presentation-bridge.js", "mcel-semantic-theme-preview.js"):
+                           "mcel-semantic-presentation-bridge.js", "mcel-semantic-theme-preview.js", "mcel-unified-presentation-controller.js"):
                 page.add_script_tag(path=str(WEB / "scripts" / script))
             page.add_script_tag(content='''var mcelLabState={semanticThemePreviewEnabled:false};
                 var mcelThemeSelect=document.getElementById('mcel-theme-select');
@@ -143,7 +143,7 @@ def test_promoted_runtime_real_panels_resolve_background_and_text_as_a_pair():
             assert page.locator('#mcel-expanded-diagnostic').inner_text() == 'Semantic Calculator ready'
             page.add_style_tag(path=str(WEB / "styles/mcel-lab.css"))
             for script in ("mcel-contract.js", "mcel-law-registry.js", "mcel-style-law.js",
-                           "mcel-semantic-presentation-bridge.js", "mcel-semantic-theme-preview.js"):
+                           "mcel-semantic-presentation-bridge.js", "mcel-semantic-theme-preview.js", "mcel-unified-presentation-controller.js"):
                 page.add_script_tag(path=str(WEB / "scripts" / script))
             record = page.evaluate("""() => {
                 const doc=document,root=doc.getElementById('mcel-expanded-root');

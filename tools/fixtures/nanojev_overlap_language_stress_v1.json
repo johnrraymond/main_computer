@@ -1,0 +1,21 @@
+{
+  "schema": "nanojev.sealed-overlap.language-stress-fixture.v1",
+  "scope": "Fresh authored grammar of a single conditional-transfer predicate; OOV, nested-condition, and explicit-anaphora challenges deliberately exceed the six-class-field decoder. Sentences remain fixture-delimited; not unrestricted parsing.",
+  "selection_templates": [
+    "{actor} {modal} hand over the {asset} to {recipient} when {condition}; the stated outcome is that {consequence}",
+    "To {recipient}, a possible delivery of the {asset} by {actor} is considered upon {condition}; this term {duty} and specifies that {consequence}"
+  ],
+  "final_templates": [
+    "A transfer of the {asset} from {actor} to {recipient} is contemplated if {condition}; the term {duty}, and its designated result is that {consequence}",
+    "With {recipient} as beneficiary and {actor} as supplier, delivery of the {asset} is considered after {condition}; the provision {duty}, and its consequence is that {consequence}",
+    "If {condition}, a transfer of the {asset} to {recipient} by {actor} is contemplated; the agreement {duty} and provides that {consequence}",
+    "For the {asset}, {recipient} would receive delivery from {actor} after {condition}; this clause {duty}, and declares that {consequence}"
+  ],
+  "positive": {"modal": "is obligated to", "duty": "imposes a duty of delivery"},
+  "negative": {"modal": "has no obligation to", "duty": "does not impose a duty of delivery"},
+  "new_actors": ["Nessa", "Ivo", "Quilla"],
+  "new_recipients": ["Vero", "Jalen", "Oris"],
+  "nested_condition_connector": "the conjunction of {first} and {second} has been satisfied",
+  "anaphor": "the same supplier",
+  "document_delimiter": " || "
+}

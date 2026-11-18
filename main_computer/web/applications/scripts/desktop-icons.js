@@ -132,6 +132,11 @@
         <path d="M16 12h4" />
         <circle cx="15.5" cy="12" r=".75" fill="currentColor" stroke="none" />
       `,
+      slh: `
+        <rect x="4.5" y="4" width="15" height="16" rx="2.4" />
+        <path d="M8 8h8M8 12h8M8 16h4" />
+        <circle cx="16" cy="16" r="1.1" fill="currentColor" stroke="none" />
+      `,
     };
 
     function desktopIconSvg(app) {

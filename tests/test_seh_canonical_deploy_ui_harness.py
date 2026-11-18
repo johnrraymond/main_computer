@@ -10,6 +10,7 @@ from copy import deepcopy
 
 import pytest
 
+import seh_mutate_harness as harness
 from seh_mutate_harness import _parser, run, HarnessError
 from tools.seh_control import git_deployment as g, deployment_state as ds, identity as st
 from main_computer.slh.organization_state import read_config,save_config
@@ -54,10 +55,18 @@ def test_verified_undeploy_plan_and_explicit_deploy_use_exact_existing_harness(t
     with pytest.raises(HarnessError,match='no target or signing overrides'):
         run(opts(root,slh,'--host','coolify-c'))
     assert remote.created is None
+    # Creation is followed by receipt-bound readiness and signed activation.
+    # Existing lower-level recovery tests cover the real queued build state.
+    monkeypatch.setattr(harness, '_wait_for_verified_build', lambda *a, **k:
+                        {'status':'REPLACEMENT_BUILD_VERIFIED','application_uuid':NEW})
+    monkeypatch.setattr(harness, '_wait_for_runtime', lambda *a, **k: None)
+    monkeypatch.setattr(harness, '_activate_via_resident_slh', lambda a, **k:
+                        {'status':'CONNECTED_VERIFIED','outbound_tunnel_authenticated':True}
+                        if a.execute_mutations else {'status':'PLAN_ONLY'})
     deployed=run(opts(root,slh,'--execute-mutations','--yes-i-know-this-mutates-seh'))
-    assert deployed['status']=='REPLACEMENT_QUEUED_NOT_VERIFIED'
+    assert deployed['status']=='CONNECTED_VERIFIED'
     assert deployed['application_uuid']==NEW
-    assert deployed['outbound_tunnel_authenticated'] is False
+    assert deployed['outbound_tunnel_authenticated'] is True
     assert st.read(root,'mainnet')[1].binding.generation==before
     operational=g._canonical_selection(root,'mainnet')[0]['deployment']
     assert operational['application_uuid']==NEW
@@ -66,17 +75,28 @@ def test_verified_undeploy_plan_and_explicit_deploy_use_exact_existing_harness(t
     assert g._undeploy_receipt(root,'mainnet',NEW) is None
 
 
-def test_unverified_or_absent_prior_undeploy_cannot_create(tmp_path,monkeypatch):
+def test_existing_registration_can_resume_but_deleted_record_needs_receipt(tmp_path,monkeypatch):
     root,slh,remote=setup(tmp_path)
     monkeypatch.setattr(g,'_client',lambda controller:remote)
     monkeypatch.setattr(g,'git_source',lambda *args,**kw:PUBLISHED)
-    with pytest.raises(HarnessError,match='verified intentional undeploy'):
-        run(opts(root,slh))
+    # A live registered SEH is not an undeployed application and must not
+    # require a removal receipt or create a second Coolify application.
+    resumed=run(opts(root,slh))
+    assert resumed['status']=='PLAN_ONLY'
+    assert resumed['action']=='RESUME_OR_VERIFY_CANONICAL_DEPLOYMENT'
     assert remote.created is None
+
     root,slh,remote=removed(tmp_path/'new')
+    from tools.seh_control.git_deployment import _UNDEPLOY_RECEIPT
+    (ds.directory(root,'mainnet') / (_UNDEPLOY_RECEIPT + APP + '.json')).unlink()
+    with pytest.raises(HarnessError,match='Verified intentional undeploy receipt'):
+        run(opts(root,slh,'--execute-mutations','--yes-i-know-this-mutates-seh'))
+    assert remote.created is None
+    # A receipt does not permit CREATE while the old outbound connection is enabled.
+    root,slh,remote=removed(tmp_path/'enabled')
     cfg=read_config(slh)
     save_config(slh,{**cfg,'seh_enabled':True})
-    with pytest.raises(HarnessError,match='Disconnect outbound SEH'):
+    with pytest.raises(HarnessError,match='Local outbound connection must be disabled'):
         run(opts(root,slh))
     assert remote.created is None
 
@@ -84,7 +104,8 @@ def test_unverified_or_absent_prior_undeploy_cannot_create(tmp_path,monkeypatch)
 def test_management_inspect_reports_operational_application_not_historical_uuid(tmp_path):
     from main_computer.slh.seh_deployment_management import SLHSEHDeploymentManager
     root, slh, remote = removed(tmp_path)
-    manager = SLHSEHDeploymentManager(root=root, state_dir=slh)
+    manager = SLHSEHDeploymentManager(root=root, state_dir=slh,
+        runtime_probe=lambda _: {'status':'UNVERIFIED'})
     old = manager.inspect({})
     assert old['deployment_phase'] == 'UNDEPLOYED'
     assert old['deployment']['deployment']['application_uuid'] == APP

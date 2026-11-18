@@ -18,21 +18,21 @@ from pathlib import Path
 args = sys.argv[1:]
 report = Path(args[args.index('--report')+1])
 mutation = '--execute-mutations' in args
-if not mutation:
-    print('SEH_PROGRESS: preflight started', flush=True)
-    print('stderr: preflight details', file=sys.stderr, flush=True)
-    time.sleep(.12)
-    if %r:
-        result = {'status':'REFUSED','reason':'intentionally unready','remote_mutation':False}
-    else:
-        result = {'status':'PLAN_ONLY','remote_mutation':False,'ready_for_undeploy':True}
+print('SEH_PROGRESS: preflight started', flush=True)
+print('stderr: preflight details', file=sys.stderr, flush=True)
+time.sleep(.12)
+if %r:
+    result = {'status':'REFUSED','error_code':'SEH_DEPLOYMENT_PREFLIGHT_REFUSED',
+              'remote_mutation':False}
 else:
+    assert mutation
     print('SEH_PROGRESS: live mutation started', flush=True)
     print('stderr: actual harness diagnostic', file=sys.stderr, flush=True)
     print(%r, file=sys.stderr, flush=True)
     print('Authorization: Bearer top-secret-token', file=sys.stderr, flush=True)
     time.sleep(.20)
-    result = {'status':'REPLACEMENT_QUEUED_NOT_VERIFIED','application_uuid':'new-uuid'}
+    result = {'status':'REPLACEMENT_QUEUED_NOT_VERIFIED','application_uuid':'new-uuid',
+              'remote_mutation':True}
 report.write_text(json.dumps(result), encoding='utf-8')
 sys.exit(2 if result['status']=='REFUSED' else 3 if mutation else 0)
 ''' % (preflight_refuses, 'value: ' + TOKEN), encoding='utf-8')
@@ -49,7 +49,7 @@ def _wait(manager, operation_id, timeout=6):
     raise AssertionError('Timed out waiting for captured CLI receipt')
 
 
-def test_actual_stdout_stderr_from_both_harness_stages_are_durable_and_redacted(tmp_path):
+def test_single_harness_lifecycle_streams_are_durable_and_redacted(tmp_path):
     manager = SLHSEHDeploymentManager(root=root_state(tmp_path), state_dir=tmp_path/'slh')
     manager._harness_script=lambda:_fake_cli(tmp_path)
     operation_id='mcel-seh-captured-stdout-stderr-0001'
@@ -67,8 +67,8 @@ def test_actual_stdout_stderr_from_both_harness_stages_are_durable_and_redacted(
         time.sleep(.02)
     assert any(x['state']=='BUSY' and x['operation'].get('output') for x in snapshots)
     completed=_wait(manager, operation_id)
-    assert completed['result']['status']=='DEPLOYMENT_QUEUED_ACTIVATION_PENDING'
-    assert completed['result']['activation_reason']=='CANONICAL_APPLICATION_READBACK_UNVERIFIED'
+    assert completed['result']['status']=='REPLACEMENT_QUEUED_NOT_VERIFIED'
+    assert completed['result']['remote_mutation'] is True
     assert completed['stage']=='HARNESS_RETURNED'
     assert any(entry['stream']=='stdout' and 'preflight started' in entry['text'] for entry in completed['output'])
     assert any(entry['stream']=='stdout' and 'live mutation started' in entry['text'] for entry in completed['output'])
@@ -131,9 +131,9 @@ def test_python_import_failure_reaches_stderr_without_coolify_mutation(tmp_path)
     assert manager.harness({'action':'deploy-seh','execute':True,
               'expected_generation':1,'confirm':'DEPLOY_SEH','operation_id':operation_id})['status']=='ACCEPTED'
     receipt=_wait(manager,operation_id)
-    assert receipt['result']['status']=='REFUSED'
-    assert receipt['result']['error_code']=='SEH_DEPLOYMENT_PREFLIGHT_UNAVAILABLE'
-    assert receipt['result']['remote_mutation'] is False
+    assert receipt['result']['status']=='INCOMPLETE'
+    assert receipt['result']['error_code']=='HARNESS_EXECUTION_UNCONFIRMED'
+    assert receipt['result']['remote_mutation']=='UNKNOWN'
     assert any(entry['stream']=='stderr' and 'ModuleNotFoundError' in entry['text']
                for entry in receipt['output'])
 

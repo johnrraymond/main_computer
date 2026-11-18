@@ -21,7 +21,7 @@ def _open(browser, width):
         removeItem:k=>values.delete(k),clear:()=>values.clear()}});}}''')
     page.set_content(render_expanded_page(ROOT, promoted=True))
     assert page.locator('#mcel-expanded-diagnostic').inner_text() == 'Semantic Calculator ready'
-    for stylesheet in ('mcel-semantic-expert.css', 'mcel-lab.css'):
+    for stylesheet in ('mcel-lab.css',):
         page.add_style_tag(path=str(WEB / 'styles' / stylesheet))
     for js in ('mcel-semantic-presentation-bridge.js',
                'mcel-semantic-theme-preview.js',
@@ -92,7 +92,8 @@ def test_black_glass_and_clean_materials_follow_shared_theme_across_eight_palett
             assert report['rails']==2 and report['noExtraChrome'] and report['oldButton'],(theme,report)
             assert 'radial-gradient' in report['mainImage'],(theme,report)
             assert 'linear-gradient' in report['mainImage'],(theme,report)
-            assert '5px 5px' in report['pixelSize'],(theme,report)
+            assert '8px 8px' in report['pixelSize'],(theme,report)
+            assert report['mainImage'].count('data:image/svg+xml,') == 1,(theme,report)
             assert report['glass'] in report['palette'].values(),(theme,report)
             assert report['railBG'] and report['purpleBG'] and report['highlightMask']!='none',(theme,report)
             assert report['purpleRadius']=='0px' and 'drop-shadow' in report['railShadow'],(theme,report)
@@ -116,7 +117,7 @@ def test_material_fully_clears_and_does_not_modify_application_controls():
             # The Lab's semantic theme projection remains after removing Chrome.
             # Only Chrome-owned paint must disappear.
             assert report['restored']['rootImage']==report['before']['rootImage'],(width,report)
-            assert '5px 5px' not in report['restored']['mainImage'],(width,report)
+            assert 'data:image/svg+xml,' not in report['restored']['mainImage'],(width,report)
             if width==390:
                 assert report['width']==0,(width,report)
             page.close()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from main_computer.mcel_applications_registry import attach_inert_presentation, CONTROLLER_JS
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_knowledge.workspace_plan import plan_workspace, verify_workspace_plan
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
@@ -78,6 +79,25 @@ def compile_semantic_app(name: str, repo: Path = ROOT) -> dict:
             raise CandidateHostError("Capability operation missing or mismatched")
     if len(effects) != sum(i.get("operationKind") == "capability" for i in intents.values()):
         raise CandidateHostError("Undeclared effects detected")
+    if name == "code-editor":
+        # The Code Editor host owns its external-job policy. MCEL only
+        # interprets the generic document-editor contract; it never matches
+        # operation identifiers or backend-specific job states itself.
+        editor = next((node for node in ir["surfaces"][0]["nodes"]
+                       if node.get("nodeKind") == "document-editor"), None)
+        if editor is None:
+            raise CandidateHostError("Code Editor document surface missing")
+        editor["externalJob"] = {
+            "launchIntent": {"ref": "intent:run-aider"},
+            "statusIntent": {"ref": "intent:aider-jobs"},
+            "pathArgument": "path", "filesArgument": "files",
+            "pendingStatus": "aider-pending",
+            "unverifiedStatus": "aider-outcome-unverified",
+            "acceptedPrefix": "Aider job accepted (not completed): ",
+            "acceptedMessage": "Aider accepted; job still running. Refresh Aider jobs before reopening source.",
+            "pendingMessage": "Aider job pending. Refresh Aider jobs before reopening source; saving is blocked.",
+            "unverifiedMessage": "Aider submission outcome unverified. Source writes are blocked for this session.",
+        }
     return ir
 
 
@@ -103,14 +123,24 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
     title = {"file-manager":"File Manager", "task-manager":"Task Manager", "code-editor":"Code Editor"}[name]
     # Only the old canonical Task Manager notebook has deep-link tabs.
     # Translate a bookmarked tab to its semantic renderer-local view state.
-    if initial_view not in (None, "server-processes", "all-processes", "connections", "cpu-gpu") or (name != "task-manager" and initial_view is not None):
+    if initial_view not in (None, "server-processes", "all-processes", "connections", "cpu-gpu", "operations") or (name != "task-manager" and initial_view is not None):
         raise CandidateHostError("Invalid canonical initial view")
     initial_view_payload = json.dumps(initial_view)
+    navigation_routes_payload = json.dumps({
+        "server-processes": "/applications/task-manager/server-processes",
+        "all-processes": "/applications/task-manager/all-processes",
+        "connections": "/applications/task-manager/connections",
+        "cpu-gpu": "/applications/task-manager/hardware",
+        "operations": "/applications/task-manager/operations",
+    } if name == "task-manager" and promoted else None)
     ready_label = "Semantic application ready" if promoted else "Semantic candidate ready"
     context_label = "MCEL application" if promoted else "Candidate · Original application unchanged"
     assets = (*DIAGNOSTIC_ASSETS, *((WORKSPACE_LAYOUT_ASSET,) if workspace_enabled else ()), *ASSETS, *(("main_computer/web/applications/scripts/mcel-scm.js", "main_computer/web/applications/scripts/code-editor-scm-manifest.js", "main_computer/web/applications/scripts/mcel-sandboxed-viewport.js") if name == "code-editor" else ()))
+    assets = list(assets)
+    if promoted and (repo / CONTROLLER_JS).is_file():
+        assets.insert(assets.index("main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js"), str(CONTROLLER_JS))
     scripts = "\n".join(script(x) for x in assets)
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic {title}</title><style>{style}</style></head><body class="mcel-workbench-page">
 <div id="mcel-workbench" aria-label="Generated semantic {title}"></div>
 <div id="mcel-workbench-status" role="status" aria-live="polite"></div>
@@ -123,10 +153,13 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
  const port=McelSemanticReadPorts.create({{appId:ir.application.appId}});
  const workspacePlan=document.getElementById("mcel-workbench-plan") ? JSON.parse(document.getElementById("mcel-workbench-plan").textContent) : undefined;
  const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined,
-    navigationContextLabel:"{context_label}"}});
+    navigationContextLabel:"{context_label}",navigationRoutes:{navigation_routes_payload}}});
  window.__mcelWorkbench=Object.freeze({{app,appId:ir.application.appId}});
  const initialView={initial_view_payload};
  if(initialView && initialView!=="server-processes") app.execute("intent:switch-view",{{choice:initialView}}).catch(e=>{{status.dataset.error="true";status.textContent="Initial view refused: "+String(e?.message||e);}});
  status.textContent={json.dumps(ready_label)};
  }}catch(e){{status.dataset.error="true";status.textContent="Semantic candidate refused: "+String(e?.message||e);}}
  }})();</script></body></html>'''
+
+    # Registry is queried on the promoted page, after the accepted app mount.
+    return attach_inert_presentation(page, repo, "file-explorer" if name == "file-manager" else name, "mcel-workbench", promoted=promoted)

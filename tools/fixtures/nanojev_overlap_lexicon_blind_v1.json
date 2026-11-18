@@ -1,0 +1,125 @@
+{
+  "schema": "nanojev.sealed-overlap.lexicon-blind-fixture.v1",
+  "scope": "Frozen extractor under independently authored grammatical forms, adversarial negation, role ambiguity and unfamiliar entity literals; no model fitting or rule changes based on this holdout",
+  "document_delimiter": " || ",
+  "fresh_names": [
+    "Zelora",
+    "Pirel",
+    "Wexton",
+    "Calira",
+    "Nerith",
+    "Avren",
+    "Qenora",
+    "Velric"
+  ],
+  "challenges": [
+    {
+      "kind": "known_affirm",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The actor is {actor} and the recipient is {recipient}; once {condition}, a duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "known_deny",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "The recipient is {recipient}; the actor is {actor}; after {condition}, no duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "scoped_not",
+      "policy": "supported",
+      "truth": "positive_scope_not",
+      "template": "If (not {condition}), the actor is {actor} and the recipient is {recipient}; the {asset} is transferred because a duty exists; the consequence is {consequence}"
+    },
+    {
+      "kind": "unfamiliar_both_names",
+      "policy": "supported",
+      "truth": "positive_novel",
+      "template": "The actor is {novel_actor} and the recipient is {novel_recipient}; once {condition}, a duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "reordered_known",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The consequence is {consequence}; the recipient is {recipient}; the asset is {asset}; the actor is {actor}; after {condition}, a duty exists"
+    },
+    {
+      "kind": "unseen_shall",
+      "policy": "abstain",
+      "truth": "positive",
+      "template": "Once {condition}, {actor} shall convey the {asset} to {recipient}; the consequence is {consequence}"
+    },
+    {
+      "kind": "unseen_need_not",
+      "policy": "abstain",
+      "truth": "negative",
+      "template": "After {condition}, {actor} need not provide {recipient} with the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "unseen_exempt",
+      "policy": "abstain",
+      "truth": "negative",
+      "template": "After {condition}, {actor} is exempt from delivering the {asset} to {recipient}; the consequence is {consequence}"
+    },
+    {
+      "kind": "double_negation",
+      "policy": "abstain",
+      "truth": "positive",
+      "template": "The actor is {actor} and the recipient is {recipient}; after {condition}, it is false that no duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "quoted_distractor",
+      "policy": "abstain",
+      "truth": "positive",
+      "template": "The phrase 'no duty exists' was quoted in a rejected draft; the actor is {actor} and the recipient is {recipient}; after {condition}, a duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "quoted_only",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "A discarded quotation says 'a duty exists' for {actor} to deliver {asset} to {recipient} after {condition}; {consequence} is mentioned in the quotation but no operative term is agreed"
+    },
+    {
+      "kind": "unless_scope",
+      "policy": "abstain",
+      "truth": "positive_scope_not",
+      "template": "Unless {condition}, the actor is {actor} and the recipient is {recipient}; a duty exists to deliver the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "conflicting_duty",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor} and the recipient is {recipient}; when {condition}, a duty exists and no duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "ambiguous_actor",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor} but the actor is also {other_actor}; the recipient is {recipient}; when {condition}, a duty exists to transfer the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "ambiguous_condition",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor} and the recipient is {recipient}; if {condition} or possibly {other_condition}, a duty exists to deliver the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "unresolved_pronoun",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "They are required to deliver the {asset} to {recipient} after {condition}; the consequence is {consequence}; the actor is not identified"
+    },
+    {
+      "kind": "denied_assertion",
+      "policy": "abstain",
+      "truth": "negative",
+      "template": "The actor is {actor} and the recipient is {recipient}; after {condition}, the provision rejects the assertion that a duty exists to send the {asset}; the consequence is {consequence}"
+    },
+    {
+      "kind": "reported_draft_only",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor} and the recipient is {recipient}; after {condition}, a draft reports that a duty exists to send the {asset}; the consequence is {consequence}; this draft is not the operative agreement"
+    }
+  ]
+}

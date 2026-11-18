@@ -1,0 +1,267 @@
+{
+  "schema": "nanojev.sealed-overlap.external-generalization-fixture.v1",
+  "document_delimiter": " || ",
+  "provenance_note": "Generated author-written probes are distinct from externally authored legal excerpts; only the latter have verified public source URLs. No outside legal texts are human annotated to a full six-field graph. For those, expected output is ABSTAIN from authoritative six-field extraction, not a claim that the text lacks legal force.",
+  "new_entities": {
+    "actors": [
+      "Nerys",
+      "Quillan",
+      "Vespara",
+      "Yorin",
+      "Halden",
+      "Zorina",
+      "Pelias",
+      "Virella"
+    ],
+    "recipients": [
+      "Quentis",
+      "Aurella",
+      "Noviant",
+      "Caldron",
+      "Lunaris",
+      "Jorell",
+      "Bramwell",
+      "Selwyn"
+    ],
+    "assets": [
+      "telemetry tranche",
+      "escrow voucher",
+      "firmware image",
+      "audit binder",
+      "service docket",
+      "calibration certificate",
+      "custody manifest",
+      "royalty statement"
+    ],
+    "conditions": [
+      "the regulator countersigns",
+      "the settlement window closes",
+      "a laboratory certifies the batch",
+      "the trustee confirms receipt",
+      "the retention period lapses",
+      "an independent audit is signed",
+      "the appellate order takes effect",
+      "the escrow officer acknowledges the deposit"
+    ],
+    "consequences": [
+      "an indemnity becomes payable",
+      "a performance bond is forfeited",
+      "an injunction may be sought",
+      "a cure period begins",
+      "a damages claim accrues",
+      "the license terminates",
+      "a replacement is due",
+      "a security deposit is returned"
+    ]
+  },
+  "authored_challenges": [
+    {
+      "kind": "anchor_positive",
+      "family": "known_control",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Under this instrument, recipient is {recipient}; actor is {actor}; once {condition}, a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "anchor_negative",
+      "family": "known_control",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "The contract specifies recipient is {recipient} and actor is {actor}; once {condition}, no duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "unknown_actor",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Following {condition}, {new_actor} shall convey the {asset} to {recipient}; default triggers {consequence}."
+    },
+    {
+      "kind": "unknown_recipient",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Following {condition}, {actor} shall convey the {asset} to {new_recipient}; default triggers {consequence}."
+    },
+    {
+      "kind": "unknown_asset",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Following {condition}, {actor} shall convey the {new_asset} to {recipient}; default triggers {consequence}."
+    },
+    {
+      "kind": "unknown_consequence",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Following {condition}, {actor} shall convey the {asset} to {recipient}; default triggers {new_consequence}."
+    },
+    {
+      "kind": "unknown_condition",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Upon {new_condition}, {actor} shall convey the {asset} to {recipient}; default triggers {consequence}."
+    },
+    {
+      "kind": "all_five_new",
+      "family": "new_vocabulary",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "After {new_condition}, {new_actor} is excused from delivering the {new_asset} to {new_recipient}; the specified outcome is {new_consequence}."
+    },
+    {
+      "kind": "unseen_shall",
+      "family": "new_grammar",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Provided {condition}, {actor} covenants to provide {asset} for the benefit of {recipient}; otherwise {consequence}."
+    },
+    {
+      "kind": "unseen_no_duty",
+      "family": "new_grammar",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "Upon {condition}, {actor} is released from the obligation of furnishing {asset} to {recipient}, with {consequence} specified."
+    },
+    {
+      "kind": "passive_voice",
+      "family": "new_grammar",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "Following {condition}, delivery of {asset} to {recipient} must be effected by {actor}, or else {consequence} shall follow."
+    },
+    {
+      "kind": "role_inversion",
+      "family": "new_grammar",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The receiving party is {recipient}, and the provider is {actor}; delivery of {asset} follows {condition}; failure entails {consequence}."
+    },
+    {
+      "kind": "no_operative_quotation",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The parties quote a superseded memorandum: \"{actor} must convey {asset} to {recipient} if {condition}; {consequence} follows\"."
+    },
+    {
+      "kind": "no_operative_proposal",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The unsigned proposal would require {actor} to send {asset} to {recipient} upon {condition}, with {consequence} as remedy; it was not adopted."
+    },
+    {
+      "kind": "contested_obligation",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The witness alleges that {actor} owes {asset} to {recipient} after {condition} and faces {consequence}; the allegation is disputed."
+    },
+    {
+      "kind": "ambiguous_scope",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "Unless {condition} or a later waiver controls, {actor} may or may not supply {asset} to {recipient}; {consequence} is disputed."
+    },
+    {
+      "kind": "competing_consequences",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "If {condition}, {actor} shall send {asset} to {recipient}; the remedy could be {consequence} or {other_consequence}."
+    },
+    {
+      "kind": "contradictory_duties",
+      "family": "nonoperative",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "Under {condition}, {actor} must and must not deliver {asset} to {recipient}; the parties separately mention {consequence}."
+    }
+  ],
+  "external_legal_excerpts": [
+    {
+      "id": "far52_212_4_compliance",
+      "section": "FAR 52.212-4(q)",
+      "source_url": "https://www.acquisition.gov/far/52.212-4",
+      "text": "The Contractor shall comply with all applicable Federal, State and local laws, executive orders, rules and regulations applicable to its performance under this contract.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "far52_212_4_termination",
+      "section": "FAR 52.212-4(l)",
+      "source_url": "https://www.acquisition.gov/far/52.212-4",
+      "text": "The Government reserves the right to terminate this contract, or any part hereof, for its sole convenience.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "far52_212_4_cost",
+      "section": "FAR 52.212-4(l)",
+      "source_url": "https://www.acquisition.gov/far/52.212-4",
+      "text": "The Contractor shall not be required to comply with the cost accounting standards or contract cost principles for this purpose.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "far52_212_4_audit",
+      "section": "FAR 52.212-4(l)",
+      "source_url": "https://www.acquisition.gov/far/52.212-4",
+      "text": "This paragraph does not give the Government any right to audit the Contractor’s records.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "far52_212_4_payment",
+      "section": "FAR 52.212-4(l)",
+      "source_url": "https://www.acquisition.gov/far/52.212-4",
+      "text": "The Contractor shall not be paid for any work performed or costs incurred which reasonably could have been avoided.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "cc4_downstream",
+      "section": "CC BY 4.0 Section 2(a)(5)(B)",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+      "text": "You may not offer or impose any additional or different terms or conditions on, or apply any Effective Technological Measures to, the Licensed Material if doing so restricts exercise of the Licensed Rights by any recipient of the Licensed Material.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "cc4_restrictions",
+      "section": "CC BY 4.0 Section 7(a)",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+      "text": "The Licensor shall not be bound by any additional or different terms or conditions communicated by You unless expressly agreed.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "cc4_survive",
+      "section": "CC BY 4.0 Section 6(d)",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+      "text": "Sections 1, 5, 6, 7, and 8 survive termination of this Public License.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "cc4_disclaimer",
+      "section": "CC BY 4.0 Section 5(a)",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+      "text": "Where disclaimers of warranties are not allowed in full or in part, this disclaimer may not apply to You.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    },
+    {
+      "id": "cc4_termination",
+      "section": "CC BY 4.0 Section 6(a)",
+      "source_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+      "text": "However, if You fail to comply with this Public License, then Your rights under this Public License terminate automatically.",
+      "target": "abstain_full_six_field",
+      "annotation_scope": "External operative legal prose, but missing the benchmark’s complete six-field actor/recipient/asset/condition/consequence/polarity mapping; no inferred negative duty merely from an exception or disclaimer."
+    }
+  ]
+}

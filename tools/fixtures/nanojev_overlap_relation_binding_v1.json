@@ -1,0 +1,29 @@
+{
+  "schema": "nanojev.sealed-overlap.relation-binding-fixture.v1",
+  "scope": "Synthetic, single-predicate contractual provisions; each clause binds an actor, recipient, asset, condition, consequence and explicit duty polarity. The consequence is a stated consequence of the provision, not a causal inference. Names and strings are closed-class.",
+  "actors": ["Mira", "Tarin", "Leona", "Soren"],
+  "recipients": ["Arlen", "Bela", "Caro", "Davi"],
+  "assets": ["sensor", "ledger", "module"],
+  "conditions": ["the permit is approved", "the audit is complete", "the escrow is funded"],
+  "consequences": ["access is suspended", "payment is withheld", "a review is initiated"],
+  "templates": {
+    "train": [
+      "When {condition}, {actor} {modal} transfer the {asset} to {recipient}; this provision stipulates that {consequence}",
+      "If {condition}, the contract {contract_modal} {actor} to send the {asset} to {recipient}; its stated consequence is that {consequence}",
+      "Provided {condition}, {actor} {modal} convey the {asset} to {recipient}; under this provision, {consequence}"
+    ],
+    "selection": [
+      "Upon {condition}, the agreement {contract_modal} {actor} to deliver the {asset} to {recipient}; the designated result is that {consequence}",
+      "Following {condition}, {actor} {modal} dispatch the {asset} to {recipient}; the specified consequence is that {consequence}"
+    ],
+    "final": [
+      "Subject to {condition}, {actor} {modal} supply the {asset} to {recipient}; the stated result of this term is that {consequence}",
+      "Once {condition}, the arrangement {contract_modal} {actor} to furnish the {asset} to {recipient}; the attached consequence is that {consequence}"
+    ]
+  },
+  "polarity_phrasing": {
+    "positive": {"modal": "is required to", "contract_modal": "obligates"},
+    "negative": {"modal": "is not required to", "contract_modal": "does not obligate"}
+  },
+  "document_delimiter": " || "
+}

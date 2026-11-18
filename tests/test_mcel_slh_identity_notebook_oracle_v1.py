@@ -175,18 +175,46 @@ def test_browser_three_tabs_fixed_footer_scope_and_actions(target):
             area=page.locator('[data-mcel-notebook]')
             area.wait_for()
             assert area.locator('[data-mcel-notebook-tab]').all_text_contents()==['Pending','Enrolled','Trash']
-            assert 'protected' in area.locator('[data-mcel-notebook-status]').inner_text().lower() or 'identity' in area.locator('[data-mcel-notebook-status]').inner_text().lower()
-            assert area.locator('[data-mcel-notebook-scroll] [data-record-key]').count()==0
-            assert not page.evaluate("window.calls.some(c=>c.url.endsWith('/identity-notebook'))")
             if target=='local':
+                # When the mounted notebook is visible, startup must hydrate
+                # the default Pending tab without a click.
                 page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
-                page.evaluate("async () => await window.__mcelSlh.app.execute('intent:read-organization-enrolled')")
+                page.wait_for_function("() => window.calls.some(c=>c.body?.operation==='read-pending')")
             else:
+                assert 'protected' in area.locator('[data-mcel-notebook-status]').inner_text().lower() or 'identity' in area.locator('[data-mcel-notebook-status]').inner_text().lower()
+                assert area.locator('[data-mcel-notebook-scroll] [data-record-key]').count()==0
+                assert not page.evaluate("window.calls.some(c=>c.url.endsWith('/identity-notebook'))")
                 page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
                 page.locator('form[data-intent="intent:connect-network-slh"] [name="address"]').fill('192.168.1.8')
                 page.locator('form[data-intent="intent:connect-network-slh"] button[type="submit"]').click()
             page.wait_for_function("() => window.calls.some(c=>c.body?.operation==='read-trash')")
             page.wait_for_function("() => document.querySelector('[data-mcel-notebook-scroll] [data-record-key]')")
+            # Repeated identical reads must preserve the application's keyed
+            # semantic row and the action's MCEL Chrome subtree.
+            page.evaluate('''() => {
+              const root=document.querySelector('[data-mcel-notebook]');
+              const row=root.querySelector('[data-record-key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]');
+              const button=row.querySelector('[data-mcel-notebook-action="Accept"]');
+              const decoration=document.createElement('span');decoration.dataset.mcelChromeDecorative='true';
+              button.append(decoration);
+              window.__slhNotebookStable={root,row,button,decoration,childMutations:0};
+              const observer=new MutationObserver(records=>{
+                window.__slhNotebookStable.childMutations += records.filter(r=>
+                  r.type==='childList' && (row.contains(r.target)||r.target===row)).length;
+              });
+              observer.observe(root,{childList:true,subtree:true});
+              window.__slhNotebookStable.observer=observer;
+            }''')
+            for _ in range(2):
+                assert page.evaluate("async () => (await window.__mcelSlh.app.execute('intent:read-organization-pending')).disposition") == 'completed'
+            stable=page.evaluate('''() => {
+              const t=window.__slhNotebookStable;
+              t.observer.disconnect();
+              return {row:t.row===t.root.querySelector('[data-record-key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]'),
+                button:t.button===t.row.querySelector('[data-mcel-notebook-action="Accept"]'),
+                chrome:t.button.contains(t.decoration),childMutations:t.childMutations};
+            }''')
+            assert stable == {'row':True,'button':True,'chrome':True,'childMutations':0}, stable
             area.locator('[data-record-key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] [data-mcel-notebook-action="Accept"]').click()
             page.wait_for_function("() => window.calls.some(c=>c.body?.operation==='accept')")
             page.wait_for_function("() => document.querySelector('[data-record-key=\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"] [data-mcel-notebook-action=\"Reject\"]:not(:disabled)')")

@@ -111,11 +111,12 @@
     let workerViewOverview=null;
     let identitySnapshot=null;
     let lifecycleObservation=null;
+    let organizationFailure=null;
     let authenticationChanged=()=>{};
     let setupChanged=()=>{};
     const operationIds=new Map();
     function durableOperationId(operation,args){
-      if(!["deploy","activate","undeploy"].includes(operation))return undefined;
+      if(!["deploy","undeploy"].includes(operation))return undefined;
       const key=operation+":"+JSON.stringify(args);
       if(!operationIds.has(key)){
         const id=global.crypto?.randomUUID?.().replaceAll("-","") ||
@@ -123,6 +124,15 @@
         operationIds.set(key,"mcel-seh-"+id);
       }
       return operationIds.get(key);
+    }
+    // Reuse an operation ID while its acknowledgement or outcome is uncertain.
+    // Once LMS confirms a terminal receipt, the same action is a NEW request.
+    function releaseRecordedOperation(receipt){
+      if(!receipt || !["RECORDED","CANCELED"].includes(receipt.phase) ||
+         typeof receipt.operationId!=="string")return;
+      for(const [key,id] of operationIds){
+        if(id===receipt.operationId)operationIds.delete(key);
+      }
     }
     function headers(extra={}) {return {Accept:"application/json",...(accessToken?{Authorization:"Bearer "+accessToken}:{}),...extra};}
     async function readWorkers(token) {
@@ -155,14 +165,29 @@
       if(pendingAuthentication)return pendingAuthentication;
       const signer=activeIdentity, epoch=identityEpoch;
       const pending=(async()=>{
-        const response=await fetcher("/api/applications/slh/setup/action",{
-          method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
-            "Content-Type":"application/json","X-MCEL-SLH-Operation":"authenticate"},
-          body:JSON.stringify({action:"authenticate",arguments:{adminDeviceId:signer}})});
+        let response;
+        try{
+          response=await fetcher("/api/applications/slh/setup/action",{
+            method:"POST",credentials:"same-origin",headers:{Accept:"application/json",
+              "Content-Type":"application/json","X-MCEL-SLH-Operation":"authenticate"},
+            body:JSON.stringify({action:"authenticate",arguments:{adminDeviceId:signer}})});
+        }catch{
+          // Do not leak transport exception text or credentials into UI receipts.
+          throw Error("MCEL_SLH_PORT:AUTHENTICATION_TRANSPORT_UNAVAILABLE");
+        }
         const result=await response?.json?.().catch(()=>null);
-        if(!response?.ok || typeof result?.access_token!=="string" ||
-           result.access_token.length<24 || (result.device_id||result.deviceId)!==signer)
-          throw Error("MCEL_SLH_PORT:AUTHORIZATION_REFUSED");
+        if(!response || typeof response.ok!=="boolean")
+          throw Error("MCEL_SLH_PORT:AUTHENTICATION_INVALID_RESPONSE");
+        if(!response.ok){
+          if(Number(response.status)>=500)
+            throw Error("MCEL_SLH_PORT:AUTHENTICATION_SERVICE_UNAVAILABLE");
+          const code=typeof result?.error==="string" ? result.error : result?.error?.code;
+          throw Error("MCEL_SLH_PORT:AUTHORIZATION_REFUSED"+
+            (typeof code==="string" && /^[A-Z_]{3,64}$/.test(code) ? ":"+code : ""));
+        }
+        if(typeof result?.access_token!=="string" || result.access_token.length<24 ||
+           (result.device_id||result.deviceId)!==signer)
+          throw Error("MCEL_SLH_PORT:AUTHENTICATION_INVALID_RESPONSE");
         if(epoch!==identityEpoch || signer!==activeIdentity)
           throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
         // Authentication was already verified by ORG-SLH's signed challenge.
@@ -181,12 +206,19 @@
       const operation=notebookOperation(req);
       if(!operation)throw Error("MCEL_SLH_NOTEBOOK:UNDECLARED_OPERATION");
       await ensureAuthorization();
-      const response=await fetcher("/api/applications/slh/identity-notebook",{
-        method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
-          "X-MCEL-SLH-Operation":"identity-notebook"}),
-        body:JSON.stringify({target:"local",operation,arguments:req.arguments,sessionTicket:""})
-      });
+      let response;
+      try{
+        response=await fetcher("/api/applications/slh/identity-notebook",{
+          method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
+            "X-MCEL-SLH-Operation":"identity-notebook"}),
+          body:JSON.stringify({target:"local",operation,arguments:req.arguments,sessionTicket:""})
+        });
+      }catch{
+        throw Error("MCEL_SLH_NOTEBOOK:TRANSPORT_UNAVAILABLE");
+      }
       const data=await response?.json?.().catch(()=>null);
+      if(Number(response?.status)>=500)
+        throw Error("MCEL_SLH_NOTEBOOK:SERVICE_UNAVAILABLE");
       if(!response?.ok || data?.ok!==true){
         const code=data?.error?.code;
         throw Error("MCEL_SLH_NOTEBOOK:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
@@ -209,7 +241,7 @@
       return value.result;
     }
     return Object.freeze({
-      managementRequest,
+      managementRequest,releaseRecordedOperation,
       onManagementChanged:callback=>{if(typeof callback==="function")managementChanged=callback;},
       setIdentity: value=>{
         if(value!==""&&!validSigner(value))throw Error("MCEL_SLH_PORT:INVALID_IDENTITY");
@@ -229,13 +261,16 @@
       preferredIdentity: ()=>identitySnapshot?.state==="AVAILABLE"?identitySnapshot.defaultDeviceId:"",
       // Public, read-only observation provenance for SLH E/W/G diagnostics.
       lifecycleObservation: ()=>lifecycleObservation?{...lifecycleObservation}:null,
+      organizationFailure: ()=>organizationFailure?{...organizationFailure}:null,
       authorize: async req=>{
         if(!permitted(req))return false;
         if(notebookOperation(req)||sehLifecycleOperation(req)||
            req.intentId===rename ||
            (req.intentId==="intent:refresh-worker-summary" && options.initialView!=="overview") ||
            req.intentId==="intent:refresh-workers"){
-          try{await ensureAuthorization();}catch{return false;}
+          // Only an undeclared operation is denied here. Authentication
+          // failures retain their typed cause through MCEL's generic receipt.
+          await ensureAuthorization();
         }
         // Config/start continue to be verified separately by the SLH backend.
         return true;
@@ -260,7 +295,7 @@
             const code=value?.error?.code;
             throw Error("MCEL_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
           }
-          if(["deploy","activate","undeploy"].includes(deployment))managementChanged(value.result);
+          if(["deploy","undeploy"].includes(deployment))managementChanged(value.result);
           return value.result;
         }
         const sehOperation=sehLifecycleOperation(req);
@@ -365,6 +400,30 @@
             throw Error("MCEL_SLH_PORT:invalid-lifecycle-observation");
           const state=result.overview.organizationState;
           const endpoint=result.overview.organizationEndpoint;
+          const failure=result.organizationFailure;
+          // Only fixed, sanitized LMS status evidence can enter the display
+          // and operational diagnostics; never render exception strings.
+          organizationFailure=null;
+          if(plain(failure) && (state==="failed" || state==="stopped_unexpectedly")){
+            const code=failure.errorCode;
+            if(["ORG_SLH_BIND_ADDRESS_UNAVAILABLE","ORG_SLH_LISTENER_BIND_FAILED"].includes(code) &&
+               failure.stage==="LISTENER_BIND" &&
+               typeof failure.bindAddress==="string" &&
+               /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(failure.bindAddress) &&
+               failure.bindAddress.split(".").every(n=>Number(n)<=255) &&
+               Number.isSafeInteger(failure.port) && failure.port>=1 && failure.port<=65535 &&
+               (failure.osError===null || Number.isInteger(failure.osError) && failure.osError>=0 && failure.osError<=65535) &&
+               (failure.restartCount===null || Number.isInteger(failure.restartCount) && failure.restartCount>=0 && failure.restartCount<=10000) &&
+               typeof failure.restartLimitReached==="boolean"){
+              organizationFailure={errorCode:code,stage:"LISTENER_BIND",
+                bindAddress:failure.bindAddress,port:failure.port,osError:failure.osError,
+                restartCount:failure.restartCount,restartLimitReached:failure.restartLimitReached,
+                explanation:code==="ORG_SLH_BIND_ADDRESS_UNAVAILABLE"?
+                  "The configured bind address is not assigned to this computer.":
+                  "The configured listener could not bind.",
+                observedAt:typeof failure.observedAt==="string"?failure.observedAt.slice(0,40):""};
+            }
+          }
           if(typeof state!=="string" || state.length>80 || typeof endpoint!=="string" || endpoint.length>120)
             throw Error("MCEL_SLH_PORT:invalid-lifecycle-state");
           // The overview can succeed while its underlying 1.5-second LMS

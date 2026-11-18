@@ -152,9 +152,7 @@ module.exports = mcel.defineApp(
     const deploymentDefinitions=[
       ["register","registerCoolifyController",{name:text,url:text,apiToken:text}],
       ["select","selectCoolifyController",{name:text}],
-      ["preview-deploy","previewSehDeploy",{}],["deploy","deploySeh",{}],
-      ["preview-activate","previewSehActivate",{}],["activate","activateSeh",{}],
-      ["preview-undeploy","previewSehUndeploy",{}],["undeploy","undeploySeh",{}]
+      ["deploy","deploySeh",{}], ["undeploy","undeploySeh",{}]
     ];
     const deploymentIntents=Object.fromEntries(deploymentDefinitions.map(([name,method,inputs])=>{
       deploymentWriter.operation(name,method,{inputs,result:deploymentResultShape,risk:"consequential"});
@@ -212,6 +210,7 @@ module.exports = mcel.defineApp(
       role:"main-workarea",priority:"primary",prefer:{side:"bottom"},children:[
         dsl.surface.notebook("organization-identity-notebook",{
           title:"Organization Identities",
+          updates:{rows:true,status:true,retention:true},
           tabs:[
             {id:"pending",label:"Pending",key:"id",state:pending,
              fields:["identity","role","requestedAt"],refresh:notebookReads[0],
@@ -260,7 +259,7 @@ module.exports = mcel.defineApp(
       ]
     });
     const sehLifecycleTabs=[
-      {id:"configuration",label:"Configuration",state:sehDeployment,refresh:inspectDeployment,
+      {id:"configuration",label:"Configuration",updates:{fields:["selectedController","deploymentStatus","generation"],actions:[],status:true,forms:true},state:sehDeployment,refresh:inspectDeployment,
        fields:["selectedController","deploymentStatus","generation"],
        forms:[
          {label:"Register Coolify controller",intent:deploymentIntents.register,
@@ -270,32 +269,35 @@ module.exports = mcel.defineApp(
             path:"controllers",valueKey:"identity",labelKey:"identity",selectedPath:"selectedController"}}}
        ],receipt:sehDeploymentReceipt,
        note:"Adding a controller never deploys an SEH. Selecting a controller cannot move an existing deployment."},
-      {id:"deployment",label:"Deployment",state:sehDeployment,refresh:inspectDeployment,
+      {id:"deployment",label:"Deployment",updates:{fields:["selectedController","applicationUuid","deploymentStatus","generation"],actions:["Deploy / Redeploy","Undeploy"],status:true,forms:false},state:sehDeployment,refresh:inspectDeployment,
        fields:["selectedController","applicationUuid","deploymentStatus","generation"],
        actions:{
-         "Preflight Deploy":{intent:deploymentIntents["preview-deploy"],
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"UNDEPLOYED"}},
-         Deploy:{intent:deploymentIntents.deploy,confirm:"Restore the intentionally undeployed canonical SEH application, then activate and verify the connection?",
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"UNDEPLOYED"}},
-         "Preflight Activate":{intent:deploymentIntents["preview-activate"],
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED"}},
-         "Activate / Resume":{intent:deploymentIntents.activate,confirm:"Activate or resume the existing canonical SEH application without creating another Coolify application?",
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED"}},
-         "Preflight Undeploy":{intent:deploymentIntents["preview-undeploy"],
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED"}},
-         Undeploy:{intent:deploymentIntents.undeploy,confirm:"Remove the exact registered SEH application from Coolify? First stop the outbound relay and settle all outstanding work.",
-           enabledWhen:{state:sehDeployment,path:"deploymentStatus",equals:"APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED"}}
+         "Deploy / Redeploy":{intent:deploymentIntents.deploy,alwaysEnabled:true,
+           confirm:"Deploy or resume the canonical SEH application? The harness will verify the build, runtime and authenticated connection before reporting success.",
+           },
+         Undeploy:{intent:deploymentIntents.undeploy,
+           // Only a deployment-present observation makes this action applicable.
+           // The runtime interprets this general typed semantic predicate for
+           // every operation notebook, not as a hard-coded SLH exception.
+           enabledWhen:{any:[
+             "PUBLIC_RUNTIME_PRESENT_SLH_CONNECTED",
+             "PUBLIC_RUNTIME_PRESENT_SLH_DISCONNECTED",
+             "APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED",
+             "APPLICATION_REGISTERED_RUNTIME_UNAVAILABLE",
+             "CONNECTED_VERIFIED"
+           ].map(phase=>({state:sehDeployment,path:"deploymentStatus",equals:phase}))},
+           confirm:"Disconnect the SLH, verify safe removal, and delete the exact registered SEH application from Coolify? Ensure outstanding work has settled."}
        },receipt:sehDeploymentReceipt,
-       note:"LMS owns deployment and activation. An existing application is resumed, never recreated. Queued builds are not verified connections."},
-      {id:"connection",label:"Connection",state:sehStatus,refresh:readSehStatus,
+       note:"The harness owns preflight, build verification, connection activation and safe disconnection. LMS records progress and the final receipt. A queued build is not a verified connection."},
+      {id:"connection",label:"Connection",updates:{fields:["phase","connected","connectionEnabled"],actions:["Start","Stop","Restart"],status:true,forms:false},state:sehStatus,refresh:readSehStatus,
        fields:["phase","connected","connectionEnabled"],actions:{
         Start:{intent:sehLifecycleActions.start,confirm:"Start this SLH's outbound SEH connection?"},
         Stop:{intent:sehLifecycleActions.stop,confirm:"Stop this SLH's outbound SEH connection?"},
         Restart:{intent:sehLifecycleActions.restart,confirm:"Restart this SLH's outbound SEH connection?"}
        }},
-      {id:"status",label:"Status",state:sehStatus,refresh:readSehStatus,
+      {id:"status",label:"Status",updates:{fields:["phase","gatewayReady","connected"],actions:[],status:true,forms:false},state:sehStatus,refresh:readSehStatus,
        fields:["phase","gatewayReady","connected"]},
-      {id:"diagnostics",label:"Diagnostics",state:sehStatus,refresh:readSehStatus,
+      {id:"diagnostics",label:"Diagnostics",updates:{fields:["lastErrorClass","phase","relayRole"],actions:[],status:true,forms:false},state:sehStatus,refresh:readSehStatus,
        fields:["lastErrorClass","phase","relayRole"]}
     ];
     const sehLifecycleNotebook=dsl.surface.region("seh-lifecycle",{
@@ -373,9 +375,48 @@ module.exports = mcel.defineApp(
         })
       ]
     });
+    // SLH owns what belongs in operator Activity. Routine observations and
+    // automated polling are deliberately absent; their capability receipts
+    // remain available in the execution record, not in this operator view.
+    const meaningfulActivity = [
+      ["Configure organization",configureAndEnable],
+      ["Change organization enablement",toggleEnablement],
+      ["Start or stop organization",toggleOrganization],
+      ["Connect Network SLH",connectNetwork],
+      ["Disconnect Network SLH",disconnectNetwork],
+      ["Connect remote SEH",connectRemoteSeh],
+      ["Disconnect remote SEH",disconnectRemoteSeh],
+      ["Start SEH connection",sehLifecycleActions.start],
+      ["Stop SEH connection",sehLifecycleActions.stop],
+      ["Restart SEH connection",sehLifecycleActions.restart],
+      ["Register Coolify controller",deploymentIntents.register],
+      ["Select Coolify controller",deploymentIntents.select],
+      ["Deploy / Redeploy SEH",deploymentIntents.deploy],
+      ["Undeploy SEH",deploymentIntents.undeploy],
+      ["Accept enrollment",notebookActions[0]],
+      ["Reject enrollment",notebookActions[1]],
+      ["Delete organization identity",notebookActions[2]],
+      ["Reactivate organization identity",notebookActions[3]],
+      ["Permanently remove identity",notebookActions[4]],
+      ["Change Trash retention",setRetention],
+      ["Empty Trash",emptyTrash]
+    ];
+    const activityEntries = meaningfulActivity.flatMap(([label,intent]) => [
+      dsl.activity.info(label+": completed",{intent,dispositions:["completed"]}),
+      dsl.activity.info(label+": recorded",{intent,dispositions:["recorded"]}),
+      dsl.activity.info(label+": accepted; verification pending",{intent,
+        dispositions:["accepted-deferred"]}),
+      dsl.activity.info(label+": command returned; outcome pending",{intent,
+        dispositions:["command-returned"]}),
+      dsl.activity.warn(label+": refused",{intent,
+        dispositions:["refused","refused-before-attempt"]}),
+      dsl.activity.warn(label+": outcome unverified",{intent,
+        dispositions:["unknown","cancelled"]}),
+      dsl.activity.error(label+": failed",{intent,dispositions:["failed"]})
+    ]);
     const operationActivity=dsl.surface.region("operation-activity",{
       role:"status",priority:"supporting",children:[
-        dsl.surface.receipt("activity")
+        dsl.surface.receipt("activity",{entries:activityEntries})
       ]
     });
     const surface=dsl.surface.define("slh",{

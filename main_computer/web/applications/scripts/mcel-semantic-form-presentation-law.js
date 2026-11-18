@@ -256,11 +256,16 @@ var McelSemanticFormPresentationLaw = (() => {
     // Geometry negotiation is a single deterministic Layout solve over
     // source-bound shape containers. No DOM nudging, rendering retries,
     // event remounts or application-specific selectors.
-    const layout = McelSemanticLayoutInference.applyFormShapeLayout({root,containers:[
-      ...[...targets].filter(([el,kind])=>(kind==="region" || kind==="group") &&
-        !coextensivePaint.has(el)).map(([el])=>el),
-      ...painted.filter(el=>!coextensivePaint.has(el)), ...cornerGroups.map(group=>group.element)
-    ]});
+    // "Current (preserve)" describes the incumbent geometry. Do not
+    // negotiate new layout padding or relocate existing app controls while
+    // merely activating the system-wide presentation defaults.
+    const layout = id === "form-current"
+      ? {status:"preserved",adjusted:0,violations:[]}
+      : McelSemanticLayoutInference.applyFormShapeLayout({root,containers:[
+          ...[...targets].filter(([el,kind])=>(kind==="region" || kind==="group") &&
+            !coextensivePaint.has(el)).map(([el])=>el),
+          ...painted.filter(el=>!coextensivePaint.has(el)), ...cornerGroups.map(group=>group.element)
+        ]});
     // Do not retain a curved frame whose interior cannot be proven. The
     // bounded safe fallback is a square frame plus an explicit diagnostic;
     // never hide or clip the offending content to conceal the violation.

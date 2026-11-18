@@ -82,7 +82,7 @@
     let onConnectionChanged=()=>{};
     const operationIds=new Map();
     function durableOperationId(operation,args){
-      if(!["deploy","activate","undeploy"].includes(operation))return undefined;
+      if(!["deploy","undeploy"].includes(operation))return undefined;
       const key=ticket+":"+operation+":"+JSON.stringify(args);
       if(!operationIds.has(key)){
         const id=global.crypto?.randomUUID?.().replaceAll("-","") ||
@@ -90,6 +90,15 @@
         operationIds.set(key,"mcel-seh-"+id);
       }
       return operationIds.get(key);
+    }
+    // Reuse an operation ID while its acknowledgement or outcome is uncertain.
+    // Once LMS confirms a terminal receipt, the same action is a NEW request.
+    function releaseRecordedOperation(receipt){
+      if(!receipt || !["RECORDED","CANCELED"].includes(receipt.phase) ||
+         typeof receipt.operationId!=="string")return;
+      for(const [key,id] of operationIds){
+        if(id===receipt.operationId)operationIds.delete(key);
+      }
     }
     async function post(action,args){
       const response=await fetcher("/api/applications/slh/network/connect",{
@@ -143,6 +152,7 @@
       return value.result;
     }
     return Object.freeze({
+      releaseRecordedOperation,
       managementRequest,
       onManagementChanged:callback=>{if(typeof callback==="function")managementChanged=callback;},
       forget,
@@ -168,7 +178,7 @@
             }
             throw Error("NETWORK_SLH_SEH_DEPLOYMENT:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
           }
-          if(["deploy","activate","undeploy"].includes(deployment))managementChanged(value.result);
+          if(["deploy","undeploy"].includes(deployment))managementChanged(value.result);
           return value.result;
         }
         const sehOperation=sehLifecycleOperation(req);

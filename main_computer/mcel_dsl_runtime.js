@@ -1004,6 +1004,34 @@ function createDsl(metadata, source) {
       "MCEL_DSL_COLOR_SEMANTICS_INVALID", "Only bounded semantic colors may be declared at "+where);
     return {color:deepClone(c)};
   }
+  const issuedActivityEntries = new Set();
+  // A report is an application-authored choice about an existing capability
+  // receipt. MCEL never assigns severity or decides which intents matter.
+  function activityEntry(severity, message, options = {}) {
+    knownOptions(options, ["intent", "dispositions"], `activity.${severity}`);
+    assert(typeof message === "string" && message.trim().length > 0 && message.length <= 200,
+      "MCEL_DSL_ACTIVITY_MESSAGE_INVALID", "Activity messages must be bounded, nonempty text.");
+    assert(options.intent instanceof IntentHandle && intents.includes(options.intent) &&
+      options.intent.record.operationKind === "capability",
+      "MCEL_DSL_ACTIVITY_INTENT_INVALID", "Activity requires a declared capability intent.");
+    const dispositions = options.dispositions === undefined ? ["completed"] : options.dispositions;
+    const allowed = new Set(["completed", "accepted-deferred", "command-returned", "recorded",
+      "refused", "refused-before-attempt", "failed", "cancelled", "unknown"]);
+    assert(Array.isArray(dispositions) && dispositions.length > 0 &&
+      dispositions.every(d => typeof d === "string" && allowed.has(d)) &&
+      new Set(dispositions).size === dispositions.length,
+      "MCEL_DSL_ACTIVITY_DISPOSITION_INVALID", "Activity dispositions must be explicit valid outcomes.");
+    const entry=Object.freeze({kind:"activity-entry",severity,intent:ref(options.intent),
+      message,dispositions:[...dispositions]});
+    issuedActivityEntries.add(entry);
+    return entry;
+  }
+  const activity = Object.freeze({
+    info:(message, options) => activityEntry("info",message,options),
+    warn:(message, options) => activityEntry("warn",message,options),
+    error:(message, options) => activityEntry("error",message,options),
+  });
+
   const issuedSurfaceNodes = [];
   function surfaceNode(name, record) {
     const handle = new SurfaceNodeHandle(name, record);
@@ -1103,7 +1131,7 @@ function createDsl(metadata, source) {
       }
       const seen=new Set();
       const tabs=options.tabs.map(tab=>{
-        knownOptions(tab,["id","label","state","fields","refresh","actions","forms","receipt","note"],"surface.operationNotebook.tab");
+        knownOptions(tab,["id","label","state","fields","refresh","actions","forms","receipt","note","updates"],"surface.operationNotebook.tab");
         assert(typeof tab.id==="string" && /^[a-z][a-z0-9-]*$/.test(tab.id) && !seen.has(tab.id) &&
           typeof tab.label==="string" && tab.label.length>0 && tab.label.length<=80 &&
           tab.state instanceof StateHandle && tab.state.record.authority==="derived" &&
@@ -1121,8 +1149,22 @@ function createDsl(metadata, source) {
           typeof label==="string" && label.length>0 && label.length<=40 &&
           action?.intent instanceof IntentHandle && action.intent.record.operationKind==="capability" &&
           action.intent.record.risk==="consequential" && action.intent.record.input.length===0 &&
+          (action.alwaysEnabled===undefined || action.alwaysEnabled===true) &&
+          !(action.alwaysEnabled && action.enabledWhen!==undefined) &&
           (action.confirm===undefined || typeof action.confirm==="string" && action.confirm.length<=240)),
           "MCEL_DSL_OPERATION_NOTEBOOK_ACTION_INVALID","Actions require no-argument consequential intents.");
+        const updates=tab.updates;
+        if(updates!==undefined){
+          knownOptions(updates,["fields","actions","status","forms"],"surface.operationNotebook.updates");
+          assert(Array.isArray(updates.fields) && updates.fields.length===tab.fields.length &&
+            updates.fields.every(field=>tab.fields.includes(field)) &&
+            Array.isArray(updates.actions) && updates.actions.length===Object.keys(actions).length &&
+            updates.actions.every(label=>Object.hasOwn(actions,label)) &&
+            updates.status===true && typeof updates.forms==="boolean" &&
+            updates.forms===((tab.forms||[]).length>0),
+            "MCEL_DSL_OPERATION_NOTEBOOK_UPDATES_INVALID",
+            "Update contract must own all declared fields, actions, status, and forms.");
+        }
         const forms=tab.forms||[];
         assert(Array.isArray(forms) && forms.length<=3,
           "MCEL_DSL_OPERATION_NOTEBOOK_FORMS_INVALID","At most three typed operational forms are supported.");
@@ -1167,10 +1209,12 @@ function createDsl(metadata, source) {
           receipt.record.schema.fields?.message?.kind==="string",
           "MCEL_DSL_OPERATION_NOTEBOOK_RECEIPT_INVALID","Receipt must be a typed derived record.");
         return {id:tab.id,label:tab.label,state:ref(tab.state),fields:[...tab.fields],
+          ...(updates?{updates:deepClone(updates)}:{}),
           refresh:ref(tab.refresh),actions:Object.fromEntries(Object.entries(actions).map(([label,action])=>
             [label,{intent:ref(action.intent),...(action.confirm?{confirm:action.confirm}:{}),
-              ...(action.enabledWhen?{enabledWhen:{state:ref(action.enabledWhen.state),
-                path:action.enabledWhen.path,equals:action.enabledWhen.equals}}:{})}])),
+              ...(action.alwaysEnabled?{alwaysEnabled:true}:{}),
+              ...(action.enabledWhen?{enabledWhen:visibilityCondition(action.enabledWhen,
+                `surface.operationNotebook.tab:${tab.id}.action:${label}.enabledWhen`)}:{})}])),
           ...(typedForms.length?{forms:typedForms}:{}),...(receipt?{receipt:ref(receipt)}:{}),
           ...(tab.note?{note:tab.note}:{})};
       });
@@ -1180,7 +1224,7 @@ function createDsl(metadata, source) {
         ...modeCondition(options,`surface.operationNotebook:${name}`)});
     },
     notebook(name, options = {}) {
-      knownOptions(options,["title","tabs","retention","empty"],`surface.notebook:${name}`);
+      knownOptions(options,["title","tabs","retention","empty","updates"],`surface.notebook:${name}`);
       assert(typeof options.title==="string" && options.title.length>0 && options.title.length<=120 &&
         Array.isArray(options.tabs) && options.tabs.length>=2 && options.tabs.length<=8,
         "MCEL_DSL_NOTEBOOK_INVALID","A notebook requires a title and bounded tabs.");
@@ -1224,12 +1268,18 @@ function createDsl(metadata, source) {
         options.empty instanceof IntentHandle && options.empty.record.risk==="consequential" &&
         options.empty.record.input.length===0,
         "MCEL_DSL_NOTEBOOK_RETENTION_INVALID","Retention requires a persistent boolean read/write and bulk action.");
+      if(options.updates!==undefined){
+        knownOptions(options.updates,["rows","status","retention"],"surface.notebook.updates");
+        assert(options.updates.rows===true && options.updates.status===true &&
+          options.updates.retention===true,"MCEL_DSL_NOTEBOOK_UPDATES_INVALID",
+          "An incremental record notebook owns keyed rows, status and retention.");
+      }
       return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"record-notebook",
-        title:options.title,tabs,retention:{state:ref(retention.state),refresh:ref(retention.refresh),
+        title:options.title,tabs,...(options.updates?{updates:deepClone(options.updates)}:{}),retention:{state:ref(retention.state),refresh:ref(retention.refresh),
           update:ref(retention.update)},empty:ref(options.empty)});
     },
     collection(name, options = {}) {
-      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "clearable", "roleFrom", "when"], `surface.collection:${name}`);
+      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "clearable", "roleFrom", "when", "rowLayout"], `surface.collection:${name}`);
       assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");
       assert(Array.isArray(options.fields) && options.fields.length > 0 && options.fields.every(x => typeof x === "string"),
         "MCEL_DSL_COLLECTION_FIELDS_REQUIRED", "Collection requires visible fields.");
@@ -1260,8 +1310,28 @@ function createDsl(metadata, source) {
       const actions = options.actions || {};
       for (const [key, value] of Object.entries(actions)) assert(["add", "update", "remove"].includes(key) && value instanceof IntentHandle,
         "MCEL_DSL_COLLECTION_ACTION_INVALID", "Collection actions must be declared intent handles.");
+      // An authored collection may opt into an identity/description/metadata row
+      // with one selection target. This is semantic structure, not an app name
+      // or a coordinate hint; legacy collections retain their existing controls.
+      let rowLayout;
+      if(options.rowLayout!==undefined){
+        const layout=options.rowLayout;
+        assert(layout && typeof layout==="object" && !Array.isArray(layout),
+          "MCEL_DSL_COLLECTION_ROW_LAYOUT_INVALID","Row layout must be a declaration.");
+        knownOptions(layout,["identity","description","metadata","selectOnRow"],`surface.collection:${name}.rowLayout`);
+        const id=layout.identity,more=layout.metadata;
+        assert(Array.isArray(id) && id.length>=1 && id.length<=3 &&
+          Array.isArray(more) && more.length<=4 && typeof layout.description==="string" &&
+          layout.selectOnRow===true && options.select instanceof IntentHandle,
+          "MCEL_DSL_COLLECTION_ROW_LAYOUT_INVALID","Row selection requires an authored collection selection intent.");
+        const ordered=[...id,layout.description,...more];
+        assert(ordered.every(f=>typeof f==="string" && options.fields.includes(f)) &&
+          new Set(ordered).size===ordered.length && ordered.length===options.fields.length,
+          "MCEL_DSL_COLLECTION_ROW_FIELDS_INVALID","Row layout must assign each visible field exactly once.");
+        rowLayout={identity:[...id],description:layout.description,metadata:[...more],selectOnRow:true};
+      }
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "collection", sourceName: name,
-        key: options.key, fields: [...options.fields],
+        key: options.key, fields: [...options.fields],...(rowLayout?{rowLayout}:{}),
         ...(options.state ? {state: ref(options.state)} : {}),
         ...(options.select ? {selectionIntent: ref(options.select)} : {}),
         ...(options.clearable?{clearable:true}:{}),...(roleFrom?{roleFrom}:{}),
@@ -1365,8 +1435,28 @@ function createDsl(metadata, source) {
         ...(options.saveIntent ? {saveIntent:ref(options.saveIntent)}:{})});
     },
     receipt(name, options = {}) {
-      knownOptions(options, ["id","color"], `surface.receipt:${name}`);
+      knownOptions(options, ["id","color","entries"], `surface.receipt:${name}`);
+      let activityEntries;
+      if (options.entries !== undefined) {
+        assert(Array.isArray(options.entries), "MCEL_DSL_ACTIVITY_ENTRIES_INVALID",
+          "Activity entries must be an array of application-authored reports.");
+        const pairs = new Set();
+        activityEntries = options.entries.map((entry) => {
+          assert(issuedActivityEntries.has(entry) && entry?.kind === "activity-entry" &&
+            ["info","warn","error"].includes(entry.severity) &&
+            Array.isArray(entry.dispositions), "MCEL_DSL_ACTIVITY_ENTRY_INVALID",
+            "Use dsl.activity.info/warn/error to declare Activity entries.");
+          for (const disposition of entry.dispositions) {
+            const key=entry.intent.ref+":"+disposition;
+            assert(!pairs.has(key), "MCEL_DSL_ACTIVITY_ENTRY_DUPLICATE",
+              "An intent disposition cannot report multiple activity severities.");
+            pairs.add(key);
+          }
+          return deepClone(entry);
+        });
+      }
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "operation-evidence",
+        ...(activityEntries !== undefined ? {activityEntries} : {}),
         ...authoredColor(options,`surface.receipt:${name}`)};
       return surfaceNode(name, record);
     },
@@ -1595,7 +1685,7 @@ function createDsl(metadata, source) {
   };
 
   return {
-    field, state, capability, intent, invariant, surface, layout, prove, expr, ir, migration, application,
+    field, state, capability, intent, activity, invariant, surface, layout, prove, expr, ir, migration, application,
     __collections: {states, capabilities, invariants, intents, effects, surfaces, layouts, scenarios, issuedSurfaceNodes},
   };
 }

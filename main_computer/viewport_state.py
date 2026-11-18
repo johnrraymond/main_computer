@@ -229,6 +229,7 @@ APPLICATION_ROUTE_NAMES = {
     "mcel-lab",
     "worker",
     "wallet",
+    "slh",
 }
 APPLICATION_ROUTE_ALIASES = {
     "layout-builder": "game-editor",
@@ -278,7 +279,7 @@ def _application_route_target(path: str) -> str | None:
     if route_path in APPLICATION_ROUTE_PREFIXES:
         return APPLICATION_ROUTE_DEFAULT
     parts = _application_route_parts(path)
-    if len(parts) not in {2, 3}:
+    if len(parts) < 2 or len(parts) > 4:
         return None
     if f"/{parts[0]}" not in APPLICATION_ROUTE_PREFIXES:
         return None
@@ -286,6 +287,12 @@ def _application_route_target(path: str) -> str | None:
     candidate = APPLICATION_ROUTE_ALIASES.get(candidate, candidate)
     if candidate not in APPLICATION_ROUTE_NAMES:
         return None
+    if candidate == "slh":
+        # The SLH application owns the canonical set of operational views.
+        # The parent shell only decides whether each route has a native child.
+        from main_computer.mcel_slh_application import ROUTES as SLH_ROUTES
+        canonical = "/applications/" + "/".join(parts[1:])
+        return candidate if canonical in SLH_ROUTES else None
     if len(parts) == 3:
         if candidate == APPLICATION_WEBSITE_BUILDER_ROUTE:
             return candidate if _website_builder_route_site_id(path) else None

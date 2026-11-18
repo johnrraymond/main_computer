@@ -5,15 +5,13 @@ html,body{width:100%;min-height:100%;margin:0}
 body.mcel-applications-candidate{background:#10061d;color:var(--mcel-ink);font:14px/1.45 Arial,Helvetica,sans-serif;overflow:hidden}
 body.mcel-applications-candidate a{color:inherit;text-decoration:none}
 body.mcel-applications-candidate button{font:inherit;cursor:pointer}
-.mcel-applications-shell{display:grid;grid-template-rows:68px minmax(0,1fr) auto;min-height:100dvh;height:100dvh;min-width:0}
-.mcel-shell-masthead{padding:12px 22px;border-bottom:1px solid var(--mcel-line);background:#0c0d0a;display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0}
-.mcel-shell-masthead h1{font-size:18px;letter-spacing:.055em;text-transform:uppercase;margin:0}
+.mcel-applications-shell{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:100dvh;height:100dvh;min-width:0}
 .mcel-shell-content{display:grid;grid-template-columns:var(--mcel-rail) minmax(0,1fr);min-height:0;min-width:0;position:relative}
 .mcel-shell-launcher{width:var(--mcel-rail);height:100%;position:relative;z-index:1300;min-height:0;overflow:visible}
-.mcel-shell-launcher-panel{position:fixed;top:68px;bottom:26px;left:0;width:min(var(--mcel-expand),calc(100vw - 12px));border:1px solid var(--mcel-line);border-left:0;background:#11110e;box-shadow:0 20px 65px #000b;transform:translateX(calc(-100% + var(--mcel-rail)));transition:transform 180ms ease;overflow:auto;overscroll-behavior:contain;direction:rtl;scrollbar-gutter:stable;border-radius:0 8px 8px 0}
+.mcel-shell-launcher-panel{position:fixed;top:0;bottom:26px;left:0;width:min(var(--mcel-expand),calc(100vw - 12px));border:1px solid var(--mcel-line);border-left:0;background:#11110e;box-shadow:0 20px 65px #000b;transform:translateX(calc(-100% + var(--mcel-rail)));transition:transform 180ms ease;overflow:auto;overscroll-behavior:contain;direction:rtl;scrollbar-gutter:stable;border-radius:0 8px 8px 0}
 .mcel-shell-launcher-panel > *{direction:ltr}
 .mcel-shell-launcher-panel:hover,.mcel-shell-launcher-panel:focus-within,.mcel-shell-launcher-panel[data-open="true"]{transform:translateX(0)}
-.mcel-shell-launcher-panel::before{content:"Apps";position:sticky;top:0;float:right;height:calc(100dvh - 102px);width:var(--mcel-rail);display:grid;place-items:center;writing-mode:vertical-rl;text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:900;color:var(--mcel-gold);background:#0a0a08;pointer-events:none;border-left:1px solid var(--mcel-line)}
+.mcel-shell-launcher-panel::before{content:"Apps";position:sticky;top:0;float:right;height:calc(100dvh - 26px);width:var(--mcel-rail);display:grid;place-items:center;writing-mode:vertical-rl;text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:900;color:var(--mcel-gold);background:#0a0a08;pointer-events:none;border-left:1px solid var(--mcel-line)}
 .mcel-shell-launcher-panel:is(:hover,:focus-within,[data-open="true"])::before{display:none}
 .mcel-shell-launcher-panel h2{font-size:16px;color:var(--mcel-gold);letter-spacing:.05em;margin:14px 12px 8px;text-transform:uppercase}
 .mcel-shell-launcher-items{display:grid;gap:8px;padding:6px 12px 18px}
@@ -35,7 +33,7 @@ body.mcel-applications-candidate button{font:inherit;cursor:pointer}
 .mcel-shell-application-mount:is([data-mode="semantic"],[data-mode="legacy"]) .mcel-shell-overview{display:none}
 .mcel-shell-status{background:#0a0a08;color:#c9c0aa;border-top:1px solid var(--mcel-line);height:26px;font:12px/24px ui-monospace,monospace;padding:0 12px 0 calc(var(--mcel-rail) + 10px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mcel-shell-status[data-error="true"]{color:#ff9a9a}
-@media (max-width:600px){.mcel-shell-masthead{padding:8px 12px}.mcel-shell-masthead h1{font-size:14px}.mcel-shell-overview{justify-content:flex-start}}
+@media (max-width:600px){.mcel-shell-overview{justify-content:flex-start}}
 @media (prefers-reduced-motion:reduce){.mcel-shell-launcher-panel{transition:none}}
 /* Original desktop icons are dynamically sourced from the authoritative legacy CSS. */
 body.mcel-applications-candidate{--ink:#f7f3e8;--muted:#c9c0aa;--gold:#f6c75b}
@@ -52,8 +50,8 @@ body.mcel-applications-candidate .desktop-icon{font:400 13.3333px Arial;cursor:p
 .mcel-shell-app-card strong{font-size:18px;line-height:1.45;color:var(--mcel-ink)}
 .mcel-shell-app-card span{font-size:14px;font-weight:600;line-height:1.35;color:var(--mcel-muted)}
 
-/* Original /applications launcher card and scroll geometry; the host masthead
- * remains 68px tall, so only the top/bottom shell anchors intentionally differ.
+/* Original /applications launcher card and scroll geometry.  With no shell
+ * masthead, the Apps rail and mounted child extend to the top of the viewport.
  * Do not replace these inherited design details with generic preview cards. */
 .mcel-shell-launcher-panel{
   display:grid;grid-auto-rows:max-content;gap:12px;align-content:start;

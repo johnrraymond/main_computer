@@ -3,7 +3,7 @@ const mcel=require("@mcel/app");
 module.exports=mcel.defineApp({id:"semantic-task-manager-generated-p3",title:"Semantic Task Manager"},dsl=>{
   const text=dsl.field.text(),num=dsl.field.integer();
   const rows=dsl.field.list(dsl.field.record({processKey:text,pid:num,name:text,status:text,memory:text,
-    createdAt:text,commandPreview:text,memoryRss:num,memoryAvailable:dsl.field.boolean(),
+    createdAt:text,commandPreview:text,commandLine:text,memoryRss:num,memoryAvailable:dsl.field.boolean(),
     statusAvailable:dsl.field.boolean(),isMainComputer:dsl.field.boolean(),isCurrentProcess:dsl.field.boolean()}),{key:"processKey"});
   const processes=dsl.state.derived("processes",rows);
   const selected=dsl.state.rendererLocal("selected",text,{initial:""});
@@ -72,8 +72,8 @@ module.exports=mcel.defineApp({id:"semantic-task-manager-generated-p3",title:"Se
     dsl.surface.form("all-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshAll,when:inView("all-processes")}),
     dsl.surface.form("connection-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshConnections,when:inView("connections")}),
     dsl.surface.form("hardware-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshHardware,when:inView("cpu-gpu")}),
-    dsl.surface.collection("process-list",{key:"processKey",fields:["name","pid","status","memory"],state:processes,select:choose,when:inView("server-processes")}),
-    dsl.surface.collection("all-process-list",{key:"processKey",fields:["name","pid","status","memory"],state:all,select:chooseAll,when:inView("all-processes")}),
+    dsl.surface.collection("process-list",{key:"processKey",fields:["name","pid","commandLine","status","memory"],rowLayout:{identity:["name","pid"],description:"commandLine",metadata:["status","memory"],selectOnRow:true},state:processes,select:choose,when:inView("server-processes")}),
+    dsl.surface.collection("all-process-list",{key:"processKey",fields:["name","pid","commandLine","status","memory"],rowLayout:{identity:["name","pid"],description:"commandLine",metadata:["status","memory"],selectOnRow:true},state:all,select:chooseAll,when:inView("all-processes")}),
     dsl.surface.collection("connection-list",{key:"key",fields:["pid","name","status","local","remote"],state:connections,when:inView("connections")}),
     dsl.surface.text("hardware-overview",{value:hardware,when:inView("cpu-gpu")}),
     dsl.surface.text("selection-echo",{value:selected,when:inView("server-processes")}),

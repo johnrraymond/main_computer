@@ -19,11 +19,11 @@ def test_cluster_inventory_is_exactly_original_apps_in_five_groups():
     old = {item["app"] for item in reference["icons"]}
     grouped = [app for _, _, apps in DESKTOP_GROUPS for app in apps]
     assert len(DESKTOP_GROUPS) == 5
-    assert len(grouped) == len(set(grouped)) == 20
+    assert len(grouped) == len(set(grouped)) == 21
     assert set(grouped) == old
     html = render_applications_shell_candidate(canonical_promoted=True)
     assert html.count('class="desktop-cluster"') == 5
-    assert html.count('class="desktop-icon"') == 20
+    assert html.count('class="desktop-icon"') == 21
     assert 'desktop-cluster-apps' in html
     assert 'desktop-cluster-title' not in html
     assert '<div class="desktop-caption">' not in html
@@ -39,7 +39,7 @@ def test_cluster_inventory_is_exactly_original_apps_in_five_groups():
     # Original ungrouped renderer remains available to the legacy oracle.
     original = legacy_desktop_icon_markup(reference, launch=True)
     assert 'desktop-cluster' not in original
-    assert original.count('class="desktop-icon"') == 20
+    assert original.count('class="desktop-icon"') == 21
 
 
 @pytest.mark.parametrize("width", [390, 500, 820, 1040, 1268, 1440])

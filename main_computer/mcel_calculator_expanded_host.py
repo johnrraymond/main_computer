@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from main_computer.mcel_applications_registry import attach_inert_presentation, CONTROLLER_JS
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 
@@ -86,18 +87,22 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
         script=(repo/path).read_text(encoding='utf8')
         if '</script' in script.lower():raise CandidateHostError('asset script termination')
         return '<script>\n'+script+'\n</script>'
-    scripts='\n'.join(asset(Path(x)) for x in ASSETS)
-    expert_css=(repo/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text(encoding='utf8')
-    expert_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
-    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-chat-console.css').read_text(encoding='utf8')
-    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-calculator-graph-inspection.css').read_text(encoding='utf8')
-    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-color-diagnostics.css').read_text(encoding='utf8')
-    expert_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-diagnostics-counter-widget.css').read_text(encoding='utf8')
-    if '</style' in expert_css.lower():
+    presentation_asset = str(CONTROLLER_JS)
+    assets = list(ASSETS)
+    if promoted and (repo / CONTROLLER_JS).is_file():
+        assets.insert(assets.index('main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js'), presentation_asset)
+    scripts='\n'.join(asset(Path(x)) for x in assets)
+    background_css=(repo/'main_computer/web/applications/styles/mcel-semantic-workbench.css').read_text(encoding='utf8')
+    background_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
+    background_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-chat-console.css').read_text(encoding='utf8')
+    background_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-calculator-graph-inspection.css').read_text(encoding='utf8')
+    background_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-semantic-color-diagnostics.css').read_text(encoding='utf8')
+    background_css+='\n'+(repo/'main_computer/web/applications/styles/mcel-diagnostics-counter-widget.css').read_text(encoding='utf8')
+    if '</style' in background_css.lower():
         raise CandidateHostError('style termination')
     page = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic Calculator · Expanded</title>
-<style>''' + expert_css + '''</style></head><body class="mcel-expert-page">
+<style>''' + background_css + '''</style></head><body class="mcel-expert-page">
 <div id="mcel-expanded-root" aria-label="Generated semantic Calculator"></div><div id="mcel-expanded-diagnostic" role="status" aria-live="polite"></div>
 <script id="mcel-expanded-ir" type="application/json">''' + payload + '''</script><script id="mcel-chat-embedded-ir" type="application/json">''' + chat_layout_payload + '</script>\n' + scripts + '''<script>
 (function(){"use strict";
@@ -128,4 +133,6 @@ def render_expanded_page(repo: Path = ROOT, *, promoted: bool = False) -> str:
  } catch(e){status.dataset.error='true';status.textContent='Calculator refused: '+String(e?.message||e);}
 })();
 </script></body></html>'''
-    return page.replace('MCEL Semantic Calculator · Expanded</title>', 'Main Computer Calculator</title>') if promoted else page
+    if promoted:
+        page = page.replace('MCEL Semantic Calculator · Expanded</title>', 'Main Computer Calculator</title>')
+    return attach_inert_presentation(page, repo, "calculator", "mcel-expanded-root", promoted=promoted)

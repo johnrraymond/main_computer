@@ -141,10 +141,11 @@ def execute_seh_deployment(operation, arguments, *, target, local_token='',
                          'operation_id': 'mcel-selection-' + secrets.token_hex(12)})
         else:
             harness_action, execute = _HARNESS[operation]
-            # For executable operations, LMS performs the read-only preflight
-            # inside its asynchronous worker so stdout/stderr and refusals are
-            # captured against the durable operation ID, not lost in a blocking
-            # pre-submission HTTP request. Explicit Preview remains unchanged.
+            # Executable Deploy and Undeploy each invoke exactly one harness
+            # lifecycle operation. The harness performs preflight, build/runtime
+            # verification, activation or disconnection internally. LMS retains
+            # the durable operation ID, streams, and exact outcome. Legacy
+            # explicit previews remain read-only diagnostic operations.
             mutation = ('/harness', {'action': harness_action,
                        'execute': execute, 'expected_generation': generation if execute else None,
                        'confirm': ('DEPLOY_SEH' if harness_action == 'deploy-seh' else

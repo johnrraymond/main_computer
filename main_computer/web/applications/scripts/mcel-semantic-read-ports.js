@@ -484,7 +484,7 @@
       if(req.intentId==="intent:create-schedule")return ["server_status","server_start","server_restart","server_shutdown"].includes(a.action) &&
         a.runAt.length<=80 && !Number.isNaN(Date.parse(a.runAt)) && a.note.length<=1024;
       if(["intent:delete-schedule","intent:run-schedule"].includes(req.intentId))return observedSchedules.has(a.scheduleId);
-      if(req.intentId==="intent:task-ai")return ["server-processes","all-processes","connections","cpu-gpu"].includes(a.view) &&
+      if(req.intentId==="intent:task-ai")return ["server-processes","all-processes","connections","cpu-gpu","operations"].includes(a.view) &&
         a.instruction.trim().length>0 && a.instruction.length<=2000 && a.query.length<=256;
       return true;
     }
@@ -681,7 +681,8 @@
             const createdAt=String(v.created_at||"");
             return {processKey:String(v.pid)+":"+(createdAt||"unknown"),pid:v.pid,
               name:v.name,status:String(v.status||"unknown"),memory:String(v.memory_human||"n/a"),
-              createdAt,commandPreview:String(v.command_preview||""),memoryRss:Number.isFinite(v.memory_rss)?v.memory_rss:0,
+              createdAt,commandPreview:String(v.command_preview||""),
+              commandLine:String(v.cmdline||""),memoryRss:Number.isFinite(v.memory_rss)?v.memory_rss:0,
               memoryAvailable:v.memory_availability==="present" || Number.isFinite(v.memory_rss),
               statusAvailable:v.status_availability==="present" || !!v.status,
               isMainComputer:v.is_main_computer===true,isCurrentProcess:v.is_current_process===true};

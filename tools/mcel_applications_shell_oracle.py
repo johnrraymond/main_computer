@@ -23,12 +23,12 @@ from main_computer.mcel_applications_shell_host import (
 
 SIZES = [390, 500, 1040, 1440]
 OUTPUT = Path("runtime/reports/mcel-applications-shell-oracle")
-# Snapshotted from the user's original desktop. Reject silent baseline changes.
+# Accepted original desktop plus SLH promotion. Reject later silent baseline changes.
 PINNED_SOURCE_SHA256 = {
-    'main_computer/web/applications/styles/base.css': '8d4bd1ed231f91161daf6b90dcdddccdda708e483293088fa0bd4c8e1ec43125',
-    'main_computer/web/applications/scripts/dom-bindings/navigation.js': 'edacc7bf452be02c801714d6e0f320517e4f567eb0e35e5809b3583c3c4f8ee5',
-    'main_computer/web/applications/scripts/desktop-icons.js': '18250db3c7e34651dba73d19e70a2b049f35a09713d5b04b37ff101a62329cd4',
-    'main_computer/web/applications.html': 'c76610e8f05e120743b5127ea4622c9bbfcd9a0cf05b07e313338d622319bd61',
+    'main_computer/web/applications/styles/base.css': '7759475e569721d2a1d996301a0851de515b87b8147f3b6c51a06747ed4236b6',
+    'main_computer/web/applications/scripts/dom-bindings/navigation.js': '5092d3cfb95268c37ab144905af72c66023b456c81c5e4fc85592d864fa55086',
+    'main_computer/web/applications/scripts/desktop-icons.js': '2a8756a85f3f611fd28375e305c93f433598089e6e1ad5714f2436a95dd89643',
+    'main_computer/web/applications.html': 'dc0e457b1a4410f01724d641fe91b566262789883653c6ffca46500c0b28904a',
 }
 
 
@@ -392,7 +392,7 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                     live_legacy.goto(host_url.rstrip('/') + '/applications?mcel-shell-child=1', wait_until='domcontentloaded', timeout=30000)
                     live_legacy.locator('#desktop-overlay .desktop-icon').first.wait_for(timeout=25000)
                     legacy = capture(live_legacy)
-                    if 'error' in legacy or len(legacy.get('icons', [])) != 20:
+                    if 'error' in legacy or len(legacy.get('icons', [])) != 21:
                         failures.append('hosted-legacy-icon-inventory-invalid')
                     else:
                         # Compare exact identity / SVG / colors, not bounding boxes:

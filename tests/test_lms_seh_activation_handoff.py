@@ -1,4 +1,7 @@
-"""YAGNI LMS deploy/activation ownership: no live Coolify or SLH mutation."""
+"""LMS delegates SEH lifecycle to one harness invocation and preserves receipts.
+
+No live Coolify, resident SLH or Mother mutations are performed by these tests.
+"""
 from __future__ import annotations
 
 import time
@@ -13,192 +16,177 @@ from tools.seh_control import identity as st, deployment_state as ds
 
 
 def done(manager, operation_id):
-    until = time.monotonic() + 6
-    while time.monotonic() < until:
-        status = manager.operation_status(operation_id)
-        if status['phase'] == 'RECORDED':
-            return status
+    until=time.monotonic()+8
+    while time.monotonic()<until:
+        row=manager.operation_status(operation_id)
+        if row['phase']=='RECORDED':return row
         time.sleep(.01)
     raise AssertionError('LMS never recorded completion')
 
 
 def _run(manager, action, operation_id):
-    confirm = {'deploy-seh':'DEPLOY_SEH', 'activate-seh':'ACTIVATE_SEH'}[action]
-    generation = manager.control.list('mainnet')['generation']
-    receipt = manager.harness({'action':action, 'execute':True,
+    confirm={'deploy-seh':'DEPLOY_SEH','undeploy-seh':'UNDEPLOY_SEH',
+             'activate-seh':'ACTIVATE_SEH'}[action]
+    generation=manager.control.list('mainnet')['generation']
+    ack=manager.harness({'action':action,'execute':True,
         'expected_generation':generation,'confirm':confirm,
         'operation_id':operation_id})
-    assert receipt['status'] == 'ACCEPTED' and receipt['operation_id'] == operation_id
-    return done(manager, operation_id)
+    assert ack['status']=='ACCEPTED' and ack['operation_id']==operation_id
+    return done(manager,operation_id)
 
 
-def test_existing_registered_uuid_activates_without_any_deploy_mutation(tmp_path):
-    root, slh, unused_remote = setup(tmp_path)
-    calls = []
-    def runner(args, *, control):
-        calls.append((args.operation, args.execute_mutations))
-        assert args.operation == 'activate-seh', 'existing application must not be redeployed'
-        return {'status': 'CONNECTED_VERIFIED' if args.execute_mutations else 'PLAN_ONLY',
-                'application_uuid': APP,
-                'remote_mutation':False}
-    manager = SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=runner)
-    assert manager.inspect({})['deployment_phase'] == 'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED'
-    receipt = _run(manager,'activate-seh','mcel-seh-explicit-activate-0000001')
-    assert receipt['result']['status'] == 'CONNECTED_VERIFIED'
-    assert calls == [('activate-seh',False),('activate-seh',True)]
-    # A stale Deploy click also resumes the existing application, never creates another.
-    calls.clear()
-    receipt = _run(manager,'deploy-seh','mcel-seh-stale-deploy-0000001')
-    assert receipt['result']['status'] == 'CONNECTED_VERIFIED'
-    assert calls == [('activate-seh',False),('activate-seh',True)]
-
-
-def test_intentional_redeployment_flows_to_activation_under_one_operation_id(tmp_path):
-    root, slh, unused_remote = removed(tmp_path)
+def test_registered_deploy_and_legacy_explicit_activate_each_delegate_once(tmp_path):
+    root,slh,_=setup(tmp_path)
     calls=[]
-    def runner(args, *, control):
-        calls.append((args.operation, args.execute_mutations))
-        if not args.execute_mutations:
-            return {'status':'PLAN_ONLY', 'remote_mutation':False}
-        if args.operation == 'deploy-seh':
-            _,_,document = st.read(root,'mainnet')
-            identity = st.deployment_record(document,'mainnet')
-            prior = ds.selected(root,'mainnet',identity)['deployment']
-            updated = deepcopy(prior)
-            updated['application_uuid']=NEW
-            updated.pop('undeployed',None)
-            updated.pop('undeployed_at',None)
-            ds.write(root,'mainnet',identity,expected_uuid=APP,deployment=updated)
-            return {'status':'REPLACEMENT_QUEUED_NOT_VERIFIED',
-                    'application_uuid':NEW,'remote_mutation':True}
-        assert args.operation == 'activate-seh'
+    def runner(args,*,control):
+        calls.append((args.operation,args.execute_mutations))
+        return {'status':'CONNECTED_VERIFIED','application_uuid':APP,'remote_mutation':False}
+    manager=SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=runner,
+        runtime_probe=lambda _: {'status':'UNVERIFIED'})
+    assert manager.inspect({})['deployment_phase']=='APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED'
+    row=_run(manager,'deploy-seh','mcel-seh-resume-two-action-00001')
+    assert row['result']['status']=='CONNECTED_VERIFIED'
+    assert calls==[('deploy-seh',True)]
+    calls.clear()
+    legacy=_run(manager,'activate-seh','mcel-seh-legacy-activation-00001')
+    assert legacy['result']['status']=='CONNECTED_VERIFIED'
+    assert calls==[('activate-seh',True)]
+
+
+def test_deploy_after_verified_undeploy_uses_one_complete_harness_call(tmp_path):
+    root,slh,_=removed(tmp_path)
+    calls=[]
+    def runner(args,*,control):
+        calls.append((args.operation,args.execute_mutations))
+        assert args.operation=='deploy-seh' and args.execute_mutations
+        _,_,document=st.read(root,'mainnet')
+        identity=st.deployment_record(document,'mainnet')
+        current=ds.selected(root,'mainnet',identity)['deployment']
+        replacement=deepcopy(current)
+        replacement['application_uuid']=NEW
+        replacement.pop('undeployed',None)
+        replacement.pop('undeployed_at',None)
+        ds.write(root,'mainnet',identity,expected_uuid=APP,deployment=replacement)
         return {'status':'CONNECTED_VERIFIED','application_uuid':NEW,
-                'outbound_tunnel_authenticated':True}
+                'remote_mutation':True,'outbound_tunnel_authenticated':True}
     manager=SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=runner)
     assert manager.inspect({})['deployment_phase']=='UNDEPLOYED'
-    receipt=_run(manager,'deploy-seh','mcel-seh-redeploy-activate-0000001')
-    assert receipt['result']['status']=='CONNECTED_VERIFIED'
-    assert receipt['result']['deployment_status']=='REPLACEMENT_QUEUED_NOT_VERIFIED'
-    assert receipt['result']['deployment_remote_mutation'] is True
-    assert receipt['result']['application_uuid']==NEW
-    assert calls==[('deploy-seh',False),('deploy-seh',True),
-                   ('activate-seh',False),('activate-seh',True)]
+    row=_run(manager,'deploy-seh','mcel-seh-redeploy-complete-00001')
+    assert row['result']['status']=='CONNECTED_VERIFIED'
+    assert row['result']['application_uuid']==NEW
+    assert calls==[('deploy-seh',True)]
 
 
-def test_queue_ack_without_canonical_readback_does_not_authorize_activation(tmp_path):
-    root, slh, unused_remote = removed(tmp_path)
+def test_queued_or_refused_outcomes_are_not_fabricated_into_success(tmp_path):
+    root,slh,_=removed(tmp_path)
     calls=[]
-    def runner(args, *, control):
+    def queued(args,*,control):
         calls.append((args.operation,args.execute_mutations))
-        return ({'status':'REPLACEMENT_QUEUED_NOT_VERIFIED','application_uuid':NEW,
-                 'remote_mutation':True} if args.execute_mutations else {'status':'PLAN_ONLY'})
-    manager=SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=runner)
-    receipt=_run(manager,'deploy-seh','mcel-seh-unverified-readback-000001')
-    assert receipt['result']['status']=='DEPLOYMENT_QUEUED_ACTIVATION_PENDING'
-    assert receipt['result']['activation_reason']=='CANONICAL_APPLICATION_READBACK_UNVERIFIED'
-    assert calls==[('deploy-seh',False),('deploy-seh',True)]
+        return {'status':'REPLACEMENT_QUEUED_NOT_VERIFIED',
+                'application_uuid':NEW,'remote_mutation':True}
+    manager=SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=queued)
+    row=_run(manager,'deploy-seh','mcel-seh-queued-not-verified-0001')
+    assert row['result']['status']=='REPLACEMENT_QUEUED_NOT_VERIFIED'
+    assert row['result']['remote_mutation'] is True
+    assert calls==[('deploy-seh',True)]
+    def refused(args,*,control):
+        calls.append((args.operation,args.execute_mutations))
+        return {'status':'REFUSED','error_code':'SEH_CANONICAL_DEPLOYMENT_DISABLED',
+                'remote_mutation':False}
+    manager.harness_runner=refused
+    row=_run(manager,'deploy-seh','mcel-seh-refused-not-overridden-01')
+    assert row['result']['status']=='REFUSED'
+    assert row['result']['error_code']=='SEH_CANONICAL_DEPLOYMENT_DISABLED'
+    assert calls[-1]==('deploy-seh',True)
 
 
-def test_activation_preflight_refusal_is_recorded_without_mutation(tmp_path):
-    root, slh, unused_remote = setup(tmp_path)
+def test_undeploy_auto_disconnect_is_owned_by_one_harness_call(tmp_path):
+    root,slh,_=setup(tmp_path)
     calls=[]
-    def runner(args, *,control):
+    def runner(args,*,control):
         calls.append((args.operation,args.execute_mutations))
-        return {'status':'REFUSED','remote_mutation':False}
+        return {'status':'SEH_UNDEPLOYED','application_removed_verified':True,
+                'remote_mutation':True,'application_uuid':APP}
     manager=SLHSEHDeploymentManager(root=root,state_dir=slh,harness_runner=runner)
-    receipt=_run(manager,'activate-seh','mcel-seh-activation-refused-000001')
-    assert receipt['result']['error_code']=='SEH_ACTIVATION_PREFLIGHT_REFUSED'
-    assert receipt['result']['remote_mutation'] is False
-    assert calls==[('activate-seh',False)]
+    row=_run(manager,'undeploy-seh','mcel-seh-undeploy-two-action-00001')
+    assert row['result']['status']=='SEH_UNDEPLOYED'
+    assert calls==[('undeploy-seh',True)]
 
 
-def test_no_canonical_application_cannot_be_created_by_deploy_action(tmp_path):
+def test_unconfigured_deploy_cannot_be_fabricated_by_lms(tmp_path):
     calls=[]
     manager=SLHSEHDeploymentManager(root=root_state(tmp_path),
-        harness_runner=lambda args,**kwargs:calls.append((args.operation,args.execute_mutations)) or {'status':'REFUSED'})
-    receipt=_run(manager,'deploy-seh','mcel-seh-unconfigured-000000001')
-    assert receipt['result']['error_code']=='SEH_DEPLOYMENT_PREFLIGHT_REFUSED'
-    assert receipt['result']['remote_mutation'] is False
-    assert calls==[('deploy-seh',False)]
+        harness_runner=lambda args,**kw:calls.append((args.operation,args.execute_mutations)) or
+             {'status':'REFUSED','remote_mutation':False})
+    row=_run(manager,'deploy-seh','mcel-seh-unconfigured-two-act-01')
+    assert row['result']['status']=='REFUSED'
+    assert calls==[('deploy-seh',True)]
 
 
-def test_ui_activation_uses_same_allowlisted_lms_harness_contract():
+def test_ui_deploy_and_undeploy_use_existing_bounded_harness_route():
     class Client:
         def __init__(self):self.calls=[]
         def request(self,method,path,payload=None):
             self.calls.append((method,path,payload))
             if method=='GET':return {'generation':33}
-            return {'status':'ACCEPTED','operation_id':'mcel-seh-ui-activate-00000001'}
+            return {'status':'ACCEPTED','operation_id':payload['operation_id']}
     client=Client()
-    result=execute_seh_deployment('activate',{},target='local',local_client=client,
-        operation_id='mcel-seh-ui-activate-00000001')
-    assert result['outcome']=='accepted-deferred'
-    assert result['operationId']=='mcel-seh-ui-activate-00000001'
-    assert client.calls[-1][2]=={'action':'activate-seh','execute':True,
-        'expected_generation':33,'confirm':'ACTIVATE_SEH',
-        'operation_id':'mcel-seh-ui-activate-00000001'}
-    client.calls=[]
-    preview=execute_seh_deployment('preview-activate',{},target='local',local_client=client)
-    assert client.calls[-1][2]=={'action':'activate-seh','execute':False,
-        'expected_generation':None,'confirm':None}
+    for verb,expected in [('deploy','deploy-seh'),('undeploy','undeploy-seh')]:
+        operation_id='mcel-seh-two-action-'+verb+'-000001'
+        result=execute_seh_deployment(verb,{},target='local',local_client=client,
+            operation_id=operation_id)
+        assert result['outcome']=='accepted-deferred'
+        assert result['operationId']==operation_id
+        assert client.calls[-1][2]=={'action':expected,'execute':True,
+            'expected_generation':33,'confirm':expected.upper().replace('-','_'),
+            'operation_id':operation_id}
 
 
-def test_network_slh_authenticates_then_forwards_activation_to_same_lms(tmp_path):
-    from tests.test_lms_seh_ownership_cutover import Services, send
+def test_network_slh_authenticates_and_forwards_same_lms_operation(tmp_path):
+    from tests.test_lms_seh_ownership_cutover import Services,send
     services=Services(tmp_path)
     try:
         calls=[]
-        services.manager.inspect=lambda body: {'deployment_phase':'APPLICATION_REGISTERED_NOT_RUNTIME_VERIFIED'}
-        def runner(args, *,control):
+        def runner(args,*,control):
             calls.append((args.operation,args.execute_mutations))
-            assert args.operation=='activate-seh'
-            return {'status':'PLAN_ONLY' if not args.execute_mutations else 'CONNECTED_VERIFIED'}
+            return {'status':'CONNECTED_VERIFIED'}
         services.manager.harness_runner=runner
-        operation_id='mcel-seh-network-activate-0000001'
-        body={'action':'activate-seh','execute':True,'expected_generation':1,
-              'confirm':'ACTIVATE_SEH','operation_id':operation_id}
+        operation_id='mcel-seh-network-two-action-0001'
+        body={'action':'deploy-seh','execute':True,'expected_generation':1,
+              'confirm':'DEPLOY_SEH','operation_id':operation_id}
         remote='/v1/org/admin/seh/deployment/harness'
         assert send(services.org.server_port,'POST',remote,body)[0]==401
-        code,result=send(services.org.server_port,'POST',remote,body,
-                         headers={'Authorization':'Bearer good'})
-        assert code==200 and result['status']=='ACCEPTED'
-        receipt=done(services.manager,operation_id)
-        assert receipt['result']['status']=='CONNECTED_VERIFIED'
-        assert receipt['principal']=='owner-device'
-        assert calls==[('activate-seh',False),('activate-seh',True)]
-        code,view=send(services.org.server_port,'GET',
-            '/v1/org/admin/seh/deployment/operations/'+operation_id,
-            headers={'Authorization':'Bearer good'})
-        assert code==200 and view['result']['status']=='CONNECTED_VERIFIED'
+        code,ack=send(services.org.server_port,'POST',remote,body,
+                      headers={'Authorization':'Bearer good'})
+        assert code==200 and ack['status']=='ACCEPTED'
+        row=done(services.manager,operation_id)
+        assert row['result']['status']=='CONNECTED_VERIFIED'
+        assert row['principal']=='owner-device'
+        assert calls==[('deploy-seh',True)]
     finally:
         services.stop()
 
 
-def test_activation_harness_stdout_stderr_are_durable_in_one_receipt(tmp_path):
-    import json
-    root, slh, unused_remote=setup(tmp_path)
+def test_harness_live_progress_and_final_report_share_one_receipt(tmp_path):
+    root,slh,_=setup(tmp_path)
     manager=SLHSEHDeploymentManager(root=root,state_dir=slh)
-    script=tmp_path/'mock_activation_cli.py'
+    script=tmp_path/'mock_two_action_cli.py'
     script.write_text('''
 import json,sys
 from pathlib import Path
 args=sys.argv[1:]
-assert args[0]=='activate-seh'
+assert args[0]=='deploy-seh' and '--execute-mutations' in args
 report=Path(args[args.index('--report')+1])
-mutation='--execute-mutations' in args
-print('activation preflight' if not mutation else 'activation worker started', flush=True)
-print('activation stderr detail', file=sys.stderr, flush=True)
-report.write_text(json.dumps({'status':'CONNECTED_VERIFIED' if mutation else 'PLAN_ONLY',
+print('[SEH +0.1s] build.verify: in_progress', file=sys.stderr, flush=True)
+print('[SEH +0.2s] resident.connection: verified', file=sys.stderr, flush=True)
+report.write_text(json.dumps({'status':'CONNECTED_VERIFIED',
                                 'application_uuid':'owned-app'}),encoding='utf-8')
 ''',encoding='utf-8')
     manager._harness_script=lambda:script
-    operation_id='mcel-seh-activation-streams-000001'
-    receipt=_run(manager,'activate-seh',operation_id)
-    assert receipt['result']['status']=='CONNECTED_VERIFIED'
-    output='\n'.join(x['text'] for x in receipt['output'])
-    assert 'activation preflight' in output
-    assert 'activation worker started' in output
-    assert 'activation stderr detail' in output
-    assert manager.operation_snapshot()['busy'] is False
-    reconnect=SLHSEHDeploymentManager(root=root,state_dir=slh)
-    assert reconnect.operation_status(operation_id)['output']==receipt['output']
+    operation_id='mcel-seh-two-action-output-000001'
+    row=_run(manager,'deploy-seh',operation_id)
+    assert row['result']['status']=='CONNECTED_VERIFIED'
+    output='\n'.join(item['text'] for item in row['output'])
+    assert 'build.verify' in output and 'resident.connection' in output
+    restarted=SLHSEHDeploymentManager(root=root,state_dir=slh)
+    assert restarted.operation_status(operation_id)['output']==row['output']

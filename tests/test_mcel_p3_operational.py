@@ -176,7 +176,7 @@ def test_p3_generated_browser_no_implicit_effects(browser,width):
         assert page.evaluate('window.__requests.length')==0
         page.locator('form[data-intent="intent:refresh"] button[type=submit]').click()
         page.wait_for_function('window.__requests.some(v=>v.url.endsWith("/overview"))')
-        page.locator('[data-record-key="501:2026-11-01T12:00:00+00:00"] [data-select-key]').click()
+        page.locator('[data-record-key="501:2026-11-01T12:00:00+00:00"][data-mcel-row-selectable]').click()
         page.get_by_role('button',name='Terminate Process').click()
         page.wait_for_function('window.__requests.some(v=>v.url.endsWith("/action"))')
         calls=page.evaluate('window.__requests')

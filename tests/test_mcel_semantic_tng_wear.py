@@ -21,7 +21,7 @@ def _page(browser):
         removeItem:k=>values.delete(k),clear:()=>values.clear()}});}}''')
     page.set_content(render_expanded_page(ROOT, promoted=True))
     assert page.locator('#mcel-expanded-diagnostic').inner_text() == 'Semantic Calculator ready'
-    for name in ('mcel-semantic-expert.css', 'mcel-lab.css'):
+    for name in ('mcel-lab.css',):
         page.add_style_tag(path=str(WEB / 'styles' / name))
     for name in ('mcel-semantic-presentation-bridge.js', 'mcel-semantic-theme-preview.js',
                  'mcel-semantic-chrome-presentation-law.js'):

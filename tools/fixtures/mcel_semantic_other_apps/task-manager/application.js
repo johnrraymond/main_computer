@@ -3,12 +3,12 @@ const mcel=require("@mcel/app");
 module.exports=mcel.defineApp({id:"semantic-task-manager",title:"Semantic Task Manager"},dsl=>{
   const text=dsl.field.text(),num=dsl.field.integer();
   const rows=dsl.field.list(dsl.field.record({processKey:text,pid:num,name:text,status:text,memory:text,
-    createdAt:text,commandPreview:text,memoryRss:num,memoryAvailable:dsl.field.boolean(),
+    createdAt:text,commandPreview:text,commandLine:text,memoryRss:num,memoryAvailable:dsl.field.boolean(),
     statusAvailable:dsl.field.boolean(),isMainComputer:dsl.field.boolean(),isCurrentProcess:dsl.field.boolean()}),{key:"processKey"});
   const processes=dsl.state.derived("processes",rows);
   const selected=dsl.state.rendererLocal("selected",text,{initial:""});
   const selectedSchedule=dsl.state.rendererLocal("selected-schedule",text,{initial:""});
-  const view=dsl.state.rendererLocal("view",text.oneOf(["server-processes","all-processes","connections","cpu-gpu"]),{initial:"server-processes"});
+  const view=dsl.state.rendererLocal("view",text.oneOf(["server-processes","all-processes","connections","cpu-gpu","operations"]),{initial:"server-processes"});
   const all=dsl.state.derived("all-processes",rows);
   const connectionRows=dsl.field.list(dsl.field.record({key:text,pid:text,name:text,status:text,local:text,remote:text}),{key:"key"});
   const connections=dsl.state.derived("connections",connectionRows);
@@ -35,7 +35,7 @@ module.exports=mcel.defineApp({id:"semantic-task-manager",title:"Semantic Task M
   reader.operation("hardware","observeHardware",{inputs:{query:text,limit:text,includeConnections:text},result:hardwareShape});
   reader.operation("schedules","listSchedules",{result:scheduleRows});
   reader.operation("server-status","readServerStatus",{result:text});
-  reader.operation("ai","getAiBrief",{inputs:{instruction:text,query:text,view:text.oneOf(["server-processes","all-processes","connections","cpu-gpu"])},result:text});
+  reader.operation("ai","getAiBrief",{inputs:{instruction:text,query:text,view:text.oneOf(["server-processes","all-processes","connections","cpu-gpu","operations"])},result:text});
   const control=dsl.capability.external("task-control",{risk:"consequential",description:"Confirmed, generation-checked process and server lifecycle actions"});
   control.operation("terminate","terminateObservedProcess",{inputs:{selected:text},result:operationReceipt,risk:"consequential"});
   control.operation("kill","killObservedProcess",{inputs:{selected:text},result:operationReceipt,risk:"consequential"});
@@ -66,9 +66,10 @@ module.exports=mcel.defineApp({id:"semantic-task-manager",title:"Semantic Task M
   const chooseAll=dsl.intent.selectFromCollection("choose-all-process",all,selected);
   const chooseSchedule=dsl.intent.selectFromCollection("choose-schedule",schedules,selectedSchedule);
   const surface=dsl.surface.bindHtml("application",{bindings:{
-    query:[dsl.surface.action("select-notebook",{intent:switchView}),dsl.surface.form("monitor-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refresh})],
-    processes:[dsl.surface.collection("process-list",{key:"processKey",fields:["name","pid","status","memory"],state:processes,select:choose})],
-    all:[dsl.surface.form("all-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshAll}),dsl.surface.collection("all-process-list",{key:"processKey",fields:["name","pid","status","memory"],state:all,select:chooseAll})],
+    views:[dsl.surface.action("select-notebook",{intent:switchView})],
+    processes:[dsl.surface.form("monitor-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refresh}),
+      dsl.surface.collection("process-list",{key:"processKey",fields:["name","pid","commandLine","status","memory"],rowLayout:{identity:["name","pid"],description:"commandLine",metadata:["status","memory"],selectOnRow:true},state:processes,select:choose})],
+    all:[dsl.surface.form("all-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshAll}),dsl.surface.collection("all-process-list",{key:"processKey",fields:["name","pid","commandLine","status","memory"],rowLayout:{identity:["name","pid"],description:"commandLine",metadata:["status","memory"],selectOnRow:true},state:all,select:chooseAll})],
     connections:[dsl.surface.form("connection-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshConnections}),dsl.surface.collection("connection-list",{key:"key",fields:["pid","name","status","local","remote"],state:connections})],
     hardware:[dsl.surface.form("hardware-query",{fields:{query:text,limit:text,includeConnections:text},defaults:{query:"",limit:"100",includeConnections:"true"},intent:refreshHardware}),dsl.surface.text("hardware-overview",{value:hardware})],
     schedules:[dsl.surface.action("list-schedules",{intent:listSchedules}),

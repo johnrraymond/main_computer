@@ -1,0 +1,14 @@
+{
+  "schema": "nanojev.sealed-overlap.paraphrase-probes.v1",
+  "description": "Human-authored, diagnostic-only paraphrases for an unchanged eight-axis space; not contract terms, labels, or model-generated vocabulary.",
+  "paraphrases": {
+    "authority": ["A delegated representative may sign off on the change", "Someone empowered to approve has given clearance"],
+    "obligation": ["Performance is mandatory under the governing terms", "A continuing commitment requires a party to act"],
+    "resource": ["Only a limited supply is available for this task", "A finite pool of computing capacity must be assigned"],
+    "evidence": ["A traceable record supports the assertion", "Independent observations corroborate what is claimed"],
+    "time": ["This permission is valid only within a particular interval", "Completion must precede a specified cutoff"],
+    "uncertainty": ["Available facts do not settle which outcome will occur", "More than one explanation remains consistent with what is known"],
+    "exclusion": ["These alternatives are not permitted to coexist", "The governing rule disallows the requested combination"],
+    "consequence": ["Carrying out the step will alter what happens next", "The action produces a specified change in the resulting condition"]
+  }
+}

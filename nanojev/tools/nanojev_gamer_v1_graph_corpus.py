@@ -263,14 +263,14 @@ def generate(output, *, train=200, dev=40, challenge=24, test=40, seed=47):
 
 
 
-def _counterfactual_pair(rng, family, mode, index):
+def _counterfactual_pair(rng, family, mode, index, *, name_pool=None):
     """Author two structurally identical graphs with changed surface identities.
 
     The same surface appears as an actor in one prompt and an action in the
     other for role_swap. All quantities, graph edges, and decision semantics
     remain unchanged. No lexical lookup is introduced at inference.
     """
-    labels=rng.sample(NAME_POOLS['train'],9)
+    labels=rng.sample(NAME_POOLS['train'] if name_pool is None else tuple(name_pool),9)
     actor,first,second,third,op_a,op_b,op_c,renamed_actor,renamed_action=labels
     new_actor=first if mode=='role_swap' else renamed_actor
     new_first=actor if mode=='role_swap' else renamed_action

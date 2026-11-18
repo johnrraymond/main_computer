@@ -23,6 +23,7 @@ from .authority import SLHAuthority, SLHError
 from .managed_gateway import SLHManagedGateway, SLHMarketplaceProxy, transport_identity
 from .organization_state import read_config, save_config, OrganizationConfigError
 from .organization_process import registered_process
+from .organization_failure import record_listener_bind_failure
 from .storage import slh_state_dir
 from .marketplace_auto import AutomaticMarketplace, read_settings
 from .organization_wallet import OrganizationWallet
@@ -544,7 +545,16 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     # ORG-SLH, not LMS-SLH, creates and owns the durable bearer root.
     authority.ensure_local_auth_key()
     tls_context, fingerprint = transport_identity(state_dir)
-    server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
+    try:
+        server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
+    except OSError as exc:
+        # Preserve the original socket error before the process exits. The
+        # controller must not have to parse traceback text to diagnose it.
+        try:
+            record_listener_bind_failure(state_dir, config, exc)
+        except OSError:
+            pass  # Never mask the primary bind failure.
+        raise
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.seh_identity_only = False
     server.authority = authority

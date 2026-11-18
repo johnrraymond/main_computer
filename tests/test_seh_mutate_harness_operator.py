@@ -422,7 +422,8 @@ def test_queued_deploy_returns_nonzero_and_does_not_print_second_command(monkeyp
     assert seh_harness.main(['deploy-seh', '--seh', 'company-primary']) == 3
     captured = capsys.readouterr()
     assert json.loads(captured.out)['ready'] is False
-    assert captured.err == ''
+    assert '[SEH ' in captured.err and 'status=DEPLOY_QUEUED_NOT_VERIFIED' in captured.err
+    assert 'Next SEH command' not in captured.err
 
 
 def test_trust_redeploy_is_incomplete_and_never_prints_manual_connector(monkeypatch, capsys):
@@ -562,3 +563,61 @@ def test_activate_unpushed_head_uses_hub_message_without_extra_commands(monkeypa
     assert 'SEH_GIT_RECONCILE_COMMAND:' not in captured.err
     assert 'SEH_GIT_COMMIT_PUSH_COMMAND:' not in captured.err
     assert 'git_repair_command' not in json.loads(captured.out)
+
+
+def test_incomplete_coolify_failure_prints_specific_repair_not_git(monkeypatch, capsys):
+    import seh_mutate_harness as harness
+    monkeypatch.setattr(harness, 'run', lambda _: {
+        'status': 'INCOMPLETE', 'remote_mutation': True,
+        'application_uuid': 'existing-replacement-uuid',
+        'failed_stage': 'seh_deployment_state_commit_or_trust',
+        'failed_operation': 'coolify_adoption_identity_verification',
+        'error_domain': 'COOLIFY',
+        'error_code': 'SEH_COOLIFY_ADOPTION_IDENTITY_VERIFICATION_FAILED',
+        'reason': 'New Coolify application deployment identity changed before SEH adoption',
+    })
+    assert harness.main(['deploy-seh', '--network', 'mainnet', '--execute-mutations',
+                         '--yes-i-know-this-mutates-seh']) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)['application_uuid'] == 'existing-replacement-uuid'
+    assert 'SEH_COOLIFY_ADOPTION_IDENTITY_VERIFICATION_FAILED' in captured.err
+    assert 'inspect --network mainnet' in captured.err
+    assert 'Git push is not indicated' in captured.err
+    assert 'SEH_GIT_COMMIT_PUSH_COMMAND' not in captured.err
+    assert 'deploy-seh --network' not in captured.err
+
+
+def test_incomplete_state_failure_shows_state_repair(monkeypatch, capsys):
+    import seh_mutate_harness as harness
+    monkeypatch.setattr(harness, 'run', lambda _: {
+        'status': 'INCOMPLETE', 'remote_mutation': True,
+        'failed_operation': 'seh_local_state_write',
+        'error_domain': 'LOCAL_SEH_STATE',
+        'error_code': 'SEH_LOCAL_STATE_WRITE_FAILED',
+        'reason': 'LOCAL_SEH_STATE verification/write failed (OSError)',
+    })
+    assert harness.main(['deploy-seh', '--network', 'mainnet']) == 2
+    captured = capsys.readouterr()
+    assert 'local SEH deployment-state path' in captured.err
+    assert 'Git push will not repair' in captured.err
+    assert 'SEH_GIT_COMMIT_PUSH_COMMAND' not in captured.err
+
+
+def test_incomplete_git_publication_prints_repair_without_second_create(monkeypatch, capsys):
+    import seh_mutate_harness as harness
+    command = 'git push origin HEAD'
+    monkeypatch.setattr(harness, 'run', lambda _: {
+        'status': 'INCOMPLETE', 'remote_mutation': True,
+        'application_uuid': 'existing-replacement-uuid',
+        'failed_operation': 'seh_git_source_not_published',
+        'git_repair_command': command,
+    })
+    assert harness.main(['deploy-seh', '--network', 'mainnet',
+                         '--execute-mutations', '--yes-i-know-this-mutates-seh']) == 2
+    captured = capsys.readouterr()
+    assert 'SEH_GIT_COMMIT_PUSH_COMMAND' in captured.err
+    assert command in captured.err
+    assert 'do not create a second application' in captured.err
+    assert 'inspect --network mainnet' in captured.err
+    assert 'deploy-seh --network' not in captured.err
+    assert json.loads(captured.out)['git_repair_command'] == command

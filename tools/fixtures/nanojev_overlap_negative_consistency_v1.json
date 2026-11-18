@@ -1,0 +1,24 @@
+{
+  "schema": "nanojev.sealed-overlap.negative-consistency-fixture.v1",
+  "scope": "Independent authored 17-challenge holdout; explicit role and consequence anchors; semantic truth is evaluation-only and never supplied to the decoder",
+  "document_delimiter": " || ",
+  "challenges": [
+    {"kind":"neg_required_paraphrase","policy":"supported","truth":"negative","template":"The recipient is {recipient}; actor is {actor}; after {condition}, {actor} is not required to deliver the {asset}; consequence: {consequence}"},
+    {"kind":"neg_need_not_paraphrase","policy":"supported","truth":"negative","template":"The actor is {actor}; recipient is {recipient}; once {condition}, {actor} need not deliver the {asset}; the consequence is {consequence}"},
+    {"kind":"neg_no_obligation","policy":"supported","truth":"negative","template":"After {condition}, actor is {actor}; recipient is {recipient}; {actor} has no obligation to deliver the {asset}; outcome: {consequence}"},
+    {"kind":"neg_no_duty","policy":"supported","truth":"negative","template":"For the recipient is {recipient} and actor is {actor}, after {condition}, no duty exists to deliver the {asset}; consequence: {consequence}"},
+    {"kind":"neg_consequence_front","policy":"supported","truth":"negative","template":"The consequence is {consequence}; the actor is {actor} and recipient is {recipient}; after {condition}, {actor} is not required to transfer the {asset}"},
+    {"kind":"neg_reordered","policy":"supported","truth":"negative","template":"The recipient is {recipient}; supplier is {actor}; after {condition}, {actor} need not transfer the {asset}; the consequence is {consequence}"},
+    {"kind":"pos_control","policy":"supported","truth":"positive","template":"The actor is {actor}; the recipient is {recipient}; once {condition}, a duty exists to transfer the {asset}; the consequence is {consequence}"},
+    {"kind":"pos_condition_negated","policy":"supported","truth":"positive_scope_not","template":"If (not {condition}), actor is {actor}; recipient is {recipient}; a duty exists to transfer the {asset}; consequence: {consequence}"},
+    {"kind":"neg_condition_negated","policy":"supported","truth":"negative_scope_not","template":"If (not {condition}), actor is {actor}; recipient is {recipient}; no duty exists to transfer the {asset}; consequence: {consequence}"},
+    {"kind":"quoted_negative","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, the old note quotes 'no duty exists to transfer the {asset}'; consequence: {consequence}"},
+    {"kind":"draft_negative","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, a draft says no duty exists to transfer the {asset}; consequence: {consequence}; never adopted"},
+    {"kind":"denied_claim","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, a witness disputes the assertion that no duty exists to transfer the {asset}; consequence: {consequence}"},
+    {"kind":"ambiguous_asset","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, no duty exists to transfer the {asset} or {other_asset}; consequence: {consequence}"},
+    {"kind":"ambiguous_consequence","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, no duty exists to transfer the {asset}; consequence: {consequence} or {other_consequence}"},
+    {"kind":"ambiguous_actor","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; the actor is also {other_actor}; recipient is {recipient}; after {condition}, no duty exists to transfer the {asset}; consequence: {consequence}"},
+    {"kind":"uncertain_negative","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, it is uncertain whether no duty exists to transfer the {asset}; consequence: {consequence}"},
+    {"kind":"unsupported_double_negative","policy":"abstain","truth":"indeterminate","template":"The actor is {actor}; recipient is {recipient}; after {condition}, it might not be false that no duty exists to transfer the {asset}; consequence: {consequence}"}
+  ]
+}

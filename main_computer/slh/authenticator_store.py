@@ -336,6 +336,29 @@ class LocalIdentityStore:
                     or not 0 < challenge['expires_at'] - challenge['issued_at'] <= 120
                     or not challenge['issued_at'] - 30 <= int(time.time()) < challenge['expires_at']):
                 raise IdentityStoreError('INVALID_CHALLENGE')
+        elif action == 'slh.device.enrollment.request':
+            # A new identity can request admission, never approve its own request.
+            # This signer remains in LMS-SLH; neither MCEL nor the CLI reads the key.
+            expected = {'version', 'action', 'audience', 'selected_admin',
+                        'device_id', 'public_key', 'kind', 'device_name',
+                        'claimed_user', 'requested_role', 'client_nonce'}
+            if (set(challenge) != expected or type(challenge.get('version')) is not int
+                    or challenge['version'] != 1
+                    or not isinstance(challenge.get('audience'), str)
+                    or not re.fullmatch(r'slh://[0-9a-f]{64}', challenge['audience'])
+                    or challenge.get('public_key') != identity['public_key']
+                    or not isinstance(challenge.get('selected_admin'), str)
+                    or not 1 <= len(challenge['selected_admin']) <= 160
+                    or challenge.get('kind') not in ('worker', 'requester', 'administrator', 'phone')
+                    or challenge.get('requested_role') not in ('worker', 'requester', 'admin')
+                    or not isinstance(challenge.get('device_name'), str)
+                    or not 1 <= len(challenge['device_name'].strip()) <= 120
+                    or not isinstance(challenge.get('claimed_user'), str)
+                    or not 1 <= len(challenge['claimed_user'].strip()) <= 160
+                    or not isinstance(challenge.get('client_nonce'), str)
+                    or not 24 <= len(challenge['client_nonce']) <= 128
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', challenge['client_nonce'])):
+                raise IdentityStoreError('INVALID_CHALLENGE')
         elif action == 'slh.admin.root.register':
             # Exact V6-A grant statement. A local identity signs only its own
             # public key, for a short window, bound to one ORG service.

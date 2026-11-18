@@ -8,17 +8,16 @@ from __future__ import annotations
 
 from html import escape
 import hashlib
-import ast
 import json
 from pathlib import Path, PureWindowsPath
 
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_navigation_contract import make_destination
+from main_computer.mcel_icon import render_icon
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 import re
 
 SOURCE = Path("tools/fixtures/mcel_semantic_applications_shell/application.js")
-REGISTRY = Path("tools/fixtures/mcel_semantic_applications_shell/registry.json")
 CSS = Path("main_computer/web/applications/styles/mcel-applications-shell.css")
 LEGACY_BASE = Path("main_computer/web/applications/styles/base.css")
 LEGACY_HTML = Path("main_computer/web/applications.html")
@@ -35,7 +34,6 @@ ROUTE = "/applications/mcel-semantic-shell"
 APP_ID = "semantic-applications-shell"
 REGION_CLASSES = {
     "application": "mcel-applications-shell",
-    "masthead": "mcel-shell-masthead",
     "shell": "mcel-shell-content",
     "launcher": "mcel-shell-launcher",
     "workspace": "mcel-shell-workspace",
@@ -44,70 +42,37 @@ REGION_CLASSES = {
 }
 PARENTS = {
     "application": None,
-    "masthead": "application",
     "shell": "application",
     "launcher": "shell",
     "workspace": "shell",
     "application-mount": "workspace",
     "status": "application",
 }
-SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console"})
 
-# Desktop-only spatial groups. The legacy inventory remains authoritative for
-# each application's title, icon, description, route and canonical identity.
+# Desktop-only spatial groups. Legacy launcher sources supply labels and an
+# independent visual oracle; MCEL Icon supplies the live SVG geometry.
 DESKTOP_GROUPS = (
     ("productivity", "Productivity & Communication", ("document", "spreadsheet", "onlyoffice", "email", "calculator")),
     ("development", "Development", ("code-editor", "terminal", "git-tools", "website-builder", "mcel-lab")),
     ("compute", "AI & Compute", ("chat-console", "ai-control", "worker", "conductor", "wallet")),
     ("creative", "Creative & Games", ("game-editor", "webgl", "astrometric")),
-    ("system", "System & Files", ("file-explorer", "task-manager")),
+    ("system", "System & Files", ("file-explorer", "task-manager", "slh")),
 )
 DESKTOP_CLUSTERS_CSS = Path("main_computer/web/applications/styles/mcel-desktop-clusters.css")
 
 
-def _canonical_route_names(repo: Path) -> frozenset[str]:
-    """Read the canonical route allowlist as data, without importing the live SPA.
-
-    Reading its AST avoids initializing the unrelated game browser assets when
-    this candidate is compiled in an isolated acceptance fixture.
-    """
-    tree = ast.parse((repo / "main_computer/viewport_state.py").read_text(encoding="utf-8"))
-    for statement in tree.body:
-        if isinstance(statement, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "APPLICATION_ROUTE_NAMES"
-            for target in statement.targets
-        ):
-            value = ast.literal_eval(statement.value)
-            if not isinstance(value, set) or not all(isinstance(item, str) for item in value):
-                break
-            return frozenset(value)
-    raise CandidateHostError("Canonical application route allowlist is unavailable")
+# Shared source authority for app IDs, routes, and presentation policy.
+# Keep the existing shell adapter for tests and launcher integrations.
+from main_computer.mcel_applications_registry import (
+    REGISTRY_PATH as REGISTRY,
+    SEMANTIC_APPS,
+    canonical_route_names as _canonical_route_names,
+    read_registry as _read_shared_registry,
+)
 
 
 def _read_registry(repo: Path) -> dict:
-    registry = json.loads((repo / REGISTRY).read_text(encoding="utf-8"))
-    apps = registry.get("apps")
-    if registry.get("schema") != "mcel.applications-shell.registry.v1" or not isinstance(apps, list):
-        raise CandidateHostError("MCEL shell registry schema invalid")
-    ids = set()
-    for app in apps:
-        if not isinstance(app, dict) or set(app) != {"id", "title", "description", "route", "mount"}:
-            raise CandidateHostError("MCEL shell registry entry invalid")
-        slug = app["id"]
-        if not isinstance(slug, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", slug) or slug in ids:
-            raise CandidateHostError("MCEL shell registry has unknown or duplicate app")
-        ids.add(slug)
-        if app["route"] != ("/applications" if slug == "desktop" else f"/applications/{slug}"):
-            raise CandidateHostError("MCEL shell registry route must be canonical")
-        expected = "overview" if slug == "desktop" else "semantic" if slug in SEMANTIC_APPS else "legacy"
-        if app["mount"] != expected:
-            raise CandidateHostError("MCEL shell registry cannot misclassify app implementation")
-        for key in ("title", "description"):
-            if not isinstance(app[key], str) or not 0 < len(app[key]) <= 160:
-                raise CandidateHostError("MCEL shell registry text invalid")
-    if ids != _canonical_route_names(repo):
-        raise CandidateHostError("MCEL shell registry must cover all canonical app routes")
-    return registry
+    return _read_shared_registry(repo, validate_presentation=False)
 
 
 def compile_applications_shell(repo: Path = ROOT) -> tuple[dict, dict]:
@@ -174,8 +139,9 @@ def _portable_repo_key(path: Path | str) -> str:
 
 
 def legacy_desktop_reference(repo: Path = ROOT) -> dict:
-    """Extract the original desktop inventory, SVG paths, and CSS from the legacy
-    authored source. No separately invented replacement icons or palette.
+    """Extract the frozen legacy icon/launcher reference for independent parity.
+
+    This source remains an oracle, not the deployed desktop SVG authority.
     """
     nav = (repo / LEGACY_NAVIGATION).read_text(encoding="utf-8")
     html = (repo / LEGACY_HTML).read_text(encoding="utf-8")
@@ -197,9 +163,9 @@ def legacy_desktop_reference(repo: Path = ROOT) -> dict:
     launcher = [{'route':route,'id':slug,'title':title.strip(),'description':description.strip()}
                 for route,slug,title,description in re.findall(
                     r'<a class="app-card[^"]*" href="([^"]+)" data-app="([^"]+)"[^>]*>\s*<strong>(.*?)</strong>\s*<span>(.*?)</span>\s*</a>',html,re.S)]
-    if len(launcher)!=21 or len({x['id'] for x in launcher})!=21:
-        raise CandidateHostError('Original application launcher oracle incomplete')
-    if len(items) != 20 or len({x["app"] for x in items}) != 20 or len(path_map) != 20:
+    if not launcher or len({x["id"] for x in launcher}) != len(launcher):
+        raise CandidateHostError("Original application launcher oracle empty or contains duplicate IDs")
+    if len(items) != 21 or len({x["app"] for x in items}) != 21 or len(path_map) != 21:
         raise CandidateHostError("Legacy desktop icon oracle incomplete")
     if set(path_map) != {x["app"] for x in items}:
         raise CandidateHostError("Legacy desktop source inventory and SVGs disagree")
@@ -222,11 +188,10 @@ def legacy_desktop_icon_markup(reference: dict, *, launch: bool, grouped: bool =
     routes = {app["id"]: app["route"] for app in reference["launcher"]}
     for item in reference["icons"]:
         slug, title, summary = (escape(item[key], quote=True) for key in ("app", "title", "summary"))
-        glyph = reference["svg"].get(item["app"])
-        if glyph:
-            drawing = '<svg class="desktop-glyph-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + glyph + '</svg>'
-        else:
-            drawing = escape(item["glyph"])
+        # Live desktop icons are supplied exclusively by MCEL Icon.  Keep the
+        # source-bound legacy SVGs in `reference` as an independent parity
+        # oracle, not as a fallback or a second production drawing authority.
+        drawing = render_icon("application." + item["app"], class_name="desktop-glyph-svg")
         summary_tail = "" if grouped and launch else f"<span>{summary}</span>"
         if launch:
             # A real anchor is required: Ctrl/Shift-click, context-menu Open in
@@ -249,7 +214,7 @@ def legacy_desktop_icon_markup(reference: dict, *, launch: bool, grouped: bool =
         return "\n".join(result)
     arranged = [app for _, _, apps in DESKTOP_GROUPS for app in apps]
     if len(arranged) != len(set(arranged)) or set(arranged) != set(cards_by_id):
-        raise CandidateHostError("Desktop groups must partition the canonical 20-app inventory")
+        raise CandidateHostError("Desktop groups must partition the canonical desktop icon inventory")
     clusters = []
     for slug, title, apps in DESKTOP_GROUPS:
         # Keep each related run together for wrapping, but no visible group
@@ -294,9 +259,7 @@ def _markup(ir: dict, reference: dict) -> str:
         if name == "application-mount":
             extra = ' id="mcel-shell-application-mount" data-mode="overview"'
         attrs = f' class="{class_name}" data-mcel-region-id="{escape(region["id"])}"{extra}'
-        if name == "masthead":
-            body = _static(region)
-        elif name == "launcher":
+        if name == "launcher":
             body = '''<div id="mcel-shell-launcher-panel" class="mcel-shell-launcher-panel" data-open="false">''' + _static(region) + '''
               <div class="mcel-shell-launcher-items" id="mcel-shell-launcher-items"></div></div>'''
         elif name == "application-mount":

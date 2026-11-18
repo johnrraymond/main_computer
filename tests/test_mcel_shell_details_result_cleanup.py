@@ -38,7 +38,7 @@ def test_shell_does_not_claim_application_heading(browser):
     page=_page(browser, render_applications_shell_candidate(canonical_promoted=True))
     try:
         assert page.locator('body').get_attribute('data-mcel-shell-ready')=='true'
-        assert page.locator('#mcel-shell-masthead .mcel-shell-head-right').count()==0
+        assert page.locator('#mcel-shell-masthead').count()==0
         assert page.locator('#mcel-shell-open-native').count()==0
         assert page.locator('.mcel-shell-toolbar').count()==0
         assert page.locator('.mcel-shell-proof').count()==0
@@ -55,7 +55,7 @@ def test_shell_does_not_claim_application_heading(browser):
         assert abs(panel.bounding_box()['x']+panel.bounding_box()['width']-56)<=3
         assert page.locator('#mcel-shell-active-title').count()==0
         assert page.locator('.mcel-shell-workspace-header').count()==0
-        assert page.locator('#mcel-shell-masthead h1').inner_text()=='MAIN COMPUTER APPLICATIONS'
+        assert page.locator('h1').count()==0  # Child app owns its own title.
     finally:
         page.close()
 
@@ -66,7 +66,7 @@ def test_no_hamburger_on_any_shell_application(browser):
     try:
         page.evaluate('history.pushState = () => {}')
         apps=page.evaluate('window.__mcelApplicationsShell.availableApplications()')
-        assert len(apps)==21
+        assert len(apps)==22
         for app in apps:
             assert page.evaluate('(id)=>window.__mcelApplicationsShell.select(id,true)',app)
             assert page.locator('#mcel-shell-active-title').count()==0

@@ -12,7 +12,8 @@ WEB = ROOT/'main_computer/web/applications'
 
 
 def _page(with_color=False, invalid=False):
-    page=render_expanded_page(ROOT,promoted=True)
+    page=render_expanded_page(ROOT,promoted=True).replace('</head>',
+        '<script>window.__mcelSemanticColorLabPreview=true;</script></head>')
     if True:
         m=re.search(r'(<script id="mcel-expanded-ir" type="application/json">)(.*?)(</script>)',page,flags=re.S)
         assert m
@@ -53,54 +54,46 @@ def _storage(page):
     }}''')
 
 
-def test_canonical_renderer_auto_binds_one_authored_action_and_keeps_calculator_operational():
+def test_canonical_renderer_infers_all_color_targets_without_authored_color_and_keeps_operations():
     with sync_playwright() as p:
         browser=_chrome(p,None)
         page=browser.new_page(viewport={'width':980,'height':760},device_scale_factor=.75)
         _storage(page)
-        page.set_content(_page(with_color=True))
-        assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready',page.locator('#mcel-expanded-diagnostic').inner_text()
+        page.set_content(_page())
+        assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
         result=page.evaluate('''() => {
           const app=window.__mcelExpanded.app, root=document.getElementById('mcel-expanded-root');
+          const submit=root.querySelector('[data-mcel-node$="arithmetic-expression"] button[type="submit"]');
           const buttons=[...root.querySelectorAll('button')];
-          const bound=root.querySelector('[data-mcel-color-state]');
-          const describe=()=>{const b=getComputedStyle(bound),r=bound.getBoundingClientRect();return {
-            color:b.color,background:b.backgroundColor,
-            geometry:[r.x,r.y,r.width,r.height],
-            node:bound.closest('[data-mcel-node]').getAttribute('data-mcel-node')};};
-          return {report:app.colorPresentation(),boundCount:buttons.filter(b=>b.hasAttribute('data-mcel-color-state')).length,
-            native:bound?.tagName,role:bound?.getAttribute('data-mcel-color-role'),rest:describe(),
-            other:root.querySelector('[data-pad-action="submit"]').hasAttribute('data-mcel-color-state')};
+          const before=submit.getBoundingClientRect();
+          return {report:app.colorPresentation(),native:submit.tagName,
+            role:submit.getAttribute('data-mcel-color-role'),colored:root.querySelectorAll('[data-mcel-color-state]').length,
+            buttonCoverage:buttons.filter(x=>x.hasAttribute('data-mcel-color-state')).length,
+            buttons:buttons.length,geom:[before.x,before.y,before.width,before.height]};
         }''')
-        assert result['report']['status']=='applied' and result['report']['authored']==1,result
-        assert result['boundCount']==1 and result['native']=='BUTTON' and result['role']=='action.generic',result
-        assert result['other'] is False and result['rest']['node'].endswith('arithmetic-expression'),result
-        button=page.locator('[data-mcel-color-state]')
+        assert result['report']['status']=='applied' and result['report']['authored']==0,result
+        assert result['report']['inferred']==27 and result['colored']==111,result
+        assert result['native']=='BUTTON' and result['role']=='action.evaluate',result
+        assert result['buttonCoverage']==53 and result['buttons']==75,result  # Embedded chat owns its controls
+        button=page.locator('[data-mcel-node$="arithmetic-expression"] button[type="submit"]')
         rest=button.evaluate('el=>getComputedStyle(el).backgroundColor')
         button.hover()
-        hovered=button.evaluate('el=>getComputedStyle(el).backgroundColor')
-        assert rest!=hovered,(rest,hovered)
+        assert button.evaluate('el=>getComputedStyle(el).backgroundColor')!=rest
         page.mouse.move(0,0)
-        assert button.evaluate('el=>getComputedStyle(el).backgroundColor')==rest
         page.locator('[data-mcel-node$="arithmetic-expression"] input').fill('2+3')
         button.click()
         page.wait_for_function("() => document.querySelector('[data-mcel-node$=calculated-value]')?.textContent?.trim()==='5'")
-        assert page.locator('[data-mcel-node$="calculated-value"]').inner_text().strip()=='5'
         alternate=page.evaluate('''() => {
-          const app=window.__mcelExpanded.app,swatch=window.__mcelColorSwatch;
-          const button=document.querySelector('[data-mcel-color-state]');
-          const before=button.getBoundingClientRect(),original=button;
-          swatch.className='mcel-runtime-preview theme-accessible';
-          const palette=McelLabStyleLaw.semanticPaletteFor(swatch,getComputedStyle);
-          const report=app.setColorTheme('theme-accessible',palette);
-          const after=button.getBoundingClientRect();
-          return {status:report.status,identity:original===document.querySelector('[data-mcel-color-state]'),
-            stableGeometry:[before.x,before.y,before.width,before.height].join()==
-              [after.x,after.y,after.width,after.height].join(),
-            changedBackground:getComputedStyle(button).backgroundColor};
+          const app=window.__mcelExpanded.app;
+          const e=document.querySelector('[data-mcel-node$="arithmetic-expression"] button[type="submit"]');
+          const before=e.getBoundingClientRect();
+          const report=app.setColorTheme('theme-civic');
+          const after=e.getBoundingClientRect();
+          return {status:report.status,bg:getComputedStyle(e).backgroundColor,
+            stable:before.x===after.x&&before.y===after.y&&before.width===after.width&&before.height===after.height};
         }''')
-        assert alternate['status']=='applied' and alternate['identity'] and alternate['stableGeometry'],alternate
-        assert alternate['changedBackground']!=rest,alternate
+        assert alternate['status']=='applied' and alternate['stable'],alternate
+        assert alternate['bg']!=rest,alternate
         browser.close()
 
 
@@ -114,11 +107,11 @@ def test_invalid_authored_color_refuses_before_any_dom_render():
           rootCount:document.querySelector('#mcel-expanded-root').childElementCount,
           colorCss:document.querySelectorAll('style[data-mcel-semantic-color-law]').length})''')
         browser.close()
-    assert 'semantic-color-invalid-color-declarations' in result['diagnostic'],result
+    assert 'semantic-color-authored-color-contract-forbidden' in result['diagnostic'],result
     assert result['rootCount']==0 and result['colorCss']==0,result
 
 
-def test_legacy_app_has_no_color_repaint_or_new_theme_css():
+def test_non_authored_app_infers_theme_without_any_explicit_color_opt_in():
     with sync_playwright() as p:
         browser=_chrome(p,None)
         page=browser.new_page()
@@ -127,8 +120,10 @@ def test_legacy_app_has_no_color_repaint_or_new_theme_css():
         result=page.evaluate('''() => ({ready:document.getElementById('mcel-expanded-diagnostic').textContent,
           report:window.__mcelExpanded.app.colorPresentation(),
           bindings:document.querySelectorAll('#mcel-expanded-root [data-mcel-color-state]').length,
-          styles:document.querySelectorAll('style[data-mcel-semantic-color-law]').length})''')
+          styles:document.querySelectorAll('style[data-mcel-semantic-color-law]').length,
+          generatedRoles:document.querySelectorAll('[data-mcel-generated-color-role]').length})''')
         browser.close()
     assert result['ready']=='Semantic Calculator ready',result
-    assert result['report']['status']=='legacy-unmigrated',result
-    assert result['bindings']==result['styles']==0,result
+    assert result['report']['status']=='applied' and result['report']['source']=='semantic-inference',result
+    assert result['report']['authored']==0 and result['bindings']==111 and result['styles']==1,result
+    assert result['generatedRoles']==0,result

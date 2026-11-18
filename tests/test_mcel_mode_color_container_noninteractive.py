@@ -55,7 +55,7 @@ def test_color_law_refuses_interactive_region_and_compiles_static_group():
 def test_calculator_mode_region_and_group_stay_static_while_items_interact():
     ir=compile_expanded(ROOT)
     mode_region=next(x for x in ir['surfaces'][0]['interfaceIntent']['regions'] if x['id'].endswith('.mode'))
-    assert mode_region['color']['role']=='surface.panel'
+    assert mode_region['purpose']=='mode-control' and 'color' not in mode_region
     with sync_playwright() as p:
         browser=_chrome(p,None)
         page=browser.new_page(viewport={'width':1000,'height':800},device_scale_factor=.75)

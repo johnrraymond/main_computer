@@ -454,7 +454,7 @@ def test_real_repository_audit_loads_canonical_registries(tmp_path: Path) -> Non
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "apps: 21" in completed.stdout
+    assert "apps: 22" in completed.stdout
     assert "blocking_apps: 0" in completed.stdout
 
     report_path = tmp_path / "mcel-repository-truth-audit.json"

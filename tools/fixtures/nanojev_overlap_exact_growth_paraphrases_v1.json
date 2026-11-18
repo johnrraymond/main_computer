@@ -1,0 +1,23 @@
+{
+  "schema": "nanojev.sealed-overlap.exact-growth-paraphrases.v1",
+  "selection": {
+    "authority": ["A designated controller possesses the power to authorize the operation", "Execution may proceed only with assent from a properly empowered signatory"],
+    "obligation": ["The operative terms compel the responsible participant to deliver performance", "A party remains bound to fulfill a specifically imposed contractual undertaking"],
+    "resource": ["The requested step draws against a finite reserve of available capacity", "The arrangement reallocates ownership of a limited operational asset"],
+    "evidence": ["An inspectable chain of observations underwrites the stated assertion", "The requested finding relies on independently reproducible supporting records"],
+    "time": ["The authorization ceases to apply once the allowable period has elapsed", "A required event must precede a designated moment on the schedule"],
+    "uncertainty": ["Current observations cannot distinguish among plausible future outcomes", "The facts permit multiple unresolved interpretations of the resulting condition"],
+    "exclusion": ["Two candidate states are barred from holding at the same instant", "An operative constraint rules out the proposed combination of actions"],
+    "consequence": ["Completion of the step produces a defined change to the subsequent condition", "A specified state transition follows from executing the contract operation"]
+  },
+  "final": {
+    "authority": ["The action falls within powers vested in the approving representative", "A properly constituted decision maker grants the required permission"],
+    "obligation": ["The signatory is answerable for carrying out the promised performance", "The binding instrument makes fulfillment of the stated duty compulsory"],
+    "resource": ["There is only a bounded allotment from which this work can draw", "Control of an exhaustible resource passes from one participant to another"],
+    "evidence": ["The factual conclusion has a verifiable record supporting its provenance", "Independent measurement records substantiate the proposition being evaluated"],
+    "time": ["The permission remains in force for a strictly delimited span", "The stipulated act is required to finish ahead of the prescribed cutoff"],
+    "uncertainty": ["The available record does not determine which result will materialize", "More than one possible construction remains open on the present evidence"],
+    "exclusion": ["The governing restrictions make these two conditions incompatible", "The requested course of action is explicitly outside the permissible set"],
+    "consequence": ["Taking this action brings about the specified downstream condition", "The contractual step changes the state that will exist afterward"]
+  }
+}

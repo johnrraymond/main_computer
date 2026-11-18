@@ -54,7 +54,7 @@ def test_switching_semantic_and_legacy_apps_never_removes_shell(width):
                 assert page.locator('body').get_attribute('data-mcel-shell-active-app') == app
                 assert page.locator('#mcel-shell-frame').get_attribute('src') == '/applications/' + app + '?mcel-shell-child=1'
                 assert page.locator('#mcel-shell-application-mount').get_attribute('data-mode') in ('semantic', 'legacy')
-                assert page.locator('.mcel-shell-app-card').count() == 21
+                assert page.locator('.mcel-shell-app-card').count() == 22
                 assert panel.evaluate('(el) => el.isConnected') is True
                 assert page.evaluate('document.querySelector("#mcel-shell-launcher-panel") === window.__originalPanel') is True
                 page.mouse.move(width - 8, 410)

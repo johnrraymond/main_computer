@@ -66,6 +66,7 @@ def test_preview_browser_visible_colors_switch_without_semantic_or_geometry_chan
             setup = '''var mcelLabState={semanticThemePreviewEnabled:false};
                        var mcelThemeSelect=document.getElementById('mcel-theme-select');
                        var mcelRuntimePreview=document.getElementById('fake-mcel-runtime-preview');'''
+            page.add_script_tag(path=str(WEB / 'scripts/mcel-unified-presentation-controller.js'))
             page.add_script_tag(content=setup + '\n' + operations)
             page.evaluate('''({ir,framed}) => {
               window.McelLabCanonicalPresentationSources = {calculator: ir};

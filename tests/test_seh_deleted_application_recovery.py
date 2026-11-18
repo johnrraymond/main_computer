@@ -390,3 +390,126 @@ def test_build_receipt_not_yet_visible_is_not_false_success(tmp_path):
     assert result['build_verification'] == 'NOT_YET_OBSERVED'
     receipt = git._recovery_checkpoint(slh)
     assert receipt['deployment_uuid'] == 'seh-build-01'
+
+
+def test_replacement_adoption_ignores_coolify_runtime_status_refresh(tmp_path):
+    """An env update may change observational fields without changing authority."""
+    root, slh, remote = setup(tmp_path)
+    request = remote.request
+    readings = [0]
+
+    def changing_status(method, path, body=None):
+        value = request(method, path, body)
+        if method == 'GET' and path == f'/api/v1/applications/{NEW}':
+            readings[0] += 1
+            value['status'] = 'starting' if readings[0] == 1 else 'running'
+            value['updated_at'] = '2026-11-16T00:00:00Z' if readings[0] == 1 else '2026-11-16T00:00:09Z'
+            value['last_seen'] = readings[0]
+        return value
+
+    remote.request = changing_status
+    result = git.restore_deleted_canonical_application(
+        root, 'mainnet', execute=True, state_dir=slh, client=remote, source=PUBLISHED)
+    assert result['status'] == 'REPLACEMENT_QUEUED_NOT_VERIFIED'
+    assert readings[0] >= 2
+    assert git._canonical_selection(root, 'mainnet')[0]['deployment']['application_uuid'] == NEW
+
+
+@pytest.mark.parametrize('property_changed, reason', [
+    ('git_repository', 'Git repository'),
+    ('project_uuid', 'project does not match'),
+    ('domains', 'deployment identity changed'),
+    ('git_commit_sha', 'deployment identity changed'),
+])
+def test_replacement_adoption_rejects_security_relevant_changes(
+        tmp_path, property_changed, reason):
+    root, slh, remote = setup(tmp_path)
+    request = remote.request
+    readings = [0]
+
+    def source_or_placement_changed(method, path, body=None):
+        value = request(method, path, body)
+        if method == 'GET' and path == f'/api/v1/applications/{NEW}':
+            readings[0] += 1
+            if readings[0] > 1:
+                value[property_changed] = {
+                    'git_repository': 'https://github.com/attacker/other',
+                    'project_uuid': 'other-project',
+                    'domains': 'https://unexpected.example.com:8080',
+                    'git_commit_sha': 'b' * 40,
+                }[property_changed]
+        return value
+
+    remote.request = source_or_placement_changed
+    result = git.restore_deleted_canonical_application(
+        root, 'mainnet', execute=True, state_dir=slh, client=remote, source=PUBLISHED)
+    assert result['status'] == 'INCOMPLETE'
+    assert result['failed_operation'] == 'coolify_adoption_identity_verification'
+    assert result['error_domain'] == 'COOLIFY'
+    assert reason in result['reason']
+    assert not any(p.startswith('/api/v1/deploy?') for method, p in remote.calls)
+    assert git._canonical_selection(root, 'mainnet')[0]['deployment']['application_uuid'] == APP
+
+
+def test_replacement_adoption_rechecks_signing_trust_separately(tmp_path):
+    root, slh, remote = setup(tmp_path)
+    request = remote.request
+    env_readbacks = [0]
+
+    def trust_changed(method, path, body=None):
+        value = request(method, path, body)
+        if method == 'GET' and path == f'/api/v1/applications/{NEW}/envs':
+            env_readbacks[0] += 1
+            if env_readbacks[0] >= 4:
+                for row in value:
+                    if row.get('key') == 'SEH_SLH_PUBLIC_KEY_B64':
+                        row['value'] = 'untrusted-key'
+        return value
+
+    remote.request = trust_changed
+    result = git.restore_deleted_canonical_application(
+        root, 'mainnet', execute=True, state_dir=slh, client=remote, source=PUBLISHED)
+    assert result['status'] == 'INCOMPLETE'
+    assert result['failed_operation'] == 'coolify_trust_adoption_readback'
+    assert result['error_domain'] == 'COOLIFY'
+    assert 'SEH_SLH_PUBLIC_KEY_B64' in result['reason']
+    assert git._canonical_selection(root, 'mainnet')[0]['deployment']['application_uuid'] == APP
+
+
+def test_local_state_write_failure_reports_operation_without_leaking_os_error(
+        tmp_path, monkeypatch):
+    root, slh, remote = setup(tmp_path)
+
+    def inaccessible(*_args, **_kwargs):
+        raise OSError('private-location-or-token-that-must-not-appear')
+
+    monkeypatch.setattr(ds, 'write', inaccessible)
+    result = git.restore_deleted_canonical_application(
+        root, 'mainnet', execute=True, state_dir=slh, client=remote, source=PUBLISHED)
+    assert result['status'] == 'INCOMPLETE'
+    assert result['failed_stage'] == 'seh_deployment_state_commit_or_trust'
+    assert result['failed_operation'] == 'seh_local_state_write'
+    assert result['error_code'] == 'SEH_LOCAL_STATE_WRITE_FAILED'
+    assert result['error_domain'] == 'LOCAL_SEH_STATE'
+    assert result['error_class'] == 'OSError'
+    assert 'private-location' not in json.dumps(result)
+    assert 'git_repair_command' not in result
+
+
+def test_coolify_environment_failure_reports_specific_operation(tmp_path):
+    root, slh, remote = setup(tmp_path)
+    request = remote.request
+
+    def cannot_patch(method, path, body=None):
+        if method == 'PATCH' and path.endswith('/envs/bulk'):
+            raise ConnectionError('bearer-token-that-must-not-appear')
+        return request(method, path, body)
+
+    remote.request = cannot_patch
+    result = git.restore_deleted_canonical_application(
+        root, 'mainnet', execute=True, state_dir=slh, client=remote, source=PUBLISHED)
+    assert result['status'] == 'INCOMPLETE'
+    assert result['failed_operation'] == 'coolify_environment_write'
+    assert result['error_domain'] == 'COOLIFY'
+    assert 'Coolify PATCH failed: ConnectionError' in result['reason']
+    assert 'bearer-token' not in json.dumps(result)

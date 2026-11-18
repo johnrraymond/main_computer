@@ -54,7 +54,7 @@ def test_slh_semantic_form_label_compiles_and_page_renders_without_lifecycle_cal
 def test_slh_http_get_returns_complete_html_instead_of_empty_response():
     with _slh_get_server() as (url, signals):
         for target in ("local", "network"):
-            with urlopen(f"{url}/applications/slh/{target}", timeout=10) as response:
+            with urlopen(f"{url}/applications/slh/{target}?mcel-shell-child=1", timeout=10) as response:
                 data = response.read()
                 assert response.status == 200
                 assert response.headers["Content-Type"] == "text/html; charset=utf-8"
@@ -82,7 +82,7 @@ def test_invalid_semantic_source_returns_503_not_connection_abort(monkeypatch):
     monkeypatch.setattr(host, "render_slh_page", render_error)
     with _slh_get_server() as (url, signals):
         try:
-            urlopen(f"{url}/applications/slh/local", timeout=10)
+            urlopen(f"{url}/applications/slh/local?mcel-shell-child=1", timeout=10)
         except HTTPError as error:
             assert error.code == 503
             assert error.read()

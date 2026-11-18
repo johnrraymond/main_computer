@@ -1,0 +1,21 @@
+/* MCEL Icon: geometry belongs to the registry, color and layout to the host. */
+.mcel-icon-svg {
+  display: inline-block;
+  vertical-align: middle;
+  flex: none;
+  color: inherit;
+  stroke: currentColor;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.mcel-icon-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: inherit;
+  line-height: 1;
+}

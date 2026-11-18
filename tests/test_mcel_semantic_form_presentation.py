@@ -203,6 +203,7 @@ def test_lab_form_selector_switches_source_bound_preview_without_frame_reload():
           function syncMcelRenderedSiteFrame(){window.__formLegacySync=(window.__formLegacySync||0)+1;}
           function renderMcelCompilerLog(){};
         """
+        page.add_script_tag(path=str(WEB / 'scripts/mcel-unified-presentation-controller.js'))
         page.add_script_tag(content=setup + operations + change)
         page.evaluate('''({ir,frameHtml})=>{
           window.McelLabCanonicalPresentationSources={calculator:ir};

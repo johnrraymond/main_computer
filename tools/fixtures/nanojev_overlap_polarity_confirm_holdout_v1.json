@@ -1,0 +1,38 @@
+{
+  "schema": "nanojev.sealed-overlap.polarity-confirm-holdout.v1",
+  "purpose": "Independent new lexical and wrapper holdout for a prespecified two-extractor comparison. Human-authored, diagnostic only; no contract seal.",
+  "axes": {
+    "authority": {
+      "positive": ["The designated custodian is empowered to approve this request", "A valid delegation enables the responsible agent to authorize the transaction"],
+      "negative": ["The designated custodian is barred from approving this request", "No valid delegation enables the responsible agent to authorize the transaction"]
+    },
+    "obligation": {
+      "positive": ["The participant must deliver the agreed result as an enforceable duty", "Fulfilling the stated commitment is compulsory for the assigned party"],
+      "negative": ["The participant may decline to deliver the result without breaching a duty", "Fulfilling the stated commitment is optional for the assigned party"]
+    },
+    "resource": {
+      "positive": ["The execution has access to a specifically reserved equipment quota", "A fixed share of operating assets is earmarked for this activity"],
+      "negative": ["The execution has no specifically reserved equipment quota", "No share of operating assets is earmarked for this activity"]
+    },
+    "evidence": {
+      "positive": ["The audit trail independently verifies the occurrence of the event", "Contemporaneous observations confirm the reported occurrence"],
+      "negative": ["The audit trail supplies no independent verification of the event", "Contemporaneous observations do not confirm the reported occurrence"]
+    },
+    "time": {
+      "positive": ["The service must finish within a prescribed temporal window", "A binding calendar limit applies to the requested operation"],
+      "negative": ["The service is subject to no prescribed temporal window", "No binding calendar limit applies to the requested operation"]
+    },
+    "uncertainty": {
+      "positive": ["The outcome remains open because decisive facts are unavailable", "Several mutually possible final states are still unresolved"],
+      "negative": ["The outcome is settled because all decisive facts are available", "The final state is fixed and no alternative outcome remains unresolved"]
+    },
+    "exclusion": {
+      "positive": ["The standing policy expressly blocks the proposed execution", "The controlling rules forbid joint performance of these actions"],
+      "negative": ["The standing policy expressly allows the proposed execution", "The controlling rules allow joint performance of these actions"]
+    },
+    "consequence": {
+      "positive": ["Completing this operation triggers a subsequent system transition", "The intervention causes an observable change in later processing"],
+      "negative": ["Completing this operation triggers no subsequent system transition", "The intervention causes no observable change in later processing"]
+    }
+  }
+}

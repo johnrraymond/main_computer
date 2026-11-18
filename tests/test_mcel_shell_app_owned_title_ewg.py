@@ -32,7 +32,7 @@ def browser():
 def test_compiled_parent_shell_has_no_application_title_region():
     ir, _ = compile_applications_shell()
     region_ids = {r["id"].split(".")[-1] for r in ir["surfaces"][0]["interfaceIntent"]["regions"]}
-    assert region_ids == {"application", "masthead", "shell", "launcher", "workspace", "application-mount", "status"}
+    assert region_ids == {"application", "shell", "launcher", "workspace", "application-mount", "status"}
     assert "workspace-header" not in region_ids
     assert not any(n.get("id") == "workspace-header" for n in
                    ir["layouts"][0]["layoutTree"]["root"].get("children", []))

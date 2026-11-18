@@ -12,11 +12,11 @@ from main_computer.mcel_semantic_other_apps_host import compile_semantic_app
 
 def test_complete_registry_and_separate_slh_are_accounted_for():
     result=battery.run_battery(browser=False)
-    assert result['coverage']['inventory']==21
-    assert result['coverage']['semanticApps']==5
+    assert result['coverage']['inventory']==22
+    assert result['coverage']['semanticApps']==6
     assert result['coverage']['legacyApps']==15
     assert result['coverage']['additionalMCELTargets']==2
-    assert len(result['apps'])==21
+    assert len(result['apps'])==22
     assert {a['app'] for a in result['auxiliary']}=={'slh-local','slh-network'}
     assert not result['productionPromotion']
     assert result['productionGate']=='BLOCKED'
@@ -27,8 +27,8 @@ def test_all_seven_semantic_targets_receive_general_candidate_sets():
     assert {a['app'] for a in result['apps']+result['auxiliary'] if
             a['negotiation']=='ELIGIBLE_TRIAL'}=={
         'calculator','file-explorer','task-manager','code-editor',
-        'chat-console','slh-local','slh-network'}
-    assert result['coverage']['negotiationEligible']==7
+        'chat-console','slh','slh-local','slh-network'}
+    assert result['coverage']['negotiationEligible']==8
     assert result['coverage']['negotiationUnsupported']==0
     assert result['productionGate']=='BLOCKED'  # Browser evidence absent.
 
@@ -67,7 +67,7 @@ def observed_battery():
 
 def test_full_battery_browser_guards_all_canonical_routes(observed_battery):
     result=observed_battery
-    assert result['coverage']['shellRoutesChecked']==63
+    assert result['coverage']['shellRoutesChecked']==66
     assert len(result['shell'])==3
     assert all(s['status']=='GUARD_PASS' for s in result['shell'])
     assert {v for s in result['shell'] for v in (x['app'] for x in s['routes'])}=={
@@ -76,13 +76,13 @@ def test_full_battery_browser_guards_all_canonical_routes(observed_battery):
 
 def test_all_semantic_hosts_mount_and_preserve_geometry(observed_battery):
     result=observed_battery
-    assert result['coverage']['browserObservations']==21  # 5 shell + 2 SLH, 3 widths
+    assert result['coverage']['browserObservations']==24  # 5 shell + 2 SLH, 3 widths
     assert all(x['ready'] and x['geometryGuardAccepted'] for x in result['semanticBrowser'])
     assert all(x['status']=='GUARD_PASS' for x in result['semanticBrowser'])
     assert result['coverage']['guardFailures']==0
-    assert result['coverage']['negotiationEligible']==7
-    assert result['coverage']['liveTrials']==14
-    assert result['coverage']['fullyTrialedTargets']==7
+    assert result['coverage']['negotiationEligible']==8
+    assert result['coverage']['liveTrials']==16
+    assert result['coverage']['fullyTrialedTargets']==8
     assert result['coverage']['partiallyTrialedTargets']==0
     assert result['coverage']['unsupportedTopologies']==0
     assert result['coverage']['rejectedTrials']==0

@@ -6,7 +6,7 @@ The repository's existing, operational Calculator markup and design served as th
 
 ## Mechanism
 
-The official semantic HTML + JavaScript source in `tools/fixtures/mcel_calculator_expanded/` remains **unchanged**. Its compiled `mcel.application-ir.v1` remains unchanged. The host's explicitly opted-in `presentation: 'expert'` instructs the shared `mcel-semantic-operational-runtime.js` to use generic UI-pattern rules, and the reusable `mcel-semantic-expert.css` chooses sizes, relative emphasis, and responsive behavior from semantic purpose/priority.
+The official semantic HTML + JavaScript source in `tools/fixtures/mcel_calculator_expanded/` remains **unchanged**. Its compiled `mcel.application-ir.v1` remains unchanged. The host's explicitly opted-in `presentation: 'expert'` instructs the shared `mcel-semantic-operational-runtime.js` to use generic UI-pattern rules, and the Calculator-scoped rules in the shared `mcel-semantic-workbench.css` choose sizes, relative emphasis, and responsive behavior from semantic purpose/priority.
 
 - A `compute` task + `primary` priority + a one-field text `expression` form produces a computed expression workbench and generated keypad. The underlying calculation is **never** evaluated in the UI; pressing `=` invokes the same authorized intent as the form's submit control. Unrelated applications and tasks do not acquire that keypad.
 - A bounded view-state enum with up to six choices produces accessible mode buttons on wide screens and retains the native select on narrow screens. The runtime continues using the canonical viewTransition, without mutating business state or authority.

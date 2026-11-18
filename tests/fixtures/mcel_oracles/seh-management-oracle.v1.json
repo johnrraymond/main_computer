@@ -33,11 +33,7 @@
     "selected_slh_authority_only": true,
     "failed_commands_do_not_claim_success": true,
     "deployment_actions": [
-      "intent:seh-deployment-preview-deploy",
       "intent:seh-deployment-deploy",
-      "intent:seh-deployment-preview-activate",
-      "intent:seh-deployment-activate",
-      "intent:seh-deployment-preview-undeploy",
       "intent:seh-deployment-undeploy"
     ],
     "controller_forms": [
@@ -51,7 +47,9 @@
     "dedicated_sign_in_control_forbidden": true,
     "network_uses_existing_authenticated_connection": true,
     "selected_controller_prepopulated_from_verified_binding": true,
-    "private_controller_registry_requires_admin_session": true
+    "private_controller_registry_requires_admin_session": true,
+    "harness_owns_deploy_preflight_and_activation": true,
+    "harness_owns_undeploy_disconnect_and_preflight": true
   },
   "remote_seh": {
     "target": "remote-seh",

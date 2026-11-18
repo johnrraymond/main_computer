@@ -185,8 +185,23 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
             paired = {id for pair in pairs for id in (pair["source"], pair["result"])}
             mode_pairs.append({"state": variant["state"], "equals": variant["equals"],
                                "pairs": pairs, "unpaired": [id for id in members if id not in paired]})
+    mode_subtabs = []
+    for variant in variants:
+        members = variant["members"]
+        grouped = [rid for rid in members if by_id[rid].get("subviewGroup")]
+        if not grouped:
+            continue
+        groups = {by_id[rid]["subviewGroup"] for rid in grouped}
+        if len(groups) != 1 or set(grouped) != set(members) or len(grouped) < 2:
+            raise ValueError("Authored mode subtabs must cover one complete conditional mode")
+        pairing = next(pair for pair in mode_pairs if pair["equals"] == variant["equals"])
+        if pairing["pairs"]:
+            raise ValueError("Mode subtabs cannot separate a verified input/result pair")
+        mode_subtabs.append({"state": variant["state"], "equals": variant["equals"],
+                             "group": next(iter(groups)), "members": grouped,
+                             "rule": "authored-subview-group"})
     zones.append({"id": "workspace", "kind": "protected-anchor", "members": anchor_members,
-                  "modeVariants": variants, "modePairs": mode_pairs,
+                  "modeVariants": variants, "modePairs": mode_pairs, "modeSubtabs": mode_subtabs,
                   "ladder": {"wide": "anchor", "medium": "anchor", "narrow": "anchor"},
                   "reasons": ["authored-primary", *(["authored-mode-alternates"] if mode_state else [])]})
     if tools:

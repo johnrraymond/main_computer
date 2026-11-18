@@ -912,7 +912,7 @@ def _paired_populated_interaction(browser, markup, app, width, screenshot=None):
         elif app=='task-manager':
             page.locator('form[data-intent="intent:refresh"] input[name="query"]').fill('server')
             page.locator('form[data-intent="intent:refresh"] button[type="submit"]').click(timeout=5000)
-            page.locator('[data-record-key="123:2026-10-31T12:00"] button').click(timeout=5000)
+            page.locator('[data-record-key="123:2026-10-31T12:00"][data-mcel-row-selectable]').click(timeout=5000)
             if page.evaluate('window.__mcelWorkbench.app.readState("state:selected")')!='123:2026-10-31T12:00':
                 return {'status':'FAIL','reason':'Selection state was not preserved'}
             expected=['task/overview']

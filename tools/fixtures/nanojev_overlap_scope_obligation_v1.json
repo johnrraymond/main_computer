@@ -1,0 +1,157 @@
+{
+  "schema": "nanojev.sealed-overlap.scope-obligation-fixture.v1",
+  "scope": "Independent authored post-lexicon-blind grammar; 25 challenge kinds; semantic gold never used during inference; all decisions include independent accompanying clause",
+  "document_delimiter": " || ",
+  "challenges": [
+    {
+      "kind": "operative_affirm",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "After {condition}, actor is {actor}; recipient is {recipient}; a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "operative_deny",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "For the actor is {actor} and recipient is {recipient}, after {condition}, no duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "condition_not_duty_yes",
+      "policy": "supported",
+      "truth": "positive_scope_not",
+      "template": "If (not {condition}), actor is {actor}, recipient is {recipient}; a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "condition_not_duty_no",
+      "policy": "supported",
+      "truth": "negative_scope_not",
+      "template": "If (not {condition}), actor is {actor}, recipient is {recipient}; no duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "double_not_true_no_duty",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, it is not true that no duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "double_not_case_no_duty",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, it is not the case that no duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "explicit_negative_required",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "The actor is {actor}; recipient is {recipient}; once {condition}, {actor} is not required to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "need_not_transfer",
+      "policy": "supported",
+      "truth": "negative",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, {actor} need not transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "operative_section",
+      "policy": "supported",
+      "truth": "positive",
+      "template": "The operative provision establishes that actor is {actor}; recipient is {recipient}; after {condition}, a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "rejected_allegation",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, the provision rejects the assertion that a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "rejected_petition",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, the board denies the petition claiming that a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "reported_draft",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, a draft reports that a duty exists to transfer the {asset}; consequence: {consequence}; the draft was not adopted"
+    },
+    {
+      "kind": "proposed_not_adopted",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, a proposal would impose a duty to transfer the {asset}; consequence: {consequence}; the proposal was not enacted"
+    },
+    {
+      "kind": "quotation_no_adoption",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, an obsolete draft reads 'a duty exists to transfer the {asset}'; consequence: {consequence}; nobody adopted that text"
+    },
+    {
+      "kind": "quotation_plus_operational",
+      "policy": "abstain",
+      "truth": "positive",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, an earlier note says 'no duty exists'; an operative provision establishes that a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "denied_truth_claim",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, a witness states that it is not true that a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "no_evidence_claim",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, there is no evidence that a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "uncertain_duty",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, it remains uncertain whether a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "hypothetical_clause",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, suppose a duty exists to transfer the {asset}; consequence: {consequence}; this is hypothetical"
+    },
+    {
+      "kind": "counterfactual_clause",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, had the contract been executed, a duty would exist to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "role_collision",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; the actor is also {other_actor}; recipient is {recipient}; after {condition}, a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "ambiguous_scope",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition} or perhaps {other_condition}, a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "unresolved_ref",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is they; recipient is {recipient}; after {condition}, a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "unless_scope",
+      "policy": "abstain",
+      "truth": "positive_scope_not",
+      "template": "Unless {condition}, actor is {actor}; recipient is {recipient}; a duty exists to transfer the {asset}; consequence: {consequence}"
+    },
+    {
+      "kind": "unknown_obligation",
+      "policy": "abstain",
+      "truth": "indeterminate",
+      "template": "The actor is {actor}; recipient is {recipient}; after {condition}, the record discusses whether {actor} ought to transfer the {asset}; consequence: {consequence}"
+    }
+  ]
+}

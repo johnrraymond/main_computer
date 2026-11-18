@@ -508,7 +508,7 @@
       // contains semantic meaning, never literal colors, selectors, labels,
       // media queries or style declarations. A consumer cannot invent a role.
       const semanticColorDeclarationSchema = "mcel.semantic-color-declaration.v1";
-      const semanticColorKinds = Object.freeze(["control", "form", "region", "text", "plot", "evidence", "embedded"]);
+      const semanticColorKinds = Object.freeze(["control", "form", "region", "text", "plot", "evidence", "embedded", "collection", "document-editor"]);
       const semanticColorDeclarationKeys = Object.freeze([
         "role", "surface", "context", "consequence", "selection", "operation"
       ]);
@@ -535,7 +535,7 @@
         if (kind === "text" && !(surface === "text" || surface === "indicator"))
           return reject("text-surface-required");
         if (kind === "plot" && surface !== "panel") return reject("plot-surface-required");
-        if ((kind === "evidence" || kind === "embedded") && surface !== "panel")
+        if (["evidence", "embedded", "collection", "document-editor"].includes(kind) && surface !== "panel")
           return reject("shell-surface-required");
         if (!role.startsWith("action.") && consequence !== "unspecified")
           return reject("consequence-on-non-action");

@@ -29,7 +29,7 @@ def test_compiled_shell_owns_region_hierarchy_without_child_effects():
     assert ir["layouts"][0]["layoutTree"]["root"]["selector"] == ".mcel-applications-shell"
     regions = ir["surfaces"][0]["interfaceIntent"]["regions"]
     assert {r["id"].split(".")[-1] for r in regions} == {
-        "application", "masthead", "shell", "launcher", "workspace",
+        "application", "shell", "launcher", "workspace",
         "application-mount", "status",
     }
     ids = {r["id"] for r in regions}
@@ -48,7 +48,7 @@ def test_rendered_shell_binds_compiled_ir_and_preserves_legacy_routes():
     assert 'mcel.layout-tree.v1' in page
     assert 'MainComputerMCELChatConsole' not in page  # no duplicate child runtime
     assert '<!-- @include' not in page
-    assert page.split('<script id="mcel-applications-shell-ir"')[0].count('data-mcel-region-id="interface-region:semantic-applications-shell.') == 7
+    assert page.split('<script id="mcel-applications-shell-ir"')[0].count('data-mcel-region-id="interface-region:semantic-applications-shell.') == 6
 
 
 def test_compiler_refuses_invalid_canonical_tree(tmp_path):
@@ -131,7 +131,7 @@ def test_browser_semantic_shell_overlay_and_history(inert_host, width):
                 raise
             assert page.locator("body").get_attribute("data-mcel-shell-ready") == "true"
             assert page.locator("#mcel-applications-shell").get_attribute("data-mcel-canonical-layout-authority") == "mcel-layout-tree.v1"
-            assert page.locator(".mcel-shell-app-card").count() == 21
+            assert page.locator(".mcel-shell-app-card").count() == 22
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             page.get_by_role("button", name="Apps", exact=True).click()
             assert page.locator("#mcel-shell-launcher-panel").get_attribute("data-open") == "true"
@@ -183,7 +183,7 @@ def test_static_browser_semantic_mount_and_overlay_without_network(width):
             page.set_content(render_applications_shell_candidate(), wait_until="load")
             assert page.locator("body").get_attribute("data-mcel-shell-ready") == "true"
             assert page.locator("#mcel-applications-shell").get_attribute("data-mcel-canonical-layout-authority") == "mcel-layout-tree.v1"
-            assert page.locator(".mcel-shell-app-card").count() == 21
+            assert page.locator(".mcel-shell-app-card").count() == 22
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             page.get_by_role("button", name="Apps", exact=True).click()
             assert page.locator("#mcel-shell-launcher-panel").get_attribute("data-open") == "true"

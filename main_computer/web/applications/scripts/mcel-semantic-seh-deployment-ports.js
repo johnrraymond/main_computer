@@ -8,11 +8,7 @@
     "read-seh-deployment":["inspect","observeSehDeployment","external-read",[]],
     "seh-deployment-register":["register","registerCoolifyController","consequential",["name","url","apiToken"]],
     "seh-deployment-select":["select","selectCoolifyController","consequential",["name"]],
-    "seh-deployment-preview-deploy":["preview-deploy","previewSehDeploy","consequential",[]],
     "seh-deployment-deploy":["deploy","deploySeh","consequential",[]],
-    "seh-deployment-preview-activate":["preview-activate","previewSehActivate","consequential",[]],
-    "seh-deployment-activate":["activate","activateSeh","consequential",[]],
-    "seh-deployment-preview-undeploy":["preview-undeploy","previewSehUndeploy","consequential",[]],
     "seh-deployment-undeploy":["undeploy","undeploySeh","consequential",[]]
   });
   function operation(req){
