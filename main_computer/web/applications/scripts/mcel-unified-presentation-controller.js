@@ -67,6 +67,7 @@
     const hadOwner = owners.has(root);
     // The operational runtime explicitly owns its unmount timing. A second
     // release call is safe and cannot unmount another application's root.
+    global.McelSemanticIconCore?.release?.(root);
     releaseOperationalColor(root);
     global.McelSemanticChromePresentationLaw?.clear?.(root);
     appliedOperational.delete(root);
@@ -114,7 +115,7 @@
   // operational applications. Native semantics and shared laws are the only
   // inputs; neither app names nor app CSS select a presentation treatment.
   const appliedOperational = new WeakMap();
-  function applyOperationalPresentation({root, ir, composition=null, appId, profiles} = {}) {
+  function applyOperationalPresentation({root, ir, composition=null, appId, profiles, readState=null} = {}) {
     const policy = prepare({root,appId,profiles,rolloutEnabled:true,surface:"deployed"});
     if (policy.status !== "prepared-no-op") return policy;
     const canonicalBridge = global.McelSemanticPresentationBridge;
@@ -141,8 +142,14 @@
       statuses.chrome=["applied","unchanged"].includes(result?.status) ? "applied" : "refused";
       if(statuses.chrome !== "applied") statuses.chromeReason=result?.reason || result?.status;
     } catch (error) { statuses.chrome="refused"; statuses.chromeReason=String(error); }
+    // Icons are a core semantic resource, not another Theme/Form/Chrome law.
+    // Failure is isolated from the three presentation authorities and mount.
+    let icons={status:"unavailable",reason:"semantic-icon-core-unavailable"};
+    try {
+      icons=global.McelSemanticIconCore?.mount?.({root,ir,bridge,profiles,readState}) || icons;
+    } catch(error) {icons={status:"unavailable",reason:String(error)};}
     const status = properties.every(name => statuses[name] === "applied") ? "applied" : "partial";
-    const report={schema,status,profiles:Object.freeze({...profiles}),steps:Object.freeze(statuses),appId};
+    const report={schema,status,profiles:Object.freeze({...profiles}),steps:Object.freeze(statuses),appId,iconCore:icons};
     appliedOperational.set(root,report);
     return report;
   }

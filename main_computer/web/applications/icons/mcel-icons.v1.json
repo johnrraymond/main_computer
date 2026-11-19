@@ -1202,6 +1202,25 @@
       ]
     },
     {
+      "id": "action.open",
+      "family": "action",
+      "label": "Open",
+      "shapes": [
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M12 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M13 3h8v8M21 3l-11 11"
+          }
+        }
+      ]
+    },
+    {
       "id": "action.inspect",
       "family": "action",
       "label": "Inspect",
@@ -1355,6 +1374,19 @@
       ]
     },
     {
+      "id": "action.reset",
+      "family": "action",
+      "label": "Reset",
+      "shapes": [
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M4 10V4h6M4 4l4.4 4.3M4.7 13a8 8 0 1 0 3-6.4"
+          }
+        }
+      ]
+    },
+    {
       "id": "action.add",
       "family": "action",
       "label": "Add",
@@ -1438,6 +1470,63 @@
           "tag": "path",
           "attrs": {
             "d": "M4 4h13l3 3v13H4zM7 4v6h10V4M8 20v-7h8v7"
+          }
+        }
+      ]
+    },
+    {
+      "id": "action.apply",
+      "family": "action",
+      "label": "Apply",
+      "shapes": [
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M4 12l5 5L20 6"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M4 21h16"
+          }
+        }
+      ]
+    },
+    {
+      "id": "action.enable",
+      "family": "action",
+      "label": "Enable",
+      "shapes": [
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M12 3v9M6.5 5.5a9 9 0 1 0 11 0"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M17 12h6M20 9v6"
+          }
+        }
+      ]
+    },
+    {
+      "id": "action.disable",
+      "family": "action",
+      "label": "Disable",
+      "shapes": [
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M12 3v9M6.5 5.5a9 9 0 1 0 11 0"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M17 12h6"
           }
         }
       ]

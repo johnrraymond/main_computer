@@ -1,0 +1,36 @@
+{
+  "schema": "nanojev.contract.special_case.milestone_escrow.v1",
+  "id": "milestone_escrow",
+  "origin": "user_requested_challenge_not_independent_expert_gold",
+  "request": "I want to hire a software developer for 12 ETH. I will deposit the entire amount upfront into a smart-contract escrow. The escrow must hold all 12 ETH until payments are earned. Release 3 ETH when the prototype is accepted, then 4 ETH when the beta is accepted, and then 5 ETH when the completed application is accepted. Each milestone has its own deadline, but I have not supplied the actual deadline dates or durations. If the developer misses a milestone deadline, I may grant that milestone seven more days. If the developer still fails, refund to me whatever funds have not yet been earned. The developer can dispute a rejected milestone. A mutually appointed arbitrator must resolve that dispute and determine whether the disputed payment is earned or refundable. Neither the client, developer, nor arbitrator may be able to lock the escrow indefinitely by refusing to respond. Use pull-payment credits so a rejecting ETH recipient does not block settlement or another person's withdrawal. Ensure all credits, refunds, and held funds together never exceed 12 ETH, and previously earned milestone payments cannot be confiscated by a later failure. Before Solidity generation identify any unspecified acceptance evidence, exact milestone deadlines, appointment procedure for the arbitrator, arbitration response limits, and recovery semantics. Do not invent unspecified terms.",
+  "deposit_wei": 12000000000000000000,
+  "milestones": [
+    {"name": "prototype", "wei": 3000000000000000000},
+    {"name": "beta", "wei": 4000000000000000000},
+    {"name": "completed_application", "wei": 5000000000000000000}
+  ],
+  "required_capabilities": [
+    {"id": "progressive_partial_disbursement", "v2": "unsupported", "reason": "Each terminal v2 settlement credits the entire deposit; partial credits while obligations remain outstanding are not representable"},
+    {"id": "per_milestone_deadlines", "v2": "unsupported", "reason": "V2 has one deadline_seconds scalar relative to funding"},
+    {"id": "discretionary_milestone_extension", "v2": "unsupported", "reason": "No mutable milestone deadline, conditional extension or extension counter"},
+    {"id": "rejection_and_dispute_workflow", "v2": "unsupported", "reason": "No typed acceptance/rejection evidence or arbitration dispute lifecycle"},
+    {"id": "arbitrator_appointment_and_authority", "v2": "unsupported", "reason": "Only fixed payer, worker and reviewer roles; no mutually appointed arbitrator or appointment state"},
+    {"id": "unearned_balance_refund", "v2": "unsupported", "reason": "V2 cannot progressively credit milestone earnings and refund only the remaining unearned balance"},
+    {"id": "dispute_nonresponse_recovery", "v2": "unsupported", "reason": "Cannot encode deadline-triggered resolution and recoverability for arbitrary arbitration states"},
+    {"id": "recipient_isolated_withdrawals", "v2": "supported", "reason": "V2 credits pendingWithdrawals and permits independent withdrawTo"},
+    {"id": "single_upfront_escrow_deposit", "v2": "supported", "reason": "V2 fund() accepts one exact ETH amount"}
+  ],
+  "missing_user_terms": [
+    "Exact milestone deadlines, and whether they are measured from funding or earlier milestone acceptance",
+    "How prototype/beta/final work acceptance and evidence are verified",
+    "How both parties appoint or replace the arbitrator",
+    "Time limits and default consequences for rejection, disputes, arbitrator inactivity and party inactivity",
+    "Whether a seven-day extension may be granted more than once, and what happens without an explicit decision"
+  ],
+  "refusal_topic_groups": {
+    "milestones": ["milestone", "prototype", "beta", "stage", "partial", "incremental", "installment", "phase"],
+    "arbitration": ["arbitrat", "disput", "rejection", "reject", "adjudicat"],
+    "deadline_or_extension": ["deadline", "extension", "seven days", "7 days", "dates", "time"],
+    "liveness_or_recovery": ["deadlock", "lock", "nonresponse", "non-response", "silence", "inactive", "unresponsive", "fallback", "recovery", "respond", "timeout"]
+  }
+}

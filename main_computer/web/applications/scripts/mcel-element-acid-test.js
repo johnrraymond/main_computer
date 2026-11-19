@@ -2635,8 +2635,9 @@
 
       function renderSummary(document, summaryNode, report) {
         if (!summaryNode) return;
-        summaryNode.replaceChildren();
-        [
+        // The summary is the user-facing digest; secondary evidence remains
+        // available but must not overwhelm the 390px lab viewport.
+        const metrics = [
           ["Elements", String(report.elementCount)],
           ["Families", String(Object.keys(report.families).length)],
           ["Blocked policies", String(report.blockedPolicyCount)],
@@ -2654,43 +2655,65 @@
           ["MVC fields", String(report.resourceMvcFieldCount || 0)],
           ["MVC interactions", report.resourceMvcInteractiveReady ? "yes" : "no"],
           ["Tree view superseded", report.supersedesTreeView ? "yes" : "no"]
-        ].forEach(([label, value]) => {
+        ];
+        const makeCard = ([label, value]) => {
           const card = createNode(document, "article", "");
           card.append(createNode(document, "strong", "", label), createNode(document, "span", "", value));
-          summaryNode.appendChild(card);
-        });
+          return card;
+        };
+        const primary = metrics.slice(0, 5).map(makeCard);
+        const more = createNode(document, "details", "mcel-element-acid-summary-details");
+        const trigger = createNode(document, "summary", "", `Additional metrics (${metrics.length - 5})`);
+        const secondary = createNode(document, "div", "mcel-element-acid-extra-metrics");
+        secondary.append(...metrics.slice(5).map(makeCard));
+        more.append(trigger, secondary);
+        summaryNode.replaceChildren(...primary, more);
       }
 
       function renderReport(reportNode, report) {
         if (!reportNode) return;
-        reportNode.textContent = [
-          `MCEL Element Library Acid Test: ${report.status}`,
-          `elements=${report.elementCount}`,
-          `registry=${report.registryElementCount}`,
-          `families=${Object.entries(report.families).map(([family, count]) => `${family}:${count}`).join(", ")}`,
-          `risks=${Object.entries(report.risks).map(([risk, count]) => `${risk}:${count}`).join(", ")}`,
-          `blocked policies=${report.blockedPolicyCount}`,
-          `showcase surfaces=${report.showcaseSurfaceCount || 0}`,
-          `tree views=${report.treeViewModeCount || 0}`,
-          `view menu options=${report.resourceViewMenuOptionCount || 0}`,
-          `side panes=${report.sidePaneModeCount || 0}`,
-          `file explorer parity=${report.fileExplorerViewParityReady ? "ready" : "incomplete"}`,
-          `mac/linux parity=${report.crossPlatformResourceViewParityReady ? "ready" : "incomplete"}`,
-          `platform view modes=${report.resourcePlatformViewModeCount || 0}`,
-          `resource MVC contract=${report.resourceMvcContractReady ? "ready" : "incomplete"}`,
-          `resource MVC fields=${report.resourceMvcFieldCount || 0}`,
-          `resource MVC commands=${report.resourceMvcCommandCount || 0}`,
-          `resource MVC selected output=${report.resourceMvcSelectedOutputCount || 0}`,
-          `resource MVC interactive=${report.resourceMvcInteractiveReady ? "ready" : "incomplete"}`,
-          `file basket adapter=${report.fileBasketModelAdapterReady ? "ready" : "incomplete"}`,
-          `tree patterns=${(report.researchedTreePatterns || []).join(",")}`,
-          `tree primitives=${report.hardTreePrimitiveCount || 0}`,
-          `tree replacement=${report.treeReplacementReady ? "ready" : "incomplete"}`,
-          `composed UI=${report.composedUiReady ? "ready" : "missing"}`,
-          `serialization=${report.serializationReady ? "ready" : "incomplete"}`,
-          `illegal nested scrollbars=${report.illegalNestedScrollbars}`,
-          `directory tree supersedes TreeView=${report.supersedesTreeView ? "yes" : "no"}`
-        ].join(" · ");
+        const document = reportNode.ownerDocument;
+        reportNode.dataset.status = report.status === "pass" ? "pass" : "fail";
+        const headline = createNode(document, "div", "mcel-element-acid-report-head");
+        headline.append(
+          createNode(document, "strong", "", "MCEL Element Library Acid Test"),
+          createNode(document, "span", "mcel-element-acid-report-status", report.status)
+        );
+        const facts = [
+          ["Elements", report.elementCount],
+          ["Registry", report.registryElementCount],
+          ["Families", Object.entries(report.families).map(([family, count]) => `${family}: ${count}`).join(", ")],
+          ["Risks", Object.entries(report.risks).map(([risk, count]) => `${risk}: ${count}`).join(", ")],
+          ["Blocked policies", report.blockedPolicyCount],
+          ["Showcase surfaces", report.showcaseSurfaceCount || 0],
+          ["Tree views", report.treeViewModeCount || 0],
+          ["View menu options", report.resourceViewMenuOptionCount || 0],
+          ["Side panes", report.sidePaneModeCount || 0],
+          ["Explorer view parity", report.fileExplorerViewParityReady ? "ready" : "incomplete"],
+          ["macOS/Linux parity", report.crossPlatformResourceViewParityReady ? "ready" : "incomplete"],
+          ["Platform view modes", report.resourcePlatformViewModeCount || 0],
+          ["Resource MVC contract", report.resourceMvcContractReady ? "ready" : "incomplete"],
+          ["Resource MVC fields", report.resourceMvcFieldCount || 0],
+          ["Resource MVC commands", report.resourceMvcCommandCount || 0],
+          ["Resource MVC selected output", report.resourceMvcSelectedOutputCount || 0],
+          ["Resource MVC interactive", report.resourceMvcInteractiveReady ? "ready" : "incomplete"],
+          ["File basket adapter", report.fileBasketModelAdapterReady ? "ready" : "incomplete"],
+          ["Tree patterns", (report.researchedTreePatterns || []).join(", ")],
+          ["Tree primitives", report.hardTreePrimitiveCount || 0],
+          ["Tree replacement", report.treeReplacementReady ? "ready" : "incomplete"],
+          ["Composed UI", report.composedUiReady ? "ready" : "missing"],
+          ["Serialization", report.serializationReady ? "ready" : "incomplete"],
+          ["Illegal nested scrollbars", report.illegalNestedScrollbars],
+          ["Directory tree supersedes TreeView", report.supersedesTreeView ? "yes" : "no"]
+        ];
+        const details = createNode(document, "details", "mcel-element-acid-report-details");
+        const label = createNode(document, "summary", "", `Diagnostic details (${facts.length})`);
+        const list = createNode(document, "dl", "mcel-element-acid-report-facts");
+        facts.forEach(([name, value]) => {
+          list.append(createNode(document, "dt", "", name), createNode(document, "dd", "", String(value)));
+        });
+        details.append(label, list);
+        reportNode.replaceChildren(headline, details);
       }
 
       function run(options = {}) {

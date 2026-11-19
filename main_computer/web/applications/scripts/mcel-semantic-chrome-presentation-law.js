@@ -432,6 +432,469 @@ var McelSemanticChromePresentationLaw = (() => {
       [${unitAttr}="true"] > [${generatedAttr}="true"] { display: none !important; }
     }
   `;
+  /* Vulcan is an independent, nonstructural chrome. The white
+     sidebar and reading area, boundary-free navigation, rounded input, and quiet
+     type are mapped to *existing* semantic regions/controls. Nothing is
+     injected into an operational application and no event handler is replaced.
+     No decorative wear, side bars, or generated components are involved. */
+  const vulcanId = "chrome-vulcan";
+  const vulcanStyleId = "mcel-vulcan-chrome-css";
+  const vulcanCss = `
+    [${rootAttr}="${vulcanId}"] {
+      color-scheme: light;
+      --mcel-vulcan-ink: #202123;
+      --mcel-vulcan-muted: #6e6e73;
+      --mcel-vulcan-rule: #e6e6e8;
+      --mcel-vulcan-paper: #ffffff;
+      --mcel-vulcan-sidebar: #ffffff;
+      --mcel-vulcan-hover: #f0f0f1;
+      --mcel-vulcan-pressed: #e8e8eb;
+      --mcel-vulcan-input: #f9f9fa;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", Arial, sans-serif !important;
+      color: var(--mcel-vulcan-ink) !important;
+      background: var(--mcel-vulcan-paper) !important;
+      background-image: none !important;
+      text-shadow: none !important;
+    }
+    [${rootAttr}="${vulcanId}"] > [data-mcel-natural-layout],
+    [${rootAttr}="${vulcanId}"] [data-mcel-purpose="workspace"],
+    [${rootAttr}="${vulcanId}"] [data-mcel-natural-scroller="workspace"] {
+      background: var(--mcel-vulcan-paper) !important;
+      background-image: none !important;
+      color: var(--mcel-vulcan-ink) !important;
+    }
+    /* Source-bound secondary regions are cards rather than heavy housings. */
+    [${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-chrome-material="housing"],
+      [data-mcel-chrome-material="instrument-glass"]
+    ) {
+      background: var(--mcel-vulcan-paper) !important;
+      background-image: none !important;
+      color: var(--mcel-vulcan-ink) !important;
+      border-color: var(--mcel-vulcan-rule) !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+    }
+    /* Existing navigation receives the pale sidebar visual language.
+       The layout authority decides whether the rail is left or elsewhere. */
+    [${rootAttr}="${vulcanId}"] :is(
+      nav, [role="navigation"], [data-mcel-purpose="navigation"],
+      [data-mcel-purpose="nav"], [data-mcel-purpose="sidebar"]
+    ) {
+      background: var(--mcel-vulcan-sidebar) !important;
+      background-image: none !important;
+      border-color: var(--mcel-vulcan-rule) !important;
+      color: var(--mcel-vulcan-ink) !important;
+      box-shadow: none !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(
+      h1,h2,h3,h4,h5,h6,p,label,legend,summary,li
+    ) {
+      color: var(--mcel-vulcan-ink) !important;
+      text-shadow: none !important;
+      letter-spacing: normal;
+    }
+    [${rootAttr}="${vulcanId}"] :is(h1,h2,h3,h4,h5,h6) {
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    [${rootAttr}="${vulcanId}"] :is(p,li) { line-height: 1.65; }
+    [${rootAttr}="${vulcanId}"] :is(hr, [role="separator"]) {
+      border-color: var(--mcel-vulcan-rule) !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(button, [role="button"], [role="tab"], [role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])) {
+      background: var(--mcel-vulcan-paper) !important;
+      background-image: none !important;
+      color: var(--mcel-vulcan-ink) !important;
+      border: 1px solid var(--mcel-vulcan-rule) !important;
+      border-radius: 12px !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+      filter: none !important;
+      transition: background-color 100ms ease, box-shadow 100ms ease;
+    }
+    [${rootAttr}="${vulcanId}"] :is(button,[role="button"],[role="tab"],[role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])):hover:not(:disabled):not([aria-disabled="true"]):not(:active):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-checked="true"]) {
+      background: var(--mcel-vulcan-hover) !important;
+      box-shadow: 0 1px 3px #0000000b !important;
+    }
+    /* A held button and a latched toggle must have identical pressed faces,
+       and hover may not erase either state. */
+    [${rootAttr}="${vulcanId}"] :is(button,[role="button"],[role="tab"],[role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])):is(
+        :active,[aria-pressed="true"],[aria-selected="true"],[aria-checked="true"]
+      ):not(:disabled):not([aria-disabled="true"]) {
+      background: var(--mcel-vulcan-pressed) !important;
+      box-shadow: inset 0 1px 3px #00000019 !important;
+      transition: none !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(
+      input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]),
+      textarea,select,[role="textbox"],[role="combobox"]
+    ) {
+      background: var(--mcel-vulcan-input) !important;
+      background-image: none !important;
+      color: var(--mcel-vulcan-ink) !important;
+      border: 1px solid var(--mcel-vulcan-rule) !important;
+      border-radius: 16px !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(input,textarea)::placeholder {
+      color: var(--mcel-vulcan-muted) !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(button,input,textarea,select,[role="button"],[role="tab"],
+      [role="switch"],[role="textbox"],[role="combobox"]):focus-visible {
+      outline: 2px solid #7387a5 !important;
+      outline-offset: 2px !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(button,input,textarea,select,[role="button"],
+      [role="tab"],[role="switch"]):disabled,
+    [${rootAttr}="${vulcanId}"] [aria-disabled="true"] {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+    [${rootAttr}="${vulcanId}"] :is(pre,code,kbd) {
+      background: #f7f7f8 !important;
+      color: #262626 !important;
+      border-color: var(--mcel-vulcan-rule) !important;
+      text-shadow: none !important;
+    }
+    /* Vulcan refinement: no contrasting sidebar, no panel housing or
+       shadow seams. Do not remove any semantic nodes or their handlers. */
+    [${rootAttr}="${vulcanId}"],
+    [${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-presentation], [data-mcel-natural-layout],
+      [data-mcel-natural-scroller], [data-mcel-zone],
+      [data-mcel-region], [data-mcel-mode-group],
+      [data-mcel-navigation-chrome], [data-mcel-mode-tabs],
+      [data-mcel-inspector-activity], [data-mcel-purpose="sidebar"],
+      [data-mcel-purpose="navigation"]
+    ) {
+      background: #fff !important;
+      background-image: none !important;
+      color: #202123 !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+      border-color: transparent !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-zone], [data-mcel-natural-scroller],
+      [data-mcel-region], [data-mcel-navigation-chrome]
+    ) {
+      border-width: 0 !important;
+    }
+    /* Source-bound nested content (records, logs, editor frames and activity)
+       retains its own semantics but cannot import a dark Theme background. */
+    [${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-node], [data-mcel-color-role="surface.panel"],
+      [data-mcel-document-surface], [data-mcel-activity],
+      [data-mcel-inspector-activity], [data-mcel-records],
+      [data-collection], [data-state], output[data-state],
+      [data-mcel-purpose="results"]
+    ) {
+      background: #fff !important;
+      background-image: none !important;
+      box-shadow: none !important;
+      border-color: transparent !important;
+      color: #202123 !important;
+    }
+    /* File Manager's explorer is projected asynchronously from read evidence.
+       These source-bound nested nodes are not semantic regions or record rows,
+       so the general white-surface rules above do not reach them. Theme CSS
+       otherwise leaves three illegible dark islands after the initial load.
+       Gate every correction on active Vulcan, not on the application itself. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-explorer-navigation],
+      [data-mcel-explorer-content-pane],
+      [data-mcel-directory-head],
+      [data-mcel-directory-columns],
+      [data-mcel-directory-contents],
+      [data-mcel-folder-tree],
+      [data-mcel-explorer-navigation] [role="treeitem"],
+      [data-mcel-directory-entry]
+    ) {
+      background: #fff !important;
+      background-image: none !important;
+      color: #202123 !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+      border-color: transparent !important;
+    }
+    /* The tree and directory are content, not individual dark cards. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-explorer-navigation], [data-mcel-explorer-content-pane]
+    ) {
+      border: 0 !important;
+      background: #fff !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-explorer-navigation] h3,
+      [data-mcel-directory-head], [data-mcel-directory-head] h3
+    ) {
+      color: #202123 !important;
+      background: #fff !important;
+      border: 0 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-directory-columns], [data-mcel-directory-entry]
+    ) {
+      color: #202123 !important;
+      background: #fff !important;
+      border: 0 !important;
+      border-bottom: 1px solid #ededee !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-directory-path], [data-mcel-directory-type],
+      [data-mcel-directory-size], [data-mcel-directory-icon],
+      [data-mcel-tree-icon], [data-mcel-tree-toggle], [data-mcel-tree-leaf]
+    ) {
+      color: #60636a !important;
+      text-shadow: none !important;
+    }
+    /* Navigation locations and folder branches are not boxed controls.
+       Selected rows alone receive the same light gray highlight as other
+       Vulcan navigation, without dark contrast or separator bars. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-purpose="navigation"] [data-record-key],
+      [data-mcel-explorer-navigation] [role="treeitem"]
+    ) {
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      color: #202123 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-purpose="navigation"] [data-record-key][aria-selected="true"],
+      [data-mcel-explorer-navigation] [role="treeitem"][aria-selected="true"],
+      [data-mcel-directory-entry][aria-selected="true"]
+    ) {
+      background: #ececee !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      color: #202123 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]
+      [data-mcel-directory-entry]:hover:not([aria-selected="true"]) {
+      background: #f5f5f6 !important;
+    }
+    /* Monaco's mount surface should be an empty white canvas until an
+       editor is initialized, rather than showing its former dark placeholder. */
+    [${rootAttr}="${vulcanId}"] [data-mcel-document-surface] {
+      border: 0 !important;
+    }
+    /* Unselected navigation actions are literal text on paper. The active
+       view alone receives a pale-gray fill, with no outline or dark gap. */
+    [${rootAttr}="${vulcanId}"] [data-mcel-mode-tabs] :is(
+      button, a, [role="tab"], [role="button"]
+    ),
+    [${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-mode-tabs], [data-mcel-navigation-chrome]
+    ) :is(button,a,[role="tab"],[role="button"]):not(:focus-visible) {
+      appearance: none !important;
+      color: #202123 !important;
+      background: transparent !important;
+      background-color: transparent !important;
+      background-image: none !important;
+      border: 0 !important;
+      outline: 0 !important;
+      border-radius: 10px !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+      filter: none !important;
+    }
+    [${rootAttr}="${vulcanId}"] [data-mcel-mode-tabs] :is(
+      button,a,[role="tab"],[role="button"]
+    ):is([aria-pressed="true"],[aria-selected="true"],[aria-current="page"],:active),
+    [${rootAttr}="${vulcanId}"] [data-mcel-mode-tabs] :is(
+      button,a,[role="tab"],[role="button"]
+    ):is([aria-pressed="true"],[aria-selected="true"],[aria-current="page"]):hover {
+      background: #ececee !important;
+      background-color: #ececee !important;
+      background-image: none !important;
+      box-shadow: none !important;
+      border: 0 !important;
+      color: #202123 !important;
+      font-weight: 650;
+    }
+    [${rootAttr}="${vulcanId}"] [data-mcel-mode-tabs] :is(
+      button,a,[role="tab"],[role="button"]
+    ):hover:not(:active):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-current="page"]) {
+      background: #f5f5f6 !important;
+      box-shadow: none !important;
+    }
+    /* All other buttons are quiet, boundary-free controls. Selection is
+       indicated by a filled face, not by the TNG outline or bezel. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      button,[role="button"],[role="tab"],[role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])
+    ) {
+      border: 0 !important;
+      outline-offset: 2px;
+      box-shadow: none !important;
+      background-color: transparent !important;
+      background-image: none !important;
+      color: #202123 !important;
+      transition: none !important;
+      animation: none !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      button,[role="button"],[role="tab"],[role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])
+    ):hover:not(:disabled):not([aria-disabled="true"]):not(:active):not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-checked="true"]):not([aria-current="page"]) {
+      background-color: #f5f5f6 !important;
+      box-shadow: none !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      button,[role="button"],[role="tab"],[role="switch"],
+      input:is([type="button"],[type="reset"],[type="submit"])
+    ):is(:active,[aria-pressed="true"],[aria-selected="true"],[aria-checked="true"],[aria-current="page"]):not(:disabled) {
+      background-color: #ececee !important;
+      box-shadow: none !important;
+    }
+    /* Navigation is intentionally text-only, but the calculator's
+       source-bound expression keypad is an operational key grid. Each
+       keycap must retain a visible boundary including =, rather than
+       inheriting the borderless navigation treatment. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]
+      [data-mcel-expression-pad] button[data-pad-action] {
+      appearance: none !important;
+      background: #fff !important;
+      background-image: none !important;
+      border: 1px solid #c8c9cd !important;
+      border-radius: 12px !important;
+      box-shadow: none !important;
+      color: #202123 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]
+      [data-mcel-expression-pad] button[data-pad-action]:hover:not(:disabled):not(:active) {
+      background: #f5f5f6 !important;
+      border-color: #bfc0c5 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]
+      [data-mcel-expression-pad] button[data-pad-action]:active:not(:disabled) {
+      background: #ececee !important;
+      border-color: #aeb0b6 !important;
+      box-shadow: inset 0 1px 2px #00000010 !important;
+    }
+    [${rootAttr}="${vulcanId}"] :is(button,[role="button"],[role="tab"],[role="switch"],input[type="submit"],input[type="button"],input[type="reset"]) {
+      transition: none !important;
+      animation: none !important;
+    }
+    html:has(body [${rootAttr}="${vulcanId}"]) {
+      color-scheme: light !important;
+      background: #fff !important;
+    }
+    /* No dark background can bleed through empty space around the mounted
+       app, including the generic expert/workbench host body. */
+    body.mcel-expert-page:has(> [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]),
+    body.mcel-workbench-page:has([${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]),
+    body:has([${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"]) {
+      background: #fff !important;
+      background-image: none !important;
+      color: #202123 !important;
+      color-scheme: light;
+    }
+    /* The old fixed-width calculator diagnostic strip is not part of the
+       Vulcan chrome. Preserve its live DOM for diagnostics/a11y, but leave no
+       visual bar, background, or reserved footer geometry. */
+    body:has([${rootAttr}="${vulcanId}"]) :is(#mcel-expanded-diagnostic,#mcel-workbench-status) {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      overflow: hidden !important;
+      clip-path: inset(50%) !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+      white-space: nowrap !important;
+    }
+    [${rootAttr}="${vulcanId}"] ::selection { background: #dceafa; color: #202123; }
+    @media (prefers-reduced-motion: reduce) {
+      [${rootAttr}="${vulcanId}"] :is(button,[role="button"],[role="tab"],[role="switch"]) {
+        transition: none !important;
+      }
+    }
+  `;
+
+  function mountVulcanMaterials({root,ir,bridge}) {
+    const originals = new Map();
+    let lastReport = {regions:0,nodes:0,assignments:new Map()};
+    function reconcile() {
+      const report = resolveMaterialTargets({root,ir,bridge});
+      if (report.status !== "ready") return;
+      lastReport = report;
+      for (const [element,original] of originals) {
+        if (!report.assignments.has(element)) {
+          if (element.getAttribute(materialOwnerAttr) === vulcanId) {
+            if (original.material === null) element.removeAttribute(materialAttr);
+            else element.setAttribute(materialAttr,original.material);
+            if (original.owner === null) element.removeAttribute(materialOwnerAttr);
+            else element.setAttribute(materialOwnerAttr,original.owner);
+          }
+          originals.delete(element);
+        }
+      }
+      for (const [element,material] of report.assignments) {
+        if (!originals.has(element)) originals.set(element,{
+          material:element.getAttribute(materialAttr),owner:element.getAttribute(materialOwnerAttr)
+        });
+        if (element.getAttribute(materialAttr) !== material) element.setAttribute(materialAttr,material);
+        if (element.getAttribute(materialOwnerAttr) !== vulcanId) element.setAttribute(materialOwnerAttr,vulcanId);
+      }
+    }
+    reconcile();
+    const observer = new root.ownerDocument.defaultView.MutationObserver(reconcile);
+    observer.observe(root,{childList:true,subtree:true});
+    return {
+      report:() => ({regions:lastReport.regions,nodes:lastReport.nodes,
+        materials:Object.fromEntries([...lastReport.assignments.values()].reduce((map,kind)=>
+          map.set(kind,(map.get(kind)||0)+1),new Map()))}),
+      clear:() => {
+        observer.disconnect();
+        for (const [element,original] of originals) {
+          if (element.getAttribute(materialOwnerAttr) !== vulcanId) continue;
+          if (original.material === null) element.removeAttribute(materialAttr);
+          else element.setAttribute(materialAttr,original.material);
+          if (original.owner === null) element.removeAttribute(materialOwnerAttr);
+          else element.setAttribute(materialOwnerAttr,original.owner);
+        }
+        originals.clear();
+      }
+    };
+  }
+
+  function applyVulcan({root,ir,bridge,theme}) {
+    const ready = resolveMaterialTargets({root,ir,bridge});
+    if (ready.status !== "ready") {
+      clear(root);
+      return {schema,profile:vulcanId,status:"refused",reason:ready.reason};
+    }
+    clear(root);
+    const doc=root.ownerDocument;
+    let sheet=doc.getElementById(vulcanStyleId);
+    if (!sheet) {
+      sheet=doc.createElement("style");sheet.id=vulcanStyleId;
+      sheet.setAttribute("data-mcel-chrome-owner",vulcanId);
+      // Vulcan paints only its own root. Its important overrides share the
+      // canonical layer so state-specific color rules cannot reinstate dark
+      // surfaces after the chrome is selected.
+      doc.head.insertBefore(sheet,doc.head.firstChild);
+    }
+    const layeredVulcanCss=`@layer mcel-semantic-color-canonical{${vulcanCss}}`;
+    if(sheet.textContent!==layeredVulcanCss)sheet.textContent=layeredVulcanCss;
+    root.setAttribute(rootAttr,vulcanId);
+    const materials=mountVulcanMaterials({root,ir,bridge});
+    mounts.set(root,{unit:null,workspace:null,rails:[],originalVariables:new Map(),materials});
+    root[ownerProperty]={owner:realmOwner,clear};
+    return {schema,status:"applied",profile:vulcanId,theme,rails:0,
+      source:ir?.application?.appId||"",materialCoverage:materials.report(),
+      appChildrenPreserved:true,horizontalOnly:false};
+  }
+
   function restoreVariable(element, name, record) {
     if (record.value) element.style.setProperty(name, record.value, record.priority);
     else element.style.removeProperty(name);
@@ -633,6 +1096,8 @@ var McelSemanticChromePresentationLaw = (() => {
   function apply({root,ir,bridge,profile="chrome-strict-hierarchy",theme="theme-machine",styleLaw}={}) {
     if (!root?.ownerDocument || !root.isConnected)
       return {schema,status:"refused",reason:"Mounted modern MCEL root is required"};
+    // Unlike TNG, Vulcan needs no themed phosphor palette or rail geometry.
+    if (profile === vulcanId) return applyVulcan({root,ir,bridge,theme});
     if (profile !== profileId) {
       clear(root);
       return {schema,status:"unchanged",profile};

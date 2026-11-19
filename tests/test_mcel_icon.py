@@ -26,12 +26,12 @@ REGISTRY = ROOT / "main_computer/web/applications/icons/mcel-icons.v1.json"
 
 def test_registry_is_complete_and_semantic():
     icons = load_registry()["icons"]
-    assert len(icons) == 102
+    assert len(icons) == 107
     assert len(icon_ids(family="application")) == 21
     assert len(icon_ids(family="frober")) == 14
     assert set(icon["family"] for icon in icons) == ICON_FAMILIES
     assert len({i["id"] for i in icons}) == len(icons)
-    assert {"status.pass", "status.fail", "action.run", "frober.layout", "resource.folder"}.issubset(icon_ids())
+    assert {"status.pass", "status.fail", "action.run", "action.apply", "action.enable", "action.disable", "frober.layout", "resource.folder"}.issubset(icon_ids())
 
 
 

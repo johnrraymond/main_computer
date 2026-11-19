@@ -1,0 +1,85 @@
+{
+  "schema": "nanojev.contract-composition.challenges.v1",
+  "provenance": {
+    "author": "Assistant-authored diagnostic, not independently authored or expert-certified",
+    "gold_excluded_from_llm_prompt": true,
+    "baseline": "56 of 56 Forge tests from expansion smoke 0002",
+    "supported_semantics": "single-funding guarded acyclic finite-state native-ETH flows",
+    "not_supported": ["offchain judgment", "automatic execution", "recurring payments", "unbounded loops", "dynamic oracle data"]
+  },
+  "cases": [
+    {
+      "id": "reversible_split_base",
+      "family": "positive",
+      "request": "Build an ETH agreement with three separate parties: the payer is the contract deployer, and the worker and reviewer are different payable addresses given in the constructor. Only the payer can lock exactly 4 ETH in one deposit; the deposit starts a five-day deadline and puts the agreement in a funded state. Before five full days have passed, the payer may invoke cancel from funded, terminating the agreement in cancelled state and returning the entire 4 ETH to the payer. At or after five days, only the reviewer may invoke release from funded into settled, atomically paying 75 percent of the 4 ETH to the worker and 25 percent to the reviewer. Each exit is final; no other withdrawal, automatic execution or repeated payment is allowed.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1", "asset": "native_eth", "payer": "deployer", "worker": "constructor_worker", "reviewer": "constructor_reviewer", "amount_wei": 4000000000000000000, "deadline_seconds": 432000,
+        "rules": [
+          {"name": "cancel", "actor": "payer", "from": "funded", "to": "cancelled", "when": "before_deadline", "payments": [{"to": "payer", "bps": 10000}]},
+          {"name": "release", "actor": "reviewer", "from": "funded", "to": "settled", "when": "at_or_after_deadline", "payments": [{"to": "worker", "bps": 7500}, {"to": "reviewer", "bps": 2500}]}
+        ]
+      }
+    },
+    {
+      "id": "reversible_split_paraphrase",
+      "family": "positive",
+      "request": "Create a one-use four-ether deposit system. The person deploying it is the payer and sole funder; worker and reviewer are separate, distinct constructor-specified payable addresses. Funding establishes state funded and begins a 120-hour countdown. The payer can choose the cancel action while the countdown is still running: from funded to cancelled, the full amount returns to that payer. Once the 120 hours expire, the reviewer alone can choose release: from funded to settled, the whole balance is paid atomically in three-to-one proportions, worker taking three quarters and reviewer one quarter. No timeout execution is automatic. Neither cancelled nor settled can execute another exit.",
+      "same_as": "reversible_split_base"
+    },
+    {
+      "id": "reversible_split_ratio_change",
+      "family": "positive",
+      "request": "I deploy and exclusively fund a one-time native ether vault for a distinct worker and reviewer, both separate payable constructor addresses. I deposit exactly 4 ETH into funded and start a five-day clock. My cancel action can be called only by me strictly before that clock reaches day five; it moves funded to cancelled and refunds me all four ether. Otherwise, from exactly day five onwards, the reviewer exclusively invokes release, moving funded to settled and atomically distributing 60 percent to worker and 40 percent to reviewer. Final payout happens at most once; there is no automatic transaction.",
+      "same_as": "reversible_split_base", "delta": {"rule": "release", "payments": [{"to": "worker", "bps": 6000}, {"to": "reviewer", "bps": 4000}]}
+    },
+    {
+      "id": "review_workflow_base",
+      "family": "positive",
+      "request": "Use native ETH and three distinct roles: payer/deployer, worker, and reviewer. Worker and reviewer are different payable constructor addresses, neither equal to the payer. Only the payer funds exactly 3 ETH, once, entering funded state and starting a seven-day period. Before seven full days have passed, the worker alone can call submit, moving funded to submitted without transferring ETH. After submission, the payer alone may call approve at any time, moving submitted to settled and paying 100 percent of the deposit to worker. If there was no submission, the payer can instead invoke refund from funded at or after day seven, moving to refunded and returning 100 percent of ETH to payer. After a settlement or refund no further action or second payout is possible. No automatic acceptance, no off-chain oracle and no other exit is supported.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1", "asset": "native_eth", "payer": "deployer", "worker": "constructor_worker", "reviewer": "constructor_reviewer", "amount_wei": 3000000000000000000, "deadline_seconds": 604800,
+        "rules": [
+          {"name": "submit", "actor": "worker", "from": "funded", "to": "submitted", "when": "before_deadline", "payments": []},
+          {"name": "approve", "actor": "payer", "from": "submitted", "to": "settled", "when": "always", "payments": [{"to": "worker", "bps": 10000}]},
+          {"name": "refund", "actor": "payer", "from": "funded", "to": "refunded", "when": "at_or_after_deadline", "payments": [{"to": "payer", "bps": 10000}]}
+        ]
+      }
+    },
+    {
+      "id": "review_workflow_paraphrase",
+      "family": "positive",
+      "request": "Draft a one-deposit service payment process for payer (who deploys), worker and reviewer (two additional, distinct payable constructor roles). Only the payer may place precisely three ether into funded, starting a one-week timer. The worker can signal submit before the timer expires, recording submitted but not taking money. From submitted, only the payer can approve whenever they wish, ending in settled and delivering the whole three ether to the worker. If the work was not submitted before the week ended, only the payer can refund from funded to refunded on or after the deadline and get the full amount back. An action is not automatically called by the clock. All final states are one-way and no other exits are allowed.",
+      "same_as": "review_workflow_base"
+    },
+    {
+      "id": "review_workflow_duration_change",
+      "family": "positive",
+      "request": "For a native ETH service agreement, the payer/deployer solely deposits exactly 3 ETH once into funded. Worker and reviewer are two distinct other constructor-supplied payable addresses. The deposit starts a fourteen-day deadline. The worker alone may submit before fourteen days to change funded into submitted without paying anyone. Once submitted, only the payer can approve at any time, changing submitted into settled and paying the entire amount to worker. If it remains funded, only the payer may call refund beginning exactly after fourteen days have elapsed, move to refunded, and get back the entire amount. No automatic triggers, repeated deposits, secondary withdrawals, or repeat settlements.",
+      "same_as": "review_workflow_base", "delta": {"deadline_seconds": 1209600}
+    },
+    {
+      "id": "ambiguous_split_allocation",
+      "family": "needs_clarification",
+      "request": "The payer deploys and funds a four ETH vault for distinct worker and reviewer constructor parties. Before five days the payer may cancel and recover all money, and after five days reviewer may release the money to worker and reviewer in whatever ratio is appropriate. Final states are cancelled or settled and payouts happen only once.",
+      "reason": "split proportions missing"
+    },
+    {
+      "id": "contradictory_review",
+      "family": "needs_clarification",
+      "request": "The sole payer/deployer funds exactly three ETH once. Worker and reviewer are distinct payable constructor roles. Before a seven-day deadline the worker alone submits into submitted from funded; after submission only payer approves to pay worker, and without submission payer refunds after seven days. Yet the very same specification requires refund even if submission already occurred and explicitly prohibits refund after submission. All exits happen only once.",
+      "reason": "refund conditions contradictory"
+    },
+    {
+      "id": "unsupported_automatic_timeout",
+      "family": "needs_clarification",
+      "request": "The payer deploys and deposits 4 ETH once for a worker and reviewer. Exactly five days later, with no transaction from any person or keeper, the contract must autonomously send 75 percent to worker and 25 percent to reviewer on-chain. Both recipient addresses are different payable constructor arguments.",
+      "reason": "automatic execution without a transaction unsupported"
+    },
+    {
+      "id": "unsupported_recurring_installments",
+      "family": "needs_clarification",
+      "request": "Have a payer/deployer lock 12 ETH once for a worker and reviewer, with worker and reviewer as distinct payable constructor addresses. Every month pay the worker 1 ETH automatically for twelve months without any external transactions, then release the remaining vault funds to the reviewer. The arrangement must maintain an ongoing installment counter rather than a one-time settlement.",
+      "reason": "recurring autonomous payments and counters unsupported"
+    }
+  ]
+}

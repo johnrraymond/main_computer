@@ -52,7 +52,7 @@ def test_patch1_compiler_declares_configuration_draft_and_no_legacy_workspace_co
     assert form['nodeKind']=='form' and form['intent']['ref']=='intent:configure-and-enable-organization' 
     assert form['fields']=={'bindAddress':{'kind':'string'},'port':{'kind':'integer'}}
     assert form['defaults']=={'bindAddress':'0.0.0.0','port':8899}
-    assert form['submitLabel']=='Configure ORG-SLH'
+    assert form['submitLabel']=='Apply'
     assert {i['id'] for i in ir['intents']} == {
         'intent:refresh-identities','intent:refresh-identity-status',
         'intent:choose-identity','intent:select-target','intent:connect-network-slh',
@@ -87,7 +87,7 @@ def test_local_configuration_ui_has_no_effects_and_identity_selection_drives_fir
             assert form.count()==1
             assert form.locator('[name="bindAddress"]').input_value()=='0.0.0.0'
             assert form.locator('[name="port"]').input_value()=='8899'
-            button=form.get_by_role('button',name='Configure ORG-SLH')
+            button=form.get_by_role('button',name='Apply')
             assert button.is_enabled()
             assert page.get_by_text('Default identity',exact=True).count()>=1
             assert form.locator('[data-mcel-reference-label]').inner_text()=='Default identity'

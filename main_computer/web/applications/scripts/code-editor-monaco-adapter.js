@@ -222,6 +222,30 @@
     return window.monaco.Uri.parse(`${EDITOR_URI_SCHEME}${encodeURI(safePath)}`);
   }
 
+  // Monaco paints its own canvas and token layers, so shell CSS cannot
+  // recolor an already-open source document. Follow the *mounted* chrome
+  // rather than globally setting the editor to light (which would change TNG).
+  function chromeThemeFor(host) {
+    return host?.closest('[data-mcel-semantic-chrome="chrome-vulcan"]')
+      ? "vs" : "vs-dark";
+  }
+
+  function observeChromeTheme(session) {
+    const root = session.host.closest('#mcel-workbench');
+    if (!root || typeof MutationObserver === "undefined") return;
+    let appliedTheme = chromeThemeFor(session.host);
+    const observer = new MutationObserver(() => {
+      if (activeSession !== session) return;
+      const nextTheme = chromeThemeFor(session.host);
+      if (nextTheme === appliedTheme) return;
+      appliedTheme = nextTheme;
+      try { window.monaco?.editor?.setTheme?.(nextTheme); }
+      catch (_) { /* The editor remains mounted; theme changes are best-effort. */ }
+    });
+    observer.observe(root, {attributes: true, attributeFilter: ["data-mcel-semantic-chrome"]});
+    session.chromeThemeObserver = observer;
+  }
+
   function disposeActive(reason = "replace") {
     if (!activeSession) {
       return {
@@ -234,6 +258,7 @@
 
     const session = activeSession;
     activeSession = null;
+    session.chromeThemeObserver?.disconnect();
     session.subscriptions.forEach((subscription) => {
       try {
         subscription.dispose();
@@ -326,7 +351,7 @@
           minimap: {enabled: false},
           readOnly: options.readOnly === true,
           scrollBeyondLastLine: false,
-          theme: "vs-dark",
+          theme: chromeThemeFor(host),
           wordWrap: "on"
         });
         const subscriptions = [
@@ -345,6 +370,7 @@
           readOnly: options.readOnly === true,
           subscriptions
         };
+        observeChromeTheme(activeSession);
         host.dataset.monacoOutcome = "pass";
         host.dataset.monacoLanguage = language;
 

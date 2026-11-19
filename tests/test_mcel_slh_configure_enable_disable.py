@@ -54,6 +54,15 @@ def test_lifecycle_browser_explicit_transitions_preserve_selected_identity():
                 if(url==='/api/applications/slh/observe?view=overview')return {ok:true,json:async()=>({
                   ok:true,schema:'mcel.slh.first-slice-observation.v1',view:'overview',
                   overview:{organizationState:window.orgState,organizationEndpoint:window.orgEndpoint}})};
+                if(url==='/api/applications/slh/seh/deployment'){
+                  if(req.body.operation==='operation-state')return {ok:true,json:async()=>({ok:true,result:{
+                    schema:'main-computer.seh-management-operation-snapshot.v1',state:'IDLE',busy:false,
+                    operation:null,last_operation:null}})};
+                  if(req.body.operation==='inspect')return {ok:true,json:async()=>({ok:true,result:{
+                    generation:33,selectedController:'coolify-a',applicationUuid:'',
+                    deploymentStatus:'UNDEPLOYED',controllers:[]}})};
+                  throw Error('UNEXPECTED_SEH_MUTATION:'+req.body.operation);
+                }
                 if(url==='/api/applications/slh/setup/action'){
                   const action=req.body.action;
                   if(action==='configure-and-enable'){
@@ -70,13 +79,16 @@ def test_lifecycle_browser_explicit_transitions_preserve_selected_identity():
             }''')
             page.set_content(render_slh_page())
             page.wait_for_function("() => window.__mcelSlh?.app.readState('state:selected-local-identity')==='one'")
-            assert not any(c['method']=='POST' for c in page.evaluate('window.slhCalls'))
+            assert all(c['method']=='GET' or (
+                c['url']=='/api/applications/slh/seh/deployment' and
+                c['body']['operation'] in ('inspect','operation-state'))
+                for c in page.evaluate('window.slhCalls'))
             form=page.locator('form[data-intent="intent:configure-and-enable-organization"]')
             assert form.count()==1
             page.locator('[data-select-key="two"]').click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='two'")
             form.locator('[name="port"]').fill('9023')
-            form.get_by_role('button',name='Configure ORG-SLH').click()
+            form.get_by_role('button',name='Apply').click()
             page.wait_for_function("() => window.slhCalls.some(c=>c.action==='configure-and-enable')")
             outgoing=page.evaluate("window.slhCalls.filter(c=>c.action==='configure-and-enable')")
             assert len(outgoing)==1

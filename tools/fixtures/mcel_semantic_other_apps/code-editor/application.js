@@ -87,43 +87,56 @@ module.exports=mcel.defineApp({id:"semantic-code-editor",title:"Semantic Code Ed
   scmProof.operation("regress","runStudioKernelRegressions",{inputs:{path:text,text:text},result:text});
   scmProof.operation("repair-packet","buildStudioAiRepairPacket",{inputs:{path:text,text:text,filter:text,key:text},result:text});
   const listProof=dsl.intent.capabilityRequest("studio-proof-list",scmProof,
-    {operation:"index",arguments:{path:selected,text:draft},resultTo:proofIndex});
+    {operation:{binding:"index",kind:"inspect",target:"document"},arguments:{path:selected,text:draft},resultTo:proofIndex});
   const chooseProof=dsl.intent.selectFromCollection("studio-proof-select",proofIndex,selectedProof);
   const inspectProof=dsl.intent.capabilityRequest("studio-proof-inspect",scmProof,
-    {operation:"inspect",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofDetail});
+    {operation:{binding:"inspect",kind:"inspect",target:"document"},arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofDetail});
   const exportProof=dsl.intent.capabilityRequest("studio-proof-export",scmProof,
-    {operation:"packet",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofPacket});
+    {operation:{binding:"packet",kind:"download",target:"document"},arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofPacket});
   const runRegression=dsl.intent.capabilityRequest("studio-regression-run",scmProof,
-    {operation:"regress",arguments:{path:selected,text:draft},resultTo:regressionResult});
+    {operation:{binding:"regress",kind:"run",target:"task"},arguments:{path:selected,text:draft},resultTo:regressionResult});
   const buildRepair=dsl.intent.capabilityRequest("studio-repair-packet",scmProof,
-    {operation:"repair-packet",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:repairPacket});
-  const listDocs=dsl.intent.capabilityRequest("list-component-docs",docs,{operation:"manifest",resultTo:docTargets});
+    {operation:{binding:"repair-packet",kind:"reconcile",target:"document"},arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:repairPacket});
+  const listDocs=dsl.intent.capabilityRequest("list-component-docs",docs,{operation:{binding:"manifest",kind:"inspect",target:"document"},resultTo:docTargets});
   const chooseDoc=dsl.intent.selectFromCollection("choose-component-doc",docTargets,docSelected);
-  const readDoc=dsl.intent.capabilityRequest("read-component-doc",docs,{operation:"read",arguments:{id:docSelected},resultTo:docContent});
-  const readViewportConfig=dsl.intent.capabilityRequest("read-component-doc-viewport-config",docs,{operation:"viewport-config",resultTo:docViewportConfig});
-  const runDocScript=dsl.intent.capabilityRequest("run-component-doc-script",viewport,{operation:"run",inputs:{script:text},resultTo:docScriptResult});
-  const inspectScmComponent=dsl.intent.capabilityRequest("inspect-scm-component-contract",scm,{operation:"component",resultTo:scmComponentContract});
-  const inspectScmRoute=dsl.intent.capabilityRequest("inspect-scm-route-contract",scm,{operation:"route",resultTo:scmRouteContract});
-  const checkStudioSource=dsl.intent.capabilityRequest("check-studio-draft",studio,{operation:"check",arguments:{path:selected,text:draft},resultTo:studioSourceChecks});
-  const previewStudioSource=dsl.intent.capabilityRequest("preview-studio-serialization",studio,{operation:"serialize-preview",arguments:{path:selected,text:draft},resultTo:studioSerializedPreview});
+  const readDoc=dsl.intent.capabilityRequest("read-component-doc",docs,{operation:{binding:"read",kind:"inspect",target:"document"},arguments:{id:docSelected},resultTo:docContent});
+  const readViewportConfig=dsl.intent.capabilityRequest("read-component-doc-viewport-config",docs,{operation:{binding:"viewport-config",kind:"settings",target:"document"},resultTo:docViewportConfig});
+  const runDocScript=dsl.intent.capabilityRequest("run-component-doc-script",viewport,{operation:{binding:"run",kind:"run",target:"terminal"},inputs:{script:text},resultTo:docScriptResult});
+  const inspectScmComponent=dsl.intent.capabilityRequest("inspect-scm-component-contract",scm,{operation:{binding:"component",kind:"inspect",target:"application"},resultTo:scmComponentContract});
+  const inspectScmRoute=dsl.intent.capabilityRequest("inspect-scm-route-contract",scm,{operation:{binding:"route",kind:"inspect",target:"application"},resultTo:scmRouteContract});
+  const checkStudioSource=dsl.intent.capabilityRequest("check-studio-draft",studio,{operation:{binding:"check",kind:"inspect",target:"document"},arguments:{path:selected,text:draft},resultTo:studioSourceChecks});
+  const previewStudioSource=dsl.intent.capabilityRequest("preview-studio-serialization",studio,{operation:{binding:"serialize-preview",kind:"inspect",target:"document"},arguments:{path:selected,text:draft},resultTo:studioSerializedPreview});
+  // These are semantic operation kinds, not icon declarations. Where the
+  // current DSL lacks an accurate type, retain the legacy executable binding.
+  const typedRuntimeOperation={
+    mount:{kind:"start",target:"service"},
+    validate:{kind:"inspect",target:"document"},
+    repair:{kind:"reconcile",target:"document"},
+    stage:{kind:"edit",target:"document"},
+    commit:{kind:"apply",target:"document"},
+    evidence:{kind:"inspect",target:"log"},
+    replay:{kind:"run",target:"task"}
+  };
   const runtimeIntents={};
   for(const name of ["mount","validate","serialize","repair","stage","commit","route-enter","route-leave","evidence","replay"])
     runtimeIntents[name]=dsl.intent.capabilityRequest("studio-runtime-"+name,scmRuntime,
-      {operation:name,arguments:{path:selected,text:draft},resultTo:scmRuntimeResult});
-  const readAiderContext=dsl.intent.capabilityRequest("aider-context",aiderReader,{operation:"context",resultTo:aiderContext});
-  const readAiderJobs=dsl.intent.capabilityRequest("aider-jobs",aiderReader,{operation:"jobs",resultTo:aiderJobs});
-  const runAider=dsl.intent.capabilityRequest("run-aider",aiderController,{operation:"run",inputs:{instruction:text,files:text},arguments:{path:selected},resultTo:aiderResult});
-  const archiveAider=dsl.intent.capabilityRequest("archive-aider-context",aiderController,{operation:"archive",arguments:{path:selected},resultTo:aiderResult});
-  const resetAider=dsl.intent.capabilityRequest("reset-aider-context",aiderController,{operation:"reset",arguments:{path:selected},resultTo:aiderResult});
-  const loadAider=dsl.intent.capabilityRequest("load-aider-archive",aiderController,{operation:"load",inputs:{archiveId:text},resultTo:aiderResult});
-  const previewAider=dsl.intent.capabilityRequest("preview-aider-plan",aider,{operation:"preview",inputs:{instruction:text},arguments:{path:selected},resultTo:aiderPreview});
-  const prepare=dsl.intent.capabilityRequest("prepare-reviewed-change",reviewer,{operation:"prepare",arguments:{path:selected,text:draft},resultTo:reviewed});
-  const apply=dsl.intent.capabilityRequest("apply-reviewed-change",applier,{operation:"apply",arguments:{path:selected,review:reviewed,text:draft},resultTo:applied});
-  const listing=dsl.intent.capabilityRequest("list-files",reader,{operation:"list",resultTo:files});
+      {operation:typedRuntimeOperation[name]
+        ? {binding:name,...typedRuntimeOperation[name]} : name,
+       arguments:{path:selected,text:draft},resultTo:scmRuntimeResult});
+  const readAiderContext=dsl.intent.capabilityRequest("aider-context",aiderReader,{operation:{binding:"context",kind:"inspect",target:"session"},resultTo:aiderContext});
+  const readAiderJobs=dsl.intent.capabilityRequest("aider-jobs",aiderReader,{operation:{binding:"jobs",kind:"refresh",target:"task"},resultTo:aiderJobs});
+  const runAider=dsl.intent.capabilityRequest("run-aider",aiderController,{operation:{binding:"run",kind:"run",target:"task"},inputs:{instruction:text,files:text},arguments:{path:selected},resultTo:aiderResult});
+  const archiveAider=dsl.intent.capabilityRequest("archive-aider-context",aiderController,{operation:{binding:"archive",kind:"save",target:"session"},arguments:{path:selected},resultTo:aiderResult});
+  const resetAider=dsl.intent.capabilityRequest("reset-aider-context",aiderController,{operation:{binding:"reset",kind:"reset",target:"session"},arguments:{path:selected},resultTo:aiderResult});
+  const loadAider=dsl.intent.capabilityRequest("load-aider-archive",aiderController,{operation:{binding:"load",kind:"open",target:"session"},inputs:{archiveId:text},resultTo:aiderResult});
+  const previewAider=dsl.intent.capabilityRequest("preview-aider-plan",aider,{operation:{binding:"preview",kind:"inspect",target:"document"},inputs:{instruction:text},arguments:{path:selected},resultTo:aiderPreview});
+  const prepare=dsl.intent.capabilityRequest("prepare-reviewed-change",reviewer,{operation:{binding:"prepare",kind:"inspect",target:"document"},arguments:{path:selected,text:draft},resultTo:reviewed});
+  const apply=dsl.intent.capabilityRequest("apply-reviewed-change",applier,{operation:{binding:"apply",kind:"apply",target:"document"},arguments:{path:selected,review:reviewed,text:draft},resultTo:applied});
+  const listing=dsl.intent.capabilityRequest("list-files",reader,{operation:{binding:"list",kind:"open",target:"folder"},resultTo:files});
   const choose=dsl.intent.selectFromCollection("select-file",files,selected);
-  const read=dsl.intent.capabilityRequest("open-source",reader,{operation:"read",arguments:{path:selected},resultTo:source});
-  const directory=dsl.intent.capabilityRequest("browse-directory",reader,{operation:"directory",inputs:{path:text},resultTo:files});
-  const save=dsl.intent.capabilityRequest("save-source",writer,{operation:"save",arguments:{path:selected,text:draft}});
+  const read=dsl.intent.capabilityRequest("open-source",reader,{operation:{binding:"read",kind:"open",target:"file"},arguments:{path:selected},resultTo:source});
+  const directory=dsl.intent.capabilityRequest("browse-directory",reader,{operation:{binding:"directory",kind:"open",target:"folder"},inputs:{path:text},resultTo:files});
+  const save=dsl.intent.capabilityRequest("save-source",writer,{operation:{binding:"save",kind:"save",target:"file"},arguments:{path:selected,text:draft}});
   const surface=dsl.surface.bindHtml("application",{bindings:{
     navigation:[dsl.surface.action("list-files",{intent:listing}),dsl.surface.form("browse-directory",{fields:{path:text},defaults:{path:""},intent:directory}),dsl.surface.collection("files",{key:"path",fields:["name","kind"],state:files,select:choose})],
     document:[dsl.surface.action("open-source",{intent:read}),dsl.surface.documentEditor("source-editor",{value:source,path:selected,draft,loadIntent:read,saveIntent:save})],

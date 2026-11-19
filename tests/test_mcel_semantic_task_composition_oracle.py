@@ -140,7 +140,7 @@ def test_semantic_task_layout_and_real_lifecycle(width):
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='device-b'")
             assert 'Backup identity' in _facts(page)['identityText']
             form=page.locator('form[data-intent="intent:configure-and-enable-organization"]')
-            form.get_by_role('button',name='Configure ORG-SLH').click()
+            form.get_by_role('button',name='Apply').click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='running'")
             after_configure=_facts(page)
             _check(after_configure,width,"Backup identity")

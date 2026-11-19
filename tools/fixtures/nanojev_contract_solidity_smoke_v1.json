@@ -1,0 +1,29 @@
+{
+  "schema": "nanojev.contract-solidity-smoke.fixtures.v1",
+  "cases": [
+    {
+      "id": "escrow_baseline",
+      "family": "positive",
+      "request": "The buyer deposits exactly 1 ETH into escrow for the seller. Only the buyer may confirm delivery, and only before 30 days have elapsed after funding; that confirmation immediately releases the escrowed ether to the seller. If no release occurred and at least 30 days have elapsed after funding, only the buyer may reclaim the escrowed ether. The same funds must never be paid out more than once, and release and refund are mutually exclusive.",
+      "expected_amount_wei": 1000000000000000000
+    },
+    {
+      "id": "escrow_paraphrase",
+      "family": "positive",
+      "request": "For a sale, place precisely one ether from the buyer into a holding contract for the seller. Starting when the buyer funds it, there is a thirty-day window in which only the buyer can acknowledge receipt of delivery and thereby have the full deposit paid immediately to the seller. Once that window has expired, if the money has not already been paid out, only the buyer can take it back. The escrow must settle exactly once, by release or refund, never both.",
+      "expected_amount_wei": 1000000000000000000
+    },
+    {
+      "id": "escrow_amount_change",
+      "family": "positive",
+      "request": "The buyer deposits exactly 2 ETH into escrow for the seller. Only the buyer may confirm delivery, and only before 30 days have elapsed after funding; that confirmation immediately releases the escrowed ether to the seller. If no release occurred and at least 30 days have elapsed after funding, only the buyer may reclaim the escrowed ether. The same funds must never be paid out more than once, and release and refund are mutually exclusive.",
+      "expected_amount_wei": 2000000000000000000
+    },
+    {
+      "id": "escrow_ambiguous",
+      "family": "needs_clarification",
+      "request": "Hold the buyer's money for the seller until the delivery situation is settled. Give it back if something goes wrong.",
+      "missing": ["amount", "deadline", "release_authority", "refund_condition"]
+    }
+  ]
+}

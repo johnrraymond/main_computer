@@ -1,0 +1,302 @@
+{
+  "schema": "nanojev.contract-liveness.challenges.v1",
+  "provenance": "assistant-authored diagnostic; gold hidden from live model; NOT independent expert gold",
+  "cases": [
+    {
+      "id": "unsafe_reversible_split",
+      "family": "unsafe_compilable",
+      "composition_case": "reversible_split_base",
+      "reason": "after deadline, silence of reviewer traps balance"
+    },
+    {
+      "id": "unsafe_work_review",
+      "family": "unsafe_compilable",
+      "composition_case": "review_workflow_base",
+      "reason": "payer silence after submission traps balance"
+    },
+    {
+      "id": "safe_reversible_split",
+      "family": "safe_positive",
+      "request": "A payer deploying this contract deposits exactly 4 ETH once, starting a five-day clock. The payable worker and reviewer are distinct constructor addresses. While in funded state before day five, the payer can call cancel to move to cancelled and return all the ETH to the payer. On or after day five, the reviewer can call release from funded to settled, paying 75% to the worker and 25% to the reviewer. Independently, on or after day five the payer can call rescue_release from funded to settled with exactly the same 75/25 split, if the reviewer will not act. Each payment is one-time and atomic. There are no additional actions, automatic transactions or refund options after the deadline.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1",
+        "asset": "native_eth",
+        "payer": "deployer",
+        "worker": "constructor_worker",
+        "reviewer": "constructor_reviewer",
+        "amount_wei": 4000000000000000000,
+        "deadline_seconds": 432000,
+        "rules": [
+          {
+            "name": "cancel",
+            "actor": "payer",
+            "from": "funded",
+            "to": "cancelled",
+            "when": "before_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "release",
+            "actor": "reviewer",
+            "from": "funded",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "reviewer",
+                "bps": 2500
+              },
+              {
+                "to": "worker",
+                "bps": 7500
+              }
+            ]
+          },
+          {
+            "name": "rescue_release",
+            "actor": "payer",
+            "from": "funded",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "reviewer",
+                "bps": 2500
+              },
+              {
+                "to": "worker",
+                "bps": 7500
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "safe_reversible_paraphrase",
+      "family": "safe_positive",
+      "request": "Use a one-shot native-ETH contract with payer as deployer, two different constructor payees worker and reviewer, and a 4 ether deposit. Funding begins a period of 5 days. The funded contract may be cancelled by payer strictly before that deadline, refunding the entire balance to payer in cancelled. After the deadline begins, reviewer has release to settle 75 percent to worker and 25 percent to reviewer. If reviewer declines, payer possesses another action explicitly named rescue_release, valid from funded at or after the deadline, to settle the same proportions into settled. No other contract functions change the state. There is no autonomous execution.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1",
+        "asset": "native_eth",
+        "payer": "deployer",
+        "worker": "constructor_worker",
+        "reviewer": "constructor_reviewer",
+        "amount_wei": 4000000000000000000,
+        "deadline_seconds": 432000,
+        "rules": [
+          {
+            "name": "cancel",
+            "actor": "payer",
+            "from": "funded",
+            "to": "cancelled",
+            "when": "before_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "release",
+            "actor": "reviewer",
+            "from": "funded",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "reviewer",
+                "bps": 2500
+              },
+              {
+                "to": "worker",
+                "bps": 7500
+              }
+            ]
+          },
+          {
+            "name": "rescue_release",
+            "actor": "payer",
+            "from": "funded",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "reviewer",
+                "bps": 2500
+              },
+              {
+                "to": "worker",
+                "bps": 7500
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "safe_review_workflow",
+      "family": "safe_positive",
+      "request": "The deployer payer deposits 3 ETH exactly once. Worker and reviewer are distinct addresses supplied to the constructor. Funding starts a deadline of seven days. Before seven days the worker can call submit to move from funded to submitted with no payment. After submission the payer may call approve at any time to settle and pay the entire deposit to worker. If the state is still funded at or after seven days, payer may call refund to refund all ETH to payer. To prevent payer inactivity causing a lock, worker has a separate fallback_approve action in submitted at or after seven days, settling all ETH to worker. Worker also has fallback_refund from funded at or after seven days which refunds the entire deposit to payer. No further transitions, recurring payments, or automatic transactions are authorized.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1",
+        "asset": "native_eth",
+        "payer": "deployer",
+        "worker": "constructor_worker",
+        "reviewer": "constructor_reviewer",
+        "amount_wei": 3000000000000000000,
+        "deadline_seconds": 604800,
+        "rules": [
+          {
+            "name": "approve",
+            "actor": "payer",
+            "from": "submitted",
+            "to": "settled",
+            "when": "always",
+            "payments": [
+              {
+                "to": "worker",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "fallback_approve",
+            "actor": "worker",
+            "from": "submitted",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "worker",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "fallback_refund",
+            "actor": "worker",
+            "from": "funded",
+            "to": "refunded",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "refund",
+            "actor": "payer",
+            "from": "funded",
+            "to": "refunded",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "submit",
+            "actor": "worker",
+            "from": "funded",
+            "to": "submitted",
+            "when": "before_deadline",
+            "payments": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "safe_review_duration_change",
+      "family": "safe_positive",
+      "request": "The payer is the deploying depositor of exactly 3 ETH. Worker and reviewer are unique payable constructor roles. The deadline starts with funding and is FOURTEEN days. In funded, worker can submit before day fourteen and change to submitted without paying anything. From submitted, payer can approve at any time and pay all funds to worker and settle. In funded at or after the fourteen-day deadline, payer can refund to payer in refunded. There are TWO explicitly authorized recovery actions for payer silence: worker can invoke fallback_approve from submitted at or after day fourteen to pay all ETH to worker in settled; worker can invoke fallback_refund from funded at or after day fourteen to return everything to payer in refunded. Every settlement is full and final; no other actions exist.",
+      "expected": {
+        "language": "nanojev.contract.state_machine.v1",
+        "asset": "native_eth",
+        "payer": "deployer",
+        "worker": "constructor_worker",
+        "reviewer": "constructor_reviewer",
+        "amount_wei": 3000000000000000000,
+        "deadline_seconds": 1209600,
+        "rules": [
+          {
+            "name": "approve",
+            "actor": "payer",
+            "from": "submitted",
+            "to": "settled",
+            "when": "always",
+            "payments": [
+              {
+                "to": "worker",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "fallback_approve",
+            "actor": "worker",
+            "from": "submitted",
+            "to": "settled",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "worker",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "fallback_refund",
+            "actor": "worker",
+            "from": "funded",
+            "to": "refunded",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "refund",
+            "actor": "payer",
+            "from": "funded",
+            "to": "refunded",
+            "when": "at_or_after_deadline",
+            "payments": [
+              {
+                "to": "payer",
+                "bps": 10000
+              }
+            ]
+          },
+          {
+            "name": "submit",
+            "actor": "worker",
+            "from": "funded",
+            "to": "submitted",
+            "when": "before_deadline",
+            "payments": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "ambiguous_recovery",
+      "family": "needs_clarification",
+      "request": "Payer deposits 3 ETH for a worker's software deliverable. If the payer never reviews a submitted deliverable, someone should eventually release or refund the funds automatically, whichever is fairest. There will be a reviewer, but I have not decided whether the reviewer should have a veto, who can execute the backup action, how many days are allowed, or who should receive the escrow under a disagreement. Please generate the complete contract now.",
+      "reason": "missing authorization, duration and destination; automatic execution unsupported"
+    }
+  ]
+}

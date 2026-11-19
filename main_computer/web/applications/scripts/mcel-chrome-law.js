@@ -33,7 +33,8 @@
         "chrome-spotlight",
         "chrome-journey",
         "chrome-compact-disclosure",
-        "chrome-tng-side-rails"
+        "chrome-tng-side-rails",
+        "chrome-vulcan"
       ]);
 
       const commonHardObjectSelector = "img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button";
@@ -69,6 +70,18 @@
       }
 
       const chromeDefinitions = Object.freeze({
+        "chrome-vulcan": Object.freeze({
+          id: "chrome-vulcan",
+          label: "Vulcan",
+          contractVersion: CONTRACT_VERSION,
+          kind: "semantic-chrome",
+          description: "White workspace and navigation, borderless idle controls, selected-only gray highlights, and no dark status bars; preserves the mounted application's structure and functions.",
+          preservesPixelBaseline: false,
+          restructuresHierarchy: false,
+          fitContract: chromeFitContractDefinition({genericFallback:false}),
+          compositionContract: chromeCompositionContractDefinition([], [], {}),
+          remediation: chromeRemediationDefinition([], [])
+        }),
         "chrome-tng-side-rails": Object.freeze({
           id: "chrome-tng-side-rails",
           label: "TNG Side Rails",
@@ -420,7 +433,9 @@
         "chrome-disclosure": "chrome-compact-disclosure",
         "tng": "chrome-tng-side-rails",
         "tng-side-rails": "chrome-tng-side-rails",
-        "lcars": "chrome-tng-side-rails"
+        "lcars": "chrome-tng-side-rails",
+        "vulcan": "chrome-vulcan",
+        "chat-style": "chrome-vulcan"
       });
 
       const chromeCatalog = Object.freeze(chromes.map((id) => chromeDefinitions[id] || Object.freeze({

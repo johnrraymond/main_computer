@@ -19,3 +19,31 @@
   color: inherit;
   line-height: 1;
 }
+
+/* Semantic icon slots are MCEL core output, not application-owned controls.
+ * Theme supplies paint/weight, Form supplies footprint, Chrome supplies
+ * interaction-state treatment. All properties inherit through existing laws. */
+[data-mcel-icon-core="active"] .mcel-semantic-icon-slot {
+  width: var(--mcel-semantic-icon-size, 16px);
+  height: var(--mcel-semantic-icon-size, 16px);
+  margin-inline-end: var(--mcel-semantic-icon-gap, 0.4em);
+  color: var(--mcel-semantic-icon-color, currentColor);
+  opacity: var(--mcel-semantic-icon-opacity, 1);
+  pointer-events: none;
+}
+[data-mcel-icon-core="active"] .mcel-semantic-icon-slot > .mcel-icon-svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: var(--mcel-semantic-icon-stroke, 2.2);
+}
+/* Theme: accessible affordances receive a stronger canonical stroke.
+ * Form: shapes may choose an icon footprint without changing the meaning.
+ * Chrome: uses the existing native pseudo-state, never event handlers. */
+[data-mcel-icon-theme="theme-accessible"] { --mcel-semantic-icon-stroke: 2.8; }
+[data-mcel-icon-form="form-angular"] { --mcel-semantic-icon-size: 15px; }
+[data-mcel-icon-form="form-pill"] { --mcel-semantic-icon-size: 18px; }
+[data-mcel-icon-form="form-wireframe"] { --mcel-semantic-icon-stroke: 1.8; }
+[data-mcel-icon-chrome="chrome-strict-hierarchy"] :is(button,[role="button"]):disabled .mcel-semantic-icon-slot,
+[data-mcel-icon-chrome="chrome-strict-hierarchy"] :is(button,[role="button"])[aria-disabled="true"] .mcel-semantic-icon-slot {
+  --mcel-semantic-icon-opacity: 0.45;
+}

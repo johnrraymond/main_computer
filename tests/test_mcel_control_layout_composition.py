@@ -50,7 +50,7 @@ def test_configuration_workspace_has_no_synthetic_refresh_toolbar(browser, width
         assert page.locator('[data-mcel-action-flow]').count() == 0
         draft = page.locator('form[data-intent="intent:configure-and-enable-organization"]')
         assert draft.count() == 1
-        assert draft.get_by_role('button',name='Configure ORG-SLH').is_disabled()  # No LMS identity observed
+        assert draft.get_by_role('button',name='Apply').is_disabled()  # No LMS identity observed
         assert page.locator('button[data-intent="intent:disable-organization"]').count() == 1
         assert assess(page.evaluate(DOM_OBSERVATION))['status'] == 'PASS'
         assert page.locator('#mcel-workbench').evaluate('e=>e.scrollHeight==e.clientHeight')

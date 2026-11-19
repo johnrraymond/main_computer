@@ -1,0 +1,160 @@
+{
+  "schema": "mcel.semantic-icon-render-oracle.v1",
+  "purpose": "Independent expected icon assignments for actual route-hosted canonical applications AND source-compiled generated P3/SLH applications. Null means intentionally unresolved; tests do not fabricate action meaning.",
+  "applications": {
+    "file-manager": {
+      "nodes": {
+        "load-roots": "action.refresh",
+        "browse": "resource.folder-open",
+        "open-directory": "resource.folder-open",
+        "search": "action.search",
+        "preview-file": "action.inspect",
+        "open-with": "navigation.external"
+      },
+      "source": "tools/fixtures/mcel_semantic_other_apps/file-manager/application.js",
+      "appId": "semantic-file-manager",
+      "route": "/applications/file-explorer",
+      "hostKind": "canonical-promoted",
+      "generatedControls": {
+        "reset-inputs": "action.reset",
+        "parent-directory": "navigation.up",
+        "open-location": "resource.folder-open",
+        "refresh-location": "action.refresh"
+      }
+    },
+    "task-manager": {
+      "nodes": {
+        "select-notebook": null,
+        "all-query": "action.refresh",
+        "connection-query": "action.refresh",
+        "hardware-query": "action.refresh",
+        "list-schedules": null,
+        "create-schedule-form": "action.add",
+        "delete-schedule": "action.delete",
+        "run-schedule": "action.run",
+        "ai-question": null,
+        "terminate-process": "action.stop",
+        "kill-process": null,
+        "start-server": "action.run",
+        "restart-server": "action.restart",
+        "shutdown-server": "action.stop",
+        "server-status": null,
+        "monitor-query": "action.refresh"
+      },
+      "source": "tools/fixtures/mcel_semantic_other_apps/task-manager/application.js",
+      "appId": "semantic-task-manager",
+      "route": "/applications/task-manager",
+      "hostKind": "canonical-promoted"
+    },
+    "task-manager-p3": {
+      "source": "mcel_apps/task-manager/application.js",
+      "appId": "semantic-task-manager-generated-p3",
+      "route": "/applications/mcel-semantic-task-manager-generated-p3",
+      "hostKind": "generated-p3-with-shared-presentation-in-test",
+      "nodes": {
+        "ai-question": null,
+        "all-query": "action.refresh",
+        "connection-query": "action.refresh",
+        "create-schedule-form": "action.add",
+        "delete-schedule": "action.delete",
+        "hardware-query": "action.refresh",
+        "kill-process": null,
+        "list-schedules": null,
+        "monitor-query": "action.refresh",
+        "restart-server": "action.restart",
+        "run-schedule": "action.run",
+        "select-notebook": null,
+        "server-status": null,
+        "shutdown-server": "action.stop",
+        "start-server": "action.run",
+        "terminate-process": "action.stop"
+      }
+    },
+    "slh": {
+      "source": "mcel_apps/slh/application.js",
+      "appId": "slh",
+      "route": "/applications/slh",
+      "hostKind": "canonical-promoted",
+      "nodes": {
+        "configure-org-slh": "action.apply",
+        "connect-network-slh": null,
+        "connect-remote-seh": null,
+        "disconnect-network-slh": null,
+        "disconnect-remote-seh": null,
+        "organization-enablement": null,
+        "start-stop-org-slh": null
+      },
+      "stateful": {
+        "running": {
+          "organization-enablement": "action.disable",
+          "start-stop-org-slh": "action.stop"
+        },
+        "stopped": {
+          "organization-enablement": "action.disable",
+          "start-stop-org-slh": "action.run"
+        },
+        "disabled": {
+          "organization-enablement": "action.enable",
+          "start-stop-org-slh": null
+        },
+        "starting": {
+          "organization-enablement": null,
+          "start-stop-org-slh": null
+        },
+        "not_configured": {
+          "organization-enablement": null,
+          "start-stop-org-slh": null
+        }
+      }
+    },
+    "code-editor": {
+      "source": "tools/fixtures/mcel_semantic_other_apps/code-editor/application.js",
+      "appId": "semantic-code-editor",
+      "route": "/applications/code-editor",
+      "hostKind": "canonical-promoted",
+      "nodes": {
+        "aider-context": "action.inspect",
+        "aider-jobs": "action.refresh",
+        "aider-load-archive": "action.open",
+        "aider-preview-form": "action.inspect",
+        "aider-run-form": "action.run",
+        "apply-reviewed-change": "action.apply",
+        "archive-aider-context": "action.save",
+        "browse-directory": "resource.folder-open",
+        "check-studio-draft": "action.inspect",
+        "inspect-scm-component-contract": "action.inspect",
+        "inspect-scm-route-contract": "action.inspect",
+        "list-component-docs": "action.inspect",
+        "list-files": "resource.folder-open",
+        "open-source": "action.open",
+        "prepare-reviewed-change": "action.inspect",
+        "preview-studio-serialization": "action.inspect",
+        "read-component-doc": "action.inspect",
+        "read-component-doc-viewport-config": "action.settings",
+        "reset-aider-context": "action.reset",
+        "run-component-doc-script": "action.run",
+        "studio-proof-export": "action.download",
+        "studio-proof-inspect": "action.inspect",
+        "studio-proof-list": "action.inspect",
+        "studio-regression-run": "action.run",
+        "studio-repair-packet": "action.reconcile",
+        "studio-runtime-commit": "action.apply",
+        "studio-runtime-evidence": "action.inspect",
+        "studio-runtime-mount": "action.run",
+        "studio-runtime-repair": "action.reconcile",
+        "studio-runtime-replay": "action.run",
+        "studio-runtime-route-enter": null,
+        "studio-runtime-route-leave": null,
+        "studio-runtime-serialize": null,
+        "studio-runtime-stage": "action.edit",
+        "studio-runtime-validate": "action.inspect"
+      },
+      "generatedControls": {
+        "document-save": "action.save",
+        "document-discard": "action.reset",
+        "document-close": "navigation.close",
+        "reset-inputs": "action.reset"
+      }
+    }
+  }
+}

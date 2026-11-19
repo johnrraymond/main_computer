@@ -11,6 +11,7 @@
 const crypto = require("node:crypto");
 const path = require("node:path");
 const vm = require("node:vm");
+const TYPED_OPERATION_SPEC = require("./schemas/mcel.application-ir.v1.schema.json").$defs.typedOperation;
 
 const RUNTIME_VERSION = "mcel-dsl-builder-wave2b";
 const FRONTEND_ID = "mcel.dsl.v1";
@@ -96,6 +97,27 @@ function deepClone(value, semanticPath = "$") {
     `DSL output contains a nonportable ${typeof value} value.`,
     semanticPath,
   );
+}
+
+// Canonical type vocabulary comes from the same IR schema as Python validation.
+// The executable binding is kept distinct from semantic operation identity.
+function normalizeOperation(value, semanticPath) {
+  if (typeof value === "string") return {binding: value};
+  assert(value && typeof value === "object" && !Array.isArray(value),
+    "MCEL_DSL_TYPED_OPERATION_INVALID", "An operation must be a legacy string or a typed operation object.", semanticPath);
+  assert(Object.keys(value).length === 3 &&
+    Object.keys(value).every(key => ["binding", "kind", "target"].includes(key)),
+    "MCEL_DSL_TYPED_OPERATION_FIELDS_INVALID", "Typed operations require only binding, kind and target.", semanticPath);
+  assert(typeof value.binding === "string" && value.binding.length > 0,
+    "MCEL_DSL_TYPED_OPERATION_BINDING_INVALID", "Typed operation requires a nonempty executable binding.", semanticPath);
+  for (const key of ["kind", "target"]) {
+    assert(typeof value[key] === "string" && TYPED_OPERATION_SPEC.properties[key].enum.includes(value[key]),
+      "MCEL_DSL_TYPED_OPERATION_" + key.toUpperCase() + "_INVALID",
+      `Typed operation ${key} must belong to the canonical MCEL type vocabulary.`, semanticPath);
+  }
+  return {binding: value.binding, typedOperation: {
+    schema: "mcel.typed-operation.v1", kind: value.kind, target: value.target,
+  }};
 }
 
 function sourceRecord(sourcePath, lineCount) {
@@ -763,8 +785,9 @@ function createDsl(metadata, source) {
   function buildCapabilityRequest(name, authority, options = {}) {
     assert(authority instanceof CapabilityHandle && capabilityById.get(authority.id) === authority,
       "MCEL_DSL_CAPABILITY_HANDLE_REQUIRED", "Capability request requires a compiler-issued declared capability.");
-    const operation = authority.operations.get(options.operation);
-    assert(operation, "MCEL_DSL_CAPABILITY_OPERATION_UNKNOWN", `Unknown capability operation '${options.operation}'.`);
+    const selected = normalizeOperation(options.operation, `intent:${name}.operation`);
+    const operation = authority.operations.get(selected.binding);
+    assert(operation, "MCEL_DSL_CAPABILITY_OPERATION_UNKNOWN", `Unknown capability operation '${selected.binding}'.`);
     assert(options && typeof options === "object" && !Array.isArray(options) &&
       Object.keys(options).every(key => ["operation", "inputs", "arguments", "reads", "resultTo", "outcomes", "confirmationRequired"].includes(key)),
       "MCEL_DSL_CAPABILITY_REQUEST_OPTION_UNKNOWN", "Unsupported capability request option.");
@@ -815,7 +838,8 @@ function createDsl(metadata, source) {
         "MCEL_DSL_RESULT_SCHEMA_MISMATCH", "Declared capability result must exactly match derived target schema.");
       resultBindings = [{target: ref(options.resultTo), source: "capability-response", disposition: "completed"}];
     }
-    const record = {id, kind: "intent", sourceName: name, operationKind: "capability", operation: options.operation,
+    const record = {id, kind: "intent", sourceName: name, operationKind: "capability", operation: selected.binding,
+      ...(selected.typedOperation ? {typedOperation: selected.typedOperation} : {}),
       runtimeMethod: operation.runtimeMethod, risk: authority.record.risk, cancellable: operation.cancellable,
       input: inputs, reads, writes: [], refusals: [], invariants: [],
       requestArguments, effectRefs: [{ref: effectId}], resultBindings,

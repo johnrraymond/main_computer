@@ -2,7 +2,7 @@
 
 Usage:
   python -m tools.mcel_functional_live_acceptance --host-url http://127.0.0.1:8765
-  python -m tools.mcel_functional_live_acceptance --host-url http://127.0.0.1:8765 --app slh --protected-reads
+  python -m tools.mcel_functional_live_acceptance --host-url http://127.0.0.1:8765 --app slh --protected-reads --admin-id <ID>
 
 All requests are browser-routed through fail-closed read allowlists. Identity
 approval/rejection, deployment/undeployment, file/process mutations and Aider
@@ -24,17 +24,22 @@ DEFAULT_REPORT = Path('runtime/reports/mcel-functional-live-acceptance/report.js
 
 
 def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = ALL_APPS,
-        *, protected_reads: bool = False) -> dict:
+        *, protected_reads: bool = False, admin_id: str | None = None) -> dict:
     base = validate_loopback_base(host_url)
     if not apps or len(set(apps)) != len(apps) or any(app not in ALL_APPS for app in apps):
         raise ValueError('Select one or more distinct supported applications')
     if protected_reads and 'slh' not in apps:
         raise ValueError('--protected-reads requires an SLH selection')
+    if admin_id is not None and (not protected_reads or 'slh' not in apps):
+        raise ValueError('--admin-id requires --protected-reads and SLH selection')
+    from tools.mcel_slh_live_readonly_frob import validate_admin_id
+    validate_admin_id(admin_id, protected_reads=protected_reads)
     report.parent.mkdir(parents=True, exist_ok=True)
     output = {'schema': 'mcel.functional-live-acceptance.v1',
               'host': base, 'scope': 'real-host-read-only-no-mutations',
               'status': 'INCOMPLETE', 'apps': {},
               'requested': list(apps), 'protected_reads': protected_reads,
+              'admin_id_supplied': admin_id is not None,
               'mutating_acceptance': 'NOT_RUN_NEEDS_ISOLATED_FIXTURES'}
     selected = tuple(app for app in apps if app in FOUR_APPS)
     if selected:
@@ -51,9 +56,13 @@ def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = AL
     if 'slh' in apps:
         try:
             slh = slh_run(base, report.parent / 'slh-evidence.json',
-                          protected_reads=protected_reads)
+                          protected_reads=protected_reads, admin_id=admin_id)
             output['apps']['slh'] = {'status': slh['status'],
                                     'protected_reads': slh['protected_reads'],
+                                    **({'failure_stage': slh['failure_stage']}
+                                       if slh.get('failure_stage') else {}),
+                                    **({'failure_code': slh['failure_code']}
+                                       if slh.get('failure_code') else {}),
                                     'evidence': 'slh-evidence.json'}
         except Exception as exc:
             output['apps']['slh'] = {'status': 'INCOMPLETE',
@@ -71,15 +80,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--app', choices=ALL_APPS, action='append', help='Repeatable; defaults to all five apps')
     parser.add_argument('--protected-reads', action='store_true',
                         help='Allow SLH authentication and *read-only* protected notebook inspection')
+    parser.add_argument('--admin-id',
+                        help='LMS-SLH identity to select via MCEL for the protected lane; never inferred')
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args(argv)
     try:
         result = run(args.host_url, args.report, tuple(args.app or ALL_APPS),
-                     protected_reads=args.protected_reads)
+                     protected_reads=args.protected_reads, admin_id=args.admin_id)
     except ValueError as exc:
         parser.error(str(exc))
     for app, outcome in result['apps'].items():
-        print('MCEL_LIVE_FUNCTIONAL', app, outcome['status'], flush=True)
+        print('MCEL_LIVE_FUNCTIONAL', app, outcome['status'],
+              outcome.get('failure_code', ''), flush=True)
     print('MCEL_LIVE_FUNCTIONAL_OVERALL', result['status'], 'report:', args.report)
     return 0 if result['status'] == 'PASS_LIVE_READ_ONLY' else 1
 

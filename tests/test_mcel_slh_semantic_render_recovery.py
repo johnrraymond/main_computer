@@ -43,11 +43,11 @@ def _slh_get_server():
 def test_slh_semantic_form_label_compiles_and_page_renders_without_lifecycle_calls():
     ir, _ = compile_slh_application()
     forms = {n["id"]: n for n in ir["surfaces"][0]["nodes"] if n["nodeKind"] == "form"}
-    assert forms["surface-node:slh.configure-org-slh"]["submitLabel"] == "Configure ORG-SLH"
+    assert forms["surface-node:slh.configure-org-slh"]["submitLabel"] == "Apply"
     for view in ("overview", "network"):
         html = render_slh_page(view)
         assert "mcel-generated-data" in html
-        assert 'Configure ORG-SLH' in html
+        assert '"submitLabel":"Apply"' in html
         assert 'data-mcel-slh-target="' + ("network" if view == "network" else "local") + '"' in html
 
 
@@ -67,7 +67,7 @@ def test_invalid_form_submit_label_is_rejected_by_strict_dsl(tmp_path: Path):
     original = (ROOT / SOURCE).read_text(encoding="utf-8")
     for substitute in ('submitLabel:""', 'submitLabel:42'):
         source = tmp_path / "application.js"
-        source.write_text(original.replace('submitLabel:"Configure ORG-SLH"', substitute), encoding="utf-8")
+        source.write_text(original.replace('submitLabel:"Apply"', substitute), encoding="utf-8")
         report = compile_dsl_application(source)
         assert not report.valid
         assert any(d["code"] == "MCEL_DSL_FORM_SUBMIT_LABEL_INVALID" for d in report.diagnostics)

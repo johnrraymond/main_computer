@@ -141,7 +141,7 @@ def test_slh_inspector_is_right_of_workspace_and_reports_backend_failure():
           return a.left>=w.right-2 && activity.getBoundingClientRect().top>=details.getBoundingClientRect().bottom-2;
         }''')
         assert '10.0.0.15' in inspector.inner_text()
-        page.get_by_role('button',name='Configure ORG-SLH').click()
+        page.get_by_role('button',name='Apply').click()
         page.wait_for_function('''()=>window.__mcelSlh.app.receipts().some(r =>
            r.intentId==='intent:configure-and-enable-organization' && r.disposition!=='completed')''')
         assert inspector.get_by_text('BIND_HOST_NOT_ASSIGNED',exact=False).count()>=1
@@ -160,11 +160,11 @@ def test_slh_latest_success_then_failure_stays_in_inspector():
         page.wait_for_function('''() => !!window.__mcelSlh && window.__mcelSlh.app.readState('state:organization-lifecycle')?.state==='running' ''')
         inspector=page.locator('[data-mcel-natural-scroller="inspection"]')
         page.evaluate('window.mcelFailRequest=false')
-        page.get_by_role('button',name='Configure ORG-SLH').click()
+        page.get_by_role('button',name='Apply').click()
         page.wait_for_function('''()=>window.__mcelSlh.app.receipts().some(r=>r.intentId==='intent:configure-and-enable-organization' && r.disposition==='completed')''')
         assert 'completed' in inspector.locator('[data-mcel-request-result]').inner_text()
         page.evaluate('window.mcelFailRequest=true')
-        page.get_by_role('button',name='Configure ORG-SLH').click()
+        page.get_by_role('button',name='Apply').click()
         page.wait_for_function('''()=>window.__mcelSlh.app.receipts().filter(r=>r.intentId==='intent:configure-and-enable-organization').length>=2''')
         assert 'BIND_HOST_NOT_ASSIGNED' in inspector.locator('[data-mcel-request-result]').inner_text()
         assert inspector.get_by_text('BIND_HOST_NOT_ASSIGNED',exact=False).count()>=1

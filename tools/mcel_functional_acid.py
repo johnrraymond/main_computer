@@ -33,6 +33,7 @@ STATUS = ('PASS', 'FAIL', 'UNVERIFIED', 'NOT_IMPLEMENTED')
 REPORT_PATH = Path('runtime/reports/mcel-functional-acid')
 SOURCE = Path('main_computer/web/applications/scripts')
 STYLE = Path('main_computer/web/applications/styles/mcel-lab.css')
+BASE_STYLE = Path('main_computer/web/applications/styles/base.css')
 NOTEBOOK = Path('tools/fixtures/mcel_candidates/task-manager-notebook/application.js')
 FIXTURE = Path('tools/fixtures/mcel_candidates/task-manager-notebook/read-only-sample.json')
 TAB_SPECIMEN = Path('tools/fixtures/mcel_acid_tab_ir.json')
@@ -182,11 +183,17 @@ def _run_browser(repo: Path, output: Path, baseline: Path | None,
                 page = browser.new_page(viewport={'width': 1280, 'height': 900},
                                         device_scale_factor=1, reduced_motion='reduce')
                 page.on('pageerror', lambda e: errors.append(str(e)))
-                page.set_content('<!doctype html><html><head><style>' +
-                    (repo / STYLE).read_text(encoding='utf-8') +
-                    '</style></head><body><div id="mcel-element-acid-summary"></div>' +
-                    '<div id="mcel-element-acid-report"></div>' +
-                    '<main id="mcel-element-acid-canvas"></main></body></html>')
+                # Exercise the same classes and base typography as the real
+                # MCEL Lab, not an unstyled body with placeholder DIVs.
+                page.set_content('<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">' +
+                    '<style>' + (repo / BASE_STYLE).read_text(encoding='utf-8') +
+                    '</style><style>' + (repo / STYLE).read_text(encoding='utf-8') +
+                    '</style></head><body><section id="mcel-lab-app" class="mcel-lab-app mc-app-shell">' +
+                    '<section class="mcel-element-acid" aria-label="MCEL Element Library Acid Test">' +
+                    '<div id="mcel-element-acid-summary" class="mcel-site-skeleton-cards"></div>' +
+                    '<div id="mcel-element-acid-canvas" class="mcel-element-acid-canvas"></div>' +
+                    '<div id="mcel-element-acid-report" class="mcel-site-skeleton-health" data-status="pending"></div>' +
+                    '</section></section></body></html>')
                 for name, src in scripts.items():
                     page.add_script_tag(content=src)
                 evidence = page.evaluate('''() => {
@@ -354,9 +361,93 @@ def _run_browser(repo: Path, output: Path, baseline: Path | None,
                     checks.append(result(f'elements-geometry-{width}', 'PASS' if
                         geo['elementCount'] >= len(elements) and geo['activeModes'] == 1 and
                         geo['pageWidth'] <= geo['viewport'] + 2 else 'FAIL', evidence=geo))
+                    # Computed presentation is a functional gate, separate from
+                    # human visual baseline approval.  These are the actual
+                    # authored elements, styles and DOM from the MCEL Lab.
+                    visual_contract = page.evaluate(r'''() => {
+                      const root=document.querySelector('.mcel-element-acid');
+                      const summary=document.querySelector('#mcel-element-acid-summary');
+                      const tiles=[...summary.querySelectorAll(':scope > article')];
+                      const details=summary.querySelector(':scope > details');
+                      const report=document.querySelector('#mcel-element-acid-report');
+                      const reportDetails=report.querySelector('details');
+                      const heading=document.querySelector('.mcel-element-acid-card h6');
+                      const font=getComputedStyle(summary).fontFamily;
+                      const rgba=str => {
+                        const m=str.match(/rgba?\(([^)]+)\)/);
+                        if(!m)return null;
+                        const x=m[1].split(',').map(Number);
+                        return [x[0],x[1],x[2],x.length>3?x[3]:1];
+                      };
+                      const onBackground = element => {
+                        let color=[0,0,0];
+                        const chain=[];
+                        for(let n=element;n;n=n.parentElement)chain.unshift(n);
+                        for(const n of chain){
+                          const bg=rgba(getComputedStyle(n).backgroundColor);
+                          if(bg)color=[0,1,2].map(i=>bg[i]*bg[3]+color[i]*(1-bg[3]));
+                        }
+                        return color;
+                      };
+                      const luminance = x => {
+                        const c=x.map(v=>{v/=255;return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4;});
+                        return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];
+                      };
+                      const contrast = el => {
+                        const fore=rgba(getComputedStyle(el).color);
+                        if(!fore)return 0;
+                        const fg=luminance(fore.slice(0,3));
+                        const bg=luminance(onBackground(el));
+                        return (Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05);
+                      };
+                      const targets=[summary.querySelector('article strong'),
+                        summary.querySelector('article span'),
+                        report.querySelector('.mcel-element-acid-report-head strong'), heading].filter(Boolean);
+                      const rects=tiles.map(x=>x.getBoundingClientRect());
+                      const overlap=rects.some((a,i)=>rects.some((b,j)=>j>i &&
+                        Math.min(a.right,b.right)-Math.max(a.left,b.left)>1 &&
+                        Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>1));
+                      return {font, contrasts:targets.map(el=>({
+                          selector:el.tagName,ratio:Math.round(contrast(el)*100)/100})),
+                        primaryMetrics:tiles.length,
+                        additionalMetrics:details?.querySelectorAll('article').length||0,
+                        additionalCollapsed:details?.open===false,
+                        reportCollapsed:reportDetails?.open===false,
+                        overlap, reportStructured:report.querySelectorAll('dl dt').length>=20,
+                        titleVisible:!!heading&&heading.getClientRects().length>0};
+                    }''')
+                    checks.append(result(f'elements-presentation-{width}', 'PASS' if
+                        ('Arial' in visual_contract['font'] or 'sans-serif' in visual_contract['font']) and
+                        visual_contract['primaryMetrics'] == 5 and
+                        visual_contract['additionalMetrics'] >= 10 and
+                        visual_contract['additionalCollapsed'] and
+                        visual_contract['reportCollapsed'] and
+                        visual_contract['reportStructured'] and
+                        visual_contract['titleVisible'] and
+                        not visual_contract['overlap'] and
+                        visual_contract['contrasts'] and
+                        all(x['ratio'] >= 4.5 for x in visual_contract['contrasts'])
+                        else 'FAIL', evidence=visual_contract))
                     path = snapshots / f'element-showcase-{width}.png'
                     page.screenshot(path=str(path), full_page=False, animations='disabled')
                     visuals.append(_compare_png(path, baseline, approve, Image, ImageChops))
+                    # Native disclosure must retain its full evidence and be
+                    # keyboard-/pointer-operable; screenshots stay collapsed.
+                    page.locator('.mcel-element-acid-report-details > summary').click()
+                    page.locator('.mcel-element-acid-summary-details > summary').click()
+                    expanded = page.evaluate('''() => ({
+                        summaryOpen:document.querySelector('.mcel-element-acid-summary-details').open,
+                        reportOpen:document.querySelector('.mcel-element-acid-report-details').open,
+                        metrics:document.querySelectorAll('.mcel-element-acid-extra-metrics article').length,
+                        diagnosticFields:document.querySelectorAll('.mcel-element-acid-report-facts dt').length,
+                        viewport:innerWidth, scrollWidth:document.documentElement.scrollWidth
+                    })''')
+                    checks.append(result(f'elements-details-toggle-{width}', 'PASS' if
+                        expanded['summaryOpen'] and expanded['reportOpen'] and
+                        expanded['metrics'] >= 10 and expanded['diagnosticFields'] >= 20 and
+                        expanded['scrollWidth'] <= expanded['viewport'] + 2 else 'FAIL', evidence=expanded))
+                    page.locator('.mcel-element-acid-report-details > summary').click()
+                    page.locator('.mcel-element-acid-summary-details > summary').click()
                 if full_elements:
                     # Each registered/showcased element receives an independent
                     # PNG. The 50 presently unshowcased definitions remain
@@ -618,11 +709,14 @@ def _prepare_output(output: Path) -> Path | None:
 
 def run(repo: Path, *, output: Path, mode: str='core', baseline: Path | None=None,
         approve: bool=False, chromium: str | None=None, timeout: int=180,
-        live_host_url: str | None=None, live_protected_reads: bool=False) -> dict[str, Any]:
+        live_host_url: str | None=None, live_protected_reads: bool=False,
+        live_admin_id: str | None=None) -> dict[str, Any]:
     if mode not in ('core','full','inventory'):
         raise ValueError('Invalid mode')
     if live_protected_reads and not live_host_url:
         raise ValueError('Protected live reads require --live-host-url')
+    if live_admin_id is not None and not live_protected_reads:
+        raise ValueError('--live-admin-id requires --live-protected-reads')
     if live_host_url:
         from tools.mcel_v1_four_app_hosted_acceptance import validate_loopback_base
         validate_loopback_base(live_host_url)
@@ -685,7 +779,7 @@ def run(repo: Path, *, output: Path, mode: str='core', baseline: Path | None=Non
     if live_host_url:
         from tools.mcel_functional_live_acceptance import run as run_live
         live_report = run_live(live_host_url, output / 'live' / 'report.json',
-                               protected_reads=live_protected_reads)
+                               protected_reads=live_protected_reads, admin_id=live_admin_id)
         report['live'] = live_report
         report['suites'].append(result('real-host-five-app-readonly',
             'PASS' if live_report['status'] == 'PASS_LIVE_READ_ONLY' else 'FAIL',
@@ -834,6 +928,8 @@ def main(argv: list[str] | None=None) -> int:
     parser.add_argument('--live-host-url', help='Opt in to actual-host read-only testing; requires loopback URL')
     parser.add_argument('--live-protected-reads', action='store_true',
                         help='Also authenticate and read SLH Pending/Enrolled/Trash; no mutations')
+    parser.add_argument('--live-admin-id',
+                        help='Explicit local administrator identity for protected live reads')
     args=parser.parse_args(argv)
     if args.approve_baselines and not args.baseline_dir:
         parser.error('--approve-baselines requires --baseline-dir')
@@ -843,7 +939,8 @@ def main(argv: list[str] | None=None) -> int:
                      mode=args.mode,baseline=args.baseline_dir,
                      approve=args.approve_baselines,chromium=args.chromium_executable,
                      timeout=args.timeout_seconds,live_host_url=args.live_host_url,
-                     live_protected_reads=args.live_protected_reads)
+                     live_protected_reads=args.live_protected_reads,
+                     live_admin_id=args.live_admin_id)
     except (OSError,ValueError) as exc:
         parser.error(str(exc))
     print(f"MCEL_FUNCTIONAL_ACID_{report['status']}: {report['counts']}")

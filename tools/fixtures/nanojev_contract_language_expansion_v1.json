@@ -1,0 +1,117 @@
+{
+  "schema": "nanojev.contract-language-expansion.fixtures.v1",
+  "provenance": {
+    "author": "LLM-generated challenge prompts, not independent human expert corpus",
+    "gold_excluded_from_llm": true,
+    "families": [
+      "timelocked_gift",
+      "split_payout"
+    ],
+    "certification": "DIAGNOSTIC_ONLY_NOT_EXPERT_GOLD"
+  },
+  "cases": [
+    {
+      "id": "gift_baseline",
+      "type": "timelocked_gift",
+      "family": "positive",
+      "request": "I am the depositor and the contract deployer. I will fund a time-locked gift with exactly 3 ETH in a single deposit. The beneficiary is a different payable address supplied when the contract is constructed. Only I may fund it; only the beneficiary may claim the entire three ether, and not until at least seven days after my deposit. The depositor gets no refund or cancellation right. The beneficiary can claim just once and the balance must not be paid twice.",
+      "expected": {
+        "amount_wei": 3000000000000000000,
+        "lock_seconds": 604800
+      }
+    },
+    {
+      "id": "gift_paraphrase",
+      "type": "timelocked_gift",
+      "family": "positive",
+      "request": "Create a one-time ETH gift vault. The person deploying the contract is the sole authorized funder and puts in precisely three ether. A separate beneficiary is designated by a payable constructor argument. Starting from the moment the gift is funded, impose a one-week lock; once a full week has passed, the beneficiary alone can withdraw the entire deposit. The funder cannot revoke or reclaim the gift. Withdrawal is irreversible and only one payout may occur.",
+      "expected": {
+        "amount_wei": 3000000000000000000,
+        "lock_seconds": 604800
+      }
+    },
+    {
+      "id": "gift_duration_change",
+      "type": "timelocked_gift",
+      "family": "positive",
+      "request": "Make a locked gift paid in native ether. Its creator is the sole depositor and must put in exactly 3 ETH. Use a separate beneficiary provided to the constructor. No one except the creator may deposit; no one except that beneficiary may withdraw the full gift, and withdrawal is permitted only at or after fourteen full days following funding. The creator has no refund or cancellation power. Once claimed, it can never be paid again.",
+      "expected": {
+        "amount_wei": 3000000000000000000,
+        "lock_seconds": 1209600
+      }
+    },
+    {
+      "id": "gift_ambiguous",
+      "type": "timelocked_gift",
+      "family": "needs_clarification",
+      "request": "I want to lock a gift in ETH for somebody and let them take it when enough time has passed.",
+      "missing": [
+        "amount",
+        "lock_duration",
+        "beneficiary"
+      ]
+    },
+    {
+      "id": "gift_contradiction",
+      "type": "timelocked_gift",
+      "family": "needs_clarification",
+      "request": "The deployer alone funds exactly three ether into a one-week locked gift for the distinct beneficiary supplied at deployment. After seven days the beneficiary alone may claim the entire gift exactly once, and the depositor has no refund. Also, the depositor may take back the full gift at any time, including before the beneficiary claims.",
+      "missing": [
+        "refund_conflict"
+      ]
+    },
+    {
+      "id": "split_baseline",
+      "type": "split_payout",
+      "family": "positive",
+      "request": "I deploy a native-ETH payout contract as the sole payer. The constructor receives two distinct payable addresses: primary recipient and secondary recipient, neither of whom is me. Only I may deposit exactly 4 ETH, once. When I authorize distribution by calling distribute, send seventy-five percent of that deposit to primary and twenty-five percent to secondary in one atomic operation. Only I may initiate distribution. There must be no refunds; distribution settles the contract once, and neither recipient may be paid again from the deposit.",
+      "expected": {
+        "amount_wei": 4000000000000000000,
+        "primary_bps": 7500,
+        "secondary_bps": 2500
+      }
+    },
+    {
+      "id": "split_paraphrase",
+      "type": "split_payout",
+      "family": "positive",
+      "request": "Make a single-use ETH splitter. The party deploying it is the only permitted funder and the only one who may trigger the payout. The payment is precisely four ether. At construction two distinct beneficiary addresses, primary and secondary, are provided; both differ from the payer. Upon the payer calling for distribution, three quarters of the locked deposit goes to primary and the remaining quarter to secondary, atomically. No refunds, no repeat deposits, and no second distribution.",
+      "expected": {
+        "amount_wei": 4000000000000000000,
+        "primary_bps": 7500,
+        "secondary_bps": 2500
+      }
+    },
+    {
+      "id": "split_ratio_change",
+      "type": "split_payout",
+      "family": "positive",
+      "request": "I am the deployer and only payer for a once-funded ether splitter. The constructor sets a primary beneficiary and a separate secondary beneficiary, both different from the payer. I deposit exactly 4 ETH once, and only I can call distribute. Distribute atomically: 60 percent to the primary beneficiary and 40 percent to the secondary. No refund route is available, and payout must happen at most once.",
+      "expected": {
+        "amount_wei": 4000000000000000000,
+        "primary_bps": 6000,
+        "secondary_bps": 4000
+      }
+    },
+    {
+      "id": "split_ambiguous",
+      "type": "split_payout",
+      "family": "needs_clarification",
+      "request": "Put some ETH in a contract and split it between two friends in whatever percentages seem fair.",
+      "missing": [
+        "amount",
+        "split_ratio",
+        "recipient_roles"
+      ]
+    },
+    {
+      "id": "split_contradiction",
+      "type": "split_payout",
+      "family": "needs_clarification",
+      "request": "The deploying payer deposits exactly 4 ETH once, split atomically by the payer at payout time between distinct primary and secondary constructor recipients, neither being the payer. The initial split is seventy-five percent to primary and twenty-five percent to secondary; later in the same instruction, the split is to be sixty percent to primary and forty percent to secondary. No refunds or second payout are allowed.",
+      "missing": [
+        "split_conflict"
+      ]
+    }
+  ]
+}

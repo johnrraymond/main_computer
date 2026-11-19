@@ -324,7 +324,7 @@ module.exports = mcel.defineApp(
         dsl.surface.form("configure-org-slh",{
           fields:{bindAddress:text,port:dsl.field.integer()},
           defaults:{},resetControl:false,
-          submitLabel:"Configure ORG-SLH",intent:configureAndEnable,
+          submitLabel:"Apply",intent:configureAndEnable,
           acceptResult:{
             bindAddress:{state:lifecycle,field:"bindAddress",pick:"bindAddress",whenIntent:refreshLifecycle},
             port:{state:lifecycle,field:"port",pick:"port",whenIntent:refreshLifecycle}

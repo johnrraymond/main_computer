@@ -2232,6 +2232,134 @@ body.mcel-modal-open {
   background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.82));
 }
 
+/* Element acid showcase: inherit MCEL's existing semantic presentation tokens.
+   Do not create an isolated theme or depend on browser-default body styles. */
+.mcel-element-acid {
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+  font-family: var(--mcel-theme-body, inherit);
+  min-width: 0;
+}
+
+.mcel-element-acid :is(.mcel-element-acid-hero,
+  .mcel-element-showcase-lane, .mcel-element-acid-card,
+  .mcel-element-acid-nav, .mcel-element-acid-proof-rail) {
+  color: inherit;
+}
+
+.mcel-element-acid #mcel-element-acid-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.mcel-element-acid #mcel-element-acid-summary article {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.mcel-element-acid #mcel-element-acid-summary article span {
+  font-size: 1rem;
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+  overflow-wrap: anywhere;
+}
+
+.mcel-element-acid-summary-details {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border: 1px solid var(--mcel-theme-line, rgba(148, 163, 184, 0.4));
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+}
+
+.mcel-element-acid-summary-details > summary,
+.mcel-element-acid-report-details > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+}
+
+.mcel-element-acid-extra-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
+.mcel-element-acid #mcel-element-acid-report {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.mcel-element-acid-report-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.mcel-element-acid-report-status {
+  display: inline-block;
+  border: 1px solid var(--mcel-theme-line, rgba(148, 163, 184, 0.4));
+  border-radius: 1rem;
+  padding: 0.18rem 0.6rem;
+  color: var(--mcel-theme-ink, var(--ink, #f7f3e8));
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mcel-element-acid-report-details {
+  min-width: 0;
+}
+
+.mcel-element-acid-report-facts {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.8fr) minmax(0, 2fr);
+  gap: 0.4rem 0.8rem;
+  margin: 0.7rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.mcel-element-acid-report-facts dt {
+  color: var(--mcel-theme-muted, var(--muted, #c9c0aa));
+  font-weight: 700;
+}
+
+.mcel-element-acid-report-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .mcel-element-acid #mcel-element-acid-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .mcel-element-acid #mcel-element-acid-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mcel-element-acid {
+    padding: 0.75rem;
+  }
+  .mcel-element-acid-report-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+  .mcel-element-acid-report-facts dd {
+    margin-bottom: 0.45rem;
+  }
+}
+
 .mcel-element-acid-copy {
   display: grid;
   gap: 0.55rem;

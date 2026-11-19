@@ -130,6 +130,9 @@
             },
             "writes": {
               "type": "array"
+            },
+            "typedOperation": {
+              "$ref": "#/$defs/typedOperation"
             }
           },
           "required": [
@@ -302,6 +305,84 @@
           ],
           "type": "object"
         }
+      ]
+    },
+    "typedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "mcel.typed-operation.v1"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "run",
+            "pause",
+            "stop",
+            "restart",
+            "reset",
+            "inspect",
+            "reconcile",
+            "deploy",
+            "undeploy",
+            "refresh",
+            "add",
+            "remove",
+            "delete",
+            "edit",
+            "copy",
+            "save",
+            "apply",
+            "download",
+            "upload",
+            "settings",
+            "filter",
+            "sort",
+            "search",
+            "start",
+            "launch",
+            "terminate",
+            "shutdown",
+            "create",
+            "open",
+            "connect",
+            "disconnect",
+            "kill",
+            "enable",
+            "disable"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "application",
+            "process",
+            "server",
+            "file",
+            "folder",
+            "network",
+            "worker",
+            "hub",
+            "database",
+            "terminal",
+            "log",
+            "service",
+            "deployment",
+            "schedule",
+            "connection",
+            "organization",
+            "session",
+            "task",
+            "document",
+            "resource"
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "kind",
+        "target"
       ]
     }
   },

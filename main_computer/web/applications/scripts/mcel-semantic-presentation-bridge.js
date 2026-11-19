@@ -218,15 +218,21 @@ var McelSemanticPresentationBridge = (() => {
       targets: [], diagnostics, expectedControls: 0, expectedRegions: 0});
     if (ir?.schema !== "mcel.application-ir.v1") return rejected("Canonical application IR required");
     const surfaces = records(ir.surfaces);
+    // Source-authorized regions may be authored in IR *or* synthesized by
+    // the generic composition engine for layout-free canonical applications.
+    // A generated P3 app has no authored interfaceIntent.regions; demanding
+    // one would exclude the real generated renderer from semantic inspection.
+    const authoredRegions = surfaces[0]?.interfaceIntent?.regions;
+    const composedRegions = composition?.schema === "mcel.generated-composition.v1"
+      ? composition.regions : null;
     if (surfaces.length !== 1 || !Array.isArray(surfaces[0].nodes) ||
-        !Array.isArray(surfaces[0].interfaceIntent?.regions))
+        (!Array.isArray(authoredRegions) && !Array.isArray(composedRegions)))
       return rejected("Unique operational semantic surface and regions required");
     if (!root?.querySelectorAll || !root.isConnected)
       return rejected("Mounted operational runtime root required");
     const surface = surfaces[0];
     const nodes = surface.nodes.filter(node => ["control", "form"].includes(node?.nodeKind));
-    const regions = composition?.schema === "mcel.generated-composition.v1"
-      ? records(composition.regions) : surface.interfaceIntent.regions;
+    const regions = Array.isArray(composedRegions) ? composedRegions : authoredRegions;
     if (!regions.length)
       return rejected("Canonical operational semantic regions required");
     const byAttribute = (attribute) => {

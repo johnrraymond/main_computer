@@ -1,0 +1,39 @@
+{
+  "schema": "nanojev.contract.pull.external-published-oracles.v1",
+  "provenance": "Independent published source descriptions; assertions translated by the experiment author, NOT independently expert gold-annotated contracts.",
+  "cases": [
+    {
+      "id": "solidity_withdrawal_pattern",
+      "source_title": "Solidity Documentation: Common Patterns / Withdrawal from Contracts",
+      "source_url": "https://docs.solidity.org/en/latest/common-patterns.html",
+      "source_author": "Solidity documentation contributors",
+      "source_excerpt": "the attacker can only cause his or her own withdraw to fail and not the rest of the contract’s workings.",
+      "gold_claim": "A rejecting beneficiary cannot block state-machine settlement or another beneficiary's withdrawal.",
+      "forge_test": "testExternalWithdrawalPatternRejectorIsolation",
+      "llm_expectation": "needs_clarification",
+      "reason": "Source does not specify amount, counterparties, deadline, authorized transitions, or payout ratios."
+    },
+    {
+      "id": "openzeppelin_splitter_deferred_release",
+      "source_title": "OpenZeppelin Contracts 4.x: PaymentSplitter",
+      "source_url": "https://docs.openzeppelin.com/contracts/4.x/api/finance",
+      "source_author": "OpenZeppelin documentation contributors",
+      "source_excerpt": "payments are not automatically forwarded to the accounts but kept in this contract",
+      "gold_claim": "A successful settlement should credit balances and retain ETH in custody until withdrawal.",
+      "forge_test": "testExternalOpenZeppelinDeferredPayment",
+      "llm_expectation": "needs_clarification",
+      "reason": "Source supplies no complete executable contract specification."
+    },
+    {
+      "id": "independent_mit_splitter",
+      "source_title": "cipherEncrypt/Payment-Splitter: README",
+      "source_url": "https://github.com/cipherEncrypt/Payment-Splitter",
+      "source_author": "cipherEncrypt (independent repository author)",
+      "source_excerpt": "each payee withdraws their own cut whenever they want (pull-payment).",
+      "gold_claim": "A payee withdrawing their credit leaves other payees' credit intact.",
+      "forge_test": "testExternalIndependentPayeeWithdrawals",
+      "llm_expectation": "needs_clarification",
+      "reason": "Source does not define a bounded state machine, mandatory deposit, or one-time settlement."
+    }
+  ]
+}

@@ -73,6 +73,45 @@ The JavaScript executes only to construct an inspectable semantic graph. It is n
 
 The author writes vanilla JavaScript. MCEL receives semantic declarations, not arbitrary runtime callbacks.
 
+### Typed capability operations (backward-compatible extension)
+
+Capability requests support **both** existing raw operation strings and a
+validated semantic operation object. The capability's declared operation name
+remains the executable binding in both forms; typed semantics do not add a
+second dispatcher or escalate the capability's risk authority.
+
+```javascript
+const restart = dsl.intent.capabilityRequest("restart-server", control, {
+  operation: "restart",  // legacy: unchanged, including existing icon inference
+  resultTo: operationResult
+});
+
+const typedRestart = dsl.intent.capabilityRequest("restart-server", control, {
+  operation: {binding: "restart", kind: "restart", target: "server"},
+  resultTo: operationResult
+});
+```
+
+The typed object requires exactly `binding`, `kind`, and `target`. `binding`
+must name an existing operation on the selected capability. `kind` and `target`
+must be members of the checked-in canonical operation type vocabularies in
+`main_computer/schemas/mcel.application-ir.v1.schema.json`. Unknown values,
+missing members, or extra keys are rejected by the DSL compiler. No application
+needs to migrate until it is ready.
+
+Canonical IR preserves the original `operation` and `runtimeMethod` for
+execution, and adds only a validated `typedOperation` record:
+
+```json
+{"operation":"restart","runtimeMethod":"restartServer",
+ "typedOperation":{"schema":"mcel.typed-operation.v1","kind":"restart","target":"server"}}
+```
+
+The MCEL icon resolver **prefers** `typedOperation` and **does not fall back**
+to name-based icon inference when the typed semantics are present but have no
+matching glyph. For legacy operations with no typed semantics, existing string
+inference is preserved. Theme, Form, and Chrome still control icon presentation.
+
 ## 1. Why this is the official shape
 
 The syntax uses four forms, each where it is strongest:

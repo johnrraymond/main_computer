@@ -46,7 +46,7 @@ Browser (independent script, canonical JSON supplied by caller):
 </script>
 ```
 
-Use the installed application's real asset routing for the JS, CSS and registry when integrating. The snippet above illustrates the contract; it does **not** authorize inserting the library into the existing shell in this first patch.
+Use the installed application's real asset routing for the JS, CSS, and registry. Promoted semantic applications now receive this registry as inert JSON via the *shared MCEL host*, so no application-specific fetch or icon annotation is required. Standalone catalog consumers still use the explicit adapter API.
 
 `mcel-icon.css` provides neutral default sizing and color inheritance. Parent controls own their visual states and focus behavior. Rendering is decorative (`aria-hidden`) by default when placed inside an already-labeled button, link, or tree item. Pass an explicit `ariaLabel` / `aria_label` only if the icon itself needs an accessible name.
 
@@ -83,9 +83,36 @@ been rewritten for this integration.
 python -m pytest -q tests/test_mcel_desktop_icon_integration.py tests/test_mcel_icon.py tests/test_mcel_desktop_clusters.py
 ```
 
-The next migrations are the older native child desktop's browser renderer,
-file-tree icons, shared toolbar controls, and frober identity/status displays.
-After they are separately accepted, remove the original `desktop-icons.js`
-geometry and the shell's remaining legacy reference parser along with any
-unneeded compatibility tests. Preserve the independent visual fixture in test
-data rather than treating the old runtime script as an icon authority.
+## Automatic semantic icon core (November 18 pilot)
+
+The shared `mcel-semantic-icon-core.js` resolves icon identities from canonical
+operation metadata and existing exact runtime node/intent bindings. It never
+matches button labels, app names, DOM order, CSS class names, or an oracle file.
+MCEL Core owns the icon identity and insertion; Theme, Form, and Chrome provide
+independent appearance overrides via inherited CSS variables. No `icon` profile
+is introduced. Unknown/conflicting operations receive no icon, not a guess.
+
+The common promoted runtime host injects the existing JSON registry, icon CSS,
+and JS adapter and invokes the icon core through the established unified
+presentation controller. Application DSL, UI components, and operation code
+remain untouched. Managed slots are decorative, idempotent, and removed on
+shared-controller release. Missing optional icon assets do not block the
+existing three presentation laws or application operations.
+
+The independent `tests/fixtures/mcel-semantic-icon-oracle.v1.json` prescribes
+expected icons (including deliberate unmapped nodes) for every canonical
+control and form in **File Manager and Task Manager**. Chromium mounts the
+actual promoted applications with mapping active, compares the rendered
+canonical SVG IDs with the oracle, checks profile changes and click handlers,
+and verifies incremental replacement and cleanup. The present pilot certifies
+13 mappings and 9 intentional non-mappings in these two applications.
+
+```powershell
+python -m pytest -q tests/test_mcel_semantic_icon_oracle.py tests/test_mcel_system_presentation_rollout.py tests/test_mcel_icon.py
+```
+
+The remaining opportunities include more specific semantic classification for
+unmapped controls, the older native child desktop's browser renderer, file-tree
+icons, and frober identity/status displays. Those should receive their own
+independent oracles before expanding automatic mappings. Preserve the original
+reference fixtures instead of treating legacy geometry code as authority.

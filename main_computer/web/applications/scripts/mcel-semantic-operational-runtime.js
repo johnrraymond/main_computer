@@ -577,7 +577,7 @@
     const navigationHistoryListeners = [];
     const refreshers = [];
     const taskRefreshPeriodMs = 5000;
-    const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
+    const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap(), actionLabelStates = new WeakMap();
     const conditionedNodes=new Map(), sharedFieldInputs=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
     const recordRenderSignatures=new WeakMap(), receiptRenderSignatures=new WeakMap();
     const declaredUpdates=[...c.nodes.values()].some(node=>!!node.updates);
@@ -709,6 +709,7 @@
       for (const session of operationNotebooks.values())session.redraw();
       for (const [n, host] of plotHosts) updatePlot(n, host);
       for (const [n, session] of documentHosts) updateDocument(n,session);
+      let semanticActionChanged=false;
       for(const {button,intent,node} of [...actionButtons,...guardedFormButtons]){
         const disabled=!enabled(node) || (intent.requestArguments||[]).some(arg=>{
           const value=read(ref(arg.state));return value===undefined || value===null || (value==="" && arg.allowEmpty!==true);
@@ -719,10 +720,23 @@
         if(node?.labelByState){
           const descriptor=node.labelByState, record=read(ref(descriptor.state));
           const value=descriptor.path?record?.[descriptor.path]:record;
+          // State transitions can change icon meaning even when the visible
+          // label stays the same (including an initial fallback label).
+          const signature=JSON.stringify([typeof value,value??null]);
+          if(actionLabelStates.get(button)!==signature){
+            actionLabelStates.set(button,signature);semanticActionChanged=true;
+          }
           const label=descriptor.labels?.[value] ?? descriptor.fallback;
-          if(typeof label==="string" && button.textContent!==label)button.textContent=label;
+          if(typeof label==="string"){
+            // Dynamic labels and managed icon slots are independent children.
+            // textContent= would destroy the SVG every time the lifecycle changes.
+            let textNode=[...button.childNodes].find(child=>child.nodeType===3);
+            if(!textNode){textNode=button.ownerDocument.createTextNode("");button.appendChild(textNode);}
+            if(textNode.nodeValue!==label){textNode.nodeValue=label;semanticActionChanged=true;}
+          }
         }
       }
+      if(semanticActionChanged)global.McelSemanticIconCore?.inspect?.(root);
       refreshColor();
       renderActivities();
       if(c.generated){
@@ -2057,9 +2071,9 @@
         const outer=elt("div",{"data-mcel-document-editor":n.id});
         const bar=elt("div",{"data-mcel-document-actions":""});
         const label=elt("span",{"data-mcel-document-label":""},"Select a source file and open it");
-        const save=elt("button",{type:"button","data-mcel-document-save":""},"Save source");
-        const discard=elt("button",{type:"button","data-mcel-document-discard":""},"Discard draft");
-        const close=elt("button",{type:"button","data-mcel-document-close":""},"Close file");
+        const save=elt("button",{type:"button","data-mcel-document-save":"","data-mcel-generated-action":"document-save"},"Save source");
+        const discard=elt("button",{type:"button","data-mcel-document-discard":"","data-mcel-generated-action":"document-discard"},"Discard draft");
+        const close=elt("button",{type:"button","data-mcel-document-close":"","data-mcel-generated-action":"document-close"},"Close file");
         const tabBar=elt("div",{"data-mcel-document-tabs":"","role":"tablist","aria-label":"Open documents"});
         const surface=elt("div",{"data-mcel-document-surface":"","aria-label":"Monaco source editor"});
         const status=elt("p",{"role":"status","data-mcel-document-dirty":"false"},"No document opened");
@@ -2240,7 +2254,7 @@
           ? elt("p",{role:"status","data-mcel-form-result":n.id},"") : null;
         if(operationStatus)form.append(operationStatus);
         if (intent && n.resetControl!==false && n.defaults && Object.keys(n.defaults).length)
-          form.append(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
+          form.append(elt("button",{type:"reset","data-mcel-generated-action":"reset-inputs"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
         if(n.clearIntent){
           const button=elt("button",{type:"button","data-mcel-clear-intent":ref(n.clearIntent)},"Clear expression and result");
           button.addEventListener("click",()=>{
@@ -2271,7 +2285,7 @@
           (own(n.fields||{},"relativePath")?"relativePath":own(n.fields||{},"path")?"path":null);
         if(intent && directoryParameter && (region?.tasks?.includes("browse") || region?.purpose==="navigation")) {
           const input=controls[directoryParameter], path=elt("span",{"data-mcel-current-directory":""},"/");
-          const up=elt("button",{type:"button","data-mcel-parent-directory":""},"Parent directory");up.disabled=true;
+          const up=elt("button",{type:"button","data-mcel-parent-directory":"","data-mcel-generated-action":"parent-directory"},"Parent directory");up.disabled=true;
           const nav={input,path,up,current:""};directoryForms.add(nav);
           up.addEventListener("click",()=>{
             const parts=nav.current.split("/").filter(Boolean);parts.pop();
@@ -3050,7 +3064,8 @@
           const navigation=navigationRoots.find(nav=>nav.selection.id===select.id);
           const selected=navigation && String(read(navigation.rootState))===String(item[n.key]);
           if(navigation)row.setAttribute("aria-selected",String(!!selected));
-          const button=elt("button",{type:"button","data-select-key":String(item[n.key])},
+          const button=elt("button",{type:"button","data-select-key":String(item[n.key]),
+            ...(navigation?{"data-mcel-generated-action":selected?"refresh-location":"open-location"}:{})},
             navigation?(selected?"Current · refresh":"Open location"):opensDocument?"Open":"Select");
           const regionId=holder.closest("[data-mcel-region]")?.getAttribute("data-mcel-region");
           const region=c.regions.get(regionId);
@@ -3456,7 +3471,8 @@
       try {
         global.__mcelPresentationReport = controller.applyOperationalPresentation({
           root, ir, composition:options.composition||null,
-          appId: activeSelection.appId, profiles: activeSelection.profiles
+          appId: activeSelection.appId, profiles: activeSelection.profiles,
+          readState:id=>clone(read(id))
         });
       } catch (error) {
         global.__mcelPresentationReport = {status:"refused", reason:String(error)};

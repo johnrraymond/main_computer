@@ -155,6 +155,10 @@ PRESENTATION_RUNTIME_ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-chrome-presentation-law.js",
     str(CONTROLLER_JS),
 )
+ICON_RUNTIME_ASSETS = (
+    "main_computer/web/applications/scripts/mcel-icon.js",
+    "main_computer/web/applications/scripts/mcel-semantic-icon-core.js",
+)
 RUNTIME_JS = Path("main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js")
 
 
@@ -165,6 +169,27 @@ def _load_core_presentation(page: str, repo: Path) -> str:
     The operational runtime itself has no network loader or eval fallback.
     """
     runtime_source = (repo / RUNTIME_JS).read_text(encoding="utf-8")
+    # Icon data and paint are optional *relative to* the established three
+    # presentation laws. A corrupt/missing icon catalog must never suppress
+    # the shared Theme/Form/Chrome dependencies or the operational mount.
+    icon_fragments = []
+    try:
+        registry_source = (repo / "main_computer/web/applications/icons/mcel-icons.v1.json").read_text(encoding="utf-8")
+        icon_registry = json.dumps(json.loads(registry_source), separators=(",", ":")).replace("<", "\\u003c")
+        icon_css = (repo / "main_computer/web/applications/styles/mcel-icon.css").read_text(encoding="utf-8")
+        if "</style" in icon_css.lower():
+            raise CandidateHostError("Unsafe MCEL icon stylesheet")
+        icon_fragments = [
+            '<script id="mcel-icon-registry" type="application/json">' + icon_registry + '</script>\n',
+            '<style>\n' + icon_css + '\n</style>\n',
+        ]
+        for asset in ICON_RUNTIME_ASSETS:
+            source = (repo / asset).read_text(encoding="utf-8")
+            if "</script" in source.lower():
+                raise CandidateHostError("Unsafe optional MCEL icon runtime dependency")
+            icon_fragments.append("<script>\n" + source + "\n</script>\n")
+    except (OSError, ValueError, CandidateHostError) as error:
+        LOGGER.warning("MCEL optional icon assets unavailable: %s", error)
     anchor = "<script>\n" + runtime_source[:100]
     if anchor not in page:
         # The canonical region-only MCEL host has no operational runtime;
@@ -172,7 +197,7 @@ def _load_core_presentation(page: str, repo: Path) -> str:
         head = re.search(r"</head>\s*<body\b", page, re.I)
         if not head or 'data-mcel-region-id' not in page:
             return page
-        fragments = []
+        fragments = list(icon_fragments)
         for relative in PRESENTATION_RUNTIME_ASSETS:
             source = (repo / relative).read_text(encoding="utf-8")
             if "</script" in source.lower():
@@ -180,7 +205,7 @@ def _load_core_presentation(page: str, repo: Path) -> str:
             if source[:120] not in page:
                 fragments.append("<script>\n" + source + "\n</script>\n")
         return page[:head.start()] + "".join(fragments) + page[head.start():]
-    fragments = []
+    fragments = list(icon_fragments)
     for relative in PRESENTATION_RUNTIME_ASSETS:
         source = (repo / relative).read_text(encoding="utf-8")
         if "</script" in source.lower():

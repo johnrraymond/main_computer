@@ -1212,6 +1212,14 @@ def _public_operational_diagnostics(
     for intent in candidate.get("intents", []):
         if not isinstance(intent, Mapping):
             continue
+        typed = intent.get("typedOperation")
+        if typed is not None and (
+            intent.get("operationKind") != "capability"
+            or not isinstance(intent.get("operation"), str)
+            or not intent.get("operation")
+        ):
+            bad("MCEL_IR_TYPED_OPERATION_AUTHORITY_INVALID", intent,
+                ["typed-operation-requires-registered-capability-binding"])
         bindings = intent.get("resultBindings", [])
         selection = intent.get("collectionSelection")
         # All operations with declared result bindings must be backed by exactly
