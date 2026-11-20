@@ -37,6 +37,7 @@ ASSETS = (
     "main_computer/web/applications/scripts/code-editor-monaco-adapter.js",
 )
 WORKSPACE_LAYOUT_ASSET = "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js"
+DOCUMENT_WORKBENCH_ASSET = "main_computer/web/applications/scripts/mcel-semantic-document-workbench.js"
 CSS = "main_computer/web/applications/styles/mcel-semantic-workbench.css"
 
 
@@ -108,9 +109,10 @@ def compile_semantic_app(name: str, repo: Path = ROOT) -> dict:
 def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False, initial_view: str | None = None) -> str:
     ir = compile_semantic_app(name, repo)
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    # The Task Manager and File Manager use verified semantic workspace plans.
-    # Other candidates retain their previously accepted presentation.
-    workspace_enabled = name in {"task-manager", "file-manager"}
+    # Paired semantic application sources are the only authorities for the
+    # verified workspace plan. Document-centric apps use declared docking
+    # preferences, while existing data-monitoring plans remain unchanged.
+    workspace_enabled = name in {"task-manager", "file-manager", "code-editor"}
     plan = plan_workspace(ir) if workspace_enabled else None
     if plan is not None:
         verify_workspace_plan(ir, plan)
@@ -139,7 +141,8 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
     } if name == "task-manager" and promoted else None)
     ready_label = "Semantic application ready" if promoted else "Semantic candidate ready"
     context_label = "MCEL application" if promoted else "Candidate · Original application unchanged"
-    assets = (*DIAGNOSTIC_ASSETS, *((WORKSPACE_LAYOUT_ASSET,) if workspace_enabled else ()), *ASSETS, *(("main_computer/web/applications/scripts/mcel-scm.js", "main_computer/web/applications/scripts/code-editor-scm-manifest.js", "main_computer/web/applications/scripts/mcel-sandboxed-viewport.js") if name == "code-editor" else ()))
+    assets = (*DIAGNOSTIC_ASSETS, *((WORKSPACE_LAYOUT_ASSET,) if workspace_enabled else ()),
+              *((DOCUMENT_WORKBENCH_ASSET,) if plan and plan.get("documentWorkbench") else ()), *ASSETS, *(("main_computer/web/applications/scripts/mcel-scm.js", "main_computer/web/applications/scripts/code-editor-scm-manifest.js", "main_computer/web/applications/scripts/mcel-sandboxed-viewport.js") if name == "code-editor" else ()))
     assets = list(assets)
     if promoted and (repo / CONTROLLER_JS).is_file():
         assets.insert(assets.index("main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js"), str(CONTROLLER_JS))

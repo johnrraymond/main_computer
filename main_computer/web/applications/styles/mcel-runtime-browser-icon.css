@@ -1,0 +1,9 @@
+/* Runtime-launcher additions do not alter the pinned legacy desktop source. */
+.desktop-icon[data-app="browser"] {
+  --desktop-icon-accent: #6eb0ff;
+  --desktop-icon-accent-bright: #b7dcff;
+  --desktop-icon-border: rgba(110,176,255,.52);
+  --desktop-icon-glow: rgba(110,176,255,.44);
+  --desktop-icon-panel: rgba(110,176,255,.18);
+  --desktop-icon-ink: #051321;
+}

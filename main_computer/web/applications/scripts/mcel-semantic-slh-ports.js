@@ -105,6 +105,7 @@
     const fetcher=options.fetcher || global.fetch?.bind(global);
     if(typeof fetcher!=="function")throw Error("MCEL_SLH_PORT:missing-fetch");
     let accessToken="";
+    let tokenExpiresAt=0; // Ephemeral, server-issued Unix expiry; never browser persistence.
     let activeIdentity="";
     let identityEpoch=0;
     let pendingAuthentication=null;
@@ -148,7 +149,7 @@
     function discardIdentity(next=""){
       if(next===activeIdentity)return;
       const oldToken=accessToken;
-      activeIdentity=next;accessToken="";pendingAuthentication=null;
+      activeIdentity=next;accessToken="";tokenExpiresAt=0;pendingAuthentication=null;
       ++identityEpoch;workerViewOverview=null;
       authenticationChanged(false);
       if(oldToken){
@@ -159,9 +160,21 @@
           body:JSON.stringify({action:"logout",arguments:{}})}).catch(()=>{});
       }
     }
+    function invalidateToken(token,notify=true){
+      // Do not revoke a newer login just because an older request settled late.
+      if(!token || accessToken!==token)return;
+      accessToken="";tokenExpiresAt=0;
+      // During an immediate re-login, defer the UI authorization transition:
+      // resetting the record notebook would discard its in-flight action.
+      // The backend remains the authority; a failed re-login revokes the UI.
+      if(notify)authenticationChanged(false);
+    }
     async function ensureAuthorization(){
       if(!validSigner(activeIdentity))throw Error("MCEL_SLH_PORT:IDENTITY_NOT_SELECTED");
-      if(accessToken)return accessToken;
+      // ORG-SLH sessions expire after 900s. Refresh before crossing the
+      // authority's expiry boundary, without introducing a periodic timer.
+      if(accessToken && (!tokenExpiresAt || Date.now()+30000<tokenExpiresAt))return accessToken;
+      if(accessToken)invalidateToken(accessToken,false);
       if(pendingAuthentication)return pendingAuthentication;
       const signer=activeIdentity, epoch=identityEpoch;
       const pending=(async()=>{
@@ -194,29 +207,74 @@
         // Worker inventory is not an authority prerequisite for other operations.
         if(epoch!==identityEpoch || signer!==activeIdentity)
           throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
+        const expires=Number(result.expires_at);
+        // Legacy supplied sessions may not expose expiry. Such sessions are
+        // still revalidated by the strictly typed 401 recovery path below.
+        tokenExpiresAt=Number.isSafeInteger(expires) && expires>0?expires*1000:0;
         accessToken=result.access_token;
         authenticationChanged(true);
         return accessToken;
       })();
       pendingAuthentication=pending;
       try{return await pending;}
+      catch(error){
+        if(epoch===identityEpoch && signer===activeIdentity && !accessToken)
+          authenticationChanged(false);
+        throw error;
+      }
       finally{if(pendingAuthentication===pending)pendingAuthentication=null;}
+    }
+    async function authorizedJsonRequest(url, request){
+      const signer=activeIdentity, epoch=identityEpoch;
+      for(let attempt=0;attempt<2;attempt++){
+        const token=await ensureAuthorization();
+        if(epoch!==identityEpoch || signer!==activeIdentity)
+          throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
+        let response;
+        try{
+          response=await fetcher(url,{
+            method:request.method,credentials:"same-origin",
+            headers:{Accept:"application/json",Authorization:"Bearer "+token,
+              ...request.headers},
+            ...(request.body===undefined?{}:{body:request.body})
+          });
+        }catch{
+          throw Error("MCEL_SLH_PORT:AUTHENTICATED_TRANSPORT_UNAVAILABLE");
+        }
+        const data=await response?.json?.().catch(()=>null);
+        if(epoch!==identityEpoch || signer!==activeIdentity)
+          throw Error("MCEL_SLH_PORT:IDENTITY_CONTEXT_CHANGED");
+        const code=data?.error?.code;
+        // Retry only an authenticated read or a direct single-step notebook
+        // operation: its ORG-SLH authority check precedes the mutation.
+        // Multi-step mutations (rename, SEH lifecycle) may have committed before
+        // returning a late 401 and must never be automatically replayed.
+        if(Number(response?.status)===401 && code==="SESSION_INVALID"){
+          const canRetry=attempt===0 && request.replayOnInvalidSession===true;
+          invalidateToken(token,!canRetry);
+          if(canRetry)continue;
+        }else if(Number(response?.status)===401 && code==="SESSION_REVOKED"){
+          invalidateToken(token); // do not attempt to bypass revocation
+        }
+        return {response,data};
+      }
+      throw Error("MCEL_SLH_PORT:AUTHORIZATION_RECOVERY_REFUSED");
     }
     async function notebook(req){
       const operation=notebookOperation(req);
       if(!operation)throw Error("MCEL_SLH_NOTEBOOK:UNDECLARED_OPERATION");
       await ensureAuthorization();
-      let response;
+      let response,data;
       try{
-        response=await fetcher("/api/applications/slh/identity-notebook",{
-          method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
-            "X-MCEL-SLH-Operation":"identity-notebook"}),
+        ({response,data}=await authorizedJsonRequest("/api/applications/slh/identity-notebook",{
+          method:"POST",replayOnInvalidSession:true,headers:{"Content-Type":"application/json",
+            "X-MCEL-SLH-Operation":"identity-notebook"},
           body:JSON.stringify({target:"local",operation,arguments:req.arguments,sessionTicket:""})
-        });
-      }catch{
+        }));
+      }catch(error){
+        if(error?.message!=="MCEL_SLH_PORT:AUTHENTICATED_TRANSPORT_UNAVAILABLE")throw error;
         throw Error("MCEL_SLH_NOTEBOOK:TRANSPORT_UNAVAILABLE");
       }
-      const data=await response?.json?.().catch(()=>null);
       if(Number(response?.status)>=500)
         throw Error("MCEL_SLH_NOTEBOOK:SERVICE_UNAVAILABLE");
       if(!response?.ok || data?.ok!==true){
@@ -250,7 +308,7 @@
       connect: async value=>{
         if(typeof value!=="string" || value.length<24 || value.length>256 || !/^[\x21-\x7e]+$/.test(value))
           throw Error("MCEL_SLH_PORT:invalid-session");
-        accessToken="";
+        accessToken="";tokenExpiresAt=0;
         await readWorkers(value);
         accessToken=value;
         authenticationChanged(true);
@@ -304,12 +362,11 @@
           if(sehOperation!=="status" &&
              (typeof global.confirm!=="function" || !global.confirm("Manage this ORG-SLH outbound SEH connection: "+sehOperation+"?")))
             throw Error("MCEL_SEH_LIFECYCLE:CANCELED");
-          const response=await fetcher("/api/applications/slh/seh/lifecycle",{
-            method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
-              "X-MCEL-SLH-Operation":"seh-lifecycle"}),
+          const {response,data:value}=await authorizedJsonRequest("/api/applications/slh/seh/lifecycle",{
+            method:"POST",headers:{"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"seh-lifecycle"},
             body:JSON.stringify({target:"local",operation:sehOperation,sessionTicket:""})
           });
-          const value=await response?.json?.().catch(()=>null);
           if(!response?.ok||value?.ok!==true)throw Error("MCEL_SEH_LIFECYCLE:"+(value?.error?.code||"REQUEST_REFUSED"));
           return value.result;
         }
@@ -363,11 +420,10 @@
           if(!global.confirm || !global.confirm("Rename authenticated Worker "+req.arguments.deviceId+
               " to '"+req.arguments.label+"'? This changes the organization's audited device directory."))
             throw Error("MCEL_SLH_PORT:administrator-canceled");
-          const result=await fetcher("/api/applications/slh/worker/rename",{
-            method:"POST",credentials:"same-origin",headers:headers({"Content-Type":"application/json",
-              "X-MCEL-SLH-Operation":"rename"}),body:JSON.stringify({device_id:req.arguments.deviceId,label:req.arguments.label})});
+          const {response:result,data}=await authorizedJsonRequest("/api/applications/slh/worker/rename",{
+            method:"POST",headers:{"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"rename"},body:JSON.stringify({device_id:req.arguments.deviceId,label:req.arguments.label})});
           if(!result?.ok)throw Error("MCEL_SLH_PORT:worker-mutation-refused");
-          const data=await result.json();
           if(!plain(data) || data.outcome!=="UPDATED" || data.deviceId!==req.arguments.deviceId ||
              typeof data.message!=="string")throw Error("MCEL_SLH_PORT:invalid-mutation-receipt");
           return data;
@@ -479,10 +535,14 @@
           return {state:result.state,defaultDeviceId:result.defaultDeviceId,explanation:result.explanation};
         }
         const view=req.intentId.includes("worker")?"workers":"overview";
-        const response=await fetcher("/api/applications/slh/observe?view="+view,
-          {method:"GET",credentials:"same-origin",headers:headers()});
+        const {response,data:result}=view==="workers"
+          ? await authorizedJsonRequest("/api/applications/slh/observe?view=workers",{method:"GET",replayOnInvalidSession:true})
+          : await (async()=>{
+              const response=await fetcher("/api/applications/slh/observe?view=overview",
+                {method:"GET",credentials:"same-origin",headers:headers()});
+              return {response,data:await response?.json?.().catch(()=>null)};
+            })();
         if(!response?.ok)throw Error("MCEL_SLH_PORT:observation-unavailable");
-        const result=await response.json();
         if(!plain(result) || result.ok!==true ||
             result.schema!=="mcel.slh.first-slice-observation.v1" ||
             result.view!==view)throw Error("MCEL_SLH_PORT:invalid-observation");

@@ -286,11 +286,42 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
         if kind and (rid, kind, anchor_members[0]) not in authored:
             derived.append({"from": rid, "kind": kind, "to": anchor_members[0],
                             "evidenceStates": signals, "reason": "verified-ir-dataflow"})
+    # A document-centric workbench is a semantic *presentation* of a single
+    # compiled document-editor, not a second source of application operations.
+    # Explicit authored side preferences must cover every non-anchor region.
+    # An absent or incomplete preference set keeps the existing generic plan.
+    editor_anchors = [r for r in primary if any(
+        nodes[member["ref"]].get("nodeKind") == "document-editor"
+        for member in r["members"])]
+    document_workbench = None
+    if len(editor_anchors) == 1 and len(anchor_members) == 1 and navigation and tools and status:
+        others = [r for r in children if r["id"] != editor_anchors[0]["id"]]
+        sides = {r["id"]: (r.get("preferences") or {}).get("side") for r in others}
+        if all(sides.values()):
+            if (any(sides[id] != "start" for id in navigation)
+                or any(sides[id] != "bottom" for id in status)
+                or any(sides[id] not in {"end", "bottom"} for id in tools)
+                or controls or mode_state):
+                raise ValueError("Document workbench preferences conflict with semantic roles")
+            end = [id for id in tools if sides[id] == "end"]
+            bottom = [id for id in tools if sides[id] == "bottom"]
+            if not end or not bottom:
+                raise ValueError("Document workbench needs independently authored end and bottom docks")
+            document_workbench = {
+                "schema": "mcel.document-workbench.v1",
+                "document": editor_anchors[0]["id"],
+                "navigation": list(navigation),
+                "companion": end,
+                "bottom": bottom,
+                "status": list(status),
+                "reason": "document-editor-and-authored-side-preferences",
+            }
     result = {"schema": SCHEMA, "policy": POLICY, "scheme": {"requested": "workspace", "resolved": scheme},
               "sourceIrHash": source_hash, "rootId": root_id, "zones": zones,
               "authoredRelations": interface.get("relations", []), "derivedRelations": derived,
               "regionFacts": [{"id": r["id"], **facts[r["id"]]} for r in children],
-              "unresolved": unresolved, "runtimeEnabled": True}
+              "unresolved": unresolved, "runtimeEnabled": True,
+              **({"documentWorkbench": document_workbench} if document_workbench else {})}
     result["fingerprint"] = sha(result)
     return result
 

@@ -1,0 +1,76 @@
+{
+  "status": "contract",
+  "contract": {
+    "language": "nanojev.contract.governed_escrow.v3",
+    "asset": "native_eth",
+    "settlement_mode": "pull",
+    "payer": "deployer",
+    "worker": "constructor_worker",
+    "arbitrator": "jointly_appointed_after_dispute",
+    "amount_wei": 12000000000000000000,
+    "milestones": [
+      {
+        "id": "prototype",
+        "amount_wei": 3000000000000000000,
+        "deadline_seconds": 1209600,
+        "extension_seconds": 604800,
+        "extension_decision_seconds": 172800,
+        "max_extensions": 1
+      },
+      {
+        "id": "beta",
+        "amount_wei": 4000000000000000000,
+        "deadline_seconds": 1814400,
+        "extension_seconds": 604800,
+        "extension_decision_seconds": 172800,
+        "max_extensions": 1
+      },
+      {
+        "id": "final_application",
+        "amount_wei": 5000000000000000000,
+        "deadline_seconds": 2419200,
+        "extension_seconds": 604800,
+        "extension_decision_seconds": 172800,
+        "max_extensions": 1
+      }
+    ],
+    "policy": {
+      "review_seconds": 432000,
+      "dispute_filing_seconds": 259200,
+      "appointment_seconds": 345600,
+      "ruling_seconds": 864000,
+      "on_review_silence": "pay_worker",
+      "on_appointment_failure": "refund_payer",
+      "on_arbitrator_silence": "refund_payer",
+      "on_missed_submission": "refund_payer",
+      "on_undisputed_rejection": "refund_payer"
+    }
+  },
+  "source_spans": {
+    "amount_wei": "The payer escrows 12 ETH for the worker, with disputes decided by a mutually appointed arbitrator.",
+    "milestones.prototype.amount_wei": "The prototype milestone is worth 3 ETH.",
+    "milestones.prototype.deadline_seconds": "The prototype deadline is 14 days after activation.",
+    "milestones.prototype.extension_seconds": "The prototype extension adds 7 days.",
+    "milestones.prototype.extension_decision_seconds": "The prototype extension decision window is 2 days after its due time.",
+    "milestones.prototype.max_extensions": "The prototype permits a maximum of 1 extension.",
+    "milestones.beta.amount_wei": "The beta milestone is worth 4 ETH.",
+    "milestones.beta.deadline_seconds": "The beta deadline is 21 days after activation.",
+    "milestones.beta.extension_seconds": "The beta extension adds 7 days.",
+    "milestones.beta.extension_decision_seconds": "The beta extension decision window is 2 days after its due time.",
+    "milestones.beta.max_extensions": "The beta permits a maximum of 1 extension.",
+    "milestones.final_application.amount_wei": "The final application milestone is worth 5 ETH.",
+    "milestones.final_application.deadline_seconds": "The final application deadline is 28 days after activation.",
+    "milestones.final_application.extension_seconds": "The final application extension adds 7 days.",
+    "milestones.final_application.extension_decision_seconds": "The final application extension decision window is 2 days after its due time.",
+    "milestones.final_application.max_extensions": "The final application permits a maximum of 1 extension.",
+    "policy.review_seconds": "The review window is 5 days.",
+    "policy.dispute_filing_seconds": "The dispute filing window is 3 days.",
+    "policy.appointment_seconds": "The appointment window is 4 days.",
+    "policy.ruling_seconds": "The ruling window is 10 days.",
+    "policy.on_review_silence": "On review silence, pay worker.",
+    "policy.on_appointment_failure": "On appointment failure, refund payer.",
+    "policy.on_arbitrator_silence": "On arbitrator silence, refund payer.",
+    "policy.on_missed_submission": "On missed submission, refund payer.",
+    "policy.on_undisputed_rejection": "On undisputed rejection, refund payer."
+  }
+}

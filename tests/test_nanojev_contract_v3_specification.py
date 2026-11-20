@@ -93,3 +93,60 @@ def test_draft_run_creates_no_approval(tmp_path):
 def test_tamper_review_source_rejected():
     data=s();data['status']='OWNER_APPROVED'
     assert v.verify_spec(data)
+
+
+def test_report_digest_uses_original_frozen_v3_canonical_json_convention(tmp_path):
+    # The frozen V3 evidence pipeline uses json.dumps defaults for ASCII escaping.
+    import hashlib
+    doc = {'z': {'value': 'café'}, 'a': [1, True, None]}
+    file = tmp_path / 'report.json'
+    file.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    expected = hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    assert v.canonical_report_sha(file) == expected
+    assert v.sha(file) != expected
+
+
+def test_report_whitespace_and_line_endings_do_not_invalidate_evidence(tmp_path):
+    doc = {'z': {'label': 'arbitration'}, 'a': [1, 2, 3]}
+    raw = tmp_path / 'raw.json'
+    reformatted = tmp_path / 'reformatted.json'
+    raw.write_bytes((json.dumps(doc, indent=2) + '\n').replace('\n', '\r\n').encode())
+    reformatted.write_text(json.dumps(doc, separators=(',', ':'), sort_keys=True) + '\n', encoding='utf-8')
+    assert v.sha(raw) != v.sha(reformatted)
+    spec = s()
+    spec['provenance']['source_report_sha256'] = v.canonical_report_sha(raw)
+    specfile = tmp_path / 'spec.json'
+    specfile.write_text(json.dumps(spec), encoding='utf-8')
+    for report_path in (raw, reformatted):
+        result = v.run(specfile, report_path=report_path)
+        assert result['status'] == 'DRAFT_COMPLETE_OWNER_AUTHORIZATION_REQUIRED'
+        assert result['errors'] == []
+        assert result['source_report_canonical_sha256'] == spec['provenance']['source_report_sha256']
+        assert result['source_report_digest_method'] == 'canonical_sorted_ascii_json_v1'
+
+
+def test_report_semantic_tampering_still_refused(tmp_path):
+    doc = {'passed_forge_tests': 203, 'status': 'PASS'}
+    report = tmp_path / 'report.json'
+    report.write_text(json.dumps(doc), encoding='utf-8')
+    spec = s()
+    spec['provenance']['source_report_sha256'] = v.canonical_report_sha(report)
+    specfile = tmp_path / 'spec.json'
+    specfile.write_text(json.dumps(spec), encoding='utf-8')
+    assert v.run(specfile, report_path=report)['errors'] == []
+    report.write_text(json.dumps({'passed_forge_tests': 204, 'status': 'PASS'}), encoding='utf-8')
+    result = v.run(specfile, report_path=report)
+    assert result['status'] == 'FAIL_SPECIFICATION_INTEGRITY'
+    assert 'canonical JSON digest differs' in ' '.join(result['errors'])
+    assert result['deployment_authorized'] is False
+
+
+def test_spec_approval_uses_raw_bytes_not_report_canonical_hash(tmp_path):
+    data = s()
+    original = tmp_path / 'spec.json'
+    changed_formatting = tmp_path / 'reformatted_spec.json'
+    original.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    changed_formatting.write_text(json.dumps(data, sort_keys=True, separators=(',', ':')), encoding='utf-8')
+    assert v.verify_spec(v.load(original)) == []
+    assert v.verify_spec(v.load(changed_formatting)) == []
+    assert v.sha(original) != v.sha(changed_formatting)

@@ -552,6 +552,43 @@
       ]
     },
     {
+      "id": "application.browser",
+      "family": "application",
+      "label": "Browser",
+      "shapes": [
+        {
+          "tag": "rect",
+          "attrs": {
+            "x": "3.5",
+            "y": "5",
+            "width": "17",
+            "height": "14",
+            "rx": "2"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M3.5 9h17M7 7h.02M10 7h.02"
+          }
+        },
+        {
+          "tag": "circle",
+          "attrs": {
+            "cx": "12",
+            "cy": "14",
+            "r": "3"
+          }
+        },
+        {
+          "tag": "path",
+          "attrs": {
+            "d": "M9 14h6M12 11v6"
+          }
+        }
+      ]
+    },
+    {
       "id": "application.game-editor",
       "family": "application",
       "label": "Game Editor",

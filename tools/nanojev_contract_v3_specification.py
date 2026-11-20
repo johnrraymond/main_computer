@@ -25,6 +25,21 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def canonical_report_sha(path):
+    """Digest the semantic JSON content using the frozen V3 evidence convention.
+
+    The existing independent-behavior and evidence-lock tools use
+    json.dumps(data, sort_keys=True, separators=(",", ":")) with
+    ensure_ascii=True (the json.dumps default). The result is independent
+    of file indentation and CRLF/LF, but not of JSON content changes.
+    Do not use this to hash the proposed specification or approval records.
+    """
+    data = load(path)
+    return hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+
+
 def canonical_sha(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')).hexdigest()
 
@@ -165,8 +180,8 @@ def run(spec_path, review_path=None, report_path=None, approval_path=None, insta
     spec=load(spec_path); digest=sha(spec_path)
     errors=verify_spec(spec)
     if review_path and not errors:errors+=check_review(spec,load(review_path))
-    if report_path and sha(report_path)!=spec['provenance']['source_report_sha256']:
-        errors.append('Frozen governance report byte hash differs from recorded evidence')
+    if report_path and canonical_report_sha(report_path)!=spec['provenance']['source_report_sha256']:
+        errors.append('Frozen governance report canonical JSON digest differs from recorded evidence')
     approval_errors=[]
     if approval_path and not errors:
         approval_errors=check_approval(spec,digest,load(approval_path))
@@ -186,7 +201,11 @@ def run(spec_path, review_path=None, report_path=None, approval_path=None, insta
             'owner_approved':status=='OWNER_APPROVAL_RECORDED_SELF_ATTESTED_NOT_EXPERT_CERTIFIED',
             'expert_gold_independence_verified':False,'deployment_authorized':False,
             'errors':errors,'approval_errors':approval_errors,'instance_errors':instance_errors,
-            'reference_review_checked':bool(review_path),'source_report_bytes_checked':bool(report_path),
+            'reference_review_checked':bool(review_path),
+            'source_report_bytes_checked':bool(report_path),
+            'source_report_digest_method':'canonical_sorted_ascii_json_v1' if report_path else None,
+            'source_report_canonical_sha256':canonical_report_sha(report_path) if report_path else None,
+            'source_report_raw_sha256':sha(report_path) if report_path else None,
             'approval_record_checked':bool(approval_path),'instance_syntax_checked':bool(instance_path)}
     if out_path:
         dst=Path(out_path);dst.parent.mkdir(parents=True,exist_ok=True)

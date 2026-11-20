@@ -220,11 +220,23 @@
     }
     return Object.freeze(report);
   }
+  // Diagnostic-only producer scope around the canonical semantic-marker writer.
+  // The existing refresh runs exactly once even if diagnostics fail or are disabled.
+  function withShadowIconProducer(root,source,run,scheduled=null){
+    const oracle=globalThis.MCELReactivityShadowOracle;
+    let token=null;
+    try{token=oracle?.beginMutationSource?.(root,source,null,scheduled)||null;}catch(_){}
+    try{return run();}finally{
+      try{oracle?.endMutationSource?.(root,token);}catch(_){}
+    }
+  }
   function mount(input) {
     const {root}=input||{};
     const previous=root&&mounts.get(root);
     if(previous){previous.input=input;return previous.refresh();}
-    const state={input,observer:null,busy:false,refresh(){return apply(state.input);},unmount(){
+    const state={input,observer:null,busy:false,
+      refresh(scheduled=null){return withShadowIconProducer(root,'semantic-icon-core',
+        ()=>apply(state.input),scheduled);},unmount(){
       state.observer?.disconnect();state.observer=null;
       for(const slot of root.querySelectorAll('[data-mcel-icon-core="slot"]'))slot.remove();
       root.removeAttribute('data-mcel-icon-core');
@@ -240,8 +252,13 @@
       state.observer=new MutationObserver(changes=>{
         if(!changes.some(change=>[...change.addedNodes,...change.removedNodes].some(node=>
           node.nodeType===1 && !node.hasAttribute?.('data-mcel-icon-core'))))return;
-        if(!state.busy){state.busy=true;queueMicrotask(()=>{state.busy=false;
-          if(mounts.get(root)===state)state.refresh();});}
+        if(!state.busy){
+          let scheduled=null;
+          try{scheduled=globalThis.MCELReactivityShadowOracle?.captureSchedule?.(
+            root,'semantic-icon-reconciliation')||null;}catch(_){}
+          state.busy=true;queueMicrotask(()=>{state.busy=false;
+            if(mounts.get(root)===state)state.refresh(scheduled);});
+        }
       });
       state.observer.observe(root,{childList:true,subtree:true});
     }

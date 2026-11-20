@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MCEL Browser</title>
+  <style>/* BROWSER_STYLES */</style>
+</head>
+<body>
+  <main class="browser-app" id="browser-app" data-mcel-app="browser">
+    <form class="browser-toolbar" id="browser-toolbar" autocomplete="off" aria-label="Browser navigation">
+      <button id="browser-back" type="button" title="Back" aria-label="Back">←</button>
+      <button id="browser-forward" type="button" title="Forward" aria-label="Forward">→</button>
+      <button id="browser-reload" type="button" title="Reload" aria-label="Reload">↻</button>
+      <label class="browser-address-label" for="browser-address">Address</label>
+      <input id="browser-address" type="text" spellcheck="false" aria-label="Address or localhost-relative path" placeholder="/ or https://example.org" />
+      <button id="browser-go" type="submit">Go</button>
+    </form>
+    <div class="browser-status" role="status" aria-live="polite">
+      <span id="browser-page-title">Backend Chromium</span>
+      <span id="browser-status">Connecting to local browser…</span>
+    </div>
+    <div class="browser-surface" id="browser-surface" tabindex="0" role="application" aria-label="Remote browser viewport; click and type to interact">
+      <img id="browser-image" alt="Backend-rendered browser page" draggable="false" />
+      <div class="browser-empty" id="browser-empty">Browser renderer initializing…</div>
+    </div>
+    <div class="browser-hint">Paths like <code>/applications</code> resolve against this Main Computer's localhost base. Full HTTP(S) addresses are preserved. Ctrl+L edits the address.</div>
+  </main>
+  <script>/* BROWSER_SCRIPT */</script>
+</body>
+</html>

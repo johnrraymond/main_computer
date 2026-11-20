@@ -1,0 +1,25 @@
+The payer escrows 12 ETH for the worker, with disputes decided by a mutually appointed arbitrator.
+The prototype milestone is worth 3 ETH.
+The prototype deadline is 14 days after activation.
+The prototype extension adds 7 days.
+The prototype extension decision window is 2 days after its due time.
+The prototype permits a maximum of 1 extension.
+The beta milestone is worth 4 ETH.
+The beta deadline is 21 days after activation.
+The beta extension adds 7 days.
+The beta extension decision window is 2 days after its due time.
+The beta permits a maximum of 1 extension.
+The final application milestone is worth 5 ETH.
+The final application deadline is 28 days after activation.
+The final application extension adds 7 days.
+The final application extension decision window is 2 days after its due time.
+The final application permits a maximum of 1 extension.
+The review window is 5 days.
+The dispute filing window is 3 days.
+The appointment window is 4 days.
+The ruling window is 10 days.
+On review silence, pay worker.
+On appointment failure, refund payer.
+On arbitrator silence, refund payer.
+On missed submission, refund payer.
+On undisputed rejection, refund payer.

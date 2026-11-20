@@ -224,6 +224,7 @@ APPLICATION_ROUTE_NAMES = {
     "git-tools",
     "code-editor",
     "file-explorer",
+    "browser",
     "game-editor",
     "website-builder",
     "mcel-lab",
@@ -279,13 +280,19 @@ def _application_route_target(path: str) -> str | None:
     if route_path in APPLICATION_ROUTE_PREFIXES:
         return APPLICATION_ROUTE_DEFAULT
     parts = _application_route_parts(path)
-    if len(parts) < 2 or len(parts) > 4:
+    if len(parts) < 2:
         return None
     if f"/{parts[0]}" not in APPLICATION_ROUTE_PREFIXES:
         return None
     candidate = parts[1]
     candidate = APPLICATION_ROUTE_ALIASES.get(candidate, candidate)
     if candidate not in APPLICATION_ROUTE_NAMES:
+        return None
+    # The backend Browser represents remote URLs as an unbounded canonical
+    # suffix. Do not apply the shallow app-tab limit to its address route.
+    if candidate == "browser":
+        return candidate if parts[0] == "applications" else None
+    if len(parts) > 4:
         return None
     if candidate == "slh":
         # The SLH application owns the canonical set of operational views.

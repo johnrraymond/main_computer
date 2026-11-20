@@ -144,7 +144,7 @@ var McelSemanticFormPresentationLaw = (() => {
     }
     return [...result.values()];
   }
-  function apply({root,ir,bridge,bindingModel="operational-runtime",profile="form-current"}={}) {
+  function applyCore({root,ir,bridge,bindingModel="operational-runtime",profile="form-current"}={}) {
     const id = normalize(profile);
     if (profile !== id || !root?.ownerDocument || !bridge)
       return {schema,status:"refused",reason:"Invalid Form profile or missing canonical inputs"};
@@ -292,6 +292,17 @@ var McelSemanticFormPresentationLaw = (() => {
       shapedElements:targets.size,paintedDescendants:painted.length,
       roundedGroupBackgrounds:cornerGroups.length,roundedNestedPaint:nestedPaint.length,
       diagnostics:result.diagnostics};
+  }
+  // Instrument the single Form Law semantic marker authority, including
+  // view-transition callbacks. Attribution is observational only.
+  function apply(request={}){
+    const root=request?.root;
+    let token=null;
+    const oracle=typeof globalThis!=='undefined'?globalThis.MCELReactivityShadowOracle:null;
+    try{token=oracle?.beginMutationSource?.(root,'semantic-form-law')||null;}catch(_){}
+    try{return applyCore(request);}finally{
+      try{oracle?.endMutationSource?.(root,token);}catch(_){}
+    }
   }
   return Object.freeze({schema,profiles,normalize,legacyCss,apply,cornerAwareGroups});
 })();

@@ -278,10 +278,17 @@ def run_shadow_lane(*, destination: Path, timeout: int) -> dict:
                        "metrics": verdict.get("metrics", {}),
                        "stages": [{"phase": s["phase"], "functionalPass": s["functionalPass"],
                                    "deltaNotifications": s["deltaNotifications"],
+                                   "revisionCount": s.get("revisionCount",0),
+                                   "receiptLinks": s.get("receiptLinks",0),
                                    "deltaPredictedSkips": s.get("deltaCounters",{}).get("predictedSkips",0),
                                    "deltaContradictions": s.get("deltaCounters",{}).get("contradictions",0),
                                    "deltaDOMMutations": s.get("deltaCounters",{}).get("observedMutations",0),
-                                   "deltaPropertyChanges": s.get("deltaCounters",{}).get("propertyChanges",0)}
+                                   "deltaPropertyChanges": s.get("deltaCounters",{}).get("propertyChanges",0),
+                                   "deltaProducerAttributed":s.get("deltaProducers",{}).get("identified",0),
+                                   "deltaProducerUnclassified":s.get("deltaProducers",{}).get("unclassified",0),
+                                   "deltaOperationLinked":s.get("deltaProducers",{}).get("operationLinked",0),
+                                   "deltaIndependentUi":s.get("deltaProducers",{}).get("independentUi",0),
+                                   "deltaUnexplained":s.get("deltaProducers",{}).get("unexplained",0)}
                                   for s in evidence.get("stages", [])]})
         if (exit_code != 0 and result["status"] == "PASS_OBSERVATION") or (
                 exit_code == 0 and result["status"] != "PASS_OBSERVATION"):
@@ -476,7 +483,14 @@ def main(argv: list[str] | None = None) -> int:
                   "predictedSkips=" + str(phase["deltaPredictedSkips"]),
                   "domMutations=" + str(phase["deltaDOMMutations"]),
                   "propertyChanges=" + str(phase["deltaPropertyChanges"]),
-                  "contradictions=" + str(phase["deltaContradictions"]), flush=True)
+                  "contradictions=" + str(phase["deltaContradictions"]),
+                  "revisions=" + str(phase["revisionCount"]),
+                  "receiptLinks=" + str(phase["receiptLinks"]),
+                  "producerAttributed="+str(phase["deltaProducerAttributed"]),
+                  "producerUnclassified="+str(phase["deltaProducerUnclassified"]),
+                  "operationLinked="+str(phase.get("deltaOperationLinked",0)),
+                  "independentUi="+str(phase.get("deltaIndependentUi",0)),
+                  "unexplained="+str(phase.get("deltaUnexplained",0)), flush=True)
         print("SLH_FUNCTIONAL_SHADOW", output["shadow"]["status"],
               "coverage=" + output["shadow"]["coverageStatus"],
               "report:", str(shadow_path), flush=True)

@@ -26,8 +26,8 @@ REGISTRY = ROOT / "main_computer/web/applications/icons/mcel-icons.v1.json"
 
 def test_registry_is_complete_and_semantic():
     icons = load_registry()["icons"]
-    assert len(icons) == 107
-    assert len(icon_ids(family="application")) == 21
+    assert len(icons) == 108
+    assert len(icon_ids(family="application")) == 22
     assert len(icon_ids(family="frober")) == 14
     assert set(icon["family"] for icon in icons) == ICON_FAMILIES
     assert len({i["id"] for i in icons}) == len(icons)
@@ -59,7 +59,7 @@ def test_accessibility_and_deploy_icons_have_distinct_semantics():
 
 def test_exact_original_desktop_drawing_geometry_preserved():
     old = legacy_desktop_reference(ROOT)
-    assert set(old["svg"]) == {id.removeprefix("application.") for id in icon_ids(family="application")}
+    assert set(old["svg"]) | {"browser"} == {id.removeprefix("application.") for id in icon_ids(family="application")}
     for app_id, drawing in old["svg"].items():
         source = ET.fromstring(f"<root>{drawing}</root>")
         new = get_icon("application." + app_id)["shapes"]

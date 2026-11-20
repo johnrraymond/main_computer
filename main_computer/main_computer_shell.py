@@ -56,6 +56,7 @@ APPS = [
     ShellApp("terminal", "Terminal", "/applications/terminal", "T", "#a78bfa"),
     ShellApp("tasks", "Tasks", "/applications/task-manager", "K", "#fb7185"),
     ShellApp("files", "Files", "/applications/file-explorer", "F", "#facc15"),
+    ShellApp("browser", "Browser", "/applications/browser", "B", "#6eb0ff"),
 ]
 
 APP_BY_KEY = {app.key: app for app in APPS}

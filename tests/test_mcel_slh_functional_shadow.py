@@ -16,7 +16,13 @@ def _sample():
                               'possibleStateOnlySkips':2,'incompleteScopes':1,
                               'unknownBatches':1,'unverified':3,'asyncMutations':2},
                      'coverage':{'completeScopes':7,'totalScoped':8,
-                                 'unresolved':['independent-candidate-renderer']}}]}
+                                 'unresolved':['independent-candidate-renderer']},
+                     'correlation':{'schema':'mcel.reactivity.revision-correlation.v1',
+                                    'operations':[{'revision':1,'receipts':1,'origin':'dispatch'}],
+                                    'async':{'receiptMatches':1},
+                                    'producers':{'identified':0,'unclassified':2,
+                                                 'partitionInvariant':True,'classificationInvariant':True,
+                                                 'operationLinked':0,'independentUi':0,'unexplained':2}}}]}
 
 
 def _stages():

@@ -100,7 +100,7 @@ def test_incumbent_runtime_observes_non_state_paths_without_replacing_scheduler(
         assert "shadowObserve('"+kind+"'" in runtime
     assert "shadowExternal('clock')" in runtime
     assert "shadowExternal('receipts')" in runtime
-    assert "?.invalidate?.(root,'async-commit')" in runtime
+    assert "?.invalidate?.(root,'async-commit',shadowRevision)" in runtime
     assert 'productionSchedulerChanged:false' in oracle
     assert 'applicationOperationsInvoked:0' in oracle
     assert 'independent-candidate-renderer' in oracle

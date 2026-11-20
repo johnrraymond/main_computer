@@ -103,17 +103,26 @@ def read_registry(repo: Path, *, validate_presentation: bool = True) -> dict:
             for prop, value in override.items():
                 if not _profile_value(prop, value):
                     raise CandidateHostError("MCEL shell registry app presentation value invalid")
-    if set(indexed) != canonical_route_names(repo):
-        raise CandidateHostError("MCEL shell registry must cover all canonical app routes")
-    # Optional non-launcher runtime registrations remain supported for future
-    # internal MCEL surfaces. SLH is promoted into the standard apps inventory.
+    # Runtime registrations may opt into the canonical launcher without
+    # mutating the pinned legacy launcher/icon oracle source files.
     for app in runtime_apps:
-        if (not isinstance(app, dict) or set(app) != {"id", "route", "mount"} or
+        if (not isinstance(app, dict) or not {"id", "route", "mount"}.issubset(app) or
+                set(app) - {"id", "route", "mount", "launcher", "title", "description"} or
                 not isinstance(app["id"], str) or not re.fullmatch(r"[a-z][a-z0-9-]*", app["id"]) or
                 app["id"] in indexed or app["route"] != "/applications/" + app["id"] or
-                app["mount"] != "semantic"):
-            raise CandidateHostError("MCEL non-launcher runtime registry invalid")
+                app["mount"] not in {"semantic", "legacy"} or
+                (app["mount"] == "legacy" and app.get("launcher") is not True)):
+            raise CandidateHostError("MCEL runtime registry invalid")
+        if app.get("launcher", False):
+            if (app.get("launcher") is not True or
+                not all(isinstance(app.get(k), str) and 0 < len(app[k]) <= 160
+                        for k in ("title", "description"))):
+                raise CandidateHostError("Launcher runtime identity requires display metadata")
+        elif "title" in app or "description" in app:
+            raise CandidateHostError("Non-launcher runtime cannot claim launcher text")
         indexed[app["id"]] = app
+    if set(indexed) != canonical_route_names(repo):
+        raise CandidateHostError("MCEL shell registry must cover all canonical app routes")
     if set(registry) - {"schema", "apps", "runtimeApps", "presentation"}:
         raise CandidateHostError("MCEL shell registry top-level contract invalid")
     if validate_presentation:

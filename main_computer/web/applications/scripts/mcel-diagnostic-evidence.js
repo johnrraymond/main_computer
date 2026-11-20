@@ -53,6 +53,56 @@
     }
     return items;
   }
+  // Read-only visual-integrity check. A heading can occupy the excluded arc
+  // of a rounded, painted region even when its ordinary DOM rectangles do not
+  // extend beyond the region's rectangular bounding box. That is a concrete
+  // collision, not merely a stylistic spacing preference. Inspect rendered
+  // text geometry rather than heading wording, region IDs, or app names.
+  function headingRegionOverrun(heading) {
+    const region=heading.parentElement;
+    if (!region?.matches('[data-mcel-region]')) return null;
+    const range=heading.ownerDocument.createRange();
+    range.selectNodeContents(heading);
+    const text=range.getBoundingClientRect(), bounds=region.getBoundingClientRect();
+    if (!(text.width>0 && text.height>0 && bounds.width>0 && bounds.height>0))return null;
+    const tolerance=1;
+    const outside={left:Math.max(0,bounds.left-text.left),right:Math.max(0,text.right-bounds.right),
+      top:Math.max(0,bounds.top-text.top),bottom:Math.max(0,text.bottom-bounds.bottom)};
+    const collisions=[];
+    for(const [side,depth] of Object.entries(outside))if(depth>tolerance)
+      collisions.push({kind:'region-bounds',side,penetrationPx:rounded(depth)});
+    const style=global.getComputedStyle(region);
+    const painted=style.backgroundImage!=='none' || (style.backgroundColor!=='transparent' &&
+      !/^rgba?\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/.test(style.backgroundColor)) ||
+      ['Top','Right','Bottom','Left'].some(side=>parseFloat(style['border'+side+'Width'])>0);
+    // Rounded corners only constrain the heading when the region actually
+    // paints a rounded panel. No layout or computed style is changed here.
+    if(painted) {
+      const corners=[['top-left','borderTopLeftRadius',true,true],
+        ['top-right','borderTopRightRadius',true,false],
+        ['bottom-left','borderBottomLeftRadius',false,true],
+        ['bottom-right','borderBottomRightRadius',false,false]];
+      for(const [corner,property,top,left] of corners) {
+        const raw=style[property];
+        if(!/^\d+(?:\.\d+)?px(?:\s|$)/.test(raw))continue;
+        const radius=Math.min(parseFloat(raw),bounds.width/2,bounds.height/2);
+        if(radius<=tolerance)continue;
+        // A sample a few pixels inside the line box avoids false positives
+        // from line-height leading while still testing the rendered first row.
+        const sample=top ? Math.max(bounds.top,text.top)+Math.min(3,text.height/4)
+          : Math.min(bounds.bottom,text.bottom)-Math.min(3,text.height/4);
+        const offset=top ? sample-bounds.top : bounds.bottom-sample;
+        if(offset<0 || offset>=radius)continue;
+        const required=radius-Math.sqrt(Math.max(0,radius*radius-(radius-offset)**2));
+        const actual=left ? text.left-bounds.left : bounds.right-text.right;
+        if(required-actual>tolerance)collisions.push({kind:'rounded-corner',corner,
+          penetrationPx:rounded(required-actual),radiusPx:rounded(radius)});
+      }
+    }
+    if(!collisions.length)return null;
+    return {collisions,textBounds:box({getBoundingClientRect:()=>text}),regionBounds:box(region),
+      note:'Heading text intersects a region boundary or the excluded corner of its rounded panel.'};
+  }
   function matchedDisplayRules(element) {
     const rules=[];
     // Include the final inline declaration and directly matching CSS rules.
@@ -107,6 +157,14 @@
     if(!entry)return null;
     const root=entry.root, time=now(), results=[];
     if(!root?.isConnected)return {schema:'mcel-diagnostic-evidence-v1',appId,time,status:'unmounted'};
+    // Include generated region headings (not only buttons/labels). This
+    // catches the SLH Operation Evidence title at the rounded upper-left
+    // corner and applies to every semantic application using this collector.
+    for(const heading of [...root.querySelectorAll('[data-mcel-region] > :is(h1,h2,h3,h4,h5,h6)')].filter(visible).slice(0,150)) {
+      if(results.length>=LIMIT)break;
+      const collision=headingRegionOverrun(heading);
+      if(collision)results.push(finding('heading-text-region-overrun',heading,collision,'error'));
+    }
     const candidates=[...root.querySelectorAll('label,button,[role="button"],summary,.chat-rag-at-hint')]
       .filter(el=>visible(el)&&!el.closest('.mcel-diagnostics-counter')).slice(0,250);
     const verified=[];

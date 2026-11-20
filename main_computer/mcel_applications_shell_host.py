@@ -59,6 +59,7 @@ DESKTOP_GROUPS = (
     ("system", "System & Files", ("file-explorer", "task-manager", "slh")),
 )
 DESKTOP_CLUSTERS_CSS = Path("main_computer/web/applications/styles/mcel-desktop-clusters.css")
+RUNTIME_DESKTOP_CSS = Path("main_computer/web/applications/styles/mcel-runtime-browser-icon.css")
 
 
 # Shared source authority for app IDs, routes, and presentation policy.
@@ -239,7 +240,27 @@ def _static(region: dict) -> str:
     return "".join(nodes)
 
 
-def _markup(ir: dict, reference: dict) -> str:
+def _runtime_desktop_markup(extensions: list[dict]) -> str:
+    """Launcher additions are opt-in; pinned legacy oracle remains untouched."""
+    if not extensions:
+        return ""
+    icons = []
+    for app in extensions:
+        identifier = app["id"]
+        route = escape(make_destination("applications." + identifier, app["route"])["href"], quote=True)
+        glyph = render_icon("application." + identifier, class_name="desktop-glyph-svg")
+        icons.append(
+            f'<a class="mcel-runtime-desktop-icon desktop-icon" data-app="{escape(identifier, quote=True)}"'
+            f' data-shell-launch="{escape(identifier, quote=True)}"'
+            f' data-mcel-destination-id="applications.{escape(identifier, quote=True)}" href="{route}">'
+            f'<span class="desktop-glyph" aria-hidden="true">{glyph}</span>'
+            f'<strong>{escape(app["title"])}</strong>'
+            f'<span>{escape(app["description"])}</span></a>'
+        )
+    return '<div class="desktop-cluster" data-desktop-group="runtime" role="group" aria-label="Additional applications"><div class="desktop-cluster-apps">' + "".join(icons) + '</div></div>'
+
+
+def _markup(ir: dict, reference: dict, *, extensions: list[dict] | None = None) -> str:
     records = ir["surfaces"][0]["interfaceIntent"]["regions"]
     children: dict[str | None, list[dict]] = {}
     for region in records:
@@ -270,7 +291,8 @@ def _markup(ir: dict, reference: dict) -> str:
             body = ('''<div class="mcel-shell-overview" id="mcel-shell-overview">
              <div id="mcel-shell-desktop-overlay" class="desktop-overlay desktop-home" aria-label="Desktop application launcher">
              '''
-             + legacy_desktop_icon_markup(reference, launch=True, grouped=True) + "</div></div>"
+             + legacy_desktop_icon_markup(reference, launch=True, grouped=True).rsplit("</div>", 1)[0]
+             + _runtime_desktop_markup(extensions or []) + "</div>" + "</div></div>"
              + '''<iframe id="mcel-shell-frame" class="mcel-shell-frame" title="MCEL application" referrerpolicy="same-origin"></iframe>''')
         elif name == "status":
             body = "Compiling semantic shell..."
@@ -296,11 +318,19 @@ def render_applications_shell_candidate(
 ) -> str:
     ir, registry = compile_applications_shell(repo)
     reference = legacy_desktop_reference(repo)
-    markup = _markup(ir, reference)
+    # Only canonical production opts into runtime launcher additions. The
+    # original 21-icon candidate/oracle remains an independent visual proof.
+    extensions = ([entry for entry in _read_registry(repo).get("runtimeApps", [])
+                   if entry.get("launcher") is True] if canonical_promoted else [])
+    if extensions:
+        registry = dict(registry)
+        registry["apps"] = [*registry["apps"], *extensions]
+    markup = _markup(ir, reference, extensions=extensions)
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     apps_json = json.dumps(registry, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
     css = (_safe_asset(repo, CSS, tag="style") + "\n" + reference["css"] + "\n"
-           + _safe_asset(repo, DESKTOP_CLUSTERS_CSS, tag="style"))
+           + _safe_asset(repo, DESKTOP_CLUSTERS_CSS, tag="style") + "\n"
+           + (_safe_asset(repo, RUNTIME_DESKTOP_CSS, tag="style") if extensions else ""))
     if "</style" in css.lower():
         raise CandidateHostError("Legacy desktop icon CSS contains unsafe inline content")
     scripts = "\n".join("<script>\n" + _safe_asset(repo, path, tag="script") + "\n</script>" for path in SCRIPTS)

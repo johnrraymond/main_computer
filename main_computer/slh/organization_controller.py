@@ -99,64 +99,110 @@ class OrganizationController:
             return False
 
     def status(self):
-        with self._lock:
-            try:
-                config = read_config(self.directory)
-            except OrganizationConfigError:
-                return {'configured': False, 'enabled': False, 'state': 'configuration_error',
-                        'listening': False, 'bind_host': None, 'api_port': None,
-                        'network_access': 'UNVERIFIED',
-                        'last_error': 'Invalid organization configuration'}
-            proc = self._process
+        """Observe current ORG state without waiting for the mutation lock.
+
+        An approved SEH deployment/activation may hold ``_lock`` across remote
+        operations. Status is strictly read-only apart from clearing a prior
+        listener-bind failure *after* independently verifying the current TLS
+        listener. It must not queue behind those operations. The initial
+        snapshot is validated after all potentially blocking process/TLS I/O;
+        evidence from a replaced child or changed configuration fails closed.
+        """
+        def configuration_error():
+            return {'configured': False, 'enabled': False, 'state': 'configuration_error',
+                    'listening': False, 'bind_host': None, 'api_port': None,
+                    'network_access': 'UNVERIFIED',
+                    'last_error': 'Invalid organization configuration'}
+
+        # ``save_config`` commits by atomic replace. Reading the persisted
+        # policy requires no shared controller lock, and all in-memory fields
+        # below are individual Python references captured for validation.
+        try:
+            config = read_config(self.directory)
+        except OrganizationConfigError:
+            return configuration_error()
+        proc = self._process
+        paused = self._paused
+        last_error = self._last_error
+        restart_count = len(self._restarts)
+        running = proc is not None and proc.poll() is None
+        try:
+            service_pid = (verified_launched_pid(
+                self.directory, launcher_pid=proc.pid,
+                controller_pid=os.getpid(),
+                controller_created=psutil.Process(os.getpid()).create_time())
+                if running else None)
+        except (OSError, RuntimeError):
+            service_pid = None
+        listening = bool(running and self._listening(config))
+
+        # Child identity and TLS evidence must describe the same generation.
+        # A stop/restart/configuration change during I/O invalidates both.
+        # Do not start another TLS probe from here: return an unverified
+        # transitional observation instead of waiting for a controller lock.
+        try:
+            current_config = read_config(self.directory)
+        except OrganizationConfigError:
+            return configuration_error()
+        current_proc = self._process
+        if (current_config != config or current_proc is not proc or
+                self._paused != paused or
+                (running and proc.poll() is not None)):
+            config = current_config
+            proc = current_proc
+            paused = self._paused
+            last_error = self._last_error
+            restart_count = len(self._restarts)
             running = proc is not None and proc.poll() is None
-            # Windows venv python.exe can be a redirector: Popen.pid is then
-            # the launcher, while the child records its real PID. Report only
-            # a verified, controller-owned ORG-SLH process to callers.
-            try:
-                service_pid = (verified_launched_pid(
-                    self.directory, launcher_pid=proc.pid,
-                    controller_pid=os.getpid(),
-                    controller_created=psutil.Process(os.getpid()).create_time())
-                    if running else None)
-            except (OSError, RuntimeError):
-                service_pid = None
-            listening = running and self._listening(config)
-            if listening:
-                # Verified TLS listener readiness, not merely process existence,
-                # is the only recovery event that clears the old failure.
-                clear_listener_bind_failure(self.directory)
-                state = 'running'
-            elif running:
-                state = 'starting'
-            elif self._paused and config['enabled'] and config['configured']:
-                state = 'stopped'
-            elif self._last_error and config['enabled']:
-                state = 'failed'
-            elif config['enabled']:
-                state = 'stopped_unexpectedly'
-            elif config['configured']:
-                state = 'disabled'
-            else:
-                state = 'not_configured'
-            failure = (read_listener_bind_failure(self.directory, config)
-                       if state in ('failed', 'stopped_unexpectedly') and config['enabled'] else None)
-            if failure is not None:
-                failure = {**failure, 'restart_limit_reached':
-                           len(self._restarts) >= 3, 'restart_count': len(self._restarts)}
-            return {'configured': config['configured'], 'enabled': config['enabled'],
-                    'state': state, 'listening': listening,
-                    # An observed local TLS handshake proves only local readiness;
-                    # binding a LAN interface does NOT prove remote reachability.
-                    'bind_host': config['host'] if config['configured'] else None,
-                    'network_access': ('NOT_CONFIGURED' if not config['configured'] else
-                                       'LOOPBACK_ONLY' if config['host'].startswith('127.') else
-                                       'BIND_CONFIGURED_REACHABILITY_UNVERIFIED'),
-                    'pid': service_pid,
-                    'api_port': config['api_port'] if config['configured'] else None,
-                    'worker_port': config['worker_port'] if config['workers_enabled'] else None,
-                    'workers_enabled': config['workers_enabled'],
-                    'seh_enabled': config['seh_enabled'], 'last_error': self._last_error,
-                    'failure': failure}
+            service_pid = None
+            listening = False
+
+        if listening:
+            # Clearing durable failure evidence is a mutation, unlike
+            # observing readiness. Never wait for the controller lock to do
+            # it, and never clear a newer failure after a child replacement.
+            if self._lock.acquire(blocking=False):
+                try:
+                    if (self._process is proc and proc.poll() is None and
+                            read_config(self.directory) == config):
+                        clear_listener_bind_failure(self.directory)
+                    else:
+                        listening = False
+                finally:
+                    self._lock.release()
+        if listening:
+            state = 'running'
+        elif running:
+            state = 'starting'
+        elif paused and config['enabled'] and config['configured']:
+            state = 'stopped'
+        elif last_error and config['enabled']:
+            state = 'failed'
+        elif config['enabled']:
+            state = 'stopped_unexpectedly'
+        elif config['configured']:
+            state = 'disabled'
+        else:
+            state = 'not_configured'
+        failure = (read_listener_bind_failure(self.directory, config)
+                   if state in ('failed', 'stopped_unexpectedly') and config['enabled'] else None)
+        if failure is not None:
+            failure = {**failure, 'restart_limit_reached':
+                       restart_count >= 3, 'restart_count': restart_count}
+        return {'configured': config['configured'], 'enabled': config['enabled'],
+                'state': state, 'listening': listening,
+                'bind_host': config['host'] if config['configured'] else None,
+                # Local pinned TLS verification is not evidence that a
+                # nonloopback bind is remotely reachable.
+                'network_access': ('NOT_CONFIGURED' if not config['configured'] else
+                                   'LOOPBACK_ONLY' if config['host'].startswith('127.') else
+                                   'BIND_CONFIGURED_REACHABILITY_UNVERIFIED'),
+                'pid': service_pid,
+                'api_port': config['api_port'] if config['configured'] else None,
+                'worker_port': config['worker_port'] if config['workers_enabled'] else None,
+                'workers_enabled': config['workers_enabled'],
+                'seh_enabled': config['seh_enabled'], 'last_error': last_error,
+                'failure': failure}
 
     def config(self):
         with self._lock:

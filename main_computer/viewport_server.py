@@ -7,6 +7,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.viewport_http import ViewportHttpMixin
+from main_computer.mcel_backend_browser import BackendBrowser
 from main_computer.viewport_route_dispatch import dispatch_get, dispatch_post
 from main_computer.viewport_routes_applications import ViewportApplicationRoutesMixin
 from main_computer.viewport_routes_aider import ViewportAiderRoutesMixin
@@ -81,6 +82,7 @@ class ViewportServer(ThreadingHTTPServer):
         config = _load_saved_hub_runtime_config(config, self.debug_root)
         config = apply_dev_chain_runtime_config(config, self.debug_root)
         self.activity = ActivityBus(self.debug_root)
+        self.backend_browser = BackendBrowser()
         self.chat_ai_processes = ChatAISubprocessManager()
         self.config = config
         self.mounted_windows_path_resolver = build_mounted_windows_path_resolver(config)
@@ -127,6 +129,12 @@ class ViewportServer(ThreadingHTTPServer):
         self.worker_runtime_lock = threading.RLock()
         self.worker_runtime_service = WorkerRuntimeService(self)
         self.worker_runtime_supervisor = WorkerRuntimeSupervisor(self.worker_runtime_service)
+
+    def server_close(self) -> None:
+        try:
+            self.backend_browser.close()
+        finally:
+            super().server_close()
 
     def signal(self, name: str, **fields: Any) -> None:
         if name in {"api-activity-snapshot", "api-activity-ollama-ps"}:

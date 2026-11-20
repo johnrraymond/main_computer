@@ -21,8 +21,10 @@ from main_computer.slh.api import SLHAPI
 from main_computer.slh.authenticator_store import LocalIdentityStore
 from main_computer.slh.local_authenticator_api import LocalAuthenticatorAPI
 from main_computer.slh.local_root_registration import LocalRootAdministratorRegistration
-from main_computer.slh.authority import SLHAuthority
-from main_computer.slh.organization_state import initialize_disabled, organization_status
+from main_computer.slh.authority import SLHAuthority, SLHError
+from main_computer.slh.organization_state import (
+    OrganizationConfigError, initialize_disabled, organization_status, read_config,
+)
 from main_computer.slh.organization_controller import OrganizationController
 from main_computer.slh.ports import DEFAULT_SLH_API_HOST, DEFAULT_SLH_API_PORT
 from main_computer.slh.storage import guard_legacy_state, secure_machine_state_dir, slh_state_dir
@@ -47,14 +49,26 @@ class ConcurrentExclusiveSLHServer(ThreadingMixIn, ExclusiveSLHServer):
 
 
 def local_status(authority: SLHAuthority, port: int, controller=None) -> dict:
+    # Deployment/activation can hold controller._lock through remote I/O.
+    # This read-only endpoint must not reacquire that mutation lock merely to
+    # decide whether to consult the live controller status. Configuration is
+    # committed using atomic replace, so reading it needs no controller lock.
+    organization = organization_status(authority.directory)
+    if controller is not None and authority.initialized():
+        try:
+            enabled = read_config(controller.directory)['enabled']
+        except OrganizationConfigError as exc:
+            # Preserve the original controller.config() failure contract.
+            raise SLHError('ORGANIZATION_CONFIG_ERROR', 409) from exc
+        if enabled:
+            organization = controller.status()
     return {
         'schema': 'main-computer.slh-local-status.v1',
         'local_service': {'state': 'running', 'binding': 'loopback',
                           'host': DEFAULT_SLH_API_HOST, 'port': port},
         'initialization': authority.status(),
         'administrator_enrollment': authority.administrator_enrollment_status(),
-        'organization_service': (controller.status() if controller is not None and authority.initialized()
-                                 and controller.config()['enabled'] else organization_status(authority.directory)),
+        'organization_service': organization,
     }
 
 

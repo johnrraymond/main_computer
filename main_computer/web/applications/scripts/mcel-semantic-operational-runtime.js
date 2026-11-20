@@ -507,6 +507,27 @@
     }
     assert(names.has("workspace") && covered.size === c.regions.size - 1,
       "workspace-plan-incomplete");
+    if(plan.documentWorkbench){
+      const layout=plan.documentWorkbench;
+      assert(layout.schema==="mcel.document-workbench.v1" &&
+        typeof layout.document==="string" && c.regions.has(layout.document) &&
+        ["navigation","companion","bottom","status"].every(k=>Array.isArray(layout[k]) && layout[k].length>0),
+        "document-workbench-invalid");
+      const doc=c.regions.get(layout.document);
+      assert(doc.priority==="primary" && doc.members.some(m=>c.nodes.get(ref(m))?.nodeKind==="document-editor"),
+        "document-workbench-anchor-invalid");
+      const groups=[[layout.document],layout.navigation,layout.companion,layout.bottom,layout.status];
+      const ids=groups.flat();
+      assert(ids.length===c.regions.size-1 && new Set(ids).size===ids.length &&
+        ids.every(id=>c.regions.has(id)) &&
+        layout.navigation.every(id=>c.regions.get(id).purpose==="navigation" && c.regions.get(id).preferences?.side==="start") &&
+        layout.companion.every(id=>c.regions.get(id).preferences?.side==="end") &&
+        layout.bottom.every(id=>c.regions.get(id).preferences?.side==="bottom") &&
+        layout.status.every(id=>c.regions.get(id).purpose==="status" && c.regions.get(id).preferences?.side==="bottom"),
+        "document-workbench-coverage-invalid");
+      assert(global.McelSemanticDocumentWorkbench?.mount,
+        "document-workbench-engine-missing");
+    }
     return plan;
   }
   function elt(tag, attrs, text) {
@@ -588,10 +609,20 @@
     let inferredLayout=null, generatedResizeObserver=null, generatedResizeListener=null;
     let plannedLayout=null,colorPresentation=null;
     const colorOperations=new Set(),colorOutcomes=new Map();
+    // Diagnostic-only DOM producer bracket. A diagnostic error must never
+    // re-run the incumbent mutation or prevent the existing UI from updating.
+    const shadowDOMSource=(name,fn,revision=null,scheduled=null)=>{
+      const oracle=global.MCELReactivityShadowOracle;
+      let token=null;
+      try{token=oracle?.beginMutationSource?.(root,name,revision,scheduled)||null;}catch(_){}
+      try{return fn();}finally{
+        try{oracle?.endMutationSource?.(root,token);}catch(_){}
+      }
+    };
     // All promoted registry apps dispatch Color Law updates through the one
     // controller. Isolated experimental runtimes retain the legacy adapter.
-    const refreshColor = () => usingController
-      ? colorLaw.refreshOperationalColor(root) : colorPresentation?.refresh();
+    const refreshColor = () => shadowDOMSource('presentation-refresh',()=>usingController
+      ? colorLaw.refreshOperationalColor(root) : colorPresentation?.refresh());
     let scheduleGeneratedLayout=()=>{};
     const rememberedInputs = new Map();
     const chatControllers=[];
@@ -650,9 +681,9 @@
     }
     const applicable = n => !n?.visibleWhen || conditionSatisfied(n.visibleWhen);
     const enabled = n => !n?.enabledWhen || conditionSatisfied(n.enabledWhen);
-    function notify() {
+    function notify(exactRevision=null) {
       try {global.MCELReactivityShadowOracle?.beforeNotify?.(
-        root,ir.application.appId,state,nextReceiptSequence);}catch (_) {}
+        root,ir.application.appId,state,nextReceiptSequence,exactRevision);}catch (_) {}
       for (const [r,el] of regionHosts) shadowObserve('region',r.id,()=>{
         if(r.visibleWhen){
           const hidden=read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
@@ -856,6 +887,11 @@
     }
     function receipt(intent, disposition, reason="") {
       const r = Object.freeze({sequence:++nextReceiptSequence,intentId:intent.id,disposition,reason});
+      // Exact local receipt sequence connects the settled operation to a later
+      // callback without relying on whichever request happens to be pending.
+      let receiptRevision=null;
+      try {receiptRevision=global.MCELReactivityShadowOracle?.operationReceipt?.(
+        root,intent.id,disposition,r.sequence)||null;}catch (_) {}
       // Record reads can also originate outside the notebook (for example a
       // programmatic inspect). A valid current result must reconcile its
       // notebook message as well as its data; a superseded result does neither.
@@ -876,7 +912,7 @@
       // DOM-row caches must not retain evicted receipts indefinitely.
       for(const host of receiptHosts)for(const key of host.rows.keys())
         if(key<=nextReceiptSequence-receiptLimit)host.rows.delete(key);
-      notify(); traceOperation(intent.id,"settled",disposition); return r;
+      notify(receiptRevision); traceOperation(intent.id,"settled",disposition); return r;
     }
     function parseInput(s, element) {
       const raw = element.value;
@@ -915,9 +951,16 @@
       // contracts (including application-initiated reads and other operations).
       return !declared;
     }
-    async function execute(id, given={}) {
+    async function execute(id, given={}, diagnosticOrigin="dispatch") {
       assert(!disposed, "disposed");
       const intent = c.intents.get(id); assert(intent,"unknown-intent:"+id);
+      // Revision tracking is optional and cannot change operation outcomes.
+      let shadowRevision=null;
+      try {shadowRevision=global.MCELReactivityShadowOracle?.beginOperation?.(
+        root,ir.application.appId,id,intent.operationKind,intent.risk,diagnosticOrigin)||null;}catch (_) {}
+      const shadowPhase=phase=>{
+        try {global.MCELReactivityShadowOracle?.operationPhase?.(root,shadowRevision,phase);}catch (_) {}
+      };
       traceOperation(id,"dispatch","");
       let attempted = false;
       let notebookReadToken=null;
@@ -993,7 +1036,7 @@
                 }
               }
             }
-            notify();
+            notify(shadowRevision);
             const result=receipt(intent,"selected");
             // Selecting an observed directory root must actually list it.
             // This is an existing read-only capability, not an inferred
@@ -1019,7 +1062,7 @@
             state.set(ref(t.target),clone(input[key]));
             for(const control of c.nodes.values())if(control.nodeKind==="control" && ref(control.intent)===id)
               for(const item of control.resetOutputs||[])state.set(ref(item.state),item.value);
-            notify();
+            notify(shadowRevision);
             // An observational lifecycle event: the rendered view changed.
             // Hosts may prepare optional capabilities without making the
             // selection itself a capability intent or changing its receipt.
@@ -1097,6 +1140,7 @@
         // browser pointer event. The Color Law may project it as pending.
         colorOperations.add(id);ownsColorOperation=true;
         colorOutcomes.delete(id);refreshColor();
+        shadowPhase('authorizing');
         const granted = await port.authorize(request);
         if(requestContextEpoch!==identityContextEpoch || obsoleteNotebookRead() ||
            revokedRecordRead())return {disposition:"superseded"};
@@ -1104,7 +1148,9 @@
         const run = ++serial; current.set(id,run);
         for (const binding of intent.resultBindings || []) targetRuns.set(ref(binding.target),run);
         attempted = true;
+        shadowPhase('invoking');
         const value = await port.invoke(request);
+        shadowPhase('response-received');
         if(requestContextEpoch!==identityContextEpoch || obsoleteNotebookRead() ||
            revokedRecordRead())return {disposition:"superseded"};
         // A root-scoped read belongs to the exact selected root that issued it.
@@ -1132,7 +1178,7 @@
         if (op.resultSchema) checkSchema(op.resultSchema,value,"capability-response");
         // Read response settlement is an external invalidation source; only
         // diagnostic epochs are advanced, not the production scheduler.
-        try {global.MCELReactivityShadowOracle?.invalidate?.(root,'async-commit');}catch (_) {}
+        try {global.MCELReactivityShadowOracle?.invalidate?.(root,'async-commit',shadowRevision);}catch (_) {}
         for (const binding of intent.resultBindings || []){
           const target=ref(binding.target);
           state.set(target,clone(value));
@@ -1246,7 +1292,7 @@
             session.status.textContent="Reviewed change applied: "+session.activePath;
           }
         }
-        notify();
+        notify(shadowRevision);
         // On a terminal Aider job receipt, reread the current affected file
         // through the original port. Never assume job acceptance means success.
         for(const [node,session] of documentHosts){
@@ -1310,7 +1356,7 @@
             for(const nav of directoryForms){
               nav.input.value="";nav.current="";nav.up.disabled=true;nav.path.textContent="/";
             }
-            notify();
+            notify(shadowRevision);
           }
         }
         return completed;
@@ -1348,7 +1394,8 @@
         // unlock the original invocation or erase its pending color state.
         if(ownsConsequential)pendingConsequential.delete(id);
         if(ownsColorOperation)colorOperations.delete(id);
-        refreshColor();
+        shadowDOMSource('operation-finalize',refreshColor,shadowRevision);
+        try {global.MCELReactivityShadowOracle?.finishOperation?.(root,shadowRevision);}catch (_) {}
       }
     }
     function renderInput(name,schema,displayLabel) {
@@ -2027,12 +2074,12 @@
         for(const [level,label] of [["info","Info"],["warn","Warn"],["error","Error"]]){
           const button=elt("button",{type:"button","data-mcel-activity-level-toggle":level,
             "aria-pressed":"true"},label);
-          button.addEventListener("click",()=>{
+          button.addEventListener("click",()=>shadowDOMSource('activity-filter-toggle',()=>{
             if(host.levels.has(level))host.levels.delete(level);
             else host.levels.add(level);
             button.setAttribute("aria-pressed",String(host.levels.has(level)));
             renderActivities();
-          });
+          }));
           filterBar.append(button);
         }
         if(expert){
@@ -3291,12 +3338,12 @@
       const controls=elt("div",{"data-mcel-auto-refresh":"","role":"group","aria-label":"Automatic monitoring refresh"});
       const button=elt("button",{type:"button","data-mcel-refresh-toggle":"","aria-pressed":"true"},"Pause automatic refresh");
       const status=elt("span",{"role":"status","data-mcel-refresh-status":""},"Refresh every 5 seconds when visible");
-      button.addEventListener("click",()=>{
+      button.addEventListener("click",()=>shadowDOMSource('monitor-toggle',()=>{
         refreshEnabled=!refreshEnabled;button.setAttribute("aria-pressed",String(refreshEnabled));
         traceOperation("monitor.auto-refresh","settled",refreshEnabled?"resumed":"paused");
         button.textContent=refreshEnabled?"Pause automatic refresh":"Resume automatic refresh";
         status.textContent=refreshEnabled?"Refresh every 5 seconds when visible":"Automatic refresh paused";
-      });
+      }));
       controls.append(button,status);
       // Automatic monitoring is a navigation-side capability, not a new
       // full-width header that consumes workspace height.
@@ -3315,9 +3362,13 @@
           const defaults=form?.defaults||{};
           const inputs=rememberedInputs.get(intent.id)||Object.fromEntries((intent.input||[]).map(p=>
             [p.sourceName,String(defaults[p.sourceName]??"")]));
-          const result=await execute(intent.id,inputs);
+          const result=await execute(intent.id,inputs,"monitor-poll");
           traceOperation("monitor.auto-refresh","settled",result.disposition);
-          status.textContent="Last refresh: "+result.disposition;
+          let pollRevision=null;
+          try{pollRevision=global.MCELReactivityShadowOracle?.revisionForReceipt?.(root,result.sequence)||null;}catch(_){}
+          shadowDOMSource('monitor-settlement-status',()=>{
+            status.textContent="Last refresh: "+result.disposition;
+          },pollRevision);
         }finally{refreshBusy=false;}
       };
       refreshTimer=global.setInterval?.(pollMonitor,taskRefreshPeriodMs);
@@ -3350,8 +3401,12 @@
         loader,selection,browse,rootsState,rootState:directory.rootState,
         entriesState:ref(node.state),key:selection.collectionSelection.key,inputName});
     }
-    if(workspacePlan) plannedLayout=global.McelSemanticLayoutInference.mountWorkspacePlan(
-      tree, workspacePlan, new Map([...regionHosts].map(([region,el])=>[region.id,el])));
+    if(workspacePlan) {
+      const regions=new Map([...regionHosts].map(([region,el])=>[region.id,el]));
+      plannedLayout=workspacePlan.documentWorkbench
+        ? global.McelSemanticDocumentWorkbench.mount(tree,workspacePlan,regions)
+        : global.McelSemanticLayoutInference.mountWorkspacePlan(tree,workspacePlan,regions);
+    }
     else if (expert) {
       // Assemble scroll owners from semantic roles, not app names or CSS
       // fractions. Ordinary regions remain the same live DOM nodes so their
@@ -3491,17 +3546,21 @@
         inferredLayout=engine.applyWorkspaceLayout(root,next,inferredLayout);
       };
       updateGeometry();
-      const scheduleGeometry=()=>{
+      const scheduleGeometry=(source='resize-observer')=>{
         if(layoutScheduled||disposed)return;
         layoutScheduled=true;
-        global.requestAnimationFrame?.(()=>{layoutScheduled=false;updateGeometry();});
+        let scheduling=null;
+        try{scheduling=global.MCELReactivityShadowOracle?.captureSchedule?.(root,source)||null;}catch(_){}
+        global.requestAnimationFrame?.(()=>shadowDOMSource('generated-layout-frame',()=>{
+          layoutScheduled=false;updateGeometry();
+        },null,scheduling));
       };
-      scheduleGeneratedLayout=scheduleGeometry;
+      scheduleGeneratedLayout=()=>scheduleGeometry('semantic-notify');
       if(typeof global.ResizeObserver==="function"){
-        generatedResizeObserver=new global.ResizeObserver(scheduleGeometry);
+        generatedResizeObserver=new global.ResizeObserver(()=>scheduleGeometry('resize-observer'));
         generatedResizeObserver.observe(layoutHost);
       } else if(typeof global.addEventListener==="function") {
-        generatedResizeListener=scheduleGeometry;
+        generatedResizeListener=()=>scheduleGeometry('window-resize');
         global.addEventListener("resize",generatedResizeListener);
       }
     }

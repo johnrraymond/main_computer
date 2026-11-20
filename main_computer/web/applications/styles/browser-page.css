@@ -1,0 +1,23 @@
+:root {color-scheme:dark; font-family: system-ui, 'Segoe UI', sans-serif}
+* {box-sizing:border-box}
+html,body {margin:0;width:100%;height:100%;overflow:hidden}
+body {color:var(--ink,#d8e1ee);background:var(--panel,#0b1320)}
+.browser-app {height:100dvh;min-width:0;display:flex;flex-direction:column;gap:0;padding:9px;}
+.browser-toolbar {display:flex;gap:5px;align-items:center;min-height:39px;flex:0 0 auto;}
+.browser-toolbar button {border:1px solid var(--border,#44556d);border-radius:5px;background:var(--surface,#1d293b);color:inherit;min-height:34px;min-width:36px;padding:4px 10px;font:inherit;cursor:pointer}
+.browser-toolbar button:hover {filter:brightness(1.17)}
+.browser-toolbar button:disabled {opacity:.4;cursor:default}
+.browser-toolbar #browser-go {min-width:53px}
+.browser-address-label {position:absolute;left:-10000px;}
+#browser-address {flex:1;min-width:0;height:34px;padding:4px 10px;border:1px solid var(--border,#44556d);border-radius:5px;background:var(--field,#07101b);color:inherit;font:13px Consolas,monospace;outline-offset:2px;}
+.browser-status {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;min-height:29px;font-size:12px;line-height:1.3;}
+.browser-status span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;}
+#browser-status[data-error="true"] {color:var(--error,#fca5a5)}
+.browser-surface {position:relative;flex:1;min-height:0;min-width:0;outline-offset:-2px;background:#f8f9fa;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:default;}
+.browser-surface img {width:100%;height:100%;object-fit:contain;display:none;user-select:none;}
+.browser-surface[data-ready="true"] img {display:block;}
+.browser-surface[data-ready="true"] .browser-empty {display:none;}
+.browser-empty {color:#333;text-align:center;padding:20px;font-size:13px;}
+.browser-hint {font-size:11px;line-height:1.4;padding-top:8px;opacity:.8;flex:0 0 auto;}
+.browser-hint code {font-size:11px;}
+@media (max-width:660px) { .browser-hint {display:none;} .browser-toolbar {gap:3px} .browser-toolbar button {min-width:30px;padding:4px 6px}}

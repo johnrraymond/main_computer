@@ -167,5 +167,15 @@
       "route": "/applications/slh",
       "mount": "semantic"
     }
+  ],
+  "runtimeApps": [
+    {
+      "id": "browser",
+      "title": "Browser",
+      "description": "Backend Chromium browser for localhost and web pages",
+      "route": "/applications/browser",
+      "mount": "legacy",
+      "launcher": true
+    }
   ]
 }

@@ -1,0 +1,1 @@
+The payer escrows 12 ETH for worker, with mutually appointed arbitrator. On review silence pay worker and on review silence refund payer; all other terms to be decided later.

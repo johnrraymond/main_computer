@@ -65,6 +65,32 @@ def evaluate_shadow(raw: dict, stages: list[dict], browser_errors: list[str], ac
                    'completeScopes': app.get('coverage', {}).get('completeScopes', 0),
                    'totalScoped': app.get('coverage', {}).get('totalScoped', 0),
                    'eventsEvicted': app.get('eventsEvicted', 0)}
+        correlation=app.get('correlation',{})
+        if correlation.get('schema')!='mcel.reactivity.revision-correlation.v1' or not correlation.get('operations'):
+            failures.append('OPERATION_REVISION_EVIDENCE_MISSING')
+        if not any(x.get('receipts',0)>0 for x in correlation.get('operations',[])):
+            failures.append('REVISION_RECEIPT_LINK_MISSING')
+        metrics['operationRevisions']=len(correlation.get('operations',[]))
+        metrics['bootstrapBatches']=app.get('stats',{}).get('bootstrapBatches',0)
+        metrics['operationsEvicted']=correlation.get('operationsEvicted',0)
+        metrics['receiptLinks']=correlation.get('async',{}).get('receiptMatches',0)
+        metrics['asyncTemporalCandidates']=correlation.get('async',{}).get('singlePending',0)
+        metrics['asyncAmbiguous']=correlation.get('async',{}).get('ambiguousPending',0)
+        metrics['asyncUnassociated']=correlation.get('async',{}).get('noPending',0)
+        producers=correlation.get('producers',{})
+        metrics['producerAttributed']=producers.get('identified',0)
+        metrics['producerUnclassified']=producers.get('unclassified',0)
+        metrics['operationLinkedDom']=producers.get('operationLinked',0)
+        metrics['independentUiDom']=producers.get('independentUi',0)
+        metrics['unexplainedDom']=producers.get('unexplained',0)
+        metrics['unexplainedSemanticMarkerNames']=producers.get('unclassifiedAttributeNames',{})
+        metrics['producerDirect']=producers.get('direct',0)
+        metrics['producerScheduled']=producers.get('scheduled',0)
+        metrics['producerUnclassifiedNoPending']=producers.get('unclassifiedNoPending',0)
+        if producers.get('partitionInvariant') is not True:
+            failures.append('PRODUCER_PARTITION_INVARIANT_FAILED')
+        if producers.get('classificationInvariant') is not True:
+            failures.append('CAUSAL_CLASSIFICATION_PARTITION_FAILED')
         if not app.get('mutationSupported'):
             failures.append('MUTATION_OBSERVER_UNAVAILABLE')
         if not metrics['notifications'] or not metrics['executions'] or not metrics['completeScopes']:
@@ -73,12 +99,16 @@ def evaluate_shadow(raw: dict, stages: list[dict], browser_errors: list[str], ac
             failures.append('PREDICTED_SKIP_CONTRADICTION')
         # Blockers remain explicit even when the diagnostic observation passes.
         blockers = list(app.get('coverage', {}).get('unresolved', []))
+        blockers.append('temporal-attribution-is-not-causal-proof')
+        if correlation.get('operationsEvicted',0): blockers.append('revision-history-evicted')
         if metrics['incompleteScopes']:
             blockers.append('incomplete-property-scopes')
         if metrics['unknownBatches']:
             blockers.append('unknown-state-batches')
-        if metrics['asyncMutations']:
-            blockers.append('unattributed-external-async-mutations')
+        if metrics['producerUnclassified']:
+            blockers.append('unclassified-external-async-mutations')
+        if metrics['producerAttributed']:
+            blockers.append('dom-producer-is-not-network-causality')
         if metrics['unverified']:
             blockers.append('unverified-consumer-dependencies')
         if metrics['eventsEvicted']:
@@ -124,10 +154,12 @@ def run_mocked_functional_shadow() -> dict:
             stages: list[dict] = []
             prior = 0
             previous_counters = {key:0 for key in COUNTERS}
+            previous_producers = {'identified':0,'unclassified':0,'direct':0,'scheduled':0,
+                                  'operationLinked':0,'independentUi':0,'unexplained':0}
 
             def record(phase: str, expected: str, toggle_text: str, enable_text: str,
                        toggle_enabled: bool, enable_enabled: bool) -> None:
-                nonlocal prior, previous_counters
+                nonlocal prior, previous_counters, previous_producers
                 page.wait_for_function("expected => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state === expected", arg=expected)
                 # Truth is based on both canonical semantic state and actual UI.
                 actual = page.evaluate("() => window.__mcelSlh.app.readState('state:organization-lifecycle')?.state")
@@ -141,18 +173,25 @@ def run_mocked_functional_shadow() -> dict:
                 apps = page.evaluate('''() => window.MCELReactivityShadowOracle.report().apps
                   .filter(a => a.appId === 'slh').map(a => ({
                      notifications:a.notifications, consumers:a.consumers,
-                     stats:a.stats, coverage:{completeScopes:a.coverage.completeScopes,
+                     stats:a.stats, correlation:a.correlation, coverage:{completeScopes:a.coverage.completeScopes,
                        totalScoped:a.coverage.totalScoped} }))''')
                 app = apps[0] if len(apps) == 1 else {}
                 count = app.get('notifications', 0)
                 counts = {k:app.get('stats',{}).get(k,0) for k in COUNTERS}
                 deltas = {k:counts[k]-previous_counters[k] for k in COUNTERS}
                 previous_counters = counts
+                producers=app.get('correlation',{}).get('producers',{})
+                producer_counts={k:producers.get(k,0) for k in previous_producers}
+                producer_deltas={k:producer_counts[k]-previous_producers[k] for k in producer_counts}
+                previous_producers=producer_counts
                 stages.append({'phase':phase, 'expectedState':expected, 'observedState':actual,
                                'ui':ui, 'functionalPass':passed,
                                'deltaNotifications': count-prior,
                                'notifications':count, 'consumers':app.get('consumers',0),
-                               'counters':counts, 'deltaCounters':deltas})
+                               'revisionCount':len(app.get('correlation',{}).get('operations',[])),
+                               'receiptLinks':app.get('correlation',{}).get('async',{}).get('receiptMatches',0),
+                               'counters':counts, 'deltaCounters':deltas,
+                               'producers':producer_counts,'deltaProducers':producer_deltas})
                 prior = count
                 if not passed:
                     raise AssertionError('INCUMBENT_UI_STATE_MISMATCH:' + repr(stages[-1]))

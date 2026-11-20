@@ -1,0 +1,63 @@
+{
+  "status": "contract",
+  "contract": {
+    "language": "nanojev.contract.governed_escrow.v3",
+    "asset": "native_eth",
+    "settlement_mode": "pull",
+    "payer": "deployer",
+    "worker": "constructor_worker",
+    "arbitrator": "jointly_appointed_after_dispute",
+    "amount_wei": 9000000000000000000,
+    "milestones": [
+      {
+        "id": "alpha",
+        "amount_wei": 4000000000000000000,
+        "deadline_seconds": 691200,
+        "extension_seconds": 259200,
+        "extension_decision_seconds": 86400,
+        "max_extensions": 0
+      },
+      {
+        "id": "beta",
+        "amount_wei": 5000000000000000000,
+        "deadline_seconds": 1123200,
+        "extension_seconds": 345600,
+        "extension_decision_seconds": 172800,
+        "max_extensions": 2
+      }
+    ],
+    "policy": {
+      "review_seconds": 172800,
+      "dispute_filing_seconds": 172800,
+      "appointment_seconds": 172800,
+      "ruling_seconds": 691200,
+      "on_review_silence": "refund_payer",
+      "on_appointment_failure": "pay_worker",
+      "on_arbitrator_silence": "pay_worker",
+      "on_missed_submission": "refund_payer",
+      "on_undisputed_rejection": "refund_payer"
+    }
+  },
+  "source_spans": {
+    "amount_wei": "The payer escrows 9 ETH to hire the worker under mutually appointed arbitrator dispute resolution.",
+    "milestones.alpha.amount_wei": "The alpha milestone pays 4 ETH.",
+    "milestones.alpha.deadline_seconds": "The alpha milestone deadline is 8 days after activation.",
+    "milestones.alpha.extension_seconds": "The alpha extension adds 3 days.",
+    "milestones.alpha.extension_decision_seconds": "The alpha extension decision window lasts 1 days after due.",
+    "milestones.alpha.max_extensions": "The alpha extension limit is 0 extensions.",
+    "milestones.beta.amount_wei": "The beta milestone pays 5 ETH.",
+    "milestones.beta.deadline_seconds": "The beta milestone deadline is 13 days after activation.",
+    "milestones.beta.extension_seconds": "The beta extension adds 4 days.",
+    "milestones.beta.extension_decision_seconds": "The beta extension decision window lasts 2 days after due.",
+    "milestones.beta.max_extensions": "The beta extension limit is 2 extensions.",
+    "policy.review_seconds": "The review period is 2 days.",
+    "policy.dispute_filing_seconds": "The dispute filing period is 2 days.",
+    "policy.appointment_seconds": "The appointment period is 2 days.",
+    "policy.ruling_seconds": "The ruling period is 8 days.",
+    "policy.on_review_silence": "On review silence, refund payer.",
+    "policy.on_appointment_failure": "On appointment failure, pay worker.",
+    "policy.on_arbitrator_silence": "On arbitrator silence, pay worker.",
+    "policy.on_missed_submission": "On missed submission, refund payer.",
+    "policy.on_undisputed_rejection": "On undisputed rejection, refund payer."
+  }
+}

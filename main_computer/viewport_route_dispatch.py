@@ -1954,6 +1954,10 @@ def _legacy_app_child_html() -> str:
 
 def dispatch_get(self) -> None:
     route_path = urlsplit(self.path).path
+    if route_path == "/api/applications/browser/frame":
+        from main_computer.mcel_backend_browser_route import handle_browser_get
+        handle_browser_get(self)
+        return
     if route_path != "/api/activity/snapshot":
         self.server.signal("http-request", method="GET", path=self.path)
     if route_path.startswith("/api/local/authenticator/"):
@@ -2059,6 +2063,14 @@ def dispatch_get(self) -> None:
             from main_computer.mcel_applications_shell_host import render_applications_shell_candidate
             self._send_text(render_applications_shell_candidate(canonical_promoted=True), "text/html; charset=utf-8")
             return
+    if route_path == "/applications/browser" or route_path.startswith("/applications/browser/"):
+        from main_computer.mcel_backend_browser_route import browser_request_authorized
+        if not browser_request_authorized(self, write=False):
+            self._send_json({"ok": False, "error": "Browser application is local-only"}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_browser_host import render_browser_page
+        self._send_text(render_browser_page(), "text/html; charset=utf-8")
+        return
     # Native SLH application: the shared shell now owns its launcher.
     # This block is reached only for the canonical native iframe child.
     if route_path in {"/applications/slh", "/applications/slh/local",
@@ -2453,6 +2465,10 @@ def _chat_console_native_execution_allowed(self) -> bool:
 
 
 def dispatch_post(self) -> None:
+    if urlsplit(self.path).path == "/api/applications/browser/control":
+        from main_computer.mcel_backend_browser_route import handle_browser_post
+        handle_browser_post(self)
+        return
     # mcel.slh.target-tabs.v2: strictly local bridge, read-only remote TLS probe.
     if urlsplit(self.path).path == "/api/applications/slh/seh/deployment":
         from main_computer.mcel_slh_seh_deployment_route import handle_seh_deployment

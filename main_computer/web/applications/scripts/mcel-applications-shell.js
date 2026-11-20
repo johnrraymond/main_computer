@@ -51,9 +51,16 @@
     if (routeFaithful && !routePreview &&
         (location.pathname === app.route || location.pathname.startsWith(app.route + "/"))) {
       target.pathname = location.pathname;
-      for (const [key, value] of new URLSearchParams(location.search)) {
-        if (key !== "mcel-shell-preview" && key !== childOnlyKey && key !== "app")
-          target.searchParams.append(key, value);
+      if (app.id === "browser") {
+        // The entire suffix (including ?app=, #fragment, and arbitrary
+        // external query keys) belongs to the backend browser destination.
+        target.search = location.search;
+        target.hash = location.hash;
+      } else {
+        for (const [key, value] of new URLSearchParams(location.search)) {
+          if (key !== "mcel-shell-preview" && key !== childOnlyKey && key !== "app")
+            target.searchParams.append(key, value);
+        }
       }
     }
     target.searchParams.set(childOnlyKey, "1");

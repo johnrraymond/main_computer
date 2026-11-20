@@ -849,10 +849,19 @@ var McelSemanticChromePresentationLaw = (() => {
     }
   `;
 
+  function observeMaterialReconcile(root,source,run){
+    let token=null;
+    const oracle=typeof globalThis!=='undefined'?globalThis.MCELReactivityShadowOracle:null;
+    try{token=oracle?.beginMutationSource?.(root,source)||null;}catch(_){}
+    try{return run();}finally{
+      try{oracle?.endMutationSource?.(root,token);}catch(_){}
+    }
+  }
   function mountVulcanMaterials({root,ir,bridge}) {
     const originals = new Map();
     let lastReport = {regions:0,nodes:0,assignments:new Map()};
-    function reconcile() {
+    function reconcile(){return observeMaterialReconcile(root,'semantic-chrome-materials',reconcileCore);}
+    function reconcileCore() {
       const report = resolveMaterialTargets({root,ir,bridge,profile:vulcanId});
       if (report.status !== "ready") return;
       lastReport = report;
@@ -1031,7 +1040,8 @@ var McelSemanticChromePresentationLaw = (() => {
       element.appendChild(surface);
       overlays.add(surface);
     }
-    function reconcile() {
+    function reconcile(){return observeMaterialReconcile(root,'semantic-chrome-materials',reconcileCore);}
+    function reconcileCore() {
       const report = resolveMaterialTargets({root, ir, bridge});
       if (report.status !== "ready") return;
       lastReport = report;

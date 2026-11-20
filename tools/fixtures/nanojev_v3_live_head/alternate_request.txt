@@ -1,0 +1,20 @@
+The payer escrows 9 ETH to hire the worker under mutually appointed arbitrator dispute resolution.
+The alpha milestone pays 4 ETH.
+The alpha milestone deadline is 8 days after activation.
+The alpha extension adds 3 days.
+The alpha extension decision window lasts 1 days after due.
+The alpha extension limit is 0 extensions.
+The beta milestone pays 5 ETH.
+The beta milestone deadline is 13 days after activation.
+The beta extension adds 4 days.
+The beta extension decision window lasts 2 days after due.
+The beta extension limit is 2 extensions.
+The review period is 2 days.
+The dispute filing period is 2 days.
+The appointment period is 2 days.
+The ruling period is 8 days.
+On review silence, refund payer.
+On appointment failure, pay worker.
+On arbitrator silence, pay worker.
+On missed submission, refund payer.
+On undisputed rejection, refund payer.

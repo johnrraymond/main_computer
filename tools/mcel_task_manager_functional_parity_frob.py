@@ -186,6 +186,12 @@ def _show_workflow(page, locator):
     panel=locator.evaluate('el=>el.closest("[data-mcel-tool-panel]")?.id||null')
     if panel:
         page.locator(f'[data-mcel-tool-tabs] [aria-controls="{panel}"]').click()
+    subpanel=locator.evaluate('el=>el.closest("[id^=mcel-subpanel-]")?.id||null')
+    if subpanel:
+        view=page.evaluate("() => window.__mcelWorkbench?.app?.readState('state:view')")
+        if view != 'operations':
+            page.locator('[data-mcel-mode-tabs] [data-value="operations"]').click()
+        page.locator(f'[data-mcel-workspace-subtabs] [aria-controls="{subpanel}"]').click()
 
 
 def _click(page, intent:str):
@@ -199,7 +205,7 @@ def _await_receipt(page,intent:str,disposition:str='completed'):
                            arg={'i':'intent:'+intent,'d':disposition},timeout=6500)
 
 
-def browser_comparison(repo:Path)->dict:
+def browser_comparison(repo:Path, *, observer=None, promoted=False)->dict:
     from playwright.sync_api import sync_playwright
     cases=[]; errors=[]; backend='unavailable'
     with sync_playwright() as pw:
@@ -210,14 +216,17 @@ def browser_comparison(repo:Path)->dict:
       page.on('dialog',lambda dialog:dialog.accept() if page.evaluate('window.__taskCase.allowMutations') else dialog.dismiss())
       try:
         page.evaluate(FIXTURE_JS)
-        page.set_content(render_semantic_page('task-manager',repo))
+        page.set_content(render_semantic_page('task-manager',repo,promoted=promoted))
         status=page.locator('#mcel-workbench-status').inner_text()
-        _scenario(cases,'notebook','semantic-candidate-mount','Semantic candidate ready',status,status=='Semantic candidate ready')
-        if status!='Semantic candidate ready':return {'status':'INCOMPLETE','cases':cases,'pageErrors':errors,'backend':backend}
+        _scenario(cases,'notebook','semantic-candidate-mount',
+                  'Semantic application ready' if promoted else 'Semantic candidate ready',
+                  status,status==('Semantic application ready' if promoted else 'Semantic candidate ready'))
+        if status!=('Semantic application ready' if promoted else 'Semantic candidate ready'):return {'status':'INCOMPLETE','cases':cases,'pageErrors':errors,'backend':backend}
+        if observer: observer(page, 'mounted')
         _scenario(cases,'authority','no-implicit-mutation',0,len(page.evaluate('window.__taskEffects')),
                   not page.evaluate('window.__taskEffects.length'))
-        _scenario(cases,'notebook','four-views',4,page.locator('[data-mcel-mode-tabs] button').count(),
-                  page.locator('[data-mcel-mode-tabs] button').count()==4)
+        _scenario(cases,'notebook','five-views',5,page.locator('[data-mcel-mode-tabs] [data-value]').count(),
+                  page.locator('[data-mcel-mode-tabs] [data-value]').count()==5)
         page.wait_for_timeout(300)
         startup_calls=len(_requests(page,'/overview'))
         _scenario(cases,'monitor-server','automatic-first-snapshot',True,startup_calls>0,
@@ -244,6 +253,7 @@ def browser_comparison(repo:Path)->dict:
                        'effects':page.evaluate('window.__taskEffects.length')-before},
                       polled>initial and paused==polled and resumed>paused and
                       page.evaluate('window.__taskEffects.length')==before)
+        if observer: observer(page, 'automatic-refresh-pause-resume')
         # Monitoring forms must use the same incumbent contract, with scoped options.
         form=page.locator('form[data-intent="intent:refresh"]')
         form.locator('[name=query]').fill('disposable')
@@ -260,6 +270,7 @@ def browser_comparison(repo:Path)->dict:
         row.wait_for()
         _scenario(cases,'monitor-server','observed-process-generation',key,row.get_attribute('data-record-key'),
                   row.get_attribute('data-record-key')==key)
+        if observer: observer(page, 'filtered-process-refresh')
         # Security: forging a selection cannot authorize a PID mutation.
         forged=page.evaluate('''()=>{const p=McelSemanticReadPorts.create({appId:'semantic-task-manager'});
           return p.authorize({appId:'semantic-task-manager',intentId:'intent:terminate-process',
@@ -268,7 +279,7 @@ def browser_comparison(repo:Path)->dict:
             arguments:{selected:'43121:forged'}})}''')
         _scenario(cases,'authority','forged-generation-rejected',False,forged,forged is False)
         # Selected observed identity carries PID AND birth time. No PID-only effects.
-        row.locator('button[data-select-key]').click()
+        row.click()
         selected=page.evaluate('window.__mcelWorkbench.app.readState("state:selected")')
         _scenario(cases,'selection','observed-selection',key,selected,selected==key)
         _click(page,'terminate-process'); _await_receipt(page,'terminate-process','command-returned')
@@ -283,11 +294,12 @@ def browser_comparison(repo:Path)->dict:
         _scenario(cases,'authority','consumed-target-refuses-repeat',old,len(_requests(page,'/action')),
                   len(_requests(page,'/action'))==old)
         for mode,intent,feature in (('all-processes','refresh-all','monitor-all'),('connections','refresh-connections','connections'),('cpu-gpu','refresh-hardware','hardware')):
-            page.locator(f'[data-mcel-mode-tabs] button[data-value="{mode}"]').click()
+            page.locator(f'[data-mcel-mode-tabs] [data-value="{mode}"]').click()
             page.locator(f'form[data-intent="intent:{intent}"] button[type=submit]').click()
             _await_receipt(page,intent)
             _scenario(cases,feature,'view-'+mode,mode,page.evaluate('window.__mcelWorkbench.app.readState("state:view")'),
                       page.evaluate('window.__mcelWorkbench.app.readState("state:view")')==mode)
+        if observer: observer(page, 'monitor-views')
         _scenario(cases,'connections','connection-row-observed',1,
                   page.evaluate('window.__mcelWorkbench.app.readState("state:connections").length'),
                   page.evaluate('window.__mcelWorkbench.app.readState("state:connections").length')==1)
@@ -326,7 +338,7 @@ def browser_comparison(repo:Path)->dict:
         page.evaluate('window.__taskCase.gpuMissing=false')
         # Kill a selected process from all-processes view, rather than relying
         # on hidden stale state from the server-processes view.
-        page.locator('[data-mcel-mode-tabs] button[data-value="all-processes"]').click()
+        page.locator('[data-mcel-mode-tabs] [data-value="all-processes"]').click()
         page.locator('form[data-intent="intent:refresh-all"] button[type=submit]').click()
         _await_receipt(page,'refresh-all')
         page.locator(f'[data-record-key="{key}"][data-mcel-row-selectable]:visible').first.click()
@@ -349,6 +361,7 @@ def browser_comparison(repo:Path)->dict:
             actual=_requests(page,'/action')[-1]['body']
             _scenario(cases,'server-lifecycle','controller-'+action,action,actual.get('action'),
                       actual.get('action')==action and actual.get('confirm') is True and bool(actual.get('request_id')))
+        if observer: observer(page, 'governed-controls')
         # Explicit AI is advisory, and not permitted to trigger OS effects.
         effects_before=page.evaluate('window.__taskEffects.length')
         ai=page.locator('form[data-intent="intent:task-ai"]')
@@ -360,6 +373,7 @@ def browser_comparison(repo:Path)->dict:
                   {'instruction':'Summarize the observed process','effectsDelta':0},
                   {'instruction':ai_body.get('instruction'),'effectsDelta':page.evaluate('window.__taskEffects.length')-effects_before},
                   ai_body.get('instruction')=='Summarize the observed process' and page.evaluate('window.__taskEffects.length')==effects_before)
+        if observer: observer(page, 'advisory-ai')
         # Schedule list, selection, exact revision and action verification.
         _click(page,'list-schedules');_await_receipt(page,'list-schedules')
         selected_id='sc-1'
@@ -404,12 +418,16 @@ def browser_comparison(repo:Path)->dict:
         _scenario(cases,'receipts','operation-receipts-present',True,
                   bool(page.evaluate('window.__mcelWorkbench.app.receipts().filter(r=>r.intentId.startsWith("intent:") && r.disposition==="completed").length')),
                   bool(page.evaluate('window.__mcelWorkbench.app.receipts().filter(r=>r.disposition==="completed").length')))
+        if observer: observer(page, 'schedules-and-receipts')
       except Exception as exc:
         try:
           debug=page.evaluate('''() => ({requests:window.__taskRequests, effects:window.__taskEffects, receipts:window.__mcelWorkbench?.app?.receipts(), status:document.querySelector('#mcel-workbench-status')?.textContent})''')
         except Exception as debug_exc:debug={'error':str(debug_exc)}
         cases.append({'id':'browser-exception','feature':'harness','status':'ERROR','error':str(exc),'debug':debug})
       finally:
+        if observer:
+          try: observer(page, 'final')
+          except Exception as audit_error: errors.append('shadow-audit: '+str(audit_error))
         page.close();browser.close()
     return {'status':'PASS' if cases and all(c['status']=='PASS' for c in cases) and not errors else 'INCOMPLETE',
             'cases':cases,'pageErrors':errors,'backend':backend,
