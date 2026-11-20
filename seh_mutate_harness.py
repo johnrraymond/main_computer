@@ -120,9 +120,9 @@ def _progress(stage: str, state: str, **fields: object) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime', 'redeploy-runtime', 'undeploy-seh'))
+    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'verify-resident-admin', 'recover-runtime', 'redeploy-runtime', 'undeploy-seh'))
     p.add_argument('--approve-generation', type=int, help='Exact Mother generation, optional for activation')
-    p.add_argument('--admin-device', help='Existing local administrator device (required if more than one local identity)')
+    p.add_argument('--admin-device', help='Override automatic verified resident administrator selection')
     p.add_argument('--local-port', type=int, default=8897, help='Resident SLH loopback port')
     p.add_argument('--activation-timeout', type=float, default=45.0, help='Maximum seconds to verify resident connectivity')
     p.add_argument('--build-timeout', type=float, default=900.0,
@@ -236,6 +236,85 @@ def _resident_failure_diagnostic(observed: dict) -> dict:
     return result
 
 
+def _verified_resident_administrator(store, explicit_device: str | None, request) -> tuple[str, str]:
+    """Return a signed, current resident administrator session, or refuse.
+
+    An ordinary local key is not evidence of administrator authority. Verify
+    every candidate against the resident ORG-SLH before selecting one. The
+    designated local default wins only if it is itself a verified admin; if
+    there is no eligible default, require exactly one verified administrator.
+    All unselected bearer sessions are logged out, even on failure.
+    """
+    inventory = store.list()
+    identities = inventory.get('identities')
+    if (type(identities) is not list or not identities or len(identities) > 128
+            or type(inventory.get('invalid_identities')) is not list
+            or inventory['invalid_identities']):
+        raise HarnessError('Resident administrator identity inventory unavailable or invalid')
+    ids = [item.get('device_id') for item in identities if type(item) is dict]
+    if (len(ids) != len(identities) or any(type(i) is not str or not i for i in ids)
+            or len(set(ids)) != len(ids)):
+        raise HarnessError('Resident administrator identity inventory invalid')
+    default = inventory.get('default_device_id')
+    if explicit_device:
+        if explicit_device not in ids:
+            raise HarnessError('Requested administrator is absent from resident identity store')
+        candidates = [explicit_device]
+    else:
+        candidates = sorted(ids, key=lambda i: (i != default, i))
+
+    approved: list[tuple[str, str]] = []
+    try:
+        for device in candidates:
+            token = None
+            try:
+                try:
+                    challenge = request('POST', '/v1/auth/challenge', {'device_id': device})
+                except HarnessError as exc:
+                    # A locally held key need not be enrolled in this organization.
+                    # A transport failure or unexpected refusal must never be
+                    # treated as a negative administrator check.
+                    if not explicit_device and 'UNKNOWN_OR_REVOKED_DEVICE' in str(exc):
+                        continue
+                    raise
+                if type(challenge) is not dict or not challenge.get('challenge_id'):
+                    raise HarnessError('Resident administrator challenge unverified')
+                signed = store.sign(device, challenge)
+                verified = request('POST', '/v1/auth/verify', {
+                    'device_id': device, 'challenge_id': challenge['challenge_id'],
+                    'signature': signed['signature'],
+                })
+                token = verified.get('access_token') if type(verified) is dict else None
+                if type(token) is not str or not token:
+                    raise HarnessError('Resident administrator authentication unverified')
+                session = request('GET', '/v1/auth/session', token=token)
+                if (type(session) is not dict or session.get('device_id') != device
+                        or session.get('active') is not True
+                        or type(session.get('user_id')) is not str
+                        or not session['user_id']):
+                    raise HarnessError('Resident administrator session unverified')
+                if session.get('role') == 'admin':
+                    approved.append((device, token))
+                    token = None  # Ownership transferred to approved list.
+                    if not explicit_device and device == default:
+                        return approved.pop()
+            finally:
+                if token:
+                    logout = request('POST', '/v1/auth/logout', {}, token=token)
+                    if type(logout) is not dict or logout.get('status') != 'LOGGED_OUT':
+                        raise HarnessError('Resident administrator discovery logout unverified')
+        if len(approved) != 1:
+            raise HarnessError(
+                'No verified resident administrator identity' if not approved
+                else 'Multiple verified administrators without an eligible default; pass --admin-device')
+        return approved.pop()
+    finally:
+        for _, bearer in approved:
+            logout = request('POST', '/v1/auth/logout', {}, token=bearer)
+            if type(logout) is not dict or logout.get('status') != 'LOGGED_OUT':
+                raise HarnessError('Resident administrator discovery logout unverified')
+
+
 def _activate_via_resident_slh(args: argparse.Namespace, *, state_dir_override=None) -> dict:
     """One signed-admin invocation; only the resident SLH mutates its service.
 
@@ -261,13 +340,6 @@ def _activate_via_resident_slh(args: argparse.Namespace, *, state_dir_override=N
     # Activation signs with the resident LMS identity, not the per-user AppData store.
     store = LocalIdentityStore((Path(state_dir_override) if state_dir_override is not None
                                 else slh_state_dir()) / "identities")
-    device = args.admin_device
-    if not device:
-        entries = store.list()
-        usable = entries['identities']
-        if len(usable) != 1 or entries['invalid_identities']:
-            raise HarnessError('Administrator device selection is ambiguous; pass --admin-device for an existing key')
-        device = usable[0]['device_id']
     # This request uses the pinned loopback address, no proxy or redirects.
     # API tokens only exist in memory for this command and are logged out.
     def request(method, path, body=None, token=None):
@@ -332,15 +404,8 @@ def _activate_via_resident_slh(args: argparse.Namespace, *, state_dir_override=N
 
     token = None
     try:
-        _progress('resident.auth', 'requesting_challenge')
-        challenge = request('POST', '/v1/auth/challenge', {'device_id': device})
-        signed = store.sign(device, challenge)
-        session = request('POST', '/v1/auth/verify', {
-            'device_id': device, 'challenge_id': challenge['challenge_id'],
-            'signature': signed['signature']})
-        token = session.get('access_token')
-        if not isinstance(token, str) or not token:
-            raise HarnessError('SLH admin session could not be established')
+        _progress('resident.auth', 'verifying_administrator')
+        device, token = _verified_resident_administrator(store, args.admin_device, request)
         _progress('resident.activation', 'requesting' if args.execute_mutations else 'preflight')
         result = request('POST', '/v1/local/seh/activate', {
             'execute': bool(args.execute_mutations),
@@ -444,7 +509,8 @@ def _activate_via_resident_slh(args: argparse.Namespace, *, state_dir_override=N
                 pass
 
 
-def _disconnect_via_resident_slh(args: argparse.Namespace, *, state_dir: Path) -> dict:
+def _disconnect_via_resident_slh(args: argparse.Namespace, *, state_dir: Path,
+                                 verify_only: bool = False) -> dict:
     """Signed local administrator Stop; never edit the connection bit directly.
 
     Only the resident SLH may authorize the persistent disconnect. The public
@@ -455,13 +521,6 @@ def _disconnect_via_resident_slh(args: argparse.Namespace, *, state_dir: Path) -
     from main_computer.slh.ports import DEFAULT_SLH_API_HOST
 
     identities = LocalIdentityStore(state_dir / 'identities')
-    device = args.admin_device
-    if not device:
-        entries = identities.list()
-        usable = entries['identities']
-        if len(usable) != 1 or entries['invalid_identities']:
-            raise HarnessError('Administrator device selection is ambiguous; pass --admin-device')
-        device = usable[0]['device_id']
 
     def request(method, path, body=None, token=None):
         conn = HTTPConnection(DEFAULT_SLH_API_HOST, args.local_port, timeout=40)
@@ -496,14 +555,15 @@ def _disconnect_via_resident_slh(args: argparse.Namespace, *, state_dir: Path) -
 
     token = None
     try:
-        challenge = request('POST', '/v1/auth/challenge', {'device_id': device})
-        signed = identities.sign(device, challenge)
-        session = request('POST', '/v1/auth/verify', {
-            'device_id': device, 'challenge_id': challenge['challenge_id'],
-            'signature': signed['signature']})
-        token = session.get('access_token')
-        if not isinstance(token, str) or not token:
-            raise HarnessError('Resident SLH administrator session unavailable')
+        _progress('resident.disconnect', 'verifying_administrator')
+        device, token = _verified_resident_administrator(identities, args.admin_device, request)
+        if verify_only:
+            logout = request('POST', '/v1/auth/logout', {}, token=token)
+            if type(logout) is not dict or logout.get('status') != 'LOGGED_OUT':
+                raise HarnessError('Resident administrator preflight logout unverified')
+            token = None
+            return {'status': 'VERIFIED_ADMIN_SESSION', 'device_id': device,
+                    'remote_mutation': False, 'session_closed': True}
         _progress('resident.disconnect', 'requesting')
         result = request('POST', '/v1/local/seh/disconnect', {}, token=token)
         if result.get('status') != 'DISCONNECTION_REQUESTED' or result.get('connection_enabled') is not False:
@@ -780,6 +840,14 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     _progress('harness.dispatch', 'routing', status=args.operation)
     if args.operation == 'activate-seh':
         return _activate_via_resident_slh(args)
+    if args.operation == 'verify-resident-admin':
+        if (args.execute_mutations or args.yes_i_know_this_mutates_seh
+                or args.seh or args.host or args.slh_id or args.public_url
+                or args.replace_existing_trust):
+            raise HarnessError('Resident administrator verification is read-only')
+        from main_computer.slh.storage import slh_state_dir
+        return _disconnect_via_resident_slh(
+            args, state_dir=Path(args.slh_state_dir or slh_state_dir()), verify_only=True)
     control = control or SEHControl(args.runtime_state_root)
     network = args.network
     if args.operation == 'list':

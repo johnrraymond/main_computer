@@ -36,6 +36,7 @@ ASSETS = (
     "main_computer/web/applications/scripts/mcel-semantic-slh-management-modal.js",
     "main_computer/web/applications/scripts/mcel-semantic-seh-remote-ports.js",
     "main_computer/web/applications/scripts/mcel-diagnostic-plugins.js",
+    "main_computer/web/applications/scripts/mcel-reactivity-shadow-plugin.js",
     "main_computer/web/applications/scripts/mcel-self-diagnosis.js",
     "main_computer/web/applications/scripts/mcel-diagnostic-evidence.js",
     "main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js",
@@ -349,6 +350,42 @@ let remoteNotebookAuthenticated=false;
 // SLH alone classifies recoverability; MCEL returns the operation result.
 const retryableIdentityRead=reason=>
   /(?:TRANSPORT_UNAVAILABLE|SERVICE_UNAVAILABLE|INSPECTION_REQUIRED|NETWORK_UNAVAILABLE|TEMPORARILY_UNAVAILABLE|READ_ALREADY_IN_FLIGHT)/.test(String(reason||"").toUpperCase());
+// A transient protected-read failure must not become sticky while the page is
+// visible. One application-owned, bounded-backoff timer is sufficient; MCEL's
+// generic renderer still never initiates authentication or protected reads.
+const identityNotebookRetryDelays=[1500,3000,6000,12000,30000];
+let identityNotebookRetryTimer=null,identityNotebookRetryAttempts=0;
+const cancelIdentityNotebookRetry=()=>{{
+  if(identityNotebookRetryTimer!==null)globalThis.clearTimeout(identityNotebookRetryTimer);
+  identityNotebookRetryTimer=null;
+}};
+const resetIdentityNotebookRetry=()=>{{
+  cancelIdentityNotebookRetry();
+  identityNotebookRetryAttempts=0;
+}};
+const scheduleIdentityNotebookRetry=()=>{{
+  if(leaving || identityNotebookAttemptState!=="retryable-failure" ||
+     identityNotebookRetryTimer!==null)return;
+  const delay=identityNotebookRetryDelays[Math.min(identityNotebookRetryAttempts,
+    identityNotebookRetryDelays.length-1)];
+  ++identityNotebookRetryAttempts;
+  const context=identityNotebookRequestedContext;
+  recordDiagnostic("identity-notebook-recovery","retry-scheduled",{{
+    attempt:identityNotebookRetryAttempts,delayMs:delay}});
+  identityNotebookRetryTimer=globalThis.setTimeout(()=>{{
+    identityNotebookRetryTimer=null;
+    if(leaving || identityNotebookRequestedContext!==context ||
+       identityNotebookAttemptState!=="retryable-failure")return;
+    // A hidden page must not repeatedly authenticate in the background.
+    // Focus or visibility restoration will resume the retry lane.
+    if(document.visibilityState==="hidden")return;
+    requestVisibleIdentityRecords(true);
+    // If readiness has not yet returned, no request was started; retain a
+    // single retry timer to detect the transition without user interaction.
+    if(identityNotebookAttemptState==="retryable-failure")
+      scheduleIdentityNotebookRetry();
+  }},delay);
+}};
 const requestVisibleIdentityRecords=(reactivation=false)=>{{
   if(leaving || !identityNotebookTargetRestored ||
      (selectedTarget==="local" && !identityNotebookVisible))return;
@@ -368,6 +405,8 @@ const requestVisibleIdentityRecords=(reactivation=false)=>{{
   const context=selectedTarget+":"+(selectedTarget==="local"?selected:"connected");
   if(identityNotebookRequestedContext===context &&
      !(reactivation && identityNotebookAttemptState==="retryable-failure"))return;
+  if(identityNotebookRequestedContext!==context)resetIdentityNotebookRetry();
+  else cancelIdentityNotebookRetry();
   identityNotebookRequestedContext=context;
   identityNotebookAttemptState="loading";
   const attempt=++identityNotebookAttemptSequence;
@@ -382,11 +421,17 @@ const requestVisibleIdentityRecords=(reactivation=false)=>{{
         retryableIdentityRead(failure.reason)?"retryable-failure":"refused";
       if(failure)recordDiagnostic("identity-notebook-load",identityNotebookAttemptState,{{
         disposition:String(failure.disposition||"unknown").slice(0,64)}});
+      if(identityNotebookAttemptState==="retryable-failure")scheduleIdentityNotebookRetry();
+      else resetIdentityNotebookRetry();
     }},error=>{{
-      if(identityNotebookRequestedContext===context && attempt===identityNotebookAttemptSequence)
-        identityNotebookAttemptState="refused";
-      recordDiagnostic("identity-notebook-load","unexpected-failure",{{
+      if(leaving || identityNotebookRequestedContext!==context ||
+         attempt!==identityNotebookAttemptSequence)return;
+      identityNotebookAttemptState=retryableIdentityRead(error?.message)?
+        "retryable-failure":"refused";
+      recordDiagnostic("identity-notebook-load",identityNotebookAttemptState,{{
         errorClass:String(error?.name||"Error").slice(0,80)}});
+      if(identityNotebookAttemptState==="retryable-failure")scheduleIdentityNotebookRetry();
+      else resetIdentityNotebookRetry();
     }});
 }};
 if(identityNotebookElement && typeof IntersectionObserver==="function"){{
@@ -509,6 +554,7 @@ const identitySelected=value=>{{
     app.setNotebookAuthorization(!!value,{{scope:"records",refresh:false}});
     identityNotebookRequestedContext="";
     identityNotebookAttemptState="idle";
+    resetIdentityNotebookRetry();
     ++identityNotebookAttemptSequence;
     requestVisibleIdentityRecords();
   }}
@@ -541,6 +587,7 @@ networkPort.onConnectionChanged(authenticated=>{{
     if(!authenticated){{
       identityNotebookRequestedContext="";
       identityNotebookAttemptState="idle";
+      resetIdentityNotebookRetry();
       ++identityNotebookAttemptSequence;
     }}
     requestVisibleIdentityRecords();
@@ -556,6 +603,7 @@ sehPort.onConnectionChanged(authenticated=>{{
     if(!authenticated){{
       identityNotebookRequestedContext="";
       identityNotebookAttemptState="idle";
+      resetIdentityNotebookRetry();
       ++identityNotebookAttemptSequence;
     }}
     requestVisibleIdentityRecords();
@@ -592,7 +640,8 @@ if(selectedTarget!=="remote-seh"){{
   }});
   if(selectedTarget==="local")void managementOverlay.start();
 }}
-window.__mcelSlh=Object.freeze({{app,composition:data.composition,managementOverlay,
+window.__mcelSlh=Object.freeze({{app,appId:data.ir.application.appId,
+  composition:data.composition,managementOverlay,
   diagnostics:observeSlhDiagnostics}});
 const refreshIdentities=async()=>{{
   // Identity discovery and Coolify management both use the resident LMS.
@@ -832,6 +881,12 @@ const observeOnReturn=()=>{{
 }};
 window.addEventListener("focus",observeOnReturn);
 window.addEventListener("online",observeOnReturn);
+window.addEventListener("visibilitychange",()=>{{
+  if(document.visibilityState==="visible" &&
+     identityNotebookAttemptState==="retryable-failure")
+    scheduleIdentityNotebookRetry();
+}});
+window.addEventListener("pagehide",cancelIdentityNotebookRetry,{{once:true}});
 const healthPoll=selectedTarget==="local"?window.setInterval(()=>{{
   if(!leaving && document.visibilityState!=="hidden"){{
     if(diagnosticState.lifecycleRefresh!=="pending")

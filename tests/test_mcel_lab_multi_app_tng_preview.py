@@ -9,16 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "main_computer/web/applications"
 
 
-def test_lab_defaults_to_tng_and_exposes_four_canonical_mounts():
+def test_lab_defaults_to_tng_and_exposes_five_canonical_mounts():
     bindings = (WEB / "scripts/dom-bindings/mcel-lab.js").read_text()
     lab = (WEB / "scripts/mcel-lab.js").read_text()
     markup = (WEB / "apps/mcel-lab.html").read_text()
     assert 'chrome: "chrome-tng-side-rails"' in bindings
     assert 'mcelLabState.chrome = "chrome-tng-side-rails"' in lab
     assert 'mcel-semantic-preview-app' in markup
-    for app in ('calculator', 'file-manager', 'task-manager', 'code-editor'):
+    for app in ('calculator', 'file-manager', 'task-manager', 'code-editor', 'slh'):
         assert f'<option value="{app}">' in markup
-        assert f'{app}:' in lab if app == 'calculator' else f'"{app}":' in lab
+        assert f'{app}:' in lab if app in ('calculator', 'slh') else f'"{app}":' in lab
     assert 'mcel-semantic-preview-app' in lab
     assert "selected.route" in lab
     assert 'mcel-shell-child=1' in lab
@@ -47,6 +47,7 @@ def test_lab_app_selector_reuses_one_live_presentation_pipeline():
             <option value="file-manager">File Manager</option>
             <option value="task-manager">Task Manager</option>
             <option value="code-editor">Code Editor</option>
+            <option value="slh">SLH</option>
           </select>
           <button id="mcel-semantic-theme-enable"></button>
           <button id="mcel-semantic-theme-disable"></button>
@@ -62,10 +63,11 @@ def test_lab_app_selector_reuses_one_live_presentation_pipeline():
           window.McelLabChromeLaw = {normalizeChrome:x=>x, chromeLabel:()=> 'TNG Side Rails'};
           window.McelLabStyleLaw = {normalizeTheme:x=>x, themePaletteFor:()=>({}),
             themeLabel:()=> 'Original MCEL'};
-          window.McelSemanticPresentationBridge = {observeRuntimePresentationTargets:()=>({
-            status:'source-bound', expectedControls:2, expectedRegions:2,
+          window.McelSemanticPresentationBridge = {observeRuntimePresentationTargets:({composition})=>{
+            window.__lastObservedComposition=composition;
+            return {status:'source-bound', expectedControls:2, expectedRegions:2,
             targets:[{kind:'control'},{kind:'control'},{kind:'region'},{kind:'region'}]
-          })};
+          };}};
           window.McelSemanticThemePreview = {apply:()=>({
             status:'applied-in-isolated-lab-frame', controls:2, regions:2,
             visualEvidence:{uncoloredRegions:0,uncoloredControls:0,observed:4}
@@ -82,12 +84,16 @@ def test_lab_app_selector_reuses_one_live_presentation_pipeline():
             set(value){this.__src=value}});
           Object.defineProperty(frame,'contentDocument',{configurable:true,
             get(){return this.__fixture||null}});
-          window.__setFixture = (rootId,irId,appId) => {
+          window.__setFixture = (rootId,irId,appId,isSlh=false) => {
             const doc=document.implementation.createHTMLDocument('host');
             doc.body.innerHTML = `<div id="${rootId}"></div>`;
             const ir=doc.createElement('script');ir.id=irId;
-            ir.type='application/json';ir.textContent=JSON.stringify({schema:'mcel.application-ir.v1',
-              application:{appId},surfaces:[{}]});doc.body.appendChild(ir);
+            ir.type='application/json';
+            const source={schema:'mcel.application-ir.v1',application:{appId},surfaces:[{}]};
+            ir.textContent=JSON.stringify(isSlh
+              ? {ir:source,composition:{schema:'mcel.generated-composition.v1',regions:[{id:'generated'}]}}
+              : source);
+            doc.body.appendChild(ir);
             frame.__fixture=doc;
           };
         }""")
@@ -101,26 +107,43 @@ def test_lab_app_selector_reuses_one_live_presentation_pipeline():
             ['calculator','mcel-expanded-root','mcel-expanded-ir','semantic-calculator-expanded','/applications/calculator'],
             ['file-manager','mcel-workbench','mcel-workbench-ir','semantic-file-manager','/applications/file-explorer'],
             ['task-manager','mcel-workbench','mcel-workbench-ir','semantic-task-manager','/applications/task-manager'],
-            ['code-editor','mcel-workbench','mcel-workbench-ir','semantic-code-editor','/applications/code-editor']
+            ['code-editor','mcel-workbench','mcel-workbench-ir','semantic-code-editor','/applications/code-editor'],
+            ['slh','mcel-workbench','mcel-generated-data','slh','/applications/slh']
           ];
           const observed=[];
           for (const [selection,rootId,irId,id,route] of cases) {
             menu.value=selection;changeMcelSemanticPreviewApp();
-            window.__setFixture(rootId,irId,id);
+            window.__setFixture(rootId,irId,id,selection==='slh');
             const apply=applyMcelSemanticThemePreview('test');
             observed.push({selection,route:frame.src, expected:route,
               status:apply.status,chrome:window.__lastChrome?.profile,
-              appId:window.__lastChrome?.ir?.application?.appId});
+              appId:window.__lastChrome?.ir?.application?.appId,
+              composition:window.__lastObservedComposition?.schema||null});
           }
+          // SLH target navigation remains within the Lab's direct child frame.
+          window.__setFixture('mcel-workbench','mcel-generated-data','slh',true);
+          const slhDoc=frame.contentDocument;
+          const tab=slhDoc.createElement('a');
+          tab.href='/applications/slh/network';
+          tab.textContent='Network SLH';
+          slhDoc.body.appendChild(tab);
+          bindMcelSlhPreviewNavigation(frame);
+          tab.click();
+          const targetRoute=frame.src;
           disableMcelSemanticThemePreview();
-          return {observed,finalSrc:frame.src,hidden:frame.hidden,
+          return {observed,targetRoute,finalSrc:frame.src,hidden:frame.hidden,
             enabled:window.mcelLabState.semanticThemePreviewEnabled};
         }""")
         for entry in result['observed']:
             assert entry['route'].startswith(entry['expected']+'?'),entry
             assert entry['status']=='applied-in-isolated-lab-frame',entry
             assert entry['chrome']=='chrome-tng-side-rails',entry
-            assert entry['appId'].startswith('semantic-'),entry
+            if entry['selection'] == 'slh':
+                assert entry['appId'] == 'slh', entry
+            else:
+                assert entry['appId'].startswith('semantic-'), entry
+            assert (entry['composition']=='mcel.generated-composition.v1') is (entry['selection']=='slh'),entry
+        assert result['targetRoute']=='/applications/slh/network?mcel-shell-child=1&mcel_lab_theme_preview=1'
         assert result['finalSrc']=='about:blank' and result['hidden'] and not result['enabled'],result
         browser.close()
 

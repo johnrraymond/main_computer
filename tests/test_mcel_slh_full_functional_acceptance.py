@@ -34,19 +34,28 @@ def test_inventory_does_not_claim_certification_without_executing_tests():
     assert result["safety"]["production_mutations"] == "NEVER_DISPATCHED"
 
 
-def test_missing_ui_coverage_or_disposable_effect_cannot_be_dressed_up_as_pass():
-    # Even a completely green suite of existing cases is insufficient when
-    # required UI or disposable-service evidence is absent.
-    everything_green = {case.id: {"status": "PASS"} for case in full.CASES}
+def test_missing_ui_coverage_or_disposable_effect_cannot_be_dressed_up_as_pass(monkeypatch):
+    # Remove the new cases; even if every older case is green, no gap is certified.
+    previous = tuple(item for item in full.CASES if item.id not in {
+        "remote-seh-disconnect-ui-execution", "remote-seh-session-real-isolated",
+        "seh-connection-startstoprestart-ui-execution", "seh-connection-startstoprestart-http-isolated",
+        "seh-controller-registerselect-ui-execution", "seh-deploy-canonical-disposable-execution"})
+    monkeypatch.setattr(full, "CASES", previous)
+    everything_green = {item.id: {"status": "PASS"} for item in previous}
     result = full.report_for(everything_green, mode="isolated")
-    missing = {row["intent"]: row for row in result["intents"]
-               if row["status"] == "NOT_TESTED"}
-    assert "intent:disconnect-remote-seh" in missing
-    assert "intent:seh-connection-start" in missing
-    assert "intent:seh-deployment-register" in missing
-    assert result["status"] == "INCOMPLETE"
-    # Adapter mocks cannot substitute for real disposable service effects.
+    missing = {row["intent"]: row for row in result["intents"] if row["status"] == "NOT_TESTED"}
+    assert {"intent:disconnect-remote-seh", "intent:seh-connection-start",
+            "intent:seh-deployment-register", "intent:seh-deployment-deploy"} <= set(missing)
     assert missing["intent:seh-deployment-deploy"]["lanes"]["isolated-effect"]["status"] == "NOT_TESTED"
+    assert result["status"] == "INCOMPLETE"
+
+
+def test_all_curated_lanes_can_certify_only_when_every_case_passes():
+    synthetic = {item.id: {"status": "PASS"} for item in full.CASES}
+    result = full.report_for(synthetic, mode="isolated")
+    assert result["counts"] == {"PASS": 32, "FAIL": 0, "NOT_TESTED": 0, "UNVERIFIED": 0}
+    assert result["status"] == "PASS_ISOLATED_FUNCTIONAL"
+    assert result["live"]["status"] == "NOT_RUN"  # No live production claim from mock evidence.
 
 
 def test_failed_behavioral_case_cannot_be_overridden_by_another_pass():

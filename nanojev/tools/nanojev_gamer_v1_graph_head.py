@@ -261,16 +261,33 @@ class GamerGraphHead(nn.Module):
         latent = latent.squeeze(0) + global_state.unsqueeze(0)
         return representations, latent
 
-    def forward(self, hidden, *, eligible=None, training_spans=None, memory=None, active_stage='G7'):
+    def forward(self, hidden, *, eligible=None, training_spans=None, inference_spans=None, memory=None, active_stage='G7'):
         tokens, global_state = self.encode(hidden, memory=memory,active_stage=active_stage)
         span_logits, span_valid = self.scored_spans(tokens, eligible)
         if active_stage not in STAGES:
             raise ValueError('GAMER_GRAPH_UNKNOWN_STAGE')
+        if inference_spans is not None:
+            if training_spans is not None or active_stage == 'G1':
+                raise ValueError('GAMER_GRAPH_INFERENCE_SPANS_CONFLICT')
+            if not isinstance(inference_spans, (tuple, list)) or len(inference_spans)>128:
+                raise ValueError('GAMER_GRAPH_INFERENCE_SPANS_INVALID')
+            last=-1
+            for span in inference_spans:
+                if (not isinstance(span,dict) or set(span)!={'kind','token_first','token_last'} or
+                    span['kind'] not in SPAN_KINDS or
+                    type(span['token_first']) is not int or type(span['token_last']) is not int or
+                    not 0 <= span['token_first'] <= span['token_last'] < len(tokens) or
+                    span['token_first'] <= last or
+                    not bool(span_valid[span['token_first'], span['token_last']-span['token_first']])):
+                    raise ValueError('GAMER_GRAPH_INFERENCE_SPANS_INVALID')
+                last=span['token_last']
         if active_stage == 'G1':
             # No random early span proposals, O(N^2) pair matrix, or other
             # untrained downstream computations during the object stage.
             return {'span_logits':span_logits, 'span_valid':span_valid, 'global_state':global_state}
-        if training_spans is None:
+        if inference_spans is not None:
+            spans = list(inference_spans)
+        elif training_spans is None:
             spans = decode_neural_spans(span_logits, span_valid)
         else:
             spans = training_spans

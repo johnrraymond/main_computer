@@ -1,0 +1,38 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 31,
+  "deadline_seconds": 86400,
+  "rules": [
+    {
+      "name": "give_unknown",
+      "actor": "payer",
+      "from": "funded",
+      "to": "completed",
+      "when": "always",
+      "credits": [
+        {
+          "to": "auditor",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund",
+      "actor": "worker",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

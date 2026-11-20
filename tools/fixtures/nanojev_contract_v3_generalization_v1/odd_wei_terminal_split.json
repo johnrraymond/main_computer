@@ -1,0 +1,55 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 101,
+  "deadline_seconds": 86400,
+  "rules": [
+    {
+      "name": "release_split",
+      "actor": "payer",
+      "from": "funded",
+      "to": "completed",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": 33
+        },
+        {
+          "to": "reviewer",
+          "amount_wei": 68
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_payer",
+      "actor": "payer",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_worker",
+      "actor": "worker",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

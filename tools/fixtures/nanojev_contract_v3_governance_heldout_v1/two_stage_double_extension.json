@@ -1,0 +1,38 @@
+{
+  "language": "nanojev.contract.governed_escrow.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "arbitrator": "jointly_appointed_after_dispute",
+  "amount_wei": 11,
+  "milestones": [
+    {
+      "id": "checkpoint_1",
+      "amount_wei": 3,
+      "deadline_seconds": 7200,
+      "extension_seconds": 6000,
+      "extension_decision_seconds": 600,
+      "max_extensions": 2
+    },
+    {
+      "id": "checkpoint_2",
+      "amount_wei": 8,
+      "deadline_seconds": 9600,
+      "extension_seconds": 7300,
+      "extension_decision_seconds": 500,
+      "max_extensions": 0
+    }
+  ],
+  "policy": {
+    "review_seconds": 4900,
+    "dispute_filing_seconds": 6100,
+    "appointment_seconds": 4100,
+    "ruling_seconds": 8200,
+    "on_review_silence": "pay_worker",
+    "on_appointment_failure": "pay_worker",
+    "on_arbitrator_silence": "refund_payer",
+    "on_missed_submission": "refund_payer",
+    "on_undisputed_rejection": "refund_payer"
+  }
+}

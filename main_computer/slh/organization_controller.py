@@ -344,9 +344,25 @@ class OrganizationController:
 
     def seh_status(self) -> dict:
         """Observes resident SLH -> SEH connectivity; never contacts Coolify."""
+        # Only take the controller lock for consistent in-memory snapshots.
+        # The pinned TLS child status read can block for two seconds (or more
+        # when the peer accepts a socket but stalls); it must NEVER hold the
+        # same lock required by routine LMS /v1/local/status observations.
         with self._lock:
             cfg = self.config()
-            child = self._seh_child_status()
+            process = getattr(self, '_process', None)
+            paused = getattr(self, '_paused', False)
+        child = self._seh_child_status()
+        with self._lock:
+            current = self.config()
+            current_process = getattr(self, '_process', None)
+            if (current != cfg or current_process is not process or
+                    getattr(self, '_paused', False) != paused or
+                    (process is not None and process.poll() is not None)):
+                # An ORG stop/restart/reconfiguration during I/O invalidates
+                # the old child's evidence. Never claim an obsolete tunnel.
+                child = None
+            cfg = current
             verified = bool(cfg['enabled'] and cfg['seh_enabled'] and child and
                             child.get('seh_enabled') is True and
                             child.get('seh_connection_verified') is True and

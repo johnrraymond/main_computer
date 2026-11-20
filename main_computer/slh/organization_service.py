@@ -75,7 +75,7 @@ def make_seh_identity_listener(*, authority, api, tls_context, fingerprint):
     """
     listener = OrganizationHTTPServer(('127.0.0.1', 0), OrganizationHTTPHandler)
     try:
-        listener.socket = tls_context.wrap_socket(listener.socket, server_side=True)
+        listener.configure_tls(tls_context)
         listener.authority = authority
         listener.api = api
         listener.fingerprint = fingerprint
@@ -87,8 +87,66 @@ def make_seh_identity_listener(*, authority, api, tls_context, fingerprint):
 
 
 class OrganizationHTTPServer(ThreadingHTTPServer):
+    """Threaded HTTPS without a blocking TLS handshake in the accept loop.
+
+    The listening socket stays TCP.  Each accepted connection is admitted to
+    a bounded handler thread, where its TLS handshake has an explicit timeout.
+    A client that sends no ClientHello cannot block the next TCP accept.
+    """
+
     daemon_threads = True
     allow_reuse_address = True
+    tls_handshake_timeout = 3.0
+    http_io_timeout = 20.0
+    max_concurrent_connections = 128
+
+    def configure_tls(self, context: ssl.SSLContext) -> None:
+        """Install the existing TLS identity before serve_forever() starts."""
+        if getattr(self, '_tls_context', None) is not None:
+            raise RuntimeError('ORG-SLH TLS was already configured')
+        if not isinstance(context, ssl.SSLContext):
+            raise TypeError('ORG-SLH requires an SSLContext')
+        self._tls_context = context
+        self._connection_slots = threading.BoundedSemaphore(self.max_concurrent_connections)
+
+    def process_request(self, request, client_address):
+        # Never wait for a slot in the accept loop.  At capacity, close only
+        # the newly accepted connection, not the listener or other clients.
+        slots = getattr(self, '_connection_slots', None)
+        if slots is not None and not slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            if slots is not None:
+                slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        slots = getattr(self, '_connection_slots', None)
+        context = getattr(self, '_tls_context', None)
+        if context is None:
+            # Preserve the behavior of legacy in-process HTTP test fixtures.
+            return super().process_request_thread(request, client_address)
+        try:
+            tls_request = None
+            try:
+                request.settimeout(self.tls_handshake_timeout)
+                tls_request = context.wrap_socket(
+                    request, server_side=True, do_handshake_on_connect=False)
+                tls_request.do_handshake()
+                # Also bound idle/partial HTTP requests after TLS admission.
+                tls_request.settimeout(self.http_io_timeout)
+            except (OSError, TimeoutError):
+                # An incomplete/invalid handshake never reaches HTTP dispatch.
+                # Avoid logging client-supplied payloads or sensitive state.
+                self.shutdown_request(tls_request if tls_request is not None else request)
+                return
+            super().process_request_thread(tls_request, client_address)
+        finally:
+            slots.release()
 
 
 class OrganizationHTTPHandler(BaseHTTPRequestHandler):
@@ -127,6 +185,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
             return
         try:
             body = json.loads(self.rfile.read(size)) if size else {}
+        except TimeoutError:
+            # A stalled/partial HTTP body must not monopolize a worker or
+            # produce a noisy traceback; the socket is closed on return.
+            self.close_connection = True
+            return
         except (ValueError, UnicodeDecodeError):
             self._respond(400, {'error': {'code': 'INVALID_JSON'}})
             return
@@ -555,7 +618,7 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
         except OSError:
             pass  # Never mask the primary bind failure.
         raise
-    server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+    server.configure_tls(tls_context)
     server.seh_identity_only = False
     server.authority = authority
     server.state_dir = Path(state_dir)

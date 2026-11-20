@@ -1,0 +1,133 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 9001,
+  "deadline_seconds": 604800,
+  "rules": [
+    {
+      "name": "reserve_fee",
+      "actor": "payer",
+      "from": "funded",
+      "to": "stage1",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": 1
+        }
+      ]
+    },
+    {
+      "name": "verify",
+      "actor": "reviewer",
+      "from": "stage1",
+      "to": "stage2",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": 3000
+        },
+        {
+          "to": "reviewer",
+          "amount_wei": 2000
+        }
+      ]
+    },
+    {
+      "name": "finish",
+      "actor": "worker",
+      "from": "stage2",
+      "to": "completed",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_payer",
+      "actor": "payer",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_worker",
+      "actor": "worker",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_stage1_payer",
+      "actor": "payer",
+      "from": "stage1",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_stage1_worker",
+      "actor": "worker",
+      "from": "stage1",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_stage2_payer",
+      "actor": "payer",
+      "from": "stage2",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_stage2_worker",
+      "actor": "worker",
+      "from": "stage2",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

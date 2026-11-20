@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from main_computer.mcel_scaffolding import (
+    DEFAULT_TEMPLATE_VERSION,
+    LEGACY_TEMPLATE_VERSION,
     InvalidScaffoldInput,
     ScaffoldWriteError,
     UnsafeScaffoldDestination,
@@ -108,15 +111,20 @@ def test_mcel_create_app_generates_structurally_valid_package(tmp_path: Path) ->
         expected_app_id=SAMPLE_APP_ID,
         expected_title=SAMPLE_TITLE,
         expected_template_id="mcel.canonical-application-template",
-        expected_template_version="1.0.0",
+        expected_template_version=DEFAULT_TEMPLATE_VERSION,
     ).ok
 
     manifest = json.loads((package_root / "mcel.app.json").read_text(encoding="utf-8"))
-    assert manifest["conformance"]["currentMode"] == "semantic-runtime-proven"
+    assert manifest["conformance"]["currentMode"] == "paired-source-compiled"
     assert manifest["conformance"]["targetMode"] == "semantic-runtime-proven"
     assert set(manifest["conformance"]["missingBridges"]) == set(result.target_gaps)
-    assert manifest["tests"]["acceptanceBindings"] == "tests/mcel_acceptance_bindings.json"
-    assert "package-local-acceptance-discovery" not in manifest["conformance"]["missingBridges"]
+    assert manifest["authoring"] == {
+        "format": "mcel.paired-html-js.v1",
+        "html": "application.html",
+        "script": "application.js",
+    }
+    assert not (package_root / "contracts").exists()
+    assert not (package_root / "src").exists()
 
 
 def test_mcel_create_app_is_byte_deterministic_and_path_independent(tmp_path: Path) -> None:
@@ -172,7 +180,8 @@ def test_mcel_create_app_cleans_partial_output_after_write_failure(tmp_path: Pat
 
 
 def test_mcel_create_app_generated_requirements_pass_current_strict_parser(tmp_path: Path) -> None:
-    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path)
+    generate_application(SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path,
+                         template_version=LEGACY_TEMPLATE_VERSION)
     registry = _strict_requirements_registry(tmp_path / SAMPLE_APP_ID)
 
     assert registry.valid is True
@@ -226,7 +235,9 @@ def test_mcel_create_app_cli_json_result_is_machine_readable_and_write_free(tmp_
     assert payload["schema"] == "mcel.create-app-result.v1"
     assert payload["result_code"] == "dry_run_valid"
     assert payload["validation"]["ok"] is True
-    assert "Target integrations: complete" in completed.stderr
+    assert payload["template"]["version"] == DEFAULT_TEMPLATE_VERSION
+    assert set(payload["target_gaps"]) == {"host-route-adoption", "browser-runtime-acceptance"}
+    assert "Target integrations still missing" in completed.stderr
     assert not output_root.exists()
 
 
@@ -255,7 +266,8 @@ def test_mcel_create_app_cli_uses_stable_invalid_input_exit_class(tmp_path: Path
 
 
 def test_template_rendering_substitutes_identity_without_unresolved_placeholders() -> None:
-    _template, title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE)
+    _template, title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE,
+                                                   template_version=LEGACY_TEMPLATE_VERSION)
     joined = "\n".join(files.values())
 
     assert title == SAMPLE_TITLE
@@ -266,7 +278,8 @@ def test_template_rendering_substitutes_identity_without_unresolved_placeholders
 
 
 def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
-    _template, _title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE)
+    _template, _title, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE,
+                                                    template_version=LEGACY_TEMPLATE_VERSION)
     manifest = json.loads(files["mcel.app.json"])
 
     manifest["conformance"]["currentMode"] = "semantic-runtime-proven"
@@ -296,3 +309,121 @@ def test_package_validator_requires_current_mode_and_gap_consistency() -> None:
     )
     assert not result.ok
     assert "missing-target-gaps" in {issue.code for issue in result.errors}
+
+
+def test_mcel_create_app_legacy_template_explicitly_preserved(tmp_path: Path) -> None:
+    legacy = generate_application(
+        SAMPLE_APP_ID, title=SAMPLE_TITLE, output_root=tmp_path,
+        template_version=LEGACY_TEMPLATE_VERSION,
+    )
+    root = tmp_path / SAMPLE_APP_ID
+    assert legacy.template_version == LEGACY_TEMPLATE_VERSION
+    assert legacy.target_gaps == ()
+    assert validate_package_path(
+        root, expected_app_id=SAMPLE_APP_ID, expected_title=SAMPLE_TITLE,
+        expected_template_id="mcel.canonical-application-template",
+        expected_template_version=LEGACY_TEMPLATE_VERSION,
+    ).ok
+    assert (root / "contracts" / "layout.js").is_file()
+    assert (root / "src" / "index.html").is_file()
+    assert not (root / "application.html").exists()
+
+
+def test_mcel_paired_template_compiles_and_has_one_authored_ui(tmp_path: Path) -> None:
+    from main_computer.mcel_dsl_compiler import compile_dsl_application
+
+    root = tmp_path / "hello-world"
+    result = generate_application(
+        "hello-world", title="Hello World", output_root=tmp_path,
+    )
+    assert result.template_version == DEFAULT_TEMPLATE_VERSION
+    assert set(result.created_files) == {
+        "application.html", "application.js", "requirements.md", "mcel.app.json",
+        "tests/test_source_contract.py",
+    }
+    report = compile_dsl_application(root / "application.js")
+    assert report.valid, report.diagnostics
+    sources = report.normalized_ir["provenance"]["frontend"]["sourceFiles"]
+    assert {Path(item["path"]).name for item in sources} == {"application.html", "application.js"}
+    assert report.normalized_ir["surfaces"][0]["interfaceIntent"]["hierarchy"]["rootId"]
+
+
+@pytest.mark.parametrize("mutation, expected_code", [
+    ("missing-html", "missing-paired-file"),
+    ("missing-js", "missing-paired-file"),
+    ("duplicate-region", "MCEL_HTML_REGION_ID_INVALID"),
+    ("unbound-state", "MCEL_HTML_BINDING_INVALID"),
+    ("source-identity-mismatch", "paired-app-id-mismatch"),
+    ("source-title-mismatch", "paired-app-title-mismatch"),
+    ("host-layout", "second-presentation-authority"),
+    ("second-ui-file", "second-presentation-authority"),
+    ("forged-conformance", "invalid-paired-conformance"),
+    ("legacy-template-spoof", "invalid-paired-template"),
+])
+def test_mcel_paired_template_fails_closed(mutation: str, expected_code: str) -> None:
+    _, _, files = render_package_files(SAMPLE_APP_ID, SAMPLE_TITLE)
+    files = dict(files)
+    if mutation == "missing-html":
+        files.pop("application.html")
+    elif mutation == "missing-js":
+        files.pop("application.js")
+    elif mutation == "duplicate-region":
+        files["application.html"] = files["application.html"].replace(
+            'data-mcel-id="status"', 'data-mcel-id="workspace"'
+        )
+    elif mutation == "unbound-state":
+        files["application.html"] = files["application.html"].replace(
+            "state:message", "state:missing"
+        )
+    elif mutation == "source-identity-mismatch":
+        files["application.js"] = files["application.js"].replace(
+            'id: "sample-app"', 'id: "different-app"'
+        )
+    elif mutation == "source-title-mismatch":
+        files["application.js"] = files["application.js"].replace(
+            'title: "Sample Application"', 'title: "Different Title"'
+        )
+    elif mutation == "second-ui-file":
+        files["src/index.html"] = "<!doctype html><html><body>Uncontrolled UI</body></html>\n"
+    else:
+        manifest = json.loads(files["mcel.app.json"])
+        if mutation == "host-layout":
+            manifest["runtime"] = {"document": "src/index.html"}
+        elif mutation == "forged-conformance":
+            manifest["conformance"]["currentMode"] = "semantic-runtime-proven"
+        elif mutation == "legacy-template-spoof":
+            manifest["template"]["version"] = LEGACY_TEMPLATE_VERSION
+        files["mcel.app.json"] = json.dumps(manifest, indent=2) + "\n"
+    result = validate_package_files(files)
+    assert not result.ok
+    assert expected_code in {issue.code for issue in result.errors}, result.errors
+
+
+def test_mcel_paired_template_escapes_title_and_keeps_valid_bindings() -> None:
+    title = 'Example "quoted" & <tag>'
+    _, _, files = render_package_files(SAMPLE_APP_ID, title)
+    assert '&amp;' in files["application.html"]
+    assert '&lt;tag&gt;' in files["application.html"]
+    assert json.dumps(title, ensure_ascii=False) in files["application.js"]
+    assert validate_package_files(files).ok
+
+
+def test_mcel_legacy_template_bytes_are_frozen() -> None:
+    _, _, files = render_package_files(
+        SAMPLE_APP_ID, SAMPLE_TITLE, template_version=LEGACY_TEMPLATE_VERSION,
+    )
+    fingerprint = hashlib.sha256(b"".join(
+        path.encode("utf-8") + b"\0" + text.encode("utf-8") + b"\0"
+        for path, text in sorted(files.items())
+    )).hexdigest()
+    assert fingerprint == "595231806abf609771f67e689cafee73c222de0c9d4092def81e120ab1e77b9e"
+
+
+def test_mcel_cli_invalid_template_keeps_machine_readable_failure(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(TOOL), SAMPLE_APP_ID, "--output-root", str(tmp_path),
+         "--template-version", "999.0.0", "--json"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["result_code"] == "invalid_input"

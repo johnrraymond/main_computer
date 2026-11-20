@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -231,6 +233,124 @@ def _validate_acceptance_bindings(
             if source.as_posix() not in normalized:
                 errors.append(PackageValidationIssue("missing-package-acceptance-selector", f"Package acceptance selector {selector!r} does not resolve.", source.as_posix()))
 
+PAIRED_AUTHORING_FORMAT = "mcel.paired-html-js.v1"
+PAIRED_TEMPLATE_VERSION = "2.0.0"
+PAIRED_TEMPLATE_ID = "mcel.canonical-application-template"
+PAIRED_REQUIRED_FILES = (
+    "mcel.app.json", "application.html", "application.js", "requirements.md", "tests/test_source_contract.py"
+)
+PAIRED_UNPROVEN_BRIDGES = ("host-route-adoption", "browser-runtime-acceptance")
+
+
+@lru_cache(maxsize=128)
+def _paired_compiler_errors(
+    html_source: str, js_source: str, app_id: str | None, title: str | None,
+) -> tuple[tuple[str, str], ...]:
+    """Use the existing paired DSL compiler as the authority, without modifying any host route."""
+    from main_computer.mcel_dsl_compiler import compile_dsl_application
+
+    with tempfile.TemporaryDirectory(prefix="mcel-paired-source-") as directory:
+        root = Path(directory)
+        (root / "application.html").write_text(html_source, encoding="utf-8")
+        (root / "application.js").write_text(js_source, encoding="utf-8")
+        try:
+            report = compile_dsl_application(root / "application.js", write_candidate=False)
+        except Exception as exc:
+            return (("paired-source-compiler-error", f"Paired compiler raised {type(exc).__name__}: {exc}"),)
+        if not report.valid:
+            return tuple(
+                (str(item.get("code", "paired-source-invalid")), str(item.get("message", "Paired compilation failed")))
+                for item in report.diagnostics
+            ) or (("paired-source-invalid", "Paired compilation failed without diagnostics"),)
+        application = report.normalized_ir.get("application", {})
+        if not isinstance(application, dict) or (app_id is not None and application.get("appId") != app_id):
+            return (("paired-app-id-mismatch", "Compiled DSL appId must equal the package manifest appId"),)
+        if title is not None and application.get("title") != title:
+            return (("paired-app-title-mismatch", "Compiled DSL title must equal the package manifest title"),)
+        frontend = report.normalized_ir.get("provenance", {}).get("frontend", {})
+        source_files = frontend.get("sourceFiles", ())
+        names = {Path(item.get("path", "")).name for item in source_files if isinstance(item, dict)}
+        if names != {"application.html", "application.js"}:
+            return (("paired-source-provenance-missing", "Compiled IR must cite both author-owned source files"),)
+        return ()
+
+
+def _validate_paired_package_files(
+    normalized: Mapping[str, str],
+    *,
+    expected_app_id: str | None,
+    expected_title: str | None,
+    expected_template_id: str | None,
+    expected_template_version: str | None,
+) -> PackageValidationResult:
+    """Strict, opt-in V2 package gate. Historical JS-only packages use the unchanged V1 validator."""
+    errors: list[PackageValidationIssue] = []
+    for path in PAIRED_REQUIRED_FILES:
+        if path not in normalized:
+            errors.append(PackageValidationIssue("missing-paired-file", "Paired template requires this file.", path))
+
+    for path, source in normalized.items():
+        if path.startswith(("contracts/", "src/")) or path in {"layout.js", "surface.js", "blueprint.json"}:
+            errors.append(PackageValidationIssue(
+                "second-presentation-authority", "A paired package must not include a second authored runtime or layout tree.", path
+            ))
+        if _safe_manifest_path(path) != path:
+            errors.append(PackageValidationIssue("unsafe-package-path", "Invalid normalized package path.", path))
+        if not isinstance(source, str):
+            errors.append(PackageValidationIssue("non-text-template-output", "Package source must be UTF-8 text.", path))
+        elif "\r" in source:
+            errors.append(PackageValidationIssue("non-canonical-line-ending", "Package source must use LF line endings.", path))
+
+    manifest = _load_json(normalized, "mcel.app.json", errors)
+    if not isinstance(manifest, dict):
+        errors.append(PackageValidationIssue("missing-paired-manifest", "The paired package requires a manifest object.", "mcel.app.json"))
+    else:
+        if manifest.get("schema") != PACKAGE_SCHEMA:
+            errors.append(PackageValidationIssue("unsupported-package-schema", "Unsupported package schema.", "mcel.app.json"))
+        if not isinstance(manifest.get("appId"), str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", manifest["appId"]):
+            errors.append(PackageValidationIssue("invalid-paired-app-id", "A paired package requires a canonical appId.", "mcel.app.json"))
+        if not isinstance(manifest.get("title"), str) or not manifest["title"].strip():
+            errors.append(PackageValidationIssue("invalid-paired-title", "A paired package requires a title.", "mcel.app.json"))
+        if expected_app_id is not None and manifest.get("appId") != expected_app_id:
+            errors.append(PackageValidationIssue("app-id-mismatch", "Manifest appId does not match generation input.", "mcel.app.json"))
+        if expected_title is not None and manifest.get("title") != expected_title:
+            errors.append(PackageValidationIssue("title-mismatch", "Manifest title does not match generation input.", "mcel.app.json"))
+        template = manifest.get("template")
+        if not isinstance(template, dict) or template.get("id") != PAIRED_TEMPLATE_ID or template.get("version") != PAIRED_TEMPLATE_VERSION:
+            errors.append(PackageValidationIssue("invalid-paired-template", "Paired package requires the canonical 2.0.0 template identity.", "mcel.app.json"))
+        if expected_template_id is not None and (not isinstance(template, dict) or template.get("id") != expected_template_id):
+            errors.append(PackageValidationIssue("template-id-mismatch", "Template identity does not match generation input.", "mcel.app.json"))
+        if expected_template_version is not None and (not isinstance(template, dict) or template.get("version") != expected_template_version):
+            errors.append(PackageValidationIssue("template-version-mismatch", "Template version does not match generation input.", "mcel.app.json"))
+        if manifest.get("authoring") != {
+            "format": PAIRED_AUTHORING_FORMAT, "html": "application.html", "script": "application.js"
+        }:
+            errors.append(PackageValidationIssue("invalid-paired-authoring", "Both source paths must be the canonical HTML+JS pair.", "mcel.app.json"))
+        if manifest.get("requirements") != "requirements.md" or manifest.get("tests") != {"root": "tests"}:
+            errors.append(PackageValidationIssue("invalid-paired-references", "Requirements and test root must use the canonical paths.", "mcel.app.json"))
+        if any(key in manifest for key in ("contracts", "runtime", "blueprint", "projection")):
+            errors.append(PackageValidationIssue("second-presentation-authority", "Paired packages cannot declare a second source/layout/runtime authority.", "mcel.app.json"))
+        conformance = manifest.get("conformance")
+        if conformance != {
+            "currentMode": "paired-source-compiled",
+            "targetMode": "semantic-runtime-proven",
+            "missingBridges": list(PAIRED_UNPROVEN_BRIDGES),
+        }:
+            errors.append(PackageValidationIssue("invalid-paired-conformance", "Scaffold compilation does not prove host routing or browser acceptance.", "mcel.app.json"))
+
+    html_source = normalized.get("application.html")
+    js_source = normalized.get("application.js")
+    if isinstance(html_source, str) and isinstance(js_source, str) and not any(
+        error.code in {"non-text-template-output", "non-canonical-line-ending"} for error in errors
+    ):
+        manifest_id = manifest.get("appId") if isinstance(manifest, dict) and isinstance(manifest.get("appId"), str) else None
+        manifest_title = manifest.get("title") if isinstance(manifest, dict) and isinstance(manifest.get("title"), str) else None
+        for code, message in _paired_compiler_errors(html_source, js_source, manifest_id, manifest_title):
+            errors.append(PackageValidationIssue(code, message, "application.html / application.js"))
+
+    return PackageValidationResult(not errors, tuple(errors), (), len(normalized))
+
+
 def validate_package_files(
     files: Mapping[str, str],
     *,
@@ -250,6 +370,24 @@ def validate_package_files(
             manifest_probe = raw_manifest_probe
     except json.JSONDecodeError:
         pass
+    template_probe = manifest_probe.get("template")
+    authoring_marker = manifest_probe.get("authoring")
+    if (
+        isinstance(template_probe, Mapping)
+        and template_probe.get("id") == PAIRED_TEMPLATE_ID
+        and template_probe.get("version") == PAIRED_TEMPLATE_VERSION
+    ) or (
+        isinstance(authoring_marker, Mapping)
+        and authoring_marker.get("format") == PAIRED_AUTHORING_FORMAT
+    ) or expected_template_version == PAIRED_TEMPLATE_VERSION:
+        return _validate_paired_package_files(
+            normalized,
+            expected_app_id=expected_app_id,
+            expected_title=expected_title,
+            expected_template_id=expected_template_id,
+            expected_template_version=expected_template_version,
+        )
+
     authoring_probe = (
         manifest_probe.get("authoring")
         if isinstance(manifest_probe.get("authoring"), Mapping)

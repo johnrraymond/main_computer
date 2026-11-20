@@ -43,39 +43,97 @@ body.mcel-applications-candidate{--ink:#f7f3e8;--muted:#c9c0aa;--gold:#f6c75b}
  * These are real href anchors so native Open Link in New Tab/Window works. */
 body.mcel-applications-candidate .desktop-icon{font:400 13.3333px Arial;cursor:pointer}
 
-/* Source-parity launcher cards: original /applications appearance and spacing. */
-.mcel-shell-launcher-panel h2{font-size:18px;margin:14px 14px 12px;line-height:1.45}
-.mcel-shell-launcher-items{gap:12px;padding:0 14px 14px}
-.mcel-shell-app-card{min-height:86px;gap:6px;padding:10px 14px;overflow:hidden}
-.mcel-shell-app-card strong{font-size:18px;line-height:1.45;color:var(--mcel-ink)}
-.mcel-shell-app-card span{font-size:14px;font-weight:600;line-height:1.35;color:var(--mcel-muted)}
-
-/* Original /applications launcher card and scroll geometry.  With no shell
- * masthead, the Apps rail and mounted child extend to the top of the viewport.
- * Do not replace these inherited design details with generic preview cards. */
+/* Compact application launcher. Icons and accents reuse the desktop source. */
 .mcel-shell-launcher-panel{
-  display:grid;grid-auto-rows:max-content;gap:12px;align-content:start;
-  padding:14px;overflow-x:hidden;overflow-y:auto;
-  font:16px Arial,Helvetica,sans-serif;
+  display:grid;
+  grid-auto-rows:max-content;
+  align-content:start;
+  gap:4px;
+  padding:12px;
+  overflow-x:hidden;
+  overflow-y:auto;
+  font:14px Arial,Helvetica,sans-serif;
 }
 .mcel-shell-launcher-panel::before{
-  position:absolute;float:none;top:0;right:0;bottom:0;height:auto;
+  position:absolute;
+  float:none;
+  top:0;
+  right:0;
+  bottom:0;
+  height:auto;
   width:var(--mcel-rail);
 }
-.mcel-shell-launcher-panel h2{margin:0;font-size:18px;line-height:normal;min-width:0}
+.mcel-shell-launcher-panel h2{
+  margin:0 0 6px;
+  font-size:16px;
+  line-height:22px;
+}
 .mcel-shell-launcher-items{display:contents}
 .mcel-shell-app-card{
-  width:100%;font:16px Arial,Helvetica,sans-serif;line-height:normal;
-  min-height:86px;gap:6px;padding:10px 14px;
-  background:#0a0a08;box-shadow:inset 6px 0 0 #a7d86d;
+  --mcel-app-accent:var(--mcel-gold);
+  display:flex;
+  align-items:center;
+  width:100%;
+  min-width:0;
+  min-height:38px;
+  gap:9px;
+  padding:4px 9px;
+  border:1px solid transparent;
+  border-left:3px solid transparent;
+  border-radius:6px;
+  background:transparent;
+  color:var(--mcel-ink);
+  text-align:left;
+  white-space:nowrap;
+  overflow:hidden;
 }
-.mcel-shell-app-card strong{min-width:0;font-size:18px;line-height:normal;overflow-wrap:anywhere}
-.mcel-shell-app-card span{min-width:0;font-size:16px;line-height:1.35;overflow-wrap:anywhere}
+.mcel-shell-app-card strong{
+  display:block;
+  flex:1 1 auto;
+  min-width:0;
+  font-size:14px;
+  line-height:20px;
+  font-weight:600;
+  color:var(--mcel-ink);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.mcel-shell-app-card .mcel-shell-app-icon{
+  display:grid;
+  flex:0 0 26px;
+  width:26px;
+  height:26px;
+  place-items:center;
+  border-radius:5px;
+  color:var(--mcel-app-accent);
+  background:color-mix(in srgb,var(--mcel-app-accent) 14%,transparent);
+}
+.mcel-shell-app-icon-svg{
+  display:block;
+  width:20px;
+  height:20px;
+  stroke:currentColor;
+  fill:none;
+  stroke-width:2.2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.mcel-shell-app-card:hover{
+  background:color-mix(in srgb,var(--mcel-app-accent) 9%,transparent);
+  border-left-color:var(--mcel-app-accent);
+}
+.mcel-shell-app-card:focus-visible{
+  outline:2px solid var(--mcel-app-accent);
+  outline-offset:-2px;
+  background:color-mix(in srgb,var(--mcel-app-accent) 9%,transparent);
+}
 .mcel-shell-app-card[aria-current="page"]{
-  background:#0a0a08;border-color:#73d6ff;box-shadow:inset 6px 0 0 #a7d86d;
+  border-color:color-mix(in srgb,var(--mcel-app-accent) 35%,transparent);
+  border-left-color:var(--mcel-app-accent);
+  background:color-mix(in srgb,var(--mcel-app-accent) 13%,#0a0a08);
 }
-/* A dismissed overlay must stay closed even while its old focused link or
- * pointer remains over it; rearm hover after pointerleave. */
+/* Dismissal latch preserves the existing hover-rearm contract. */
 .mcel-shell-launcher-panel[data-dismissed="true"]{
   transform:translateX(calc(-100% + var(--mcel-rail)))!important;
 }

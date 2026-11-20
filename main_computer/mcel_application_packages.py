@@ -398,7 +398,7 @@ def _build_record(
                 manifest_path,
             )
         )
-    if declared_app_id is not None and blueprint.get("appId") != declared_app_id:
+    if declared_app_id is not None and "blueprint.json" in text_files and blueprint.get("appId") != declared_app_id:
         errors.append(
             ApplicationPackageIssue(
                 "manifest-blueprint-app-id-mismatch",

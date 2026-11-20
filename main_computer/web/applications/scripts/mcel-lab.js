@@ -63,8 +63,8 @@
     }
 
     // The Calculator experiment never writes to the production Calculator DOM.
-    // Presentation experiments live only inside an isolated iframe. The four
-    // canonical routes already provide their own mounted operational runtime IR;
+    // Presentation experiments live only inside an isolated iframe. The
+    // canonical routes provide their own mounted operational runtime IR;
     // never fabricate IR for an unrecognized route or use application labels as
     // semantic bindings. Navigation completion does not imply runtime readiness.
     const mcelSemanticPreviewApps = Object.freeze({
@@ -75,7 +75,9 @@
       "task-manager": Object.freeze({label: "Task Manager", route: "/applications/task-manager",
         rootId: "mcel-workbench", irId: "mcel-workbench-ir", appId: "semantic-task-manager"}),
       "code-editor": Object.freeze({label: "Code Editor", route: "/applications/code-editor",
-        rootId: "mcel-workbench", irId: "mcel-workbench-ir", appId: "semantic-code-editor"})
+        rootId: "mcel-workbench", irId: "mcel-workbench-ir", appId: "semantic-code-editor"}),
+      slh: Object.freeze({label: "SLH", route: "/applications/slh",
+        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "slh", wrappedIr: true})
     });
     function selectedMcelSemanticPreviewApp() {
       const value = document.getElementById("mcel-semantic-preview-app")?.value ||
@@ -136,21 +138,27 @@
       const root = doc.getElementById(selected.rootId);
       if (!sourceElement || !root)
         return {status: 'waiting', doc, reason: `Waiting for ${selected.label} canonical IR and mounted root.`};
-      let source;
-      try { source = JSON.parse(sourceElement.textContent); }
-      catch (_) { return {status: 'refused', reason: `${selected.label} canonical IR is invalid JSON.`}; }
+      let source, composition = null;
+      try {
+        const payload = JSON.parse(sourceElement.textContent);
+        source = selected.wrappedIr ? payload?.ir : payload;
+        composition = selected.wrappedIr ? payload?.composition : null;
+      } catch (_) { return {status: 'refused', reason: `${selected.label} canonical IR is invalid JSON.`}; }
+      if (selected.wrappedIr && (composition?.schema !== 'mcel.generated-composition.v1' ||
+          !Array.isArray(composition.regions)))
+        return {status: 'refused', reason: `${selected.label} canonical composition is unavailable.`};
       if (source?.schema !== 'mcel.application-ir.v1' ||
           source?.application?.appId !== selected.appId ||
           !Array.isArray(source?.surfaces) || source.surfaces.length !== 1)
         return {status: 'refused', reason: `${selected.label} canonical IR identity does not match the selected route.`};
-      const bindings = window.McelSemanticPresentationBridge.observeRuntimePresentationTargets({ir: source, root});
+      const bindings = window.McelSemanticPresentationBridge.observeRuntimePresentationTargets({ir: source, root, composition});
       if (!bindings.expectedControls || !bindings.expectedRegions)
         return {status: 'refused', reason: `${selected.label} has no verifiable operational nodes or regions.`};
       if (bindings.status !== 'source-bound')
         return {status: 'waiting', doc, reason: `Waiting for ${selected.label} source bindings: ` +
           `${bindings.targets.filter(t => t.kind === 'control').length}/${bindings.expectedControls} controls; ` +
           `${bindings.targets.filter(t => t.kind === 'region').length}/${bindings.expectedRegions} regions. ${bindings.reason || ''}`};
-      return {status: 'ready', doc, root, ir: source, bindingModel: 'operational-runtime'};
+      return {status: 'ready', doc, root, ir: source, composition, bindingModel: 'operational-runtime'};
     }
     function mcelLabPresentationInput(source) {
       // Canonical route identity, not the IR's internal compiler identifier.
@@ -162,9 +170,19 @@
       const chromeChoice = (typeof mcelChromeSelect !== 'undefined' ? mcelChromeSelect?.value : null) || mcelLabState.chrome || 'chrome-strict-hierarchy';
       const form = window.McelSemanticFormPresentationLaw?.normalize?.(formChoice) || formChoice;
       const chrome = window.McelLabChromeLaw?.normalizeChrome?.(chromeChoice) || chromeChoice;
+      // SLH's composed regions are part of its canonical source evidence.
+      // Every Lab law must observe the same composition as the operational mount.
+      const bridge = source.composition ? {
+        observeRuntimePresentationTargets: input =>
+          window.McelSemanticPresentationBridge.observeRuntimePresentationTargets({
+            ...input, composition: source.composition
+          }),
+        observePresentationTargets: input =>
+          window.McelSemanticPresentationBridge.observePresentationTargets(input)
+      } : window.McelSemanticPresentationBridge;
       return {root:source.root, ir:source.ir, appId,
         profiles:{theme,form,chrome}, bindingModel:source.bindingModel,
-        bridge:window.McelSemanticPresentationBridge, styleLaw:window.McelLabStyleLaw};
+        bridge, styleLaw:window.McelLabStyleLaw};
     }
     function applyMcelSemanticThemePreview(reason = 'theme-change') {
       const frame = mcelSemanticThemeFrame();
@@ -255,9 +273,36 @@
         }
       }, 8000);
     }
+    // SLH target tabs navigate to canonical paths without the host-shell child
+    // flag. Preserve the Lab's isolated frame across target changes, without
+    // changing SLH's real routes or navigation outside this preview.
+    function bindMcelSlhPreviewNavigation(frame) {
+      if (selectedMcelSemanticPreviewApp().appId !== 'slh') return;
+      let doc;
+      try { doc = frame?.contentDocument; } catch (_) { return; }
+      if (!doc || doc.__mcelSlhLabNavigationBound) return;
+      doc.__mcelSlhLabNavigationBound = true;
+      const routes = new Set([
+        '/applications/slh', '/applications/slh/local', '/applications/slh/workers',
+        '/applications/slh/local/workers', '/applications/slh/network',
+        '/applications/slh/network/workers', '/applications/slh/remote-seh'
+      ]);
+      doc.addEventListener('click', event => {
+        if (event.defaultPrevented || event.button !== 0 ||
+            event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const link = event.target?.closest?.('a[href]');
+        const route = link?.getAttribute('href');
+        if (!routes.has(route)) return;
+        event.preventDefault();
+        stopMcelSemanticThemeMountWatch();
+        setMcelSemanticThemePreviewStatus('Loading isolated SLH target; waiting for canonical bindings.');
+        frame.src = `${route}?mcel-shell-child=1&mcel_lab_theme_preview=1`;
+      }, true);
+    }
     function onMcelSemanticThemeFrameLoad() {
       if (!mcelLabState.semanticThemePreviewEnabled) return;
       const frame = mcelSemanticThemeFrame();
+      bindMcelSlhPreviewNavigation(frame);
       const observation = applyMcelSemanticThemePreview('iframe-load');
       if (observation.status === 'waiting') watchMcelSemanticThemeMount(frame, observation);
     }
@@ -17757,6 +17802,14 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
       document.getElementById("mcel-semantic-color-inspector")?.addEventListener("toggle", renderMcelSemanticColorInspector);
       mcelChromeSelect?.addEventListener("change", () => changeMcelChrome("chrome-select"));
+      // Shared Chrome preference is authoritative for the two operational
+      // skins; keep the Lab selector synchronized with app/iframe shortcuts.
+      window.McelUnifiedPresentationController?.subscribeChromePreference?.((chrome, reason) => {
+        if (!chrome || mcelLabState.chrome === chrome) return;
+        mcelLabState.chrome = chrome;
+        if (mcelChromeSelect) mcelChromeSelect.value = chrome;
+        changeMcelChrome(reason || "chrome-preference");
+      });
       mcelFormPresentationSelect?.addEventListener("change", () => changeMcelFormPresentation("form-select"));
       document.getElementById("mcel-semantic-compatibility-source")?.addEventListener("change", renderMcelSemanticCompatibility);
       document.getElementById("mcel-semantic-compatibility-refresh")?.addEventListener("click", renderMcelSemanticCompatibility);
@@ -17928,7 +17981,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         if (chrome.restructuresHierarchy) option.dataset.restructuresHierarchy = "true";
         mcelChromeSelect.appendChild(option);
       });
-      mcelLabState.chrome = McelLabChromeLaw.normalizeChrome(mcelLabState.chrome);
+      mcelLabState.chrome = McelLabChromeLaw.normalizeChrome(
+        window.McelUnifiedPresentationController?.getPreferredChrome?.() || mcelLabState.chrome);
       mcelChromeSelect.value = mcelLabState.chrome;
     }
 
@@ -18557,6 +18611,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         ? McelLabChromeLaw.chromeLabel(mcelLabState.chrome)
         : mcelLabState.chrome;
       if (mcelChromeSelect) mcelChromeSelect.value = mcelLabState.chrome;
+      if (reason === "chrome-select" &&
+          ["chrome-tng-side-rails", "chrome-vulcan"].includes(mcelLabState.chrome)) {
+        window.McelUnifiedPresentationController?.setPreferredChrome?.(mcelLabState.chrome,"lab-selector");
+      }
       mcelLabState.compileEvents = [
         ...mcelLabState.compileEvents,
         {level: "success", module: "chrome-law", code: "MCEL_CHROME_CHANGED", message: `Chrome changed to ${label} (${mcelLabState.chrome}) during ${reason}.`}

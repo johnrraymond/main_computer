@@ -34,6 +34,7 @@ ASSETS = [
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js',
     'main_computer/web/applications/scripts/mcel-diagnostic-plugins.js',
+    'main_computer/web/applications/scripts/mcel-reactivity-shadow-plugin.js',
     'main_computer/web/applications/scripts/mcel-self-diagnosis.js',
     'main_computer/web/applications/scripts/mcel-diagnostic-evidence.js',
     'main_computer/web/applications/scripts/mcel-diagnostics-counter-widget.js',

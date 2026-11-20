@@ -20,6 +20,147 @@
   });
   const phases = Object.freeze({theme: "operational-mount", form: "post-mount", chrome: "post-mount"});
 
+  // One user Chrome choice across all MCEL routes on this browser origin.
+  // This is a presentation preference only: no app state or server policy is
+  // written, and a blocked browser storage API must not block mounting.
+  const chromePreferenceKey = "mcel.user.chrome.v1";
+  const chromeChoices = Object.freeze(["chrome-tng-side-rails", "chrome-vulcan"]);
+  const activeChromeRoots = new Set();
+  const chromeContexts = new WeakMap();
+  const chromeListeners = new Set();
+  let volatileChrome = null;
+  const validChrome = value => chromeChoices.includes(value) ? value : null;
+  function getPreferredChrome() {
+    try {
+      return validChrome(global.localStorage?.getItem(chromePreferenceKey)) || volatileChrome;
+    } catch (_) { return volatileChrome; }
+  }
+  function inLabPreviewChild() {
+    try {
+      return global.parent !== global &&
+        /(?:\?|&)mcel_lab_theme_preview=1(?:&|$)/.test(global.location?.search || "") &&
+        !!global.parent.document?.getElementById("mcel-lab-app") &&
+        !!global.parent.McelUnifiedPresentationController;
+    } catch (_) { return false; }
+  }
+  function notifyChrome(chrome, reason) {
+    for (const listener of chromeListeners) {
+      try { listener(chrome, reason); } catch (_) { /* Presentation observers cannot break the app. */ }
+    }
+  }
+  function subscribeChromePreference(listener) {
+    if (typeof listener !== "function") return () => {};
+    chromeListeners.add(listener);
+    return () => chromeListeners.delete(listener);
+  }
+  function replaceChromeReport(root, chrome) {
+    const previous = appliedOperational.get(root);
+    if (!previous) return;
+    const next = {...previous, profiles:Object.freeze({...previous.profiles,chrome}),
+      steps:Object.freeze({...previous.steps,chrome:"applied"})};
+    appliedOperational.set(root,next);
+    if (global.__mcelPresentationReport === previous) global.__mcelPresentationReport = next;
+  }
+  function applyChromePreference(chrome) {
+    // Frame preview is explicitly owned by the Lab parent, not by two
+    // competing Chrome law instances in the parent and child realms.
+    if (inLabPreviewChild() || !activeChromeRoots.size) return {status:"applied",updated:0};
+    const law = global.McelSemanticChromePresentationLaw;
+    if (!law?.apply) return {status:"refused",reason:"chrome-law-unavailable"};
+    const changed = [];
+    for (const root of [...activeChromeRoots]) {
+      if (!root.isConnected || !chromeContexts.has(root)) {
+        activeChromeRoots.delete(root);
+        chromeContexts.delete(root);
+        continue;
+      }
+      const context = chromeContexts.get(root);
+      const previous = root.getAttribute("data-mcel-semantic-chrome") || context.profiles.chrome;
+      if (previous === chrome) continue;
+      let result;
+      try {
+        result = law.apply({root,ir:context.ir,bridge:context.bridge,profile:chrome,
+          theme:context.profiles.theme,styleLaw:global.McelLabStyleLaw});
+      } catch (error) { result = {status:"refused",reason:String(error)}; }
+      if (result?.status !== "applied") {
+        // Failed visual transitions must not strand the application unskinned.
+        try { law.apply({root,ir:context.ir,bridge:context.bridge,profile:previous,
+          theme:context.profiles.theme,styleLaw:global.McelLabStyleLaw}); } catch (_) {}
+        for (const item of changed.reverse()) {
+          try { law.apply({root:item.root,ir:item.context.ir,bridge:item.context.bridge,
+            profile:item.previous,theme:item.context.profiles.theme,styleLaw:global.McelLabStyleLaw});
+            replaceChromeReport(item.root,item.previous);
+          } catch (_) {}
+        }
+        return {status:"refused",reason:result?.reason || result?.status || "chrome-transition-failed"};
+      }
+      changed.push({root,context,previous});
+      replaceChromeReport(root,chrome);
+    }
+    return {status:"applied",updated:changed.length};
+  }
+  function setPreferredChrome(chrome, reason="user") {
+    const choice = validChrome(chrome);
+    if (!choice) return {status:"refused",reason:"unsupported-chrome"};
+    const result = applyChromePreference(choice);
+    if (result.status !== "applied") return result;
+    volatileChrome = choice;
+    let persisted = false;
+    try {
+      global.localStorage?.setItem(chromePreferenceKey,choice);
+      persisted = !!global.localStorage;
+    } catch (_) { /* Private mode / disabled storage: current tab still works. */ }
+    notifyChrome(choice,reason);
+    return {status:"applied",chrome:choice,persisted,updated:result.updated};
+  }
+  function cycleChrome() {
+    const current = getPreferredChrome() ||
+      [...activeChromeRoots].map(root=>root.getAttribute("data-mcel-semantic-chrome"))
+        .find(validChrome) || chromeChoices[0];
+    return setPreferredChrome(current === chromeChoices[0] ? chromeChoices[1] : chromeChoices[0],
+      "keyboard-shortcut");
+  }
+  function onChromeKeydown(event) {
+    if (event.defaultPrevented || event.repeat || event.isComposing ||
+        !event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey ||
+        String(event.key).toLowerCase() !== "n" || event.getModifierState?.("AltGraph")) return;
+    // A Lab preview iframe delegates to its parent so its selector and the
+    // actual preview always have the same visual owner.
+    let result = null;
+    if (inLabPreviewChild()) {
+      try { result = global.parent.McelUnifiedPresentationController?.cycleChrome?.(); } catch (_) {}
+    }
+    result ||= cycleChrome();
+    if (result.status === "applied") {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+  if (global.document?.addEventListener)
+    global.document.addEventListener("keydown",onChromeKeydown,true);
+  if (global.addEventListener) global.addEventListener("storage",event=>{
+    if (event.key !== chromePreferenceKey) return;
+    const choice = validChrome(event.newValue);
+    if (event.newValue && !choice) return;
+    volatileChrome = choice;
+    if (choice) {
+      if (applyChromePreference(choice).status !== "applied") return;
+    } else if (!inLabPreviewChild()) {
+      // Removing the saved choice restores each mounted application's policy.
+      for (const root of [...activeChromeRoots]) {
+        const context = chromeContexts.get(root);
+        if (context) {
+          const profile = context.profiles.chrome;
+          try { global.McelSemanticChromePresentationLaw?.apply?.({root,ir:context.ir,
+            bridge:context.bridge,profile,theme:context.profiles.theme,
+            styleLaw:global.McelLabStyleLaw}); replaceChromeReport(root,profile); }
+          catch (_) {}
+        }
+      }
+    }
+    notifyChrome(choice,"storage-sync");
+  });
+
   function refused(reason) {
     return Object.freeze({schema, status: "refused-no-op", reason, applied: false});
   }
@@ -71,6 +212,8 @@
     releaseOperationalColor(root);
     global.McelSemanticChromePresentationLaw?.clear?.(root);
     appliedOperational.delete(root);
+    activeChromeRoots.delete(root);
+    chromeContexts.delete(root);
     owners.delete(root);
     return hadOwner;
   }
@@ -116,7 +259,8 @@
   // inputs; neither app names nor app CSS select a presentation treatment.
   const appliedOperational = new WeakMap();
   function applyOperationalPresentation({root, ir, composition=null, appId, profiles, readState=null} = {}) {
-    const policy = prepare({root,appId,profiles,rolloutEnabled:true,surface:"deployed"});
+    const effectiveProfiles = {...profiles, chrome:getPreferredChrome() || profiles?.chrome};
+    const policy = prepare({root,appId,profiles:effectiveProfiles,rolloutEnabled:true,surface:"deployed"});
     if (policy.status !== "prepared-no-op") return policy;
     const canonicalBridge = global.McelSemanticPresentationBridge;
     const bridge = canonicalBridge && Object.freeze({
@@ -128,17 +272,17 @@
     statuses.theme = color?.status === "applied" ? "applied" : "refused";
     if (!bridge || !styleLaw) {
       statuses.form = "refused"; statuses.chrome = "refused";
-      return {schema,status:"partial",profiles,steps:statuses,reason:"presentation-laws-unavailable"};
+      return {schema,status:"partial",profiles:effectiveProfiles,steps:statuses,reason:"presentation-laws-unavailable"};
     }
     try {
       const result=global.McelSemanticFormPresentationLaw?.apply({
-        root,ir,bridge,profile:profiles.form,bindingModel:"operational-runtime"});
+        root,ir,bridge,profile:effectiveProfiles.form,bindingModel:"operational-runtime"});
       statuses.form=result?.status === "applied-in-isolated-lab-frame" ? "applied" : "refused";
       if (statuses.form !== "applied") statuses.formReason=result?.reason || result?.status;
     } catch (error) { statuses.form="refused"; statuses.formReason=String(error); }
     try {
       const result=global.McelSemanticChromePresentationLaw?.apply({
-        root,ir,bridge,profile:profiles.chrome,theme:profiles.theme,styleLaw});
+        root,ir,bridge,profile:effectiveProfiles.chrome,theme:effectiveProfiles.theme,styleLaw});
       statuses.chrome=["applied","unchanged"].includes(result?.status) ? "applied" : "refused";
       if(statuses.chrome !== "applied") statuses.chromeReason=result?.reason || result?.status;
     } catch (error) { statuses.chrome="refused"; statuses.chromeReason=String(error); }
@@ -146,11 +290,15 @@
     // Failure is isolated from the three presentation authorities and mount.
     let icons={status:"unavailable",reason:"semantic-icon-core-unavailable"};
     try {
-      icons=global.McelSemanticIconCore?.mount?.({root,ir,bridge,profiles,readState}) || icons;
+      icons=global.McelSemanticIconCore?.mount?.({root,ir,bridge,profiles:effectiveProfiles,readState}) || icons;
     } catch(error) {icons={status:"unavailable",reason:String(error)};}
     const status = properties.every(name => statuses[name] === "applied") ? "applied" : "partial";
-    const report={schema,status,profiles:Object.freeze({...profiles}),steps:Object.freeze(statuses),appId,iconCore:icons};
+    const report={schema,status,profiles:Object.freeze({...effectiveProfiles}),steps:Object.freeze(statuses),appId,iconCore:icons};
     appliedOperational.set(root,report);
+    if (statuses.chrome === "applied") {
+      chromeContexts.set(root,{ir,bridge,profiles:{...profiles}});
+      activeChromeRoots.add(root);
+    }
     return report;
   }
   function operationalReport(root) {return appliedOperational.get(root)||null;}
@@ -219,6 +367,8 @@
       validateOperationalColor, mountOperationalColor, refreshOperationalColor,
       operationalColorReport, setOperationalColorTheme, releaseOperationalColor,
       applyLabTheme, applyLabForm, applyLabChrome,
+      chromePreferenceKey, getPreferredChrome, setPreferredChrome, cycleChrome,
+      subscribeChromePreference,
       applyOperationalPresentation, applyNativePresentation, operationalReport}),
     writable: false, configurable: false
   });

@@ -1,0 +1,123 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 999,
+  "deadline_seconds": 172800,
+  "rules": [
+    {
+      "name": "propose",
+      "actor": "worker",
+      "from": "funded",
+      "to": "proposed",
+      "when": "before_deadline",
+      "credits": []
+    },
+    {
+      "name": "accept",
+      "actor": "payer",
+      "from": "proposed",
+      "to": "accepted",
+      "when": "before_deadline",
+      "credits": []
+    },
+    {
+      "name": "finalize",
+      "actor": "reviewer",
+      "from": "accepted",
+      "to": "completed",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": 400
+        },
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_payer",
+      "actor": "payer",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_worker",
+      "actor": "worker",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_proposed_payer",
+      "actor": "payer",
+      "from": "proposed",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_proposed_worker",
+      "actor": "worker",
+      "from": "proposed",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_accepted_payer",
+      "actor": "payer",
+      "from": "accepted",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_accepted_worker",
+      "actor": "worker",
+      "from": "accepted",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

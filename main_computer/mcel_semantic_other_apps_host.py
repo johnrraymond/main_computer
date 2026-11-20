@@ -17,13 +17,14 @@ APPS = {
     "file-manager": ("semantic-file-manager", {"load-roots", "choose-root", "browse", "enter-directory", "search", "choose-entry", "preview-entry", "open-with"},
                      {"filesystem-read", "application-navigation"}),
     "task-manager": ("semantic-task-manager", {"refresh", "choose-process", "choose-all-process", "choose-schedule", "server-status", "switch-view", "refresh-all", "refresh-connections", "refresh-hardware", "list-schedules", "task-ai", "terminate-process", "kill-process", "start-server", "restart-server", "shutdown-server", "create-schedule", "delete-schedule", "run-schedule"}, {"monitor", "task-control", "task-scheduling"}),
-    "code-editor": ("semantic-code-editor", {"list-files", "select-file", "open-source", "browse-directory", "save-source", "prepare-reviewed-change", "apply-reviewed-change", "preview-aider-plan", "aider-context", "aider-jobs", "run-aider", "archive-aider-context", "reset-aider-context", "load-aider-archive", "list-component-docs", "choose-component-doc", "read-component-doc", "read-component-doc-viewport-config", "run-component-doc-script", "inspect-scm-component-contract", "inspect-scm-route-contract", "check-studio-draft", "preview-studio-serialization", "studio-runtime-mount", "studio-runtime-validate", "studio-runtime-serialize", "studio-runtime-repair", "studio-runtime-stage", "studio-runtime-commit", "studio-runtime-route-enter", "studio-runtime-route-leave", "studio-runtime-evidence", "studio-runtime-replay", "studio-proof-list", "studio-proof-select", "studio-proof-inspect", "studio-proof-export", "studio-regression-run", "studio-repair-packet"}, {"source-reader", "source-writer", "reviewer", "review-applier", "aider-preview", "aider-context", "aider-control", "component-docs", "sandboxed-viewport", "scm-definition", "studio-source-tools", "scm-runtime", "scm-proof"}),
+    "code-editor": ("code-editor", {"list-files", "select-file", "open-source", "browse-directory", "save-source", "prepare-reviewed-change", "apply-reviewed-change", "preview-aider-plan", "aider-context", "aider-jobs", "run-aider", "archive-aider-context", "reset-aider-context", "load-aider-archive", "list-component-docs", "choose-component-doc", "read-component-doc", "read-component-doc-viewport-config", "run-component-doc-script", "inspect-scm-component-contract", "inspect-scm-route-contract", "check-studio-draft", "preview-studio-serialization", "studio-runtime-mount", "studio-runtime-validate", "studio-runtime-serialize", "studio-runtime-repair", "studio-runtime-stage", "studio-runtime-commit", "studio-runtime-route-enter", "studio-runtime-route-leave", "studio-runtime-evidence", "studio-runtime-replay", "studio-proof-list", "studio-proof-select", "studio-proof-inspect", "studio-proof-export", "studio-regression-run", "studio-repair-packet"}, {"source-reader", "source-writer", "reviewer", "review-applier", "aider-preview", "aider-context", "aider-control", "component-docs", "sandboxed-viewport", "scm-definition", "studio-source-tools", "scm-runtime", "scm-proof"}),
 }
 ROUTE_PREFIX = "/applications/mcel-semantic-"
 SOURCE_ROOT = Path("tools/fixtures/mcel_semantic_other_apps")
 DIAGNOSTIC_ASSETS = (
     "main_computer/web/applications/scripts/mcel-diagnostic-early-bootstrap.js",
     "main_computer/web/applications/scripts/mcel-diagnostic-plugins.js",
+    "main_computer/web/applications/scripts/mcel-reactivity-shadow-plugin.js",
     "main_computer/web/applications/scripts/mcel-app-parity-trace-plugin.js",
 )
 ASSETS = (
@@ -43,7 +44,10 @@ def compile_semantic_app(name: str, repo: Path = ROOT) -> dict:
     if name not in APPS:
         raise CandidateHostError("Unknown semantic application")
     app_id, expected_intents, expected_caps = APPS[name]
-    source = repo / SOURCE_ROOT / name / "application.js"
+    # A single canonical package owns the Code Editor.  The older paired
+    # semantic fixture is not consulted by the live host.
+    source = (repo / "mcel_apps/code-editor/application.js" if name == "code-editor"
+              else repo / SOURCE_ROOT / name / "application.js")
     report = compile_dsl_application(source)
     if not report.valid or report.normalized_ir is None:
         raise CandidateHostError(f"Invalid paired source for {name}: {report.diagnostics}")

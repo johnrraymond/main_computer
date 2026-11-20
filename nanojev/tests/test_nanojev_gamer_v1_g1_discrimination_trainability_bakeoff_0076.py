@@ -327,3 +327,40 @@ def test_counterexample_mining_has_no_label_in_inference_and_retains_best():
     assert all('round' in line for line in detail['rounds'])
     assert 'gold' not in inspect.signature(m._predict).parameters
     assert 'gold' not in inspect.signature(m._model_scores).parameters
+
+
+def test_zero_candidates_keep_feature_dimension_and_decode_empty():
+    """Regression for G1-0081 zero-hidden/stage-component causal replay.
+
+    A valid positive-token-length input can have no accepted candidates after
+    removing G1 evidence. The neural scoring tensor must still be (0, 58),
+    and the production-compatible structured selector must emit the empty set.
+    """
+    from tools import nanojev_gamer_v1_g1_quantity_preserving_bakeoff_0079 as quantity
+
+    empty=learned.Case('cutover','dev','encounter','zero-candidates',6,[],
+                       set(),set(),[])
+    encoded=prior.Encoded(empty,[])
+    data=cov.Expanded(encoded,encoded,(),(),(),0,0,0,frozenset())
+    net=m.Discriminator().eval().requires_grad_(False)
+    cache=m._tensor_cache(data)
+    assert cache[0].shape==(0,m.DIM)
+    assert cache[1].shape==(0,)
+    assert m._model_scores(data,net,cache=cache).shape==(0,)
+    assert m._predict(data,'staged_joint_64',WEIGHTS,net)==set()
+    assert quantity._predict(data,quantity.PINNED_CONTINUED,WEIGHTS,net,net,{})==set()
+    assert not any(p.requires_grad for p in net.parameters())
+
+
+
+def test_empty_lattice_does_not_silently_accept_mismatched_features():
+    empty=learned.Case('cutover','dev','allocation','zero-candidates',6,[],
+                       set(),set(),[])
+    encoded=prior.Encoded(empty,[])
+    data=cov.Expanded(encoded,encoded,((1.,),),(),(),0,0,0,frozenset())
+    with pytest.raises(ValueError,match='LATTICE_FEATURE_MISMATCH'):
+        m._tensor_cache(data)
+    normal=sample()
+    normal.prop_features=normal.prop_features[:-1]
+    with pytest.raises(ValueError,match='LATTICE_FEATURE_MISMATCH'):
+        m._model_scores(normal,m.Discriminator())

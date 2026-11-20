@@ -1,0 +1,59 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 17,
+  "deadline_seconds": 86400,
+  "rules": [
+    {
+      "name": "open_late",
+      "actor": "worker",
+      "from": "funded",
+      "to": "waiting",
+      "when": "at_or_after_deadline",
+      "credits": []
+    },
+    {
+      "name": "impossible_finish",
+      "actor": "payer",
+      "from": "waiting",
+      "to": "completed",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "fallback_payer",
+      "actor": "payer",
+      "from": "waiting",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "fallback_worker",
+      "actor": "worker",
+      "from": "waiting",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

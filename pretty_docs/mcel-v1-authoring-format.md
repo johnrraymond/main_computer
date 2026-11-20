@@ -14,7 +14,7 @@ mcel_apps/<app-id>/
   generated/              # compiler-owned artifacts; not dual-authored
 ```
 
-The existing `tools/mcel_create_app.py` must ultimately scaffold this exact authoring boundary. A compiled application has one source of semantic truth across the pair, not two independent app definitions. Generated artifacts are replaceable outputs.
+As of the paired-source scaffolder patch, `tools/mcel_create_app.py` defaults to the version `2.0.0` two-file source contract, with minimal requirements, manifest and test files. The existing compiler validates both files together, but newly scaffolded packages are **paired-source-compiled**, not automatically host-mounted or browser-certified. Explicit `--template-version 1.0.0` retains the historical multi-file package. A compiled application has one source of semantic truth across the pair, not two independent app definitions. Generated artifacts are replaceable outputs.
 
 ## Semantic HTML
 

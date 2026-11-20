@@ -601,7 +601,26 @@
     for (const s of c.states.values()) {
       if (own(s,"initial")) { checkSchema(s.schema,s.initial,s.id); state.set(s.id,clone(s.initial)); }
     }
-    const read = id => state.get(id);
+    // Diagnostic-only observation. The incumbent state and renderer remain
+    // authoritative; failures in the optional oracle cannot affect either.
+    let shadowCurrentConsumer = null;
+    const read = id => {
+      if (shadowCurrentConsumer) try {shadowCurrentConsumer.read(id);} catch (_) {}
+      return state.get(id);
+    };
+    function shadowObserve(kind,id,render,targets=null,externalSources=[]) {
+      let observation=null;
+      try {observation=global.MCELReactivityShadowOracle?.capture?.(root,kind,id,targets)||null;}catch (_) {}
+      if(!observation)return render();
+      const previous=shadowCurrentConsumer;shadowCurrentConsumer=observation;
+      try {
+        for(const source of externalSources)observation.readExternal(source);
+        return render();
+      } finally {shadowCurrentConsumer=previous;try {observation.finish();}catch (_) {}}
+    }
+    const shadowExternal=name=>{
+      if(shadowCurrentConsumer)try {shadowCurrentConsumer.readExternal(name);}catch (_) {}
+    };
     // Missing/expired derived state never satisfies operational applicability.
     // A backend-supplied observation timestamp, when present, is checked as
     // well as the time at which this runtime received its validated response.
@@ -611,6 +630,9 @@
       const id=ref(when.state),descriptor=c.states.get(id),source=read(id);
       if(source===undefined || source===null)return false;
       if(descriptor?.authority==="derived"){
+        // Derived observations can expire between state writes. A signal graph
+        // must observe the freshness clock, not only the cached state value.
+        shadowExternal('clock');
         const received=observedTimes.get(id);
         if(!Number.isFinite(received) || Date.now()-received>60000 || received-Date.now()>5000)return false;
         if(source && typeof source==="object" && !Array.isArray(source)){
@@ -629,23 +651,26 @@
     const applicable = n => !n?.visibleWhen || conditionSatisfied(n.visibleWhen);
     const enabled = n => !n?.enabledWhen || conditionSatisfied(n.enabledWhen);
     function notify() {
-      for (const [r,el] of regionHosts) {
+      try {global.MCELReactivityShadowOracle?.beforeNotify?.(
+        root,ir.application.appId,state,nextReceiptSequence);}catch (_) {}
+      for (const [r,el] of regionHosts) shadowObserve('region',r.id,()=>{
         if(r.visibleWhen){
           const hidden=read(ref(r.visibleWhen.state)) !== r.visibleWhen.equals;
           if(el.hidden!==hidden)el.hidden=hidden;
         }
-      }
-      for (const [n, el] of conditionedNodes){
+      },el);
+      for (const [n, el] of conditionedNodes) shadowObserve('condition',n.id,()=>{
         const hidden=!applicable(n);if(el.hidden!==hidden)el.hidden=hidden;
-      }
-      if(c.generated)for(const [r,el] of regionHosts)if(r.recipe!=="root" && r.members?.length) {
-        const hidden=r.members.every(member=>{
-          const node=c.nodes.get(ref(member));
-          return !!node?.visibleWhen && !applicable(node);
-        });
-        if(el.hidden!==hidden)el.hidden=hidden;
-      }
-      for (const [n, host] of selectedRecordHosts){
+      },el);
+      if(c.generated)for(const [r,el] of regionHosts)if(r.recipe!=="root" && r.members?.length)
+        shadowObserve('generated-visibility',r.id,()=>{
+          const hidden=r.members.every(member=>{
+            const node=c.nodes.get(ref(member));
+            return !!node?.visibleWhen && !applicable(node);
+          });
+          if(el.hidden!==hidden)el.hidden=hidden;
+        },el,['generated-layout']);
+      for (const [n, host] of selectedRecordHosts) shadowObserve('selected-record',n.id,()=>{
         const selections=[...c.intents.values()].filter(i=>i.collectionSelection &&
           ref(i.collectionSelection.target)===ref(n.value.state));
         const signature=JSON.stringify([read(ref(n.value.state)),...selections.map(i=>
@@ -653,14 +678,14 @@
         if(recordRenderSignatures.get(host)!==signature){
           updateSelectedRecord(n,host);recordRenderSignatures.set(host,signature);
         }
-      }
-      for (const [n, host] of typedRecordHosts){
+      },host);
+      for (const [n, host] of typedRecordHosts) shadowObserve('typed-record',n.id,()=>{
         const signature=JSON.stringify(read(ref(n.value.state)));
         if(!recordRenderSignatures.has(host) || recordRenderSignatures.get(host)!==signature){
           updateTypedRecord(n,host);recordRenderSignatures.set(host,signature);
         }
-      }
-      for (const [id, elements] of displays) for (const el of elements) {
+      },host);
+      for (const [id, elements] of displays) for (const [index,el] of elements.entries()) shadowObserve('display',id+':'+index,()=>{
         const value = read(id);
         // A bounded, inert image result is a generic semantic visualization.
         // Never insert returned HTML or execute result-owned scripts.
@@ -687,8 +712,8 @@
           const next=value === undefined ? "" : (value !== null && typeof value === "object" ? JSON.stringify(value,null,2) : String(value));
           if(el.textContent!==next || el.querySelector('[data-mcel-sandboxed-image]'))el.textContent=next;
         }
-      }
-      for (const view of tabSwitchers) {
+      },el);
+      for (const view of tabSwitchers) shadowObserve('tab-switch',view.stateId,()=>{
         const selected=read(view.stateId);
         view.select.value=selected === undefined ? view.select.value : selected;
         for (const button of view.buttons) {
@@ -702,15 +727,22 @@
               button.removeAttribute("aria-current");
           }
         }
-      }
-      for (const [n, host] of collectionHosts) updateCollection(n,host);
-      for(const refresh of deselectionControls)refresh();
-      for (const session of notebooks.values())session.redraw();
-      for (const session of operationNotebooks.values())session.redraw();
-      for (const [n, host] of plotHosts) updatePlot(n, host);
-      for (const [n, session] of documentHosts) updateDocument(n,session);
+      },[view.select,...view.buttons],['local-control']);
+      for (const [n, host] of collectionHosts)
+        shadowObserve('collection',n.id,()=>updateCollection(n,host),host,['local-dom']);
+      for(const [index,refresh] of [...deselectionControls].entries())
+        shadowObserve('deselection-control',String(index),refresh,refresh.shadowTargets,['local-control']);
+      for (const session of notebooks.values())
+        shadowObserve('notebook',session.node.id,()=>session.redraw(),session.root,['notebook-local']);
+      for (const session of operationNotebooks.values())
+        shadowObserve('operation-notebook',session.node.id,()=>session.redraw(),session.root,['notebook-local']);
+      for (const [n, host] of plotHosts)
+        shadowObserve('plot',n.id,()=>updatePlot(n,host),host);
+      for (const [n, session] of documentHosts)
+        shadowObserve('document',n.id,()=>updateDocument(n,session),session.surface,['editor-local']);
       let semanticActionChanged=false;
-      for(const {button,intent,node} of [...actionButtons,...guardedFormButtons]){
+      for(const {button,intent,node} of [...actionButtons,...guardedFormButtons])
+        shadowObserve('action-control',node?.id||intent.id,()=>{
         const disabled=!enabled(node) || (intent.requestArguments||[]).some(arg=>{
           const value=read(ref(arg.state));return value===undefined || value===null || (value==="" && arg.allowEmpty!==true);
         });
@@ -735,11 +767,15 @@
             if(textNode.nodeValue!==label){textNode.nodeValue=label;semanticActionChanged=true;}
           }
         }
-      }
-      if(semanticActionChanged)global.McelSemanticIconCore?.inspect?.(root);
-      refreshColor();
-      renderActivities();
-      if(c.generated){
+      },button,['local-control']);
+      if(semanticActionChanged)shadowObserve('semantic-icons','action-labels',
+        ()=>global.McelSemanticIconCore?.inspect?.(root),root,['theme']);
+      shadowObserve('color','presentation',refreshColor,root,['theme']);
+      shadowObserve('activity','receipts',()=>{
+        shadowExternal('receipts');
+        renderActivities();
+      },receiptHosts.map(host=>host.list),['activity-filter']);
+      if(c.generated)shadowObserve('generated-layout','workspace',()=>{
         if(!declaredUpdates)scheduleGeneratedLayout();
         else {
           const fingerprint=JSON.stringify({regions:[...regionHosts].map(([r,el])=>
@@ -749,7 +785,8 @@
             lastLayoutFingerprint=fingerprint;scheduleGeneratedLayout();
           }
         }
-      }
+      },root,['theme','generated-layout']);
+      try {global.MCELReactivityShadowOracle?.afterNotify?.(root);}catch (_) {}
     }
     // Activity is a generic receipt view. The app may author a specific set of
     // intent/outcome reports using dsl.activity.info/warn/error. Without such
@@ -1093,6 +1130,9 @@
             (intent.resultBindings || []).some(binding=>targetRuns.get(ref(binding.target)) !== run)))
           return {disposition:"superseded"};
         if (op.resultSchema) checkSchema(op.resultSchema,value,"capability-response");
+        // Read response settlement is an external invalidation source; only
+        // diagnostic epochs are advanced, not the production scheduler.
+        try {global.MCELReactivityShadowOracle?.invalidate?.(root,'async-commit');}catch (_) {}
         for (const binding of intent.resultBindings || []){
           const target=ref(binding.target);
           state.set(target,clone(value));
@@ -1712,7 +1752,7 @@
       root.append(elt("h3",{},n.title),tabs);
       if(signIn)root.append(signIn);
       root.append(body,status);holder.append(root);
-      const session={node:n,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:"",
+      const session={node:n,root,active:n.tabs[0].id,available:false,busy:false,epoch:0,error:"",
         operationMessage:"",redraw:null,renderedTab:null,semanticUpdater:null,
         formBindings:[],readFailure:null};
       operationNotebooks.set(n,session);
@@ -2047,6 +2087,7 @@
               if(clear.disabled!==!value)clear.disabled=!value;
               if(empty.hidden!==!!value)empty.hidden=!!value;
             };
+            refresh.shadowTargets=[clear,empty];
             deselectionControls.add(refresh);
           }
         }
@@ -3492,6 +3533,7 @@
         ? colorLaw.setOperationalColorTheme(root,theme,palette)
         : colorPresentation?.setTheme?.(theme,palette)) || {status:"legacy-unmigrated"},
       unmount:()=>{disposed=true;
+        try {global.MCELReactivityShadowOracle?.release?.(root);}catch (_) {}
         for(const session of operationNotebooks.values())session.semanticUpdater?.dispose();
         if(usingController)
           colorLaw.releaseOperationalColor(root);

@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import socket
 import time
+from socketserver import ThreadingMixIn
 from typing import Callable
 from wsgiref.simple_server import make_server
 
@@ -27,6 +28,22 @@ from main_computer.slh.ports import DEFAULT_SLH_API_HOST, DEFAULT_SLH_API_PORT
 from main_computer.slh.storage import guard_legacy_state, secure_machine_state_dir, slh_state_dir
 from tools.slh_auth_harness import ExclusiveSLHServer
 from tools.slh_seh_connector import service_identity
+
+
+class ConcurrentExclusiveSLHServer(ThreadingMixIn, ExclusiveSLHServer):
+    """Loopback-only LMS: slow control operations must not block identity/status.
+
+    Preserve the Windows exclusive bind inherited from ExclusiveSLHServer.
+    Controller/authority mutations retain their own locks; concurrent HTTP
+    dispatch does not grant parallel permission to mutate protected state.
+    """
+
+    daemon_threads = True
+    block_on_close = False
+
+    def setup_environ(self):
+        super().setup_environ()
+        self.base_environ['wsgi.multithread'] = True
 
 
 def local_status(authority: SLHAuthority, port: int, controller=None) -> dict:
@@ -73,7 +90,7 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
                  local_authenticator=authenticator,
                  local_root_registration=LocalRootAdministratorRegistration(authority, authenticator))
     try:
-        server = make_server(DEFAULT_SLH_API_HOST, port, api.wsgi_app, server_class=ExclusiveSLHServer)
+        server = make_server(DEFAULT_SLH_API_HOST, port, api.wsgi_app, server_class=ConcurrentExclusiveSLHServer)
     except BaseException:
         controller.close()
         raise

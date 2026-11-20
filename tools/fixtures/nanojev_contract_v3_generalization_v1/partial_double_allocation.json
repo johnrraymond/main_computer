@@ -1,0 +1,90 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 5,
+  "deadline_seconds": 86400,
+  "rules": [
+    {
+      "name": "advance",
+      "actor": "worker",
+      "from": "funded",
+      "to": "advanced",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": 3
+        }
+      ]
+    },
+    {
+      "name": "pay_again",
+      "actor": "payer",
+      "from": "advanced",
+      "to": "completed",
+      "when": "before_deadline",
+      "credits": [
+        {
+          "to": "worker",
+          "amount_wei": 4
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_payer",
+      "actor": "payer",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_funded_worker",
+      "actor": "worker",
+      "from": "funded",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_advanced_payer",
+      "actor": "payer",
+      "from": "advanced",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    },
+    {
+      "name": "refund_advanced_worker",
+      "actor": "worker",
+      "from": "advanced",
+      "to": "refunded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

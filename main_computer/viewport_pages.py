@@ -30,21 +30,10 @@ def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> 
     def replace(match: re.Match[str]) -> str:
         include_name = match.group(1).strip()
         if include_name == "applications/apps/code-editor.html":
-            from main_computer.mcel_code_editor_host_projection import project
-
-            return project(_REPOSITORY_ROOT)
-        if include_name == "applications/apps/code-editor.html":
-            from main_computer.mcel_code_editor_host_projection import project
-
-            return project(_REPOSITORY_ROOT)
-        if include_name == "applications/apps/code-editor.html":
-            from main_computer.mcel_code_editor_host_projection import project
-
-            return project(_REPOSITORY_ROOT)
-        if include_name == "applications/apps/code-editor.html":
-            from main_computer.mcel_code_editor_host_projection import project
-
-            return project(_REPOSITORY_ROOT)
+            # The native Code Editor route now mounts the canonical paired
+            # application. The legacy SPA include is inert shell scaffolding,
+            # never an alternative authored application or runtime authority.
+            return '<div class="code-editor-app mc-app" id="code-editor-app" style="display:none"></div>'
         if include_name == "applications/apps/calculator.html":
             from main_computer.mcel_calculator_host_projection import project
 

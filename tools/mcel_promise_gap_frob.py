@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from main_computer.mcel_dsl_compiler import compile_dsl_application
-from main_computer.mcel_scaffolding import generate_application
+from main_computer.mcel_scaffolding import LEGACY_TEMPLATE_VERSION, generate_application
 
 TASKS = ROOT / 'tools/fixtures/mcel_promise_gap/tasks.v1.json'
 FIXTURES = TASKS.parent
@@ -112,7 +112,9 @@ def _compiler_probe(probe_id: str, file: str, expect_valid: bool, label: str, *,
 
 
 def _scaffold(task: dict[str, Any], destination_root: Path) -> dict[str, Any]:
-    result = generate_application(task['appId'], title=task['title'], output_root=destination_root, dry_run=False)
+    # The historical diagnostic measures the V1 explicit package shape, not the new paired scaffold.
+    result = generate_application(task['appId'], title=task['title'], output_root=destination_root,
+                                  template_version=LEGACY_TEMPLATE_VERSION, dry_run=False)
     target = destination_root / task['appId']
     files = [p for p in target.rglob('*') if p.is_file()]
     html = (target / 'src/index.html').read_text(encoding='utf-8')

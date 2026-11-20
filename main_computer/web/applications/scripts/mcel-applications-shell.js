@@ -102,7 +102,18 @@
     if (id !== "desktop") target.searchParams.set("app", id);
     return target.pathname + target.search;
   }
-  for (const app of catalog.apps) {
+  // Read the live desktop's canonical order. Its five icon clusters are
+  // already composed by the shell host; the rail must not maintain a second
+  // ordering table or fall back silently to the older registry order.
+  const desktopOrder = [...document.querySelectorAll(
+    '#mcel-shell-desktop-overlay .desktop-icon[data-app]'
+  )].map(icon => icon.dataset.app);
+  if (desktopOrder.length !== allowed.size - 1 ||
+      new Set(desktopOrder).size !== desktopOrder.length ||
+      desktopOrder.some(id => id === "desktop" || !allowed.has(id)))
+    return refuse("launcher-desktop-order-mismatch");
+  const launcherApps = [allowed.get("desktop"), ...desktopOrder.map(id => allowed.get(id))];
+  for (const app of launcherApps) {
     const a = document.createElement("a");
     a.className = "mcel-shell-app-card";
     // The element always exposes its canonical URL.  Only an ordinary
@@ -111,9 +122,29 @@
     a.href = app.route;
     a.dataset.mcelDestinationId = "applications." + app.id;
     a.dataset.app = app.id;
-    const strong = document.createElement("strong"); strong.textContent = app.title;
-    const detail = document.createElement("span"); detail.textContent = app.description;
-    a.append(strong, detail);
+    // Reuse desktop MCEL Icon geometry and each app's established accent.
+    // The navigation row has no independently maintained icon/color table.
+    const desktopIcon = document.querySelector('.desktop-icon[data-app="' + app.id + '"]');
+    const svg = app.id === "desktop"
+      ? document.querySelector("#mcel-shell-home-icon")?.content.firstElementChild
+      : desktopIcon?.querySelector(".desktop-glyph-svg");
+    if (!svg) return refuse("launcher-icon-missing:" + app.id);
+    const glyph = document.createElement("span");
+    glyph.className = "mcel-shell-app-icon";
+    glyph.setAttribute("aria-hidden", "true");
+    const drawing = svg.cloneNode(true);
+    drawing.classList.add("mcel-shell-app-icon-svg");
+    glyph.append(drawing);
+    const accent = desktopIcon
+      ? getComputedStyle(desktopIcon).getPropertyValue("--desktop-icon-accent").trim()
+      : "var(--mcel-gold)";
+    if (!accent) return refuse("launcher-accent-missing:" + app.id);
+    a.style.setProperty("--mcel-app-accent", accent);
+    const strong = document.createElement("strong");
+    strong.textContent = app.title;
+    // Descriptions remain available on hover, not as a second text line.
+    a.title = app.title + " — " + app.description;
+    a.append(glyph, strong);
     a.addEventListener("click", event => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.shiftKey ||
           event.metaKey || event.altKey || a.target || a.hasAttribute("download")) return;

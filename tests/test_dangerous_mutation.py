@@ -235,6 +235,7 @@ def test_preflight_cli_runs_inspect_internally_without_browser_or_mutation(monke
         return {'status':'READ_ONLY','application_uuid':UUID_A,'state':'tombstone',
                 'lms_idle':True,'deployment_phase':'UNDEPLOYED'}
     monkeypatch.setattr(dm,'preflight',fake_preflight)
+    monkeypatch.setattr(dm,'verify_resident_admin',lambda **kw:{'status':'VERIFIED','device_id':'admin-device','mutation_submitted':False})
     monkeypatch.setattr(dm,'execute_browser_cycle',lambda **kwargs: (_ for _ in ()).throw(AssertionError('browser cannot run')))
     destination=tmp_path/'report.json'
     assert dm.main(['--mode','preflight','--scope','seh','--report',str(destination)])==0
@@ -248,6 +249,7 @@ def test_all_scope_checks_seh_before_identity_mutations(monkeypatch,tmp_path):
         return {'status':'READ_ONLY','application_uuid':UUID_A,
                 'state':'unknown','lms_idle':True}
     monkeypatch.setattr(dm,'preflight',unknown)
+    monkeypatch.setattr(dm,'verify_resident_admin',lambda **kw:{'status':'VERIFIED','device_id':'admin-device','mutation_submitted':False})
     from tools import mcel_slh_dangerous_functional_acceptance as old
     monkeypatch.setattr(old,'discover_admin_device',lambda **kw:'verified-admin')
     monkeypatch.setattr(dm,'identity_ui_cycle',lambda **kw:(_ for _ in ()).throw(AssertionError('must refuse before identity mutations')))
@@ -262,6 +264,7 @@ def test_all_scope_combines_both_browser_lanes_only_when_verified(monkeypatch,tm
     calls=[]
     monkeypatch.setattr(dm,'preflight',lambda **kw:{'status':'READ_ONLY','application_uuid':UUID_A,
                    'state':'tombstone','lms_idle':True})
+    monkeypatch.setattr(dm,'verify_resident_admin',lambda **kw:{'status':'VERIFIED','device_id':'admin-device','mutation_submitted':False})
     from tools import mcel_slh_dangerous_functional_acceptance as old
     monkeypatch.setattr(old,'discover_admin_device',lambda **kw:'verified-admin')
     def identity_ui(**kwargs):
@@ -290,3 +293,43 @@ def test_identity_gate_allows_exact_connection_status_read_but_no_connection_mut
         assert gate.classify(url,'POST',body(operation))=='DENY_CONNECTION_MUTATION'
     assert gate.classify(url,'POST',json.dumps({'target':'network',
         'sessionTicket':'token','operation':'status'}))=='DENY_CONNECTION_MUTATION'
+
+
+def test_resident_admin_gate_reuses_read_only_harness_operation(monkeypatch,tmp_path):
+    import seh_mutate_harness
+    calls=[]
+    def verified(args):
+        calls.append(args)
+        return {'status':'VERIFIED_ADMIN_SESSION','device_id':'approved-admin',
+                'session_closed':True,'remote_mutation':False}
+    monkeypatch.setattr(seh_mutate_harness,'run',verified)
+    result=dm.verify_resident_admin(local_port=8897,state_root=tmp_path)
+    assert result == {'status':'VERIFIED','device_id':'approved-admin','mutation_submitted':False}
+    assert len(calls)==1
+    assert calls[0].operation=='verify-resident-admin'
+    assert calls[0].execute_mutations is False
+    assert calls[0].yes_i_know_this_mutates_seh is False
+
+
+@pytest.mark.parametrize('refusal,code',[
+    ('Multiple verified administrators without an eligible default; pass --admin-device',
+      'RESIDENT_ADMIN_SELECTION_AMBIGUOUS'),
+    ('No verified resident administrator identity','RESIDENT_ADMIN_NOT_VERIFIED'),
+    ('Resident SLH localhost service is unavailable: ConnectionRefusedError',
+      'RESIDENT_ADMIN_TRANSPORT_UNAVAILABLE')])
+def test_resident_admin_gate_fail_closed_with_bounded_diagnostic(monkeypatch,tmp_path,refusal,code):
+    import seh_mutate_harness
+    def fail(args):
+        raise seh_mutate_harness.HarnessError(refusal)
+    monkeypatch.setattr(seh_mutate_harness,'run',fail)
+    with pytest.raises(dm.MutationRefused,match='^'+code+'$'):
+        dm.verify_resident_admin(local_port=8897,state_root=tmp_path)
+
+
+def test_resident_admin_gate_does_not_accept_unverified_logout(monkeypatch,tmp_path):
+    import seh_mutate_harness
+    monkeypatch.setattr(seh_mutate_harness,'run',lambda args:{
+        'status':'VERIFIED_ADMIN_SESSION','device_id':'approved-admin',
+        'session_closed':False,'remote_mutation':False})
+    with pytest.raises(dm.MutationRefused,match='RESIDENT_ADMIN_AUTHORITY_UNVERIFIED'):
+        dm.verify_resident_admin(local_port=8897,state_root=tmp_path)

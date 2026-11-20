@@ -260,8 +260,12 @@ def _markup(ir: dict, reference: dict) -> str:
             extra = ' id="mcel-shell-application-mount" data-mode="overview"'
         attrs = f' class="{class_name}" data-mcel-region-id="{escape(region["id"])}"{extra}'
         if name == "launcher":
-            body = '''<div id="mcel-shell-launcher-panel" class="mcel-shell-launcher-panel" data-open="false">''' + _static(region) + '''
-              <div class="mcel-shell-launcher-items" id="mcel-shell-launcher-items"></div></div>'''
+            # Desktop has no desktop app glyph; use MCEL Icon's home glyph.
+            home_icon = render_icon("navigation.home", class_name="mcel-shell-app-icon-svg")
+            body = (f'<template id="mcel-shell-home-icon">{home_icon}</template>'
+                    + '''<div id="mcel-shell-launcher-panel" class="mcel-shell-launcher-panel" data-open="false">'''
+                    + _static(region) + '''
+              <div class="mcel-shell-launcher-items" id="mcel-shell-launcher-items"></div></div>''')
         elif name == "application-mount":
             body = ('''<div class="mcel-shell-overview" id="mcel-shell-overview">
              <div id="mcel-shell-desktop-overlay" class="desktop-overlay desktop-home" aria-label="Desktop application launcher">

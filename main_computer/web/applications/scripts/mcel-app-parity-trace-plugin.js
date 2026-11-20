@@ -24,6 +24,10 @@
         const id = JSON.parse(candidate.textContent).application.appId;
         if (/^semantic-(code-editor|file-manager|task-manager)$/.test(id))
           return {app:id.substring(9),variant:"semantic"};
+        // Canonical paired-source Code Editor retains the semantic renderer.
+        // In browser harnesses the route can be about:blank, so use the IR.
+        if (id === "code-editor" && global.document?.querySelector?.("#mcel-workbench"))
+          return {app:"code-editor",variant:"semantic"};
       } catch (_) { /* A failed candidate still produces startup errors. */ }
     }
     if (route.includes("code-editor")) return {app:"code-editor",variant:"production"};

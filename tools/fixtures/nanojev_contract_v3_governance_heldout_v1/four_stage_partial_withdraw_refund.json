@@ -1,0 +1,54 @@
+{
+  "language": "nanojev.contract.governed_escrow.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "arbitrator": "jointly_appointed_after_dispute",
+  "amount_wei": 26,
+  "milestones": [
+    {
+      "id": "checkpoint_1",
+      "amount_wei": 1,
+      "deadline_seconds": 6000,
+      "extension_seconds": 9100,
+      "extension_decision_seconds": 650,
+      "max_extensions": 0
+    },
+    {
+      "id": "checkpoint_2",
+      "amount_wei": 5,
+      "deadline_seconds": 6700,
+      "extension_seconds": 8500,
+      "extension_decision_seconds": 600,
+      "max_extensions": 2
+    },
+    {
+      "id": "checkpoint_3",
+      "amount_wei": 7,
+      "deadline_seconds": 7800,
+      "extension_seconds": 9900,
+      "extension_decision_seconds": 700,
+      "max_extensions": 1
+    },
+    {
+      "id": "checkpoint_4",
+      "amount_wei": 13,
+      "deadline_seconds": 9000,
+      "extension_seconds": 9200,
+      "extension_decision_seconds": 800,
+      "max_extensions": 0
+    }
+  ],
+  "policy": {
+    "review_seconds": 3800,
+    "dispute_filing_seconds": 4100,
+    "appointment_seconds": 3600,
+    "ruling_seconds": 8800,
+    "on_review_silence": "pay_worker",
+    "on_appointment_failure": "refund_payer",
+    "on_arbitrator_silence": "refund_payer",
+    "on_missed_submission": "refund_payer",
+    "on_undisputed_rejection": "refund_payer"
+  }
+}

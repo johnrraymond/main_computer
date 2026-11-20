@@ -126,6 +126,7 @@ def test_seh_page_failure_diagnostic_exports_only_public_fields():
 def test_cli_optional_page_preflight_checks_browser_without_mutations(monkeypatch, tmp_path):
     calls=[]
     monkeypatch.setattr(dm, 'preflight', lambda **kwargs: _baseline() | {'status':'READ_ONLY'})
+    monkeypatch.setattr(dm, 'verify_resident_admin', lambda **kwargs:{'status':'VERIFIED','device_id':'admin-device','mutation_submitted':False})
     monkeypatch.setattr(dm, 'verify_seh_page_read_only', lambda **kwargs:
                         (calls.append(kwargs) or {'status':'PASS_READ_ONLY_UI',
                           'page_preflight': {'application_uuid':'abc12345orig'}}))
@@ -140,6 +141,7 @@ def test_cli_optional_page_preflight_checks_browser_without_mutations(monkeypatc
 
 def test_cli_page_preflight_refuses_actual_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr(dm, 'preflight', lambda **kwargs: _baseline() | {'status':'READ_ONLY'})
+    monkeypatch.setattr(dm, 'verify_resident_admin', lambda **kwargs:{'status':'VERIFIED','device_id':'admin-device','mutation_submitted':False})
     monkeypatch.setattr(dm, 'verify_seh_page_read_only', lambda **kwargs:
                         {'status':'INCOMPLETE','failed_gate':'PAGE_CANONICAL_UUID_MISMATCH',
                          'submitted_operations':[]})

@@ -134,6 +134,32 @@ def aligned_labels(prepared,row):
             'eligible':prepared['eligible']}
 
 
+def composite_binding_labels(prepared, row, predicted_spans):
+    """Align G2 binding supervision to observed G1 nodes, never gold G1 inputs.
+
+    Unmatched gold objects cannot be silently teacher-forced into the graph.
+    They are absent from the prediction path and their edges are untrainable.
+    """
+    if not isinstance(predicted_spans,(list,tuple)):
+        raise ValueError('GAMER_GRAPH_COMPOSITE_SPANS_REQUIRED')
+    from tools.nanojev_gamer_v1_graph_head import token_span_char_bounds
+    observed={}
+    for index,span in enumerate(predicted_spans):
+        bounds=token_span_char_bounds(span,prepared)
+        if bounds is None:raise ValueError('GAMER_GRAPH_COMPOSITE_SPAN_BOUNDARY')
+        key=(*bounds,span['kind'])
+        if key in observed:raise ValueError('GAMER_GRAPH_COMPOSITE_DUPLICATE_OBJECT')
+        observed[key]=index
+    ids={}
+    for node in row['graph']['nodes']:
+        if 'span' not in node:continue
+        key=(*node['span'],node['kind'])
+        if key in observed:ids[node['id']]=observed[key]
+    if len(set(ids.values()))!=len(ids):
+        raise ValueError('GAMER_GRAPH_COMPOSITE_AMBIGUOUS_BINDING')
+    return ids
+
+
 def trainable_stage(head,stage):
     if stage not in STAGES:raise ValueError('GAMER_GRAPH_UNKNOWN_TRAINING_STAGE')
     prefix=STAGE_MODULES[stage]
@@ -591,7 +617,8 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
           train_limit=0,refine_checkpoint=None,refine_parent_dataset=None,
           counterfactual_fraction=.5,consistency_weight=.15,
           structured_weight=.40,family_balanced=False,controlled_exposure=False,
-          parent_retention_weight=0.0,hard_null_weight=0.0,cutover_id=None):
+          parent_retention_weight=0.0,hard_null_weight=0.0,cutover_id=None,
+          native_composite_g1=None,native_composite_cert=None):
     from safetensors.torch import save_file
     dataset=Path(dataset); output=Path(output); source_adapter=Path(source_adapter)
     if stage not in STAGES:raise ValueError('GAMER_GRAPH_UNKNOWN_TRAINING_STAGE')
@@ -621,6 +648,11 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
         raise PermissionError('GAMER_GRAPH_STAGE_LOCKED_REQUIRES_PARENT_GATE')
     if stage=='G1' and (parent_checkpoint or prerequisite_cert):
         raise ValueError('GAMER_GRAPH_G1_MUST_START_CLEAN')
+    composite_requested=bool(native_composite_g1 or native_composite_cert)
+    if composite_requested and (stage!='G2' or not native_composite_g1 or
+                                not native_composite_cert):
+        raise PermissionError('GAMER_GRAPH_COMPOSITE_G1_G2_REQUIRES_CERTIFIED_PAIR')
+
     rows=load_rows(dataset)
     training=[r for r in rows if r['split']=='train']
     if train_limit: training=training[:train_limit]
@@ -666,7 +698,17 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
         if not prerequisite_cert:
             raise PermissionError('GAMER_GRAPH_PREREQUISITE_CERT_REQUIRED')
         previous=STAGES[STAGES.index(stage)-1]
-        _verify_certification(prerequisite_cert,parent_checkpoint,parent_manifest,previous)
+        if stage=='G2' and composite_requested:
+            from tools.nanojev_gamer_v1_g1_native_certification_0082 import verify_native_certificate
+            native_g1_certificate=verify_native_certificate(
+                native_composite_cert,native_composite_g1,
+                expected_head_sha256=parent_manifest['head_sha256'])
+            if str(Path(prerequisite_cert).resolve())!=str(Path(native_composite_cert).resolve()):
+                raise PermissionError('GAMER_GRAPH_COMPOSITE_PREREQUISITE_CERT_MISMATCH')
+        else:
+            _verify_certification(prerequisite_cert,parent_checkpoint,parent_manifest,previous)
+        if stage!='G2' and parent_manifest.get('native_composite_g1'):
+            raise PermissionError('GAMER_GRAPH_NATIVE_LATER_STAGE_INTEGRATION_NOT_CERTIFIED')
         if parent_manifest['dataset_sha256']!=backbone.sha256(dataset):
             raise ValueError('GAMER_GRAPH_DATASET_LINEAGE_CHANGED')
         if parent_manifest['source_adapter_sha256']!=backbone.adapter_fingerprint(source_adapter):
@@ -695,9 +737,28 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
     memory=None
     if STAGES.index(stage)>=5 and any('memory_episode' not in row for row in training):
         raise ValueError('GAMER_GRAPH_G6_REQUIRES_SEQUENCED_ACQUISITION_CORPUS')
+    composite_runtime=None
+    native_composite_lineage=None
+    if composite_requested:
+        from tools.nanojev_gamer_v1_g1_native_composite_0082 import load_composite
+        composite_runtime=load_composite(native_composite_g1,device=device)
+        if composite_runtime.record['head_sha256']!=parent_manifest['head_sha256']:
+            raise PermissionError('GAMER_GRAPH_NATIVE_COMPOSITE_PARENT_DRIFT')
+        native_composite_lineage={
+            'checkpoint':str(Path(native_composite_g1).resolve()),
+            'checkpoint_manifest_sha256':backbone.sha256(Path(native_composite_g1)/'composite-interface.json'),
+            'certificate':str(Path(native_composite_cert).resolve()),
+            'certificate_sha256':backbone.sha256(native_composite_cert),
+            'mode':'predicted_G1_spans_native_G2_binding'}
     cache=[]
     for i,row in enumerate(training):
         item=capture(model,tok,row,device,max_length)
+        if composite_runtime is not None:
+            inference=composite_runtime.predict(item['hidden'].to(device=device,dtype=torch.float32),
+                item['prepared'],family=row['family'],native_stage='G1')
+            spans=inference['token_spans']
+            item['native_composite_spans']=spans
+            item['native_binding_ids']=composite_binding_labels(item['prepared'],row,spans)
         if STAGES.index(stage)>=5:
             bank,target,size=_episode_memory(head,model,tok,row,device,max_length)
             item['memory']=bank.detach().to('cpu',dtype=torch.float16)
@@ -832,10 +893,14 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
                 prep=item['prepared'];lab=item['labels']
                 bank=item['memory'].to(device=device,dtype=torch.float32) if 'memory' in item else None
                 output_head=head(hidden,eligible=prep['eligible'].to(device),
-                    training_spans=lab['spans'] if stage!='G1' else None,
+                    training_spans=(lab['spans'] if stage!='G1' and
+                                    composite_runtime is None else None),
+                    inference_spans=item.get('native_composite_spans'),
                     memory=bank,active_stage=stage)
                 episode_row={**row,'memory_target':item.get('memory_target')}
-                stage_objective=stage_loss(head,output_head,lab,episode_row,stage,
+                current_labels=(dict(lab,surface_ids=item['native_binding_ids'])
+                                if composite_runtime is not None else lab)
+                stage_objective=stage_loss(head,output_head,current_labels,episode_row,stage,
                     memory=bank,structured_weight=structured_weight,hard_null_weight=hard_null_weight)
                 if parent_teacher is not None and not row.get('counterfactual_pair'):
                     with torch.no_grad():
@@ -908,7 +973,8 @@ def train(*,dataset,output,source_adapter,stage='G1',parent_checkpoint=None,
          'g1_parent_dataset_sha256':backbone.sha256(refine_parent_dataset) if refine_parent_dataset else None,
          'g1_refined_from':str(Path(refine_checkpoint).resolve()) if refine_checkpoint else None,
          'g1_refined_head_sha256':refine_manifest['head_sha256'] if refine_checkpoint else None,
-         'deterministic_fabric':fabric}
+         'deterministic_fabric':fabric,
+         'native_composite_g1':native_composite_lineage}
     (output/MANIFEST).write_text(json_text(manifest)+'\n',encoding='utf-8')
     return manifest
 
@@ -1063,6 +1129,17 @@ def evaluate(*,dataset,checkpoint,output,split='dev',limit=0,device='cuda',
     if limit:rows=rows[:limit]
     model,tok=backbone.model_components(manifest['model_id'],manifest['source_adapter'],device)
     head.eval()
+    composite_runtime=None
+    if manifest.get('native_composite_g1'):
+        from tools.nanojev_gamer_v1_g1_native_certification_0082 import verify_native_certificate
+        from tools.nanojev_gamer_v1_g1_native_composite_0082 import load_composite
+        bound=manifest['native_composite_g1']
+        if (backbone.sha256(Path(bound['checkpoint'])/'composite-interface.json')!=
+                bound['checkpoint_manifest_sha256'] or
+            backbone.sha256(bound['certificate'])!=bound['certificate_sha256']):
+            raise PermissionError('GAMER_GRAPH_NATIVE_G1_G2_LINEAGE_DRIFT')
+        verify_native_certificate(bound['certificate'],bound['checkpoint'])
+        composite_runtime=load_composite(bound['checkpoint'],device=device)
     stage=target_stage or manifest['stage']
     if stage not in STAGES or STAGES.index(stage)>STAGES.index(manifest['stage']):
         raise PermissionError('GAMER_GRAPH_CANNOT_EVALUATE_UNTRAINED_FUTURE_STAGE')
@@ -1085,10 +1162,20 @@ def evaluate(*,dataset,checkpoint,output,split='dev',limit=0,device='cuda',
             if 'memory_episode' not in row:
                 raise ValueError('GAMER_GRAPH_MEMORY_EVALUATION_REQUIRES_EPISODE')
             bank,memory_target,memory_count=_episode_memory(head,model,tok,row,device,max_length)
+        native_spans=(composite_runtime.predict(h,p,family=row['family'],native_stage='G1')
+                      ['token_spans'] if composite_runtime is not None else None)
         with torch.inference_mode():
-            output_head=head(h,eligible=elig,memory=bank,active_stage=stage)
-        found=_char_objects(output_head,p)
-        raw_found=_char_objects(output_head,p,normalize_whitespace=False)
+            output_head=(head(h,eligible=elig,memory=bank,active_stage=stage,
+                              inference_spans=native_spans)
+                         if stage!='G1' or composite_runtime is None else
+                         composite_runtime.head(h,eligible=elig,active_stage='G1'))
+        if composite_runtime is not None:
+            selected_objects={( *token_span_char_bounds(s,p),s['kind']) for s in native_spans}
+            found=selected_objects
+            raw_found=selected_objects
+        else:
+            found=_char_objects(output_head,p)
+            raw_found=_char_objects(output_head,p,normalize_whitespace=False)
         gold={(x['start'],x['end'],x['kind']) for x in row['object_spans']}
         raw_object_tp+=len(raw_found&gold)
         raw_object_pred_count+=len(raw_found)
@@ -1110,17 +1197,25 @@ def evaluate(*,dataset,checkpoint,output,split='dev',limit=0,device='cuda',
         family_ok[row['family']]+=int(passed)
         if i<ablation_limit:
             # A real causal control, same head with content-free backbone vectors.
+            zero_spans=(composite_runtime.predict(h,p,family=row['family'],
+                           mode='zero_hidden',native_stage='G1')['token_spans']
+                        if composite_runtime is not None else None)
             with torch.inference_mode():
-                zero=head(torch.zeros_like(h),eligible=elig,memory=bank,active_stage=stage)
+                zero=head(torch.zeros_like(h),eligible=elig,memory=bank,
+                          active_stage=stage,inference_spans=zero_spans)
             if stage=='G1':
-                zero_passed=_char_objects(zero,p)==gold
+                zero_passed=({(*token_span_char_bounds(s,p),s['kind']) for s in zero_spans}==gold
+                             if composite_runtime is not None else _char_objects(zero,p)==gold)
             else:
                 zg,_=decode_graph(zero,p,unlocked=stage)
                 zero_passed,_,_=_compare(zg,row['graph'],stage)
             zero_correct+=int(zero_passed)
             ablated=_ablate_stage_head(output_head,stage)
             if stage=='G1':
-                component_passed=_char_objects(ablated,p)==gold
+                component_passed=({(*token_span_char_bounds(s,p),s['kind']) for s in
+                     composite_runtime.predict(h,p,family=row['family'],mode='stage_component',
+                        native_stage='G1')['token_spans']}==gold
+                     if composite_runtime is not None else _char_objects(ablated,p)==gold)
             elif stage=='G6':
                 # Remove the acquired memory itself and recompute the graph.
                 with torch.inference_mode():
@@ -2375,6 +2470,8 @@ def main(argv=None):
     t.add_argument('--source-adapter',required=True)
     t.add_argument('--stage',default='G1',choices=STAGES)
     t.add_argument('--parent-checkpoint');t.add_argument('--prerequisite-cert')
+    t.add_argument('--native-composite-g1',help='G1-0081 immutable composite checkpoint; G2 only')
+    t.add_argument('--native-composite-cert',help='G1-0082 native certification; required with composite')
     t.add_argument('--refine-checkpoint',help='Continue G1 from an existing immutable G1 checkpoint; produces a new checkpoint')
     t.add_argument('--refine-parent-dataset',help='Required for training-only extension of existing immutable dataset')
     t.add_argument('--counterfactual-fraction',type=float,default=.5)
@@ -5489,7 +5586,8 @@ def main(argv=None):
        structured_weight=a.structured_weight,family_balanced=a.family_balanced,
        controlled_exposure=a.controlled_exposure,
        parent_retention_weight=a.parent_retention_weight,hard_null_weight=a.hard_null_weight,
-       cutover_id=a.cutover_id)
+       cutover_id=a.cutover_id,
+       native_composite_g1=a.native_composite_g1,native_composite_cert=a.native_composite_cert)
     elif a.command=='evaluate':result=evaluate(dataset=a.dataset,checkpoint=a.checkpoint,
        output=a.output,split=a.split,limit=a.limit,device=a.device,
        ablation_limit=a.ablation_limit,max_length=a.max_length,target_stage=a.target_stage,

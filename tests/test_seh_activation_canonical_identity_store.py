@@ -68,6 +68,8 @@ def test_activation_preflight_uses_lms_identity_store_not_user_store(tmp_path, m
                 return Response(challenge)
             if self.path == '/v1/auth/verify':
                 return Response({'access_token': 'test-memory-only-token'})
+            if self.path == '/v1/auth/session':
+                return Response({'device_id': lms_id, 'user_id': 'verified-admin', 'role': 'admin', 'active': True})
             if self.path == '/v1/local/seh/activate':
                 return Response({'status': 'PLAN_ONLY', 'remote_mutation': False})
             if self.path == '/v1/auth/logout':
@@ -86,7 +88,7 @@ def test_activation_preflight_uses_lms_identity_store_not_user_store(tmp_path, m
 
     assert result == {'status': 'PLAN_ONLY', 'remote_mutation': False}
     assert [path for _, path, _, _ in requests] == [
-        '/v1/auth/challenge', '/v1/auth/verify',
+        '/v1/auth/challenge', '/v1/auth/verify', '/v1/auth/session',
         '/v1/local/seh/activate', '/v1/auth/logout',
     ]
     assert requests[0][2] == {'device_id': lms_id}
@@ -96,7 +98,7 @@ def test_activation_preflight_uses_lms_identity_store_not_user_store(tmp_path, m
     assert requests[1][2]['device_id'] == lms_id
     assert isinstance(requests[1][2]['signature'], str)
     assert requests[1][2]['signature']
-    assert requests[2][2] == {'execute': False, 'approve_generation': None}
-    assert requests[2][3]['Authorization'] == 'Bearer test-memory-only-token'
+    assert requests[3][2] == {'execute': False, 'approve_generation': None}
+    assert requests[3][3]['Authorization'] == 'Bearer test-memory-only-token'
     assert lms_store.list()['default_device_id'] == lms_id
     assert [i['device_id'] for i in user_store.list()['identities']] == ['different-user-key']

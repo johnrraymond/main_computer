@@ -1,0 +1,11 @@
+"use strict";
+const mcel = require("@mcel/app");
+
+module.exports = mcel.defineApp({id: {{APP_ID_JSON}}, title: {{APP_TITLE_JSON}}}, dsl => {
+  const message = dsl.state.canonical("message", dsl.field.text(), {initial: "Ready"});
+  const surface = dsl.surface.bindHtml("application", {bindings: {
+    workspace: [dsl.surface.text("message", {value: message})],
+    status: [dsl.surface.receipt("activity")]
+  }});
+  return {states: [message], surfaces: [surface]};
+});

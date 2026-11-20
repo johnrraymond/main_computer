@@ -2,6 +2,8 @@
 
 from .generator import (
     DEFAULT_TEMPLATE_VERSION,
+    LEGACY_TEMPLATE_VERSION,
+    SUPPORTED_TEMPLATE_VERSIONS,
     TARGET_GAPS,
     InvalidScaffoldInput,
     McelScaffoldingError,
@@ -17,6 +19,8 @@ from .package_validator import PackageValidationResult, validate_package_files, 
 
 __all__ = [
     "DEFAULT_TEMPLATE_VERSION",
+    "LEGACY_TEMPLATE_VERSION",
+    "SUPPORTED_TEMPLATE_VERSIONS",
     "TARGET_GAPS",
     "InvalidScaffoldInput",
     "McelScaffoldingError",

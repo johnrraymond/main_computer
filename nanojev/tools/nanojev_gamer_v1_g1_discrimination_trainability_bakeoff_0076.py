@@ -51,6 +51,10 @@ MAX_OPTIONS = coverage.MAX_OPTIONS
 
 def _features(data):
     """Entirely label-blind model inputs. Never reads case.gold."""
+    count=len(data.added.case.options)
+    if any(len(items)!=count for items in (
+            data.prop_features,data.added.features,data.is_new,data.base_scores)):
+        raise ValueError('G1_0076_LATTICE_FEATURE_MISMATCH')
     rows = []
     for opt, a, b, new in zip(data.added.case.options, data.prop_features,
                                data.added.features, data.is_new):
@@ -61,7 +65,11 @@ def _features(data):
         if len(row) != DIM or not all(math.isfinite(float(x)) for x in row):
             raise ValueError('G1_0076_FEATURE_CONTRACT')
         rows.append(tuple(max(-6.0, min(6.0, float(x))) / 3.0 for x in row))
-    return torch.tensor(rows, dtype=torch.float64)
+    # A causal ablation may produce no eligible span candidates. Preserve
+    # the [candidate_count, feature_width] contract even at count zero;
+    # torch.tensor([]) would produce [0] and break the trained 58x40 scorer.
+    return (torch.tensor(rows, dtype=torch.float64) if rows else
+            torch.empty((0, DIM), dtype=torch.float64))
 
 
 def _selection_priority(data, index, mode):

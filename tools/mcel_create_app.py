@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from main_computer.mcel_scaffolding import (  # noqa: E402
     DEFAULT_TEMPLATE_VERSION,
+    SUPPORTED_TEMPLATE_VERSIONS,
     McelScaffoldingError,
     generate_application,
 )
@@ -35,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--template-version",
         default=DEFAULT_TEMPLATE_VERSION,
-        help=f"Exact template version. Current value: {DEFAULT_TEMPLATE_VERSION}.",
+        help=f"Versioned template (default: {DEFAULT_TEMPLATE_VERSION}; supported: {SUPPORTED_TEMPLATE_VERSIONS}).",
     )
     parser.add_argument("--dry-run", action="store_true", help="Validate and report without writing.")
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable result on stdout.")

@@ -140,7 +140,7 @@ var McelSemanticThemePreview = (() => {
       // Lab swatches are not a palette authority. The canonical renderer
       // resolves the selected named Theme from the same Color Law as standalone.
       const mounted = root.ownerDocument.defaultView;
-      const application = mounted?.__mcelExpanded || mounted?.__mcelWorkbench;
+      const application = mounted?.__mcelExpanded || mounted?.__mcelWorkbench || mounted?.__mcelSlh;
       if (application?.appId !== ir?.application?.appId)
         return {schema,status:'refused',reason:'Mounted application handle does not match canonical source'};
       const result=application.app?.setColorTheme?.(theme);

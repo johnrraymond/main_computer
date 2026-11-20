@@ -39,6 +39,7 @@ _SURFACE_BUNDLE_CONTRACT_KEY = "surfaceBundle"
 _SURFACE_BUNDLE_PROJECTION_PATH = "contracts/surface-bundle.json"
 HOST_BOUND_RUNTIME_MODE = "host-bound"
 COPIED_RUNTIME_MODE = "package-document"
+NATIVE_SEMANTIC_RUNTIME_MODE = "native-semantic-route"
 
 
 class RuntimeProjectionError(RuntimeError):
@@ -187,9 +188,28 @@ def _record_blueprint(repo_root: Path, record: ApplicationPackageRecord) -> Mapp
     return _read_json(_repository_path(repo_root, record.blueprint, "blueprint"), "application blueprint")
 
 
+def _native_semantic_route(repo_root: Path, record: ApplicationPackageRecord) -> str | None:
+    # A paired-source package is projectable only when a host route has been
+    # explicitly adopted. A newly scaffolded application has no such claim.
+    if record.blueprint or record.runtime:
+        return None
+    manifest = _read_json(repo_root / record.manifest, "paired application manifest")
+    authoring = manifest.get("authoring")
+    if not isinstance(authoring, Mapping) or authoring.get("format") != "mcel.paired-html-js.v1":
+        return None
+    route = manifest.get("nativeRoute")
+    if route is None:
+        return None
+    if not isinstance(route, str) or route != f"/applications/{record.app_id}":
+        raise InvalidRuntimeProjectionSource("Paired native route must match the application identity.")
+    return route
+
+
 def is_runtime_projectable_record(repo_root: Path, record: ApplicationPackageRecord) -> bool:
     if all(record.runtime.get(key) for key in _BROWSER_RUNTIME_KEYS):
         return True
+    if not record.blueprint:
+        return _native_semantic_route(repo_root, record) is not None
     return _host_binding(_record_blueprint(repo_root, record)) is not None
 
 
@@ -266,6 +286,55 @@ def build_application_runtime_projection(
 ) -> ApplicationRuntimeProjection:
     if not catalog.ok or catalog.invalid_count or not record.valid or not record.app_id or not record.fingerprint:
         raise InvalidRuntimeProjectionSource("Only valid repository application packages may be projected.")
+
+    native_route = _native_semantic_route(repo_root, record)
+    if native_route is not None:
+        # Catalog entry only: the native host compiles the paired source and
+        # executes its own governed runtime. Never copy executable source into
+        # this virtual browser projection or fabricate a generic JS adapter.
+        from main_computer.mcel_dsl_compiler import compile_dsl_application
+        source = repo_root / record.package_root / "application.js"
+        compiled = compile_dsl_application(source, write_candidate=False)
+        if not compiled.valid or compiled.normalized_ir is None or compiled.app_id != record.app_id:
+            raise InvalidRuntimeProjectionSource("Native paired-source compilation failed.")
+        html_sources = compiled.normalized_ir.get("provenance",{}).get("frontend",{}).get("sourceFiles",[])
+        if {Path(x.get("path","")).name for x in html_sources} != {"application.html","application.js"}:
+            raise InvalidRuntimeProjectionSource("Native route requires authoritative HTML+JS source pairing.")
+        projection_root = PurePosixPath(DEFAULT_RUNTIME_PROJECTION_ROOT, record.app_id).as_posix()
+        browser_root = PurePosixPath("applications/mcel-packages", record.app_id).as_posix()
+        fingerprint = _hash_framed_items(RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM, (
+            ("@package",record.fingerprint.encode("utf-8")),
+            ("@catalog",catalog.fingerprint.encode("utf-8")),
+            ("@route",native_route.encode("utf-8")),
+            ("@semantic",str(compiled.semantic_fingerprint).encode("utf-8")),
+        ))
+        manifest = {
+            "schema":RUNTIME_PROJECTION_SCHEMA,"appId":record.app_id,"title":record.title or record.app_id,
+            "source":{"packageRoot":record.package_root,"packageFingerprint":record.fingerprint,
+                      "packageFingerprintAlgorithm":record.fingerprint_algorithm,
+                      "catalogFingerprint":catalog.fingerprint,
+                      "catalogFingerprintAlgorithm":catalog.fingerprint_algorithm},
+            "projection":{"fingerprint":fingerprint,
+                          "fingerprintAlgorithm":RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM,"fileCount":1},
+            "surface":{"rootSelector":"#mcel-workbench"},"surfaceBundle":None,"modules":{},
+            "runtime":{"mode":NATIVE_SEMANTIC_RUNTIME_MODE,"route":native_route,
+                       "rootSelector":"#mcel-workbench","facade":None},
+            "conformance":{"currentMode":record.conformance.get("currentMode","paired-source-compiled"),
+                           "targetMode":record.conformance.get("targetMode","semantic-runtime-proven"),
+                           "missingBridges":list(record.conformance.get("missingBridges",[]))},
+        }
+        files={RUNTIME_MANIFEST_NAME:(json.dumps(manifest,indent=2,sort_keys=True,ensure_ascii=False)+"\n").encode("utf-8")}
+        return ApplicationRuntimeProjection(
+            app_id=record.app_id,title=record.title or record.app_id,
+            source_package_root=record.package_root,source_package_fingerprint=record.fingerprint,
+            catalog_fingerprint=catalog.fingerprint,projection_root=projection_root,
+            manifest_path=PurePosixPath(projection_root,RUNTIME_MANIFEST_NAME).as_posix(),
+            manifest_url=PurePosixPath(browser_root,RUNTIME_MANIFEST_NAME).as_posix(),
+            document_url=None,script_url=None,style_url=None,
+            mount_mode=NATIVE_SEMANTIC_RUNTIME_MODE,host_route=native_route,
+            root_selector="#mcel-workbench",runtime_facade=None,surface_bundle_url=None,
+            surface_bundle=None,fingerprint=fingerprint,
+            fingerprint_algorithm=RUNTIME_PROJECTION_FINGERPRINT_ALGORITHM,files=files,manifest=manifest)
 
     blueprint = _record_blueprint(repo_root, record)
     root_selector = blueprint.get("rootSelector")

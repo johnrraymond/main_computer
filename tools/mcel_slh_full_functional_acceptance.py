@@ -9,7 +9,8 @@ Run:
     python -m tools.mcel_slh_full_functional_acceptance --mode isolated
     python -m tools.mcel_slh_full_functional_acceptance --mode isolated --case identity-ui
 
-Default runs only curated mocked-browser or disposable-service tests. The
+Default runs curated mocked-browser or disposable-service tests plus the
+opt-in-by-default isolated reactivity shadow diagnostic lane. The
 optional real-host lane delegates to the existing read-only, allowlisted live
 runner. No destructive live lane is implemented or implicitly enabled.
 """
@@ -88,17 +89,29 @@ CASES: tuple[Case, ...] = (
     case("seh-controllers-ui", "ui", "tests/test_mcel_slh_seh_deployment_ui.py::test_browser_deployment_controls_are_selected_target_scoped", "seh-deployment-register seh-deployment-select", "controller forms are present on correct target; submission not asserted"),
     case("seh-controllers-adapter", "adapter", "tests/test_mcel_slh_seh_deployment_ui.py::test_local_and_network_deploy_plans_use_selected_slh_without_relay", "seh-deployment-register seh-deployment-select", "controller registration and selection are routed to LMS"),
     case("seh-public-health-ui", "ui", "tests/test_mcel_operation_notebook_outcome_reactivity.py::test_undeploy_eligibility_tracks_authoritative_deployment_phase_in_place", "read-seh-deployment", "deployment phases update Undeploy eligibility without remounting"),
+    # Certification closure: asserting submission and state reconciliation, not merely mounted forms.
+    case("remote-seh-disconnect-ui-execution", "ui", "tests/test_mcel_slh_certification_closure.py::test_remote_seh_disconnect_ui_revokes_ticket_and_protected_projection", "disconnect-remote-seh", "browser disconnects the exact remote SEH ticket and removes protected projection"),
+    case("remote-seh-session-real-isolated", "isolated-effect", "tests/test_seh_remote_admin_backend.py::test_admin_login_and_identity_read_through_opaque_relay", "connect-remote-seh disconnect-remote-seh", "real disposable ORG-SLH TLS and opaque relay authenticate, read, revoke and reject reused session"),
+    case("seh-connection-startstoprestart-ui-execution", "ui", "tests/test_mcel_slh_certification_closure.py::test_seh_connection_start_stop_restart_ui_reconciles_authoritative_state", "seh-connection-start seh-connection-stop seh-connection-restart", "browser submits three connection operations and reconciles each selected target"),
+    case("seh-connection-startstoprestart-http-isolated", "isolated-effect", "tests/test_seh_remote_admin_backend.py::test_org_slh_admin_outbound_lifecycle_persists_and_does_not_stop_org", "seh-connection-start seh-connection-stop seh-connection-restart", "disposable ORG-SLH TLS HTTP enforces admin, persisted stop/start/restart, and leaves organization running"),
+    case("seh-controller-registerselect-ui-execution", "ui", "tests/test_mcel_slh_certification_closure.py::test_seh_controller_register_select_ui_persists_in_authoritative_inspection", "seh-deployment-register seh-deployment-select", "browser posts real register/select forms on local and network targets, refreshes controller inventory and selection"),
+    case("seh-deploy-canonical-disposable-execution", "isolated-effect", "tests/test_seh_canonical_deploy_ui_harness.py::test_verified_undeploy_plan_and_explicit_deploy_use_exact_existing_harness", "seh-deployment-deploy", "real guarded harness on disposable canonical state with simulated Coolify, verified replacement and signed-activation contract; not evidence of production runtime"),
 )
 
-# Explicit unproved execution facets. The runner does NOT manufacture a PASS
-# for an action merely because a form exists or an adapter mock accepts it.
-# These require new focused tests or disposable end-to-end fixtures.
-REQUIRED_EXCEPTIONS = {
-    "intent:disconnect-remote-seh": {"ui"},
-    "intent:seh-connection-start": {"ui"},
-    "intent:seh-connection-restart": {"ui"},
-    "intent:seh-deployment-register": {"ui"},
-    "intent:seh-deployment-select": {"ui"},
+# A passing form-presence test is insufficient: each previously missing facet
+# requires its particular execution test, even if other UI tests are green.
+MANDATORY_CASES = {
+    ("intent:connect-remote-seh", "isolated-effect"): {"remote-seh-session-real-isolated"},
+    ("intent:disconnect-remote-seh", "ui"): {"remote-seh-disconnect-ui-execution"},
+    ("intent:disconnect-remote-seh", "isolated-effect"): {"remote-seh-session-real-isolated"},
+    ("intent:seh-connection-start", "ui"): {"seh-connection-startstoprestart-ui-execution"},
+    ("intent:seh-connection-start", "isolated-effect"): {"seh-connection-startstoprestart-http-isolated"},
+    ("intent:seh-connection-stop", "isolated-effect"): {"seh-connection-startstoprestart-http-isolated"},
+    ("intent:seh-connection-restart", "ui"): {"seh-connection-startstoprestart-ui-execution"},
+    ("intent:seh-connection-restart", "isolated-effect"): {"seh-connection-startstoprestart-http-isolated"},
+    ("intent:seh-deployment-register", "ui"): {"seh-controller-registerselect-ui-execution"},
+    ("intent:seh-deployment-select", "ui"): {"seh-controller-registerselect-ui-execution"},
+    ("intent:seh-deployment-deploy", "isolated-effect"): {"seh-deploy-canonical-disposable-execution"},
 }
 
 
@@ -148,6 +161,14 @@ def source_fingerprint() -> str:
     paths.update((ROOT / "main_computer").glob("mcel_slh*.py"))
     paths.update((ROOT / "main_computer/web/applications/scripts").glob("mcel-semantic-slh*.js"))
     paths.update(ROOT / item.node.split("::", 1)[0] for item in CASES)
+    # Shadow evidence must be invalidated if the recorder, test fixture, or
+    # diagnostic runner changes. A resume cannot reuse a different oracle.
+    paths.update(ROOT / name for name in (
+        "tools/mcel_slh_functional_shadow.py",
+        "main_computer/web/applications/scripts/mcel-reactivity-shadow-plugin.js",
+        "main_computer/web/applications/scripts/mcel-diagnostic-plugins.js",
+        "tests/test_mcel_slh_lifecycle_disable_enablement_oracle.py",
+    ))
     digest = hashlib.sha256()
     for path in sorted(paths):
         digest.update(str(path.relative_to(ROOT)).encode("utf-8"))
@@ -198,6 +219,80 @@ def run_case(item: Case, *, timeout: int) -> dict:
                 "seconds": round(time.monotonic()-start, 2), "output_tail": message}
 
 
+
+def run_shadow_lane(*, destination: Path, timeout: int) -> dict:
+    """Isolate mocked-browser diagnostics in their own bounded process group.
+
+    Never reuse an old evidence file after a failed or timed-out invocation.
+    The reported status comes from the diagnostic verdict, not subprocess
+    exit code or the mere existence of a JSON report.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.unlink(missing_ok=True)
+    command = [sys.executable, "-m", "tools.mcel_slh_functional_shadow",
+               "--output", str(destination)]
+    start = time.monotonic()
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace") as log:
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                   env=env, creationflags=flags,
+                                   start_new_session=(os.name != "nt"))
+        timed_out = False
+        try:
+            exit_code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10, check=False)
+            else:
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired: process.kill()
+            exit_code = None
+        log.seek(0)
+        output_tail = log.read()[-1500:]
+    result = {"status": "UNVERIFIED", "coverageStatus": "INCOMPLETE",
+              "selectiveSchedulingCertified": False,
+              "seconds": round(time.monotonic()-start, 2), "exit_code": exit_code,
+              "output_tail": output_tail, "report": str(destination)}
+    if timed_out:
+        result["reason"] = "SHADOW_TIMEOUT"
+        return result
+    if not destination.is_file():
+        result["reason"] = "SHADOW_EVIDENCE_MISSING"
+        return result
+    try:
+        evidence = json.loads(destination.read_text(encoding="utf-8"))
+        if evidence.get("schema") != "mcel.slh.functional-shadow.v1":
+            raise ValueError("unexpected shadow evidence schema")
+        verdict = evidence["evaluation"]
+        result.update({"status": verdict["status"],
+                       "coverageStatus": verdict.get("coverageStatus", "INCOMPLETE"),
+                       "selectiveSchedulingCertified":False,
+                       "failures": verdict.get("failures", []),
+                       "coverageBlockers": verdict.get("coverageBlockers", []),
+                       "metrics": verdict.get("metrics", {}),
+                       "stages": [{"phase": s["phase"], "functionalPass": s["functionalPass"],
+                                   "deltaNotifications": s["deltaNotifications"],
+                                   "deltaPredictedSkips": s.get("deltaCounters",{}).get("predictedSkips",0),
+                                   "deltaContradictions": s.get("deltaCounters",{}).get("contradictions",0),
+                                   "deltaDOMMutations": s.get("deltaCounters",{}).get("observedMutations",0),
+                                   "deltaPropertyChanges": s.get("deltaCounters",{}).get("propertyChanges",0)}
+                                  for s in evidence.get("stages", [])]})
+        if (exit_code != 0 and result["status"] == "PASS_OBSERVATION") or (
+                exit_code == 0 and result["status"] != "PASS_OBSERVATION"):
+            result["status"] = "FAIL"
+            result["reason"] = "SHADOW_EXIT_VERDICT_MISMATCH"
+    except (ValueError, KeyError, TypeError) as exc:
+        result["status"] = "FAIL"
+        result["reason"] = "SHADOW_EVIDENCE_INVALID:" + str(exc)
+    return result
+
+
 def report_for(results: dict[str, dict], *, mode: str) -> dict:
     data = inventory()
     rows = []
@@ -209,12 +304,14 @@ def report_for(results: dict[str, dict], *, mode: str) -> dict:
             supporting = [item for item in CASES if intent_id in item.intents and item.lane == lane]
             # A fixture that checks only the existence of a form is insufficient
             # to certify its user-facing operation.
-            if lane in REQUIRED_EXCEPTIONS.get(intent_id, set()):
+            mandatory = MANDATORY_CASES.get((intent_id, lane), set())
+            # Never satisfy a required facet with an unrelated passing case.
+            if not mandatory.issubset({item.id for item in supporting}):
                 supporting = []
             observed = [results[item.id]["status"] for item in supporting if item.id in results]
             if any(x == "FAIL" for x in observed): status = "FAIL"
             elif any(x == "UNVERIFIED" for x in observed): status = "UNVERIFIED"
-            elif observed and all(x == "PASS" for x in observed): status = "PASS"
+            elif observed and all(x == "PASS" for x in observed) and mandatory.issubset({item.id for item in supporting if results.get(item.id, {}).get("status") == "PASS"}): status = "PASS"
             else: status = "NOT_TESTED"
             lanes[lane] = {"status": status, "evidence": [item.id for item in supporting]}
         statuses = {v["status"] for v in lanes.values()}
@@ -234,6 +331,8 @@ def report_for(results: dict[str, dict], *, mode: str) -> dict:
                        "assertion": item.proves, "result": results.get(item.id, {"status":"NOT_RUN"})}
                       for item in CASES],
             "live": {"status": "NOT_RUN", "reason": "Live host and disposable mutating fixtures are separate acceptance lanes"},
+            "shadow": {"status": "NOT_RUN", "coverageStatus": "NOT_RUN",
+                       "selectiveSchedulingCertified": False},
             "safety": {"production_mutations": "NEVER_DISPATCHED", "test_modes": "mocked-browser-and-isolated-backend-fixtures",
                        "screenshots_committed": False}}
 
@@ -248,6 +347,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-cases", type=int, default=0,
                         help="run at most this many new cases; 0 means no batch limit")
     parser.add_argument("--resume", action="store_true", help="resume only when source fingerprint matches")
+    parser.add_argument("--shadow", choices=("on", "off"), default="on",
+                        help="run independent mocked SLH lifecycle with shadow oracle (default: on)")
+    parser.add_argument("--shadow-timeout", type=int, default=120,
+                        help="bounded timeout for companion browser diagnostic, seconds")
     parser.add_argument("--no-supervisor", action="store_true",
                         help="debug full battery in one process (not recommended)")
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
@@ -257,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.max_cases < 0:
         parser.error("--max-cases must be nonnegative")
+    if args.shadow_timeout < 5 or args.shadow_timeout > 900:
+        parser.error("--shadow-timeout must be between 5 and 900 seconds")
     if args.timeout < 5 or args.timeout > 900:
         parser.error("timeout must be between 5 and 900 seconds")
     if args.live_protected_reads and (not args.live_host_url or not args.live_admin_id):
@@ -309,7 +414,8 @@ def main(argv: list[str] | None = None) -> int:
                     break
                 cmd = [sys.executable, "-m", "tools.mcel_slh_full_functional_acceptance",
                        "--mode", "isolated", "--profile", "full", "--case", item.id,
-                       "--resume", "--timeout", str(args.timeout), "--report", str(target)]
+                       "--resume", "--timeout", str(args.timeout), "--report", str(target),
+                       "--shadow", "off"]
                 with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as log:
                     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                     child = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
@@ -360,6 +466,29 @@ def main(argv: list[str] | None = None) -> int:
                 checkpoint()
                 print("SLH_FUNCTIONAL", item.id, results[item.id]["status"], flush=True)
     output = report_for(results, mode=args.mode)
+    if args.mode == "isolated" and args.shadow == "on":
+        shadow_path = target.with_name(target.stem + "-shadow.json")
+        output["shadow"] = run_shadow_lane(destination=shadow_path, timeout=args.shadow_timeout)
+        for phase in output["shadow"].get("stages", []):
+            print("SLH_SHADOW_PHASE", phase["phase"],
+                  "PASS" if phase["functionalPass"] and not phase["deltaContradictions"] else "FAIL",
+                  "notifications=" + str(phase["deltaNotifications"]),
+                  "predictedSkips=" + str(phase["deltaPredictedSkips"]),
+                  "domMutations=" + str(phase["deltaDOMMutations"]),
+                  "propertyChanges=" + str(phase["deltaPropertyChanges"]),
+                  "contradictions=" + str(phase["deltaContradictions"]), flush=True)
+        print("SLH_FUNCTIONAL_SHADOW", output["shadow"]["status"],
+              "coverage=" + output["shadow"]["coverageStatus"],
+              "report:", str(shadow_path), flush=True)
+    else:
+        output["shadow"] = {"status":"NOT_REQUESTED", "coverageStatus":"NOT_RUN",
+                            "selectiveSchedulingCertified":False}
+    output["combined_status"] = (
+        "FAIL" if output["status"] == "FAIL" or output["shadow"]["status"] == "FAIL"
+        else "INCOMPLETE" if output["status"] != "PASS_ISOLATED_FUNCTIONAL" or
+             output["shadow"]["status"] == "UNVERIFIED"
+        else "PASS_FUNCTIONAL_WITH_SHADOW_OBSERVATION" if output["shadow"]["status"] == "PASS_OBSERVATION"
+        else output["status"])
     output["source_fingerprint"] = fingerprint
     output["completed_cases"] = len(results)
     output["total_cases"] = len(CASES)
@@ -384,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
     print("SLH_FUNCTIONAL_OVERALL", output["status"], output["counts"],
           f"cases={len(results)}/{len(CASES)}", "report:", str(target), flush=True)
     if output["live"]["status"] == "INCOMPLETE" and args.live_host_url: return 3
+    if output["shadow"]["status"] == "FAIL": return 1
+    if output["shadow"]["status"] == "UNVERIFIED": return 3
     if any(r.get("status") == "FAIL" for r in results.values()): return 1
     if any(r.get("status") == "UNVERIFIED" for r in results.values()): return 3
     return 0 if output["status"] == "PASS_ISOLATED_FUNCTIONAL" else 4

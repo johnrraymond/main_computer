@@ -30,6 +30,7 @@ from tools.mcel_phase2b_browser import launch_semantic_browser
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = Path('runtime/reports/mcel-slh-dangerous-mutation/report.json')
+DEFAULT_RECONCILE_REPORT = Path('runtime/reports/mcel-slh-dangerous-mutation/reconciliation.json')
 NOTEBOOK = '[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"]'
 ID_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{15,127}\Z')
 UUID_PATTERN = re.compile(r'[A-Za-z0-9_-]{8,64}\Z')
@@ -59,6 +60,39 @@ def _read_canonical(state_root: Path, local_port: int) -> dict:
            UUID_PATTERN.fullmatch(deployment['application_uuid']) is not None,
            'CANONICAL_APPLICATION_UUID_UNVERIFIED')
     return value
+
+
+def verify_resident_admin(*, local_port: int, state_root: Path) -> dict:
+    """Read-only signed authority gate before any dangerous browser click.
+
+    Uses the same canonical signer/selection path as the SEH mutation harness.
+    This is NOT a substitute for the separate page and LMS inspections.
+    """
+    import seh_mutate_harness
+    args = seh_mutate_harness._parser().parse_args([
+        'verify-resident-admin', '--network', 'mainnet',
+        '--runtime-state-root', str(state_root), '--local-port', str(local_port),
+    ])
+    try:
+        result = seh_mutate_harness.run(args)
+    except seh_mutate_harness.HarnessError as exc:
+        # Only fixed classification codes enter durable reports. Never persist
+        # arbitrary exception text or authentication-response payloads.
+        reason = str(exc)
+        code = ('RESIDENT_ADMIN_SELECTION_AMBIGUOUS'
+                if 'Multiple verified administrators' in reason else
+                'RESIDENT_ADMIN_NOT_VERIFIED'
+                if 'No verified resident administrator' in reason else
+                'RESIDENT_ADMIN_TRANSPORT_UNAVAILABLE'
+                if 'localhost service is unavailable' in reason else
+                'RESIDENT_ADMIN_PREFLIGHT_REFUSED')
+        raise MutationRefused(code) from None
+    ensure(type(result) is dict and result.get('status') == 'VERIFIED_ADMIN_SESSION'
+           and result.get('session_closed') is True and result.get('remote_mutation') is False
+           and type(result.get('device_id')) is str and bool(result['device_id']),
+           'RESIDENT_ADMIN_AUTHORITY_UNVERIFIED')
+    return {'status': 'VERIFIED', 'device_id': result['device_id'],
+            'mutation_submitted': False}
 
 
 def canonical_info(record: dict) -> dict:
@@ -141,6 +175,7 @@ class BrowserGate:
         self.mutations: list[dict] = []
         self.blocked: list[dict] = []
         self.on_mutation: Callable[[], None] | None = None
+        self.last_receipt: dict | None = None
 
     def arm(self, operation: str) -> None:
         ensure(operation in ('deploy', 'undeploy') and self.armed is None,
@@ -347,6 +382,99 @@ def wait_receipt(page, operation_id: str, *, timeout: float) -> dict:
     raise MutationRefused(last_reason + '_TIMEOUT')
 
 
+def safe_receipt_summary(receipt: dict) -> dict:
+    """Allowlisted, bounded LMS outcome evidence. Never persist stream output or secrets."""
+    ensure(type(receipt) is dict, 'LMS_RECEIPT_INVALID')
+    result = receipt.get('result')
+    result = result if type(result) is dict else {}
+    causal = receipt.get('causal_diagnostic')
+    causal = causal if type(causal) is dict else {}
+    # Operation IDs and enum/code fields only. Drop everything else, including
+    # free-form messages and journal stdout/stderr which may reveal credentials.
+    fields = (
+        ('operation_id', receipt.get('operation_id')),
+        ('phase', receipt.get('phase')),
+        ('stage', receipt.get('stage')),
+        ('action', receipt.get('action')),
+        ('result_status', result.get('status')),
+        ('error_code', result.get('error_code')),
+        ('error_type', result.get('error_type')),
+        ('remote_mutation', result.get('remote_mutation')),
+        ('causal_error_code', causal.get('error_code')),
+    )
+    return {key: value for key, value in fields
+            if isinstance(value, str) and 0 < len(value) <= 128 and
+            re.fullmatch(r'[A-Za-z0-9_.-]+', value)}
+
+
+def reconcile_recorded_operation(*, source_report: Path,
+                                 state_root: Path, local_port: int,
+                                 receipt_lookup: Callable[[str, dict], dict] | None = None,
+                                 inspect: Callable[[Path, int], dict] = _read_canonical,
+                                 lms: Callable[[], dict] = read_lms_deployment) -> dict:
+    """Read only. Reconcile exact previously submitted LMS operation and SEH state.
+
+    No browser, operation submission, cancellation or retry is permitted here.
+    A receipt is evidence of the harness result, not proof of live Coolify state.
+    """
+    report = {'schema': 'mcel.slh.dangerous-mutation-reconciliation.v1',
+              'status': 'READ_ONLY_UNVERIFIED', 'mutation_submitted': False,
+              'source_report': str(source_report)}
+    try:
+        previous = json.loads(source_report.read_text(encoding='utf-8'))
+        ensure(type(previous) is dict and
+               previous.get('schema') == 'mcel.slh.dangerous-mutation.v1' and
+               previous.get('scope') in ('seh', 'all') and
+               previous.get('mode') == 'live', 'PRIOR_LIVE_SEH_REPORT_REQUIRED')
+        seh = (previous.get('groups') or {}).get('seh') or {}
+        mutations = seh.get('submitted_operations')
+        ensure(type(mutations) is list and mutations, 'NO_SUBMITTED_OPERATION_TO_RECONCILE')
+        entry = mutations[-1]
+        ensure(type(entry) is dict and entry.get('operation') in ('deploy', 'undeploy') and
+               type(entry.get('operation_id')) is str and
+               ID_PATTERN.fullmatch(entry['operation_id']) is not None,
+               'INVALID_SUBMITTED_OPERATION_ID')
+        operation_id = entry['operation_id']
+        report['operation'] = entry['operation']
+        report['operation_id'] = operation_id
+        lookup = receipt_lookup or (lambda op, args: execute_seh_deployment(op, args, target='local'))
+        receipt = lookup('operation-status', {'operationId': operation_id})
+        ensure(type(receipt) is dict and receipt.get('operation_id') == operation_id,
+               'LMS_RECEIPT_ID_MISMATCH')
+        summary = safe_receipt_summary(receipt)
+        report['lms_receipt'] = summary
+        # No success language until independently verified against both sources.
+        canonical = canonical_info(inspect(state_root, local_port))
+        report['canonical'] = {'uuid': canonical.get('uuid'),
+                               'generation': canonical.get('generation'),
+                               'undeployed': canonical.get('undeployed')}
+        live = lms()
+        report['lms_deployment'] = {
+            'application_uuid': live.get('applicationUuid'),
+            'generation': live.get('generation'),
+            'selected_controller': live.get('selectedController'),
+            'deployment_phase': live.get('deploymentStatus'),
+        }
+        expected = 'SEH_UNDEPLOYED' if entry['operation'] == 'undeploy' else 'CONNECTED_VERIFIED'
+        report['receipt_expected_status'] = expected
+        report['receipt_matches_expected'] = (
+            summary.get('phase') == 'RECORDED' and summary.get('result_status') == expected)
+        report['authoritative_effect_verified'] = bool(
+            report['receipt_matches_expected'] and
+            ((entry['operation'] == 'undeploy' and
+              canonical.get('undeployed') is True and
+              live.get('deploymentStatus') in ('UNDEPLOYED', 'SEH_UNDEPLOYED')) or
+             (entry['operation'] == 'deploy' and
+              canonical.get('undeployed') is not True and
+              live.get('applicationUuid') == canonical.get('uuid') and
+              live.get('deploymentStatus') in
+                  ('CONNECTED_VERIFIED', 'PUBLIC_RUNTIME_PRESENT_SLH_CONNECTED'))))
+        report['status'] = 'READ_ONLY_EVIDENCE_CAPTURED'
+    except BaseException as exc:
+        report['failed_gate'] = str(exc) if isinstance(exc, MutationRefused) else type(exc).__name__
+    return report
+
+
 def browser_action(page, gate: BrowserGate, operation: str, *, timeout: float) -> dict:
     label = 'Deploy / Redeploy' if operation == 'deploy' else 'Undeploy'
     ensure(not gate.armed, 'PREVIOUS_OPERATION_GATE_STILL_ARMED')
@@ -377,6 +505,7 @@ def browser_action(page, gate: BrowserGate, operation: str, *, timeout: float) -
            ack.get('outcome') in ('accepted-deferred','CONNECTED_VERIFIED','SEH_UNDEPLOYED'),
            'PAGE_LMS_ACK_ID_MISMATCH')
     receipt = wait_receipt(page, identifier, timeout=timeout)
+    gate.last_receipt = safe_receipt_summary(receipt)
     expected = 'CONNECTED_VERIFIED' if operation == 'deploy' else 'SEH_UNDEPLOYED'
     ensure(receipt.get('phase') == 'RECORDED' and
            type(receipt.get('result')) is dict and
@@ -505,6 +634,8 @@ def execute_browser_cycle(*, base: str, pre: dict, state_root: Path, local_port:
                 report['failed_gate'] = str(exc) if isinstance(exc, MutationRefused) else type(exc).__name__
                 report['submitted_operations'] = list(gate.mutations)
                 report['blocked_requests'] = gate.blocked
+                if gate.last_receipt is not None:
+                    report['lms_receipt'] = gate.last_receipt
                 report['page_observation'] = _safe_page_observation(page)
                 if gate.mutations:
                     try:
@@ -850,7 +981,7 @@ def identity_ui_cycle(*, base: str, port: int, admin_device: str,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('--mode', choices=('preflight', 'live'), default='preflight')
+    parser.add_argument('--mode', choices=('preflight', 'live', 'reconcile'), default='preflight')
     parser.add_argument('--scope', choices=('seh','identities','all'), default='all')
     parser.add_argument('--host-url', default='http://127.0.0.1:8765')
     parser.add_argument('--local-port', type=int, default=8897)
@@ -865,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--acknowledge-real-mutations', action='store_true')
     parser.add_argument('--timeout', type=float, default=900.0)
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
+    parser.add_argument('--reconcile-report', type=Path, default=DEFAULT_RECONCILE_REPORT,
+                        help='Read-only reconciliation output; does not replace prior live report')
     args = parser.parse_args(argv)
     if args.mode == 'live' and not (args.execute_mutations and args.acknowledge_real_mutations):
         parser.error('live mode requires BOTH --execute-mutations and --acknowledge-real-mutations')
@@ -874,6 +1007,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error('--verify-page requires preflight mode with SEH scope')
     if args.cycle_active_seh and args.scope == 'identities':
         parser.error('--cycle-active-seh requires SEH scope')
+    if args.mode == 'reconcile' and (args.scope != 'seh' or args.verify_page):
+        parser.error('reconcile requires --scope seh without --verify-page')
     if args.expect_seh_uuid and args.scope == 'identities':
         parser.error('--expect-seh-uuid requires SEH scope')
     if not 1 <= args.local_port <= 65535 or not 5 <= args.timeout <= 7200:
@@ -881,6 +1016,19 @@ def main(argv: list[str] | None = None) -> int:
     base = validate_loopback_base(args.host_url)
     path = args.report if args.report.is_absolute() else ROOT / args.report
     path.parent.mkdir(parents=True, exist_ok=True)
+    if args.mode == 'reconcile':
+        destination = (args.reconcile_report if args.reconcile_report.is_absolute()
+                       else ROOT / args.reconcile_report)
+        if destination.resolve() == path.resolve():
+            parser.error('reconciliation output must not overwrite its source live report')
+        result = reconcile_recorded_operation(source_report=path,
+                      state_root=args.runtime_state_root, local_port=args.local_port)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n',
+                               encoding='utf-8')
+        print('SLH_DANGEROUS_MUTATION_RECONCILE', result['status'],
+              result.get('lms_receipt', {}), 'report:', destination, flush=True)
+        return 0 if result['status'] == 'READ_ONLY_EVIDENCE_CAPTURED' else 1
     output = {'schema': 'mcel.slh.dangerous-mutation.v1',
               'mode': args.mode, 'scope': args.scope, 'status': 'INCOMPLETE', 'host': base,
               'events': [], 'mutation_approval': args.mode == 'live',
@@ -897,6 +1045,12 @@ def main(argv: list[str] | None = None) -> int:
             pre = preflight(state_root=args.runtime_state_root, local_port=args.local_port,
                             expect_uuid=args.expect_seh_uuid)
             output['preflight'] = pre
+            save()
+            # A valid UUID is not proof that a resident administrator can sign.
+            # Verify the exact harness prerequisite before arming browser writes.
+            admin_gate = verify_resident_admin(local_port=args.local_port,
+                                               state_root=args.runtime_state_root)
+            output['resident_admin_preflight'] = admin_gate
             save()
         if args.scope in ('identities','all'):
             from tools.mcel_slh_dangerous_functional_acceptance import discover_admin_device

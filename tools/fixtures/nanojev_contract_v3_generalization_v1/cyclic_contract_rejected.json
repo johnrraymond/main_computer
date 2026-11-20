@@ -1,0 +1,33 @@
+{
+  "language": "nanojev.contract.state_machine.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "reviewer": "constructor_reviewer",
+  "amount_wei": 17,
+  "deadline_seconds": 86400,
+  "rules": [
+    {
+      "name": "enter",
+      "actor": "worker",
+      "from": "funded",
+      "to": "review",
+      "when": "before_deadline",
+      "credits": []
+    },
+    {
+      "name": "loop_back",
+      "actor": "payer",
+      "from": "review",
+      "to": "funded",
+      "when": "at_or_after_deadline",
+      "credits": [
+        {
+          "to": "payer",
+          "amount_wei": "remaining"
+        }
+      ]
+    }
+  ]
+}

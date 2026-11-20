@@ -82,10 +82,16 @@ _LAUNCHER_CAPTURE = r'''() => {
     cards:cards.map(el=>{
       const b=el.getBoundingClientRect(), cs=getComputedStyle(el);
       const strong=el.querySelector('strong'), summary=el.querySelector('span');
-      return {id:el.dataset.app,title:strong?.textContent,summary:summary?.textContent,
+      const glyph=el.querySelector('.mcel-shell-app-icon');
+      const svg=glyph?.querySelector('svg');
+      return {id:el.dataset.app,title:strong?.textContent,summary:summary?.textContent.trim(),
         route:el.getAttribute('href'),font:cs.font,gap:cs.gap,padding:cs.padding,
         background:cs.backgroundColor,borderColor:cs.borderColor,shadow:cs.boxShadow,
         strongFont:getComputedStyle(strong).font,summaryFont:getComputedStyle(summary).font,
+        tooltip:el.title, iconId:svg?.getAttribute('data-mcel-icon-id'),
+        iconSvg:svg?.innerHTML.trim(),iconColor:glyph?getComputedStyle(glyph).color:null,
+        accent:cs.getPropertyValue('--mcel-app-accent').trim(),
+        labelHeight:strong?.getBoundingClientRect().height,
         rect:{x:b.left-bounds.left,y:b.top-bounds.top,w:b.width,h:b.height}};
     })
   };
@@ -148,6 +154,41 @@ _CAPTURE = r'''() => {
         rect:{x:b.x-r.x,y:b.y-r.y,w:b.width,h:b.height}};
     })};
 }'''
+
+
+def compare_compact_launcher(reference: dict, actual: dict, desktop: dict) -> list[str]:
+    """Independent acceptance for the intentional one-line launcher redesign.
+
+    Legacy card parity remains in compare_launcher() as a historical negative
+    control; it is no longer the desired deployed shell appearance.
+    """
+    errors = []
+    source = reference.get('cards', [])
+    observed = actual.get('cards', [])
+    icons = {icon['id']: icon for icon in desktop.get('icons', [])}
+    if len(source) != len(observed):
+        return [f'launcher-card-count:{len(source)}!={len(observed)}']
+    if abs(reference['rect']['width'] - actual['rect']['width']) > 1.5:
+        errors.append('launcher-panel-width-changed')
+    for original, item in zip(source, observed):
+        slug = original['id']
+        if item['id'] != slug or item['title'] != original['title'] or item['route'] != original['route']:
+            errors.append(f'launcher-identity-route:{slug}')
+        if item['rect']['h'] > 40 or item['rect']['h'] < 32 or item['labelHeight'] > 24:
+            errors.append(f'launcher-not-one-row:{slug}')
+        if item['summary'] or item['tooltip'] != original['title'] + ' — ' + original['summary']:
+            errors.append(f'launcher-description-visibility:{slug}')
+        if slug == 'desktop':
+            if item['iconId'] != 'navigation.home' or not item['accent']:
+                errors.append('launcher-desktop-icon-or-accent')
+        else:
+            icon = icons.get(slug)
+            if (icon is None or item['iconId'] != 'application.' + slug or
+                item['iconSvg'] != icon['svg'] or item['accent'] != icon['accent']):
+                errors.append(f'launcher-source-icon-or-accent:{slug}')
+        if not item['iconColor'] or item['iconColor'] == 'rgb(201, 192, 170)':
+            errors.append(f'launcher-icon-color-muted:{slug}')
+    return errors
 
 
 def capture(page):
@@ -377,13 +418,13 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                     failures.append('launcher-diagnostic-reported-first-hover-failure')
                 candidate_page.mouse.move(width-12, 410)
                 candidate_page.evaluate('window.__mcelApplicationsShell.select("desktop", false)')
-                # Compare source-controlled legacy launcher with candidate
-                # relative card geometry (the host mastheads differ in height).
+                # Preserve source order, identity, and route, while accepting
+                # the intentional compact icon/color/one-line geometry.
                 launcher_page.mouse.move(20, 350)
                 candidate_page.mouse.move(20, 350)
                 original_launcher = capture_launcher(launcher_page)
                 candidate_launcher = capture_launcher(candidate_page)
-                failures.extend(compare_launcher(original_launcher, candidate_launcher))
+                failures.extend(compare_compact_launcher(original_launcher, candidate_launcher, actual))
                 if abs(original_launcher['rect']['left']) > 3 or abs(candidate_launcher['rect']['left']) > 3:
                     failures.append('launcher-hover-open-failed')
                 # Hosted acceptance also checks the *running legacy desktop*.
@@ -442,13 +483,13 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                     document.querySelector('#mcel-shell-launcher-panel').getBoundingClientRect().right''')
                 if abs(closed-56)>3:
                     failures.append(f'rail-hover-did-not-collapse:{closed}')
-                candidate_page.get_by_role('button',name='Apps',exact=True).click()
+                candidate_page.locator('.mcel-shell-app-card[data-app="calculator"]').focus()
                 expanded=candidate_page.evaluate('''() => {
                     const r=document.querySelector('#mcel-shell-launcher-panel').getBoundingClientRect();
                     return {right:r.right,width:r.width,left:r.left};}''')
                 if abs(expanded["left"]) > 3:
                     failures.append(f'expanded-launcher-left:{expanded["left"]}')
-                if candidate_page.locator('.mcel-shell-app-card').count() != 21:
+                if candidate_page.locator('.mcel-shell-app-card').count() != len(reg['apps']):
                     failures.append('launcher-card-count')
                 # Focus must open the launcher, Escape must actually close it.
                 candidate_page.locator('.mcel-shell-app-card[data-app="calculator"]').focus()
@@ -460,7 +501,7 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                 if abs(escape_right - 56) > 3:
                     failures.append('launcher-escape-did-not-close')
                 if mode == "hosted":
-                    candidate_page.get_by_role('button',name='Apps',exact=True).click()
+                    candidate_page.locator('.mcel-shell-app-card[data-app="calculator"]').focus()
                     candidate_page.locator('.mcel-shell-app-card[data-app="chat-console"]').click()
                 else:
                     # about:blank forbids pushState. Exercise the same mount without URL mutation.
@@ -505,7 +546,7 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
                         failures.extend('initial:' + e for e in _observed_canonical_mount(
                             route_page, '/applications/chat-console'))
                         route_page.evaluate('window.__mcelOraclePersistentRail = document.getElementById("mcel-shell-launcher-panel")')
-                        route_page.get_by_role('button', name='Apps', exact=True).click()
+                        route_page.locator('.mcel-shell-app-card[data-app="calculator"]').focus()
                         route_page.locator('.mcel-shell-app-card[data-app="calculator"]').click()
                         failures.extend(_observed_canonical_mount(route_page, '/applications/calculator'))
                         if not route_page.evaluate('window.__mcelOraclePersistentRail === document.getElementById("mcel-shell-launcher-panel")'):

@@ -1,0 +1,12 @@
+{
+  "schema": "mcel.application-template-source.v1",
+  "templateId": "mcel.canonical-application-template",
+  "version": "2.0.0",
+  "files": [
+    {"source": "application.html.tmpl", "target": "application.html", "ownership": "user-owned"},
+    {"source": "application.js.tmpl", "target": "application.js", "ownership": "user-owned"},
+    {"source": "requirements.md.tmpl", "target": "requirements.md", "ownership": "user-owned"},
+    {"source": "mcel.app.json.tmpl", "target": "mcel.app.json", "ownership": "generator-owned"},
+    {"source": "tests/test_source_contract.py.tmpl", "target": "tests/test_source_contract.py", "ownership": "user-owned"}
+  ]
+}

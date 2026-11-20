@@ -421,13 +421,15 @@ def copy_reference_self_contained_runtime_package(
         shutil.copytree(case.package_path, destination)
         return case, destination
 
-    from main_computer.mcel_scaffolding import render_package_files
+    from main_computer.mcel_scaffolding import LEGACY_TEMPLATE_VERSION, render_package_files
 
     sample_app_id = "sample-app"
     destination_name = directory_name or sample_app_id
     destination = target_root / "mcel_apps" / destination_name
     destination.mkdir(parents=True, exist_ok=False)
-    _template, _title, files = render_package_files(sample_app_id, title="Sample Application")
+    _template, _title, files = render_package_files(
+        sample_app_id, title="Sample Application", template_version=LEGACY_TEMPLATE_VERSION,
+    )
     for relative, text in files.items():
         path = destination / relative
         path.parent.mkdir(parents=True, exist_ok=True)

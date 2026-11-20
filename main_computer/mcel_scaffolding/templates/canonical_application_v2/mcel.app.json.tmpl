@@ -1,0 +1,18 @@
+{
+  "schema": "mcel.application-package.v1",
+  "appId": {{APP_ID_JSON}},
+  "title": {{APP_TITLE_JSON}},
+  "template": {"id": {{TEMPLATE_ID_JSON}}, "version": {{TEMPLATE_VERSION_JSON}}},
+  "authoring": {
+    "format": "mcel.paired-html-js.v1",
+    "html": "application.html",
+    "script": "application.js"
+  },
+  "requirements": "requirements.md",
+  "tests": {"root": "tests"},
+  "conformance": {
+    "currentMode": "paired-source-compiled",
+    "targetMode": "semantic-runtime-proven",
+    "missingBridges": ["host-route-adoption", "browser-runtime-acceptance"]
+  }
+}

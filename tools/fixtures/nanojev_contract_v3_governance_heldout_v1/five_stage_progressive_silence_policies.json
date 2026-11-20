@@ -1,0 +1,62 @@
+{
+  "language": "nanojev.contract.governed_escrow.v3",
+  "asset": "native_eth",
+  "settlement_mode": "pull",
+  "payer": "deployer",
+  "worker": "constructor_worker",
+  "arbitrator": "jointly_appointed_after_dispute",
+  "amount_wei": 12,
+  "milestones": [
+    {
+      "id": "checkpoint_1",
+      "amount_wei": 1,
+      "deadline_seconds": 6000,
+      "extension_seconds": 7200,
+      "extension_decision_seconds": 500,
+      "max_extensions": 1
+    },
+    {
+      "id": "checkpoint_2",
+      "amount_wei": 1,
+      "deadline_seconds": 6100,
+      "extension_seconds": 7400,
+      "extension_decision_seconds": 550,
+      "max_extensions": 2
+    },
+    {
+      "id": "checkpoint_3",
+      "amount_wei": 2,
+      "deadline_seconds": 6200,
+      "extension_seconds": 7600,
+      "extension_decision_seconds": 600,
+      "max_extensions": 1
+    },
+    {
+      "id": "checkpoint_4",
+      "amount_wei": 3,
+      "deadline_seconds": 6300,
+      "extension_seconds": 7800,
+      "extension_decision_seconds": 650,
+      "max_extensions": 0
+    },
+    {
+      "id": "checkpoint_5",
+      "amount_wei": 5,
+      "deadline_seconds": 6400,
+      "extension_seconds": 8000,
+      "extension_decision_seconds": 700,
+      "max_extensions": 0
+    }
+  ],
+  "policy": {
+    "review_seconds": 3800,
+    "dispute_filing_seconds": 4200,
+    "appointment_seconds": 3600,
+    "ruling_seconds": 8100,
+    "on_review_silence": "pay_worker",
+    "on_appointment_failure": "pay_worker",
+    "on_arbitrator_silence": "pay_worker",
+    "on_missed_submission": "refund_payer",
+    "on_undisputed_rejection": "refund_payer"
+  }
+}

@@ -779,6 +779,35 @@ var McelSemanticChromePresentationLaw = (() => {
       border-color: #aeb0b6 !important;
       box-shadow: inset 0 1px 2px #00000010 !important;
     }
+    /* An authored command is not a navigation destination. Keep Vulcan's
+       borderless mode switches, record selection, activity filters and plain
+       text actions unchanged. Only the canonical task footer and the typed
+       operation notebook's action row gain the calculator keycap outline.
+       This rule is app-neutral and never matches controls by their labels. */
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-task-actions] > button,
+      [data-mcel-task-actions] > [data-node-kind="control"] > button,
+      [data-mcel-operation-actions] > button
+    ) {
+      border: 1px solid #c8c9cd !important;
+      border-radius: 12px !important;
+      background-color: #fff !important;
+      box-shadow: none !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-task-actions] > button,
+      [data-mcel-task-actions] > [data-node-kind="control"] > button,
+      [data-mcel-operation-actions] > button
+    ):hover:not(:disabled):not([aria-disabled="true"]):not(:active) {
+      border-color: #bfc0c5 !important;
+    }
+    [${rootAttr}="${vulcanId}"][${rootAttr}="${vulcanId}"] :is(
+      [data-mcel-task-actions] > button,
+      [data-mcel-task-actions] > [data-node-kind="control"] > button,
+      [data-mcel-operation-actions] > button
+    ):is(:active,[aria-pressed="true"]):not(:disabled):not([aria-disabled="true"]) {
+      border-color: #aeb0b6 !important;
+    }
     [${rootAttr}="${vulcanId}"] :is(button,[role="button"],[role="tab"],[role="switch"],input[type="submit"],input[type="button"],input[type="reset"]) {
       transition: none !important;
       animation: none !important;
@@ -824,7 +853,7 @@ var McelSemanticChromePresentationLaw = (() => {
     const originals = new Map();
     let lastReport = {regions:0,nodes:0,assignments:new Map()};
     function reconcile() {
-      const report = resolveMaterialTargets({root,ir,bridge});
+      const report = resolveMaterialTargets({root,ir,bridge,profile:vulcanId});
       if (report.status !== "ready") return;
       lastReport = report;
       for (const [element,original] of originals) {
@@ -868,7 +897,7 @@ var McelSemanticChromePresentationLaw = (() => {
   }
 
   function applyVulcan({root,ir,bridge,theme}) {
-    const ready = resolveMaterialTargets({root,ir,bridge});
+    const ready = resolveMaterialTargets({root,ir,bridge,profile:vulcanId});
     if (ready.status !== "ready") {
       clear(root);
       return {schema,profile:vulcanId,status:"refused",reason:ready.reason};
@@ -902,7 +931,7 @@ var McelSemanticChromePresentationLaw = (() => {
   /* Application-neutral: assignments come only from exact canonical runtime
      region and node bindings. Native controls below those bindings inherit
      material through their DOM role, not application name or containment zone. */
-  function resolveMaterialTargets({root, ir, bridge}) {
+  function resolveMaterialTargets({root, ir, bridge, profile=profileId}) {
     const observed = bridge?.observeRuntimePresentationTargets?.({root, ir});
     if (observed?.status !== "source-bound") return {
       status: "refused", reason: observed?.reason || "Source-bound operational runtime required",
@@ -915,6 +944,15 @@ var McelSemanticChromePresentationLaw = (() => {
       root.contains(t.element));
     const decorative = element => Boolean(element.closest(
       `[${generatedAttr}="true"], [data-mcel-chrome-decorative="true"], [${wearSurfaceAttr}]`));
+    // File explorer tree names, disclosure arrows and directory-name links
+    // are row navigation, not raised command keycaps. The source runtime
+    // already gives these controls transparent faces and row-level selection.
+    // Do not stamp TNG bevel/wear material on them. This is deliberately
+    // restricted to TNG: Vulcan keeps its existing source-bound assignments.
+    const plainExplorerNavigation = element => profile === profileId && element.matches(
+      '[data-mcel-explorer-navigation] [role="treeitem"] :is(' +
+        'button[data-select-key], button[data-mcel-tree-toggle], button[data-mcel-inspect-folder]), ' +
+      '[data-mcel-directory-entry] button[data-mcel-directory-open]');
     const offer = (element, material) => {
       if (element !== root && root.contains(element) && !decorative(element))
         assignments.set(element, material);
@@ -939,7 +977,8 @@ var McelSemanticChromePresentationLaw = (() => {
     for (const scope of scopes) {
       const controls = [scope, ...scope.querySelectorAll(controlSelector)];
       for (const element of controls) {
-        if (!element.matches(controlSelector) || decorative(element)) continue;
+        if (!element.matches(controlSelector) || decorative(element) ||
+            plainExplorerNavigation(element)) continue;
         const tag = element.localName;
         const type = (element.getAttribute("type") || "text").toLowerCase();
         const role = element.getAttribute("role") || "";

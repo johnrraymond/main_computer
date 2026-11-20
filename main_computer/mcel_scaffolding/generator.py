@@ -22,7 +22,9 @@ from .package_validator import PackageValidationResult, validate_package_files, 
 
 
 TEMPLATE_ID = "mcel.canonical-application-template"
-DEFAULT_TEMPLATE_VERSION = "1.0.0"
+LEGACY_TEMPLATE_VERSION = "1.0.0"
+DEFAULT_TEMPLATE_VERSION = "2.0.0"
+SUPPORTED_TEMPLATE_VERSIONS = (LEGACY_TEMPLATE_VERSION, DEFAULT_TEMPLATE_VERSION)
 RESULT_SCHEMA = "mcel.create-app-result.v1"
 DEFAULT_OUTPUT_DIRECTORY = "mcel_apps"
 APP_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -155,20 +157,19 @@ def _safe_relative_path(raw: str, *, field: str) -> str:
     return path.as_posix()
 
 
-def _template_root():
-    return resources.files("main_computer.mcel_scaffolding").joinpath(
-        "templates", "canonical_application_v1"
-    )
+def _template_root(version: str):
+    directory = "canonical_application_v2" if version == DEFAULT_TEMPLATE_VERSION else "canonical_application_v1"
+    return resources.files("main_computer.mcel_scaffolding").joinpath("templates", directory)
 
 
 def load_template_definition(version: str = DEFAULT_TEMPLATE_VERSION) -> TemplateDefinition:
-    if version != DEFAULT_TEMPLATE_VERSION:
+    if version not in SUPPORTED_TEMPLATE_VERSIONS:
         raise InvalidScaffoldInput(
-            f"Unsupported template version {version!r}; expected {DEFAULT_TEMPLATE_VERSION!r}.",
+            f"Unsupported template version {version!r}; supported: {SUPPORTED_TEMPLATE_VERSIONS!r}.",
             details={"template_version": version},
         )
 
-    root = _template_root()
+    root = _template_root(version)
     try:
         raw = root.joinpath("template.json").read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -214,7 +215,7 @@ def _json_string_literal(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def build_template_context(app_id: str, title: str) -> dict[str, str]:
+def build_template_context(app_id: str, title: str, *, template_version: str = DEFAULT_TEMPLATE_VERSION) -> dict[str, str]:
     python_name = app_id.replace("-", "_")
     class_name = "".join(part.capitalize() for part in app_id.split("-"))
     return {
@@ -227,8 +228,8 @@ def build_template_context(app_id: str, title: str) -> dict[str, str]:
         "APP_CLASS_NAME": class_name,
         "TEMPLATE_ID": TEMPLATE_ID,
         "TEMPLATE_ID_JSON": _json_string_literal(TEMPLATE_ID),
-        "TEMPLATE_VERSION": DEFAULT_TEMPLATE_VERSION,
-        "TEMPLATE_VERSION_JSON": _json_string_literal(DEFAULT_TEMPLATE_VERSION),
+        "TEMPLATE_VERSION": template_version,
+        "TEMPLATE_VERSION_JSON": _json_string_literal(template_version),
     }
 
 
@@ -258,8 +259,8 @@ def render_package_files(
     clean_app_id = validate_app_id(app_id)
     clean_title = normalize_title(clean_app_id, title)
     template = load_template_definition(template_version)
-    context = build_template_context(clean_app_id, clean_title)
-    root = _template_root()
+    context = build_template_context(clean_app_id, clean_title, template_version=template.version)
+    root = _template_root(template.version)
 
     rendered: dict[str, str] = {}
     for item in template.files:
@@ -346,6 +347,7 @@ def generate_application(
         )
 
     created_files = tuple(sorted(files))
+    gaps = tuple(json.loads(files["mcel.app.json"])["conformance"]["missingBridges"])
     if dry_run:
         return ScaffoldResult(
             ok=True,
@@ -359,6 +361,7 @@ def generate_application(
             dry_run=True,
             created_files=created_files,
             validation=in_memory_validation,
+            target_gaps=gaps,
         )
 
     write_text = writer or _write_text_file
@@ -401,6 +404,7 @@ def generate_application(
             dry_run=False,
             created_files=created_files,
             validation=disk_validation,
+            target_gaps=gaps,
         )
     except McelScaffoldingError:
         raise

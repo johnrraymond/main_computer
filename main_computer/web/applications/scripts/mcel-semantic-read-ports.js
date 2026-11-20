@@ -96,6 +96,10 @@
       "intent:studio-repair-packet":["scm-proof","repair-packet","buildStudioAiRepairPacket",["path","text","filter","key"]]
     })
   });
+  // The canonical Code Editor and the former semantic candidate have the
+  // *same exact* scoped operation allowance during development migration.
+  // The alias does not grant an additional capability or permit new effects.
+  const allowedFor=appId=>appId==="code-editor" ? allow["semantic-code-editor"] : allow[appId];
   const err=s=>{throw Error("MCEL_READ_PORT:"+s);};
   const requiredText=(value,max=4096)=>typeof value==="string" && value.length<=max;
   const plain=x=>x && typeof x==="object" && !Array.isArray(x);
@@ -103,10 +107,10 @@
     const consequential=new Set(["intent:terminate-process","intent:kill-process","intent:start-server",
       "intent:restart-server","intent:shutdown-server","intent:create-schedule","intent:delete-schedule","intent:run-schedule",
       "intent:run-aider","intent:archive-aider-context","intent:reset-aider-context","intent:load-aider-archive"]);
-    const expectedRisk=(["semantic-task-manager","semantic-task-manager-generated-p3","semantic-code-editor"].includes(req.appId)) && consequential.has(req.intentId)?"consequential":
-      req.appId==="semantic-code-editor" && ["intent:save-source","intent:apply-reviewed-change"].includes(req.intentId)?"source-write":"external-read";
+    const expectedRisk=(["semantic-task-manager","semantic-task-manager-generated-p3","semantic-code-editor","code-editor"].includes(req.appId)) && consequential.has(req.intentId)?"consequential":
+      ["semantic-code-editor","code-editor"].includes(req.appId) && ["intent:save-source","intent:apply-reviewed-change"].includes(req.intentId)?"source-write":"external-read";
     if(!plain(req) || req.risk!==expectedRisk)return false;
-    const spec=allow[req.appId]?.[req.intentId];
+    const spec=allowedFor(req.appId)?.[req.intentId];
     if(!spec || req.effectId!=="effect:"+req.intentId.slice(7)+".request" ||
        req.capabilityId!=="capability:"+spec[0] || req.operation!==spec[1] || req.runtimeMethod!==spec[2] ||
        !plain(req.arguments))return false;
@@ -123,7 +127,7 @@
   }
   function create(options={}){
     const appId=options.appId;
-    if(!Object.prototype.hasOwnProperty.call(allow,appId))err("app-not-admitted");
+    if(!allowedFor(appId))err("app-not-admitted");
     const fetcher=options.fetcher || global.fetch?.bind(global);
     if(typeof fetcher!=="function")err("missing-fetch");
     let knownRoots=new Set(), lastListing=null, knownDirectories=new Set([""]), knownEditorFiles=new Set(), knownEditorDirs=new Set([""]);
