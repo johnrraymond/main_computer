@@ -1,0 +1,105 @@
+<div class="worker-wallet-inner">
+<header class="worker-wallet-compat-header">
+  <strong>Wallet &amp; Multi-session Keys</strong>
+  <p>Existing marketplace wallet controls. Wallet operations use the active Worker session; choosing a Hub does not connect it.</p>
+  <p class="worker-wallet-session" id="worker-wallet-session-context" role="status">Reading active Worker session...</p>
+</header>
+<div class="worker-wallet-card-grid"><div aria-label="Worker wallet readiness" class="worker-card worker-bridge-card worker-bridge-readiness-card" id="worker-bridge-readiness-card">
+<h4>Worker Wallet Readiness</h4>
+<p class="worker-card-note">Connect a Worker wallet, request faucet funds when needed, and request a hub-issued multi-session key.</p>
+<dl class="worker-bridge-status-grid">
+<div><dt>Primary wallet</dt><dd id="worker-primary-wallet-status">Not connected</dd></div>
+<div><dt>Recovery</dt><dd id="worker-recovery-status">Not configured</dd></div>
+<div><dt>Multi-session key</dt><dd id="worker-multisession-status">No active key</dd></div>
+<div><dt>Readiness</dt><dd id="worker-bridge-readiness-status">Setup not started</dd></div>
+</dl>
+<div class="worker-inline-actions">
+<button id="worker-connect-wallet" type="button">Connect Wallet</button>
+<button disabled="" id="worker-disconnect-wallet" type="button">Disconnect Wallet</button>
+<button id="worker-refresh-bridge-readiness" type="button">Refresh</button>
+</div>
+</div><div aria-label="Faucet credit request" class="worker-card worker-bridge-card worker-faucet-card" id="worker-faucet-card">
+<h4>Faucet Credits</h4>
+<p class="worker-card-note">Request 1 local dev-chain credit for the already-connected Worker wallet. The faucet uses the verified ethers wallet state; it does not connect wallets or switch chains.</p>
+<dl class="worker-bridge-status-grid">
+<div><dt>Target</dt><dd id="worker-faucet-target">Connect wallet first</dd></div>
+<div><dt>Readiness</dt><dd id="worker-faucet-readiness">Checking faucet readiness</dd></div>
+<div><dt>Last request</dt><dd id="worker-faucet-status">Not requested</dd></div>
+<div><dt>Transaction</dt><dd id="worker-faucet-tx">—</dd></div>
+</dl>
+<dl class="worker-bridge-status-grid worker-faucet-result-grid" hidden="" id="worker-faucet-result">
+<div><dt>tx_hash</dt><dd id="worker-faucet-result-tx">—</dd></div>
+<div><dt>from</dt><dd id="worker-faucet-result-from">—</dd></div>
+<div><dt>to</dt><dd id="worker-faucet-result-to">—</dd></div>
+<div><dt>amount_credits</dt><dd id="worker-faucet-result-amount">—</dd></div>
+<div><dt>chain_id</dt><dd id="worker-faucet-result-chain">—</dd></div>
+<div><dt>runtime_source</dt><dd id="worker-faucet-result-runtime">—</dd></div>
+</dl>
+<div class="worker-inline-actions">
+<button disabled="" id="worker-request-faucet" type="button">Request Faucet Funds</button>
+<span class="worker-inline-status" id="worker-faucet-disabled-reason">Connect Wallet before requesting faucet funds.</span>
+</div>
+</div><div aria-label="Recovery methods" class="worker-card worker-bridge-card worker-recovery-card" id="worker-recovery-card">
+<h4>Recovery Methods</h4>
+<p class="worker-card-note">Store optional local recovery contacts for later wallet recovery flows.</p>
+<form class="worker-inline-form" id="worker-add-recovery-email-form">
+<label>
+<span>Recovery email</span>
+<input autocomplete="email" id="worker-recovery-email-input" placeholder="name@example.com" type="email"/>
+</label>
+<button type="submit">Add Email</button>
+</form>
+<div aria-label="Configured recovery emails" class="worker-token-list" id="worker-recovery-email-list">
+<span>No recovery emails added.</span>
+</div>
+<form class="worker-inline-form" id="worker-add-recovery-wallet-form">
+<label>
+<span>Recovery wallet</span>
+<input autocomplete="off" id="worker-recovery-wallet-input" placeholder="0x..." type="text"/>
+</label>
+<button type="submit">Add Wallet</button>
+</form>
+<div aria-label="Configured recovery wallets" class="worker-token-list" id="worker-recovery-wallet-list">
+<span>No recovery wallets added.</span>
+</div>
+<div class="worker-inline-actions">
+<button id="worker-confirm-recovery" type="button">Confirm Local Recovery Setup</button>
+</div>
+</div><div aria-label="Multi-session key lifecycle" class="worker-card worker-bridge-card worker-multisession-card" id="worker-multisession-card">
+<h4>Multi-session Key</h4>
+<p class="worker-card-note">Visible before wallet connection. Request, revoke, then request a replacement key without requiring a wallet first.</p>
+<dl class="worker-bridge-status-grid">
+<div><dt>Status</dt><dd id="worker-multisession-key-state">No active key</dd></div>
+<div><dt>Key id</dt><dd id="worker-multisession-key-id">—</dd></div>
+<div><dt>Created</dt><dd id="worker-multisession-created-at">—</dd></div>
+<div><dt>Revoked</dt><dd id="worker-multisession-revoked-at">—</dd></div>
+</dl>
+<div class="worker-inline-actions">
+<button id="worker-request-multisession-key" type="button">Request New Key</button>
+<button id="worker-revoke-multisession-key" type="button">Revoke Active Key</button>
+</div>
+</div><div aria-label="My bridge account" class="worker-card worker-bridge-card worker-hub-credit-card" id="worker-hub-credit-card">
+<h4>My Bridge Account</h4>
+<p class="worker-card-note">Money on the machine is money on the bridge.</p>
+<dl class="worker-bridge-status-grid">
+<div><dt>My wallet</dt><dd id="worker-hub-credit-wallet">Connect wallet first</dd></div>
+<div><dt>My wallet balance</dt><dd id="worker-hub-credit-wallet-balance">Connect wallet first</dd></div>
+<div><dt>My bridge balance</dt><dd id="worker-hub-credit-balance">Unknown</dd></div>
+<div><dt>Bridge contract</dt><dd id="worker-hub-credit-escrow-address">Loading deployment…</dd></div>
+<div><dt>Last funding</dt><dd id="worker-hub-credit-status">Not funded</dd></div>
+<div><dt>Transaction</dt><dd id="worker-hub-credit-tx">—</dd></div>
+</dl>
+<form class="worker-inline-form" id="worker-hub-credit-form">
+<label>
+<span>Amount</span>
+<input id="worker-hub-credit-amount" min="0.000001" step="0.000001" type="number" value="1"/>
+</label>
+</form>
+<div class="worker-inline-actions">
+<button id="worker-check-hub-credit-balance" type="button">Check Balances</button>
+<button disabled="" id="worker-fund-hub-credit" type="button">Fund</button>
+<span class="worker-inline-status" id="worker-hub-credit-disabled-reason">Connect Wallet before funding.</span>
+</div>
+</div></div>
+<output id="worker-save-status" role="status" aria-live="polite">Wallet controls initializing.</output>
+</div>

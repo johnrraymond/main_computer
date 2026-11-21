@@ -7,6 +7,7 @@ Remote TLS observation remains isolated from local lifecycle authority.
 from __future__ import annotations
 
 import json
+import os
 import ipaddress
 import re
 from pathlib import Path
@@ -104,6 +105,13 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         len(activity) != 1 or membership(activity[0]) != {"surface-node:slh.activity"}):
         raise SlhApplicationError("SLH semantic target and inspector ownership invalid")
     nodes = {x["id"]: x for x in surface["nodes"]}
+    identity_collection = nodes.get("surface-node:slh.available-local-identities", {})
+    if (identity_collection.get("credentialDisclosure") != {
+            "intent":{"ref":"intent:software-authenticator-reveal"},
+            "identityField":"deviceId"} or
+        "fingerprint" in identity_collection.get("fields",[]) or
+        "deviceId" in identity_collection.get("fields",[])):
+        raise SlhApplicationError("SLH identity credential disclosure authority invalid")
     local_form = nodes.get("surface-node:slh.configure-org-slh", {})
     remote_form = nodes.get("surface-node:slh.connect-network-slh", {})
     seh_form = nodes.get("surface-node:slh.connect-remote-seh", {})
@@ -164,10 +172,12 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         *{f"intent:seh-connection-{action}" for action in ("start","stop","restart")},
         *{f"intent:read-organization-{name}" for name in ("pending","enrolled","trash","retention")},
         *{f"intent:organization-{name}" for name in ("accept","reject","delete","reactivate","remove")},
-        "intent:set-organization-trash-retention", "intent:empty-organization-trash"
+        "intent:set-organization-trash-retention", "intent:empty-organization-trash",
+        "intent:software-authenticator-reveal"
     }
     expected_capabilities = {
         "capability:slh-observer":"external-read", "capability:network-slh-connection":"consequential",
+        "capability:slh-software-authenticator-control":"consequential",
         "capability:slh-first-run":"consequential",
         "capability:organization-identity-administration":"consequential",
         "capability:organization-identity-observer":"external-read",
@@ -181,6 +191,7 @@ def compile_slh_application(repo: Path = ROOT) -> tuple[dict, dict]:
         "effect:refresh-identities.request":"external-read",
         "effect:refresh-identity-status.request":"external-read",
         "effect:refresh-lifecycle.request":"external-read",
+        "effect:software-authenticator-reveal.request":"consequential",
         "effect:connect-network-slh.request":"consequential",
         "effect:disconnect-network-slh.request":"consequential",
         "effect:configure-and-enable-organization.request":"consequential",
@@ -332,7 +343,9 @@ recordDiagnostic("semantic-mount","started");
 let managementOverlay=null;
 const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),data.ir,
   {{capabilities:adapter,composition:data.composition,presentation:"expert",
-    navigationChrome:document.getElementById("mcel-slh-navigation-context")}});
+    navigationChrome:document.getElementById("mcel-slh-navigation-context"),
+    signalSchedulerIntegration:true,
+    signalSchedulerStartEnabled:{json.dumps(os.environ.get("MCEL_SIGNAL_SCHEDULER_SLH") == "certified")}}});
 diagnosticState.mount="completed";
 recordDiagnostic("semantic-mount","completed");
 const scopeKey=identityKey;

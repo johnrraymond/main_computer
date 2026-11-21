@@ -6,11 +6,12 @@ These are bounded operational candidates, NOT complete production migrations.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from main_computer.mcel_applications_registry import attach_inert_presentation, CONTROLLER_JS
 from main_computer.mcel_dsl_compiler import compile_dsl_application
-from main_computer.mcel_knowledge.workspace_plan import plan_workspace, verify_workspace_plan
+from main_computer.mcel_knowledge.semantic_template_pipeline import plan_semantic_workspace, verify_semantic_workspace_plan
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 
 APPS = {
@@ -113,9 +114,9 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
     # verified workspace plan. Document-centric apps use declared docking
     # preferences, while existing data-monitoring plans remain unchanged.
     workspace_enabled = name in {"task-manager", "file-manager", "code-editor"}
-    plan = plan_workspace(ir) if workspace_enabled else None
+    plan = plan_semantic_workspace(ir, repo) if workspace_enabled else None
     if plan is not None:
-        verify_workspace_plan(ir, plan)
+        verify_semantic_workspace_plan(ir, plan, repo)
     plan_payload = json.dumps(plan, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c") if plan else "null"
     plan_markup = f'<script type="application/json" id="mcel-workbench-plan">{plan_payload}</script>' if workspace_enabled else ""
     def script(path):
@@ -160,7 +161,9 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
  const port=McelSemanticReadPorts.create({{appId:ir.application.appId}});
  const workspacePlan=document.getElementById("mcel-workbench-plan") ? JSON.parse(document.getElementById("mcel-workbench-plan").textContent) : undefined;
  const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined,
-    navigationContextLabel:"{context_label}",navigationRoutes:{navigation_routes_payload}}});
+    navigationContextLabel:"{context_label}",navigationRoutes:{navigation_routes_payload},
+    signalSchedulerIntegration:{str(name == "task-manager").lower()},
+    signalSchedulerStartEnabled:{str(name == "task-manager" and os.environ.get("MCEL_SIGNAL_SCHEDULER_TASK_MANAGER") == "certified").lower()}}});
  window.__mcelWorkbench=Object.freeze({{app,appId:ir.application.appId}});
  const initialView={initial_view_payload};
  if(initialView && initialView!=="server-processes") app.execute("intent:switch-view",{{choice:initialView}}).catch(e=>{{status.dataset.error="true";status.textContent="Initial view refused: "+String(e?.message||e);}});

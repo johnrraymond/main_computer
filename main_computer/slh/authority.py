@@ -101,6 +101,12 @@ class SLHAuthority:
             CREATE TABLE IF NOT EXISTS enrollment_keys(id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE,
                 enrollment_id TEXT NOT NULL REFERENCES enrollments(id), issuer TEXT NOT NULL,
                 allowed_role TEXT NOT NULL, expires_at INTEGER NOT NULL, redeemed_at INTEGER);
+            CREATE TABLE IF NOT EXISTS admin_software_otp(
+                admin_id TEXT PRIMARY KEY REFERENCES users(id),
+                device_id TEXT NOT NULL REFERENCES devices(id),
+                sealed_secret TEXT NOT NULL, last_accepted_step INTEGER NOT NULL,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY, device_id TEXT NOT NULL,
                 payload TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER);
             CREATE TABLE IF NOT EXISTS root_admin_nonces(
@@ -673,6 +679,39 @@ class SLHAuthority:
             self._audit(c,admin_id,'enrollment.key.issued',req_id)
         return {'enrollment_key':secret, 'expires_in_seconds':ttl,'request_id':req_id,'single_use':True}
 
+    def software_otp_status(self, admin_id):
+        from .software_otp_authority import status
+        return status(self,admin_id)
+
+    def provision_software_otp(self, admin_id, device_id, secret, code):
+        from .software_otp_authority import provision, OTPRefused
+        try:
+            return provision(self,admin_id,device_id,secret,code)
+        except OTPRefused as exc:
+            raise SLHError(exc.code,exc.status) from exc
+
+    def revoke_software_otp(self, admin_id):
+        from .software_otp_authority import revoke
+        return revoke(self,admin_id)
+
+    def approve_with_software_otp(self, req_id, admin_id, code):
+        from .software_otp_authority import approve, OTPRefused
+        try:
+            return approve(self,req_id,admin_id,code)
+        except OTPRefused as exc:
+            raise SLHError(exc.code,exc.status) from exc
+
+    def _activate_enrollment(self, c, r, actor, method):
+        user_id='user-'+uuid.uuid4().hex
+        now=int(time.time())
+        c.execute('INSERT INTO users VALUES (?,?,?,?)', (user_id,r['claimed_user'],r['requested_role'],'active'))
+        c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
+                  (r['device_id'],user_id,r['public_key'],r['fingerprint'],r['kind'],r['device_name'],'','active',now))
+        c.execute("UPDATE enrollments SET status='approved',authorized_by=? WHERE id=?", (actor,r['id']))
+        self._audit(c,actor,'enrollment.approved',r['device_id'],method)
+        return {'status':'APPROVED','request_id':r['id'],'device_id':r['device_id'],
+                'user_id':user_id, 'authorized_by':actor}
+
     def approve(self, req_id, *, admin_id=None, enrollment_key=None):
         if bool(admin_id) == bool(enrollment_key):
             raise SLHError('APPROVAL_METHOD_REQUIRED')
@@ -693,14 +732,8 @@ class SLHAuthority:
                           (int(time.time()),grant['id']))
             else:
                 actor=admin_id
-            user_id='user-'+uuid.uuid4().hex
-            now=int(time.time())
-            c.execute('INSERT INTO users VALUES (?,?,?,?)', (user_id,r['claimed_user'],r['requested_role'],'active'))
-            c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
-                      (r['device_id'],user_id,r['public_key'],r['fingerprint'],r['kind'],r['device_name'],'','active',now))
-            c.execute("UPDATE enrollments SET status='approved',authorized_by=? WHERE id=?", (actor,req_id))
-            self._audit(c,actor,'enrollment.approved',r['device_id'])
-            return {'status':'APPROVED','request_id':req_id,'device_id':r['device_id'], 'user_id':user_id, 'authorized_by':actor}
+            return self._activate_enrollment(c,r,actor,
+                'enrollment_key' if enrollment_key else 'admin_session')
 
     def deny(self, req_id, actor):
         with self._lock,self._db() as c:

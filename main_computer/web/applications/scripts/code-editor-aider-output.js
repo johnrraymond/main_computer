@@ -146,7 +146,10 @@
       };
     }
 
-    aiderInstruction.addEventListener("input", () => {
+    // The canonical Code Editor is a native MCEL application.  Its legacy
+    // controls are absent in shell children for other apps (including MCEL Lab).
+    // Never abort the shared shell while binding an unmounted legacy surface.
+    aiderInstruction?.addEventListener("input", () => {
       const threadId = selectedAiderArchiveId() || aiderThreadIdFromLocation();
       saveAiderInstructionDraft(threadId, aiderInstruction.value);
     });

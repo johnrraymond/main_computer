@@ -3111,24 +3111,53 @@ function Stop-MainComputerSLHBootLauncher([string]$RootPath) {
 # Only a gateway launched with an exact --root pointing at this checkout can
 # be recovered without supervisor state.  A recognizable module name alone
 # never establishes process ownership.
+# Return the decision and its inputs together.  The stop diagnostics must use
+# exactly the same predicate as the ownership gate (no second, divergent guess).
 function Test-MainComputerOwnedSLHGateway([string]$CommandLine, [string]$RootPath) {
-  if ([string]::IsNullOrWhiteSpace($CommandLine) -or
-      -not $CommandLine.ToLowerInvariant().Contains("main_computer.slh.gateway_service")) {
-    return $false
+  return [bool](Get-MainComputerSLHGatewayIdentityFacts $CommandLine $RootPath).owned
+}
+
+function Get-MainComputerSLHGatewayIdentityFacts([string]$CommandLine, [string]$RootPath) {
+  $facts = [ordered]@{
+    owned = $false
+    reason = "unknown"
+    command_line_available = (-not [string]::IsNullOrWhiteSpace($CommandLine))
+    gateway_module_present = $false
+    root_argument_present = $false
+    actual_root = ""
+    expected_root = $RootPath
+    root_matches = $false
+  }
+  if (-not $facts.command_line_available) {
+    $facts.reason = "command-line-unavailable"
+    return $facts
+  }
+  $facts.gateway_module_present = $CommandLine.ToLowerInvariant().Contains("main_computer.slh.gateway_service")
+  if (-not $facts.gateway_module_present) {
+    $facts.reason = "gateway-module-missing"
+    return $facts
   }
   $rootMatch = [regex]::Match($CommandLine, '(?i)(?:^|\s)--root\s+(?:"([^"]+)"|''([^'']+)''|(\S+))')
-  if (-not $rootMatch.Success) { return $false }
-  $actualRoot = ""
+  if (-not $rootMatch.Success) {
+    $facts.reason = "root-argument-missing"
+    return $facts
+  }
+  $facts.root_argument_present = $true
   foreach ($group in @($rootMatch.Groups[1], $rootMatch.Groups[2], $rootMatch.Groups[3])) {
-    if ($group.Success) { $actualRoot = $group.Value; break }
+    if ($group.Success) { $facts.actual_root = $group.Value; break }
   }
   try {
-    $actualRoot = [System.IO.Path]::GetFullPath($actualRoot).TrimEnd([char[]]@('\', '/'))
+    $actualRoot = [System.IO.Path]::GetFullPath($facts.actual_root).TrimEnd([char[]]@('\', '/'))
     $expectedRoot = [System.IO.Path]::GetFullPath($RootPath).TrimEnd([char[]]@('\', '/'))
-    return [string]::Equals($actualRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)
+    $facts.actual_root = $actualRoot
+    $facts.expected_root = $expectedRoot
+    $facts.root_matches = [string]::Equals($actualRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)
+    $facts.owned = $facts.root_matches
+    $facts.reason = $(if ($facts.root_matches) { "verified" } else { "checkout-root-mismatch" })
   } catch {
-    return $false
+    $facts.reason = "root-normalization-failed: " + $_.Exception.Message
   }
+  return $facts
 }
 
 # A boot task can exit while its child remains.  When that PowerShell
@@ -3192,7 +3221,7 @@ function Stop-MainComputerSLHListenerAfterLaunchers([string]$RootPath, [object]$
   return [ordered]@{ state = "not-owned"; pid = $listenerPid; command_line = $commandLine }
 }
 
-function Stop-MainComputerORGService([string]$RootPath, [object]$LaunchContext) {
+function Stop-MainComputerORGService([string]$RootPath, [object]$LaunchContext, [bool]$ForceShutdown = $false) {
   $stateDir = Join-Path $RootPath "runtime\state\slh"
   $pidPath = Join-Path $stateDir "organization-service.pid"
   if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
@@ -3200,19 +3229,45 @@ function Stop-MainComputerORGService([string]$RootPath, [object]$LaunchContext) 
   }
   $pythonCommand = [string]$LaunchContext.python
   try {
-    # The child, UI controller and launcher all use the same validated record:
-    # creation timestamp + exact organization_service module and state dir.
-    $output = & $pythonCommand -m main_computer.slh.organization_process stop --state-dir $stateDir 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      throw ("ORG-SLH stop helper exited {0}: {1}" -f $LASTEXITCODE, (($output | Out-String).Trim()))
+    # The shared start/stop forced-shutdown policy permits terminating the
+    # recorded PID without process identity proof; the helper's default API
+    # remains strict for callers that do not explicitly enable the override.
+    # In Windows PowerShell 5.1, stderr from a native command redirected with
+    # 2>&1 can become a *terminating* error when ErrorActionPreference=Stop.
+    # Then only the first diagnostic line survives (not the actual refusal).
+    # Temporarily capture the full native output and restore the caller policy.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      if ($ForceShutdown) {
+        $output = @(& $pythonCommand -m main_computer.slh.organization_process stop --state-dir $stateDir --force-unverified 2>&1)
+      } else {
+        $output = @(& $pythonCommand -m main_computer.slh.organization_process stop --state-dir $stateDir 2>&1)
+      }
+      $helperExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($helperExitCode -ne 0) {
+      throw ("ORG-SLH stop helper exited {0}: {1}" -f $helperExitCode, (($output | Out-String).Trim()))
     }
     $result = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop
-    if ([string]$result.state -notin @("not-running", "terminated")) {
+    if ($ForceShutdown) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$result.warning)) {
+        Write-Warning ([string]$result.warning)
+      }
+      if ([string]$result.state -eq "force-termination-failed") {
+        Write-Warning ("FORCED STOP: could not terminate ORG-SLH PID " + [string]$result.pid + "; shutdown continues")
+      }
+    } elseif ([string]$result.state -notin @("not-running", "terminated")) {
       throw "ORG-SLH stop helper did not verify termination"
     }
     return $result
   } catch {
-    # Do not erase the PID file or claim successful teardown on failure.
+    if ($ForceShutdown) {
+      Write-Warning ("FORCED STOP: ORG-SLH cleanup failed; continuing shutdown: " + $_.Exception.Message)
+    }
+    # The forced start/stop entry points treat failure as a warning, not a fatal error.
     return [ordered]@{ state = "failed"; error = $_.Exception.Message }
   }
 }
@@ -3236,7 +3291,11 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   # all verified local SLH launchers; --no-slh-hub prevents the new supervisor
   # from relaunching SLH.  Never start a dormant Windows SLH boot task.
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
-  Stop-MainComputer $RootPath $true | Out-Null
+  try {
+    Stop-MainComputer $RootPath $true $true | Out-Null
+  } catch {
+    Write-Warning ("RESTART cleanup raised an error; proceeding with launch anyway: " + $_.Exception.Message)
+  }
   $slhStart = [ordered]@{
     ok = $true
     requested = (-not $NoSLHHubRequested)
@@ -3244,7 +3303,19 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
     message = "SLH startup disabled by --no-slh-hub; verified local SLH launchers were stopped."
   }
   if (-not $NoSLHHubRequested) {
-    $slhRelease = Assert-MainComputerSLHListenerReleased
+    try {
+      $slhRelease = Assert-MainComputerSLHListenerReleased
+    } catch {
+      $listenerPid = Get-MainComputerSLHListenerPid
+      if ($listenerPid -gt 0) {
+        $listener = [ordered]@{ pid = $listenerPid; role = "slh-local-orphan"; sources = @("occupied SLH listener 8897") }
+        $forcedListener = Force-StopUnverifiedPid $listener ([ordered]@{ state = "listener-occupied"; reason = "slh-listener-still-occupied-after-cleanup" }) $RootPath
+        $slhRelease = [ordered]@{ state = [string]$forcedListener.state; port = 8897 }
+      } else {
+        $slhRelease = [ordered]@{ state = "listener-unverified"; port = 8897 }
+      }
+      Write-Warning ("RESTART proceeding despite SLH listener check: " + $_.Exception.Message)
+    }
     $slhStart = [ordered]@{
       ok = $true
       requested = $true
@@ -3897,7 +3968,7 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
     # it has no --root marker and requires a separate owner proof.
     if (Test-MainComputerSeparatelyOwnedSLH $commandLine) {
       if (Test-MainComputerOwnedSLHGateway $commandLine $RootPath) {
-        Add-PidCandidate $Candidates $process.ProcessId "slh" "verified live gateway for this checkout" 20
+        Add-PidCandidate $Candidates $process.ProcessId "slh" "verified live gateway for this checkout" 20 $false $commandLine $process.CreationDate
       }
       continue
     }
@@ -4025,6 +4096,133 @@ function Invoke-ProcessKill([int]$ProcessId, [bool]$StopTree = $true) {
   }
 }
 
+# Capture the identity evidence BEFORE taskkill changes it. Emit actionable
+# console lines and retain the identical record in stop-report JSON.
+function Get-UnverifiedPidDiagnostic([object]$Candidate, [object]$PreviousResult, [string]$RootPath) {
+  $processId = [int]$Candidate.pid
+  $role = [string]$Candidate.role
+  $diag = [ordered]@{
+    pid = $processId
+    role = $role
+    prior_state = [string]$PreviousResult.state
+    prior_error = [string]$PreviousResult.error
+    prior_reason = [string]$PreviousResult.reason
+    sources = @($Candidate.sources)
+    expected_root = $RootPath
+    previous_command_line = [string]$PreviousResult.command_line
+    discovery_command_line = [string](Get-ObjectPropertyValue $Candidate "verified_command_line" "")
+    discovery_creation_date = [string](Get-ObjectPropertyValue $Candidate "verified_creation_date" "")
+    live_command_line = ""
+    live_executable = ""
+    live_name = ""
+    live_creation_date = ""
+    live_parent_pid = $null
+    live_cim_state = "not-queried"
+    live_process_present = (Test-ProcessStillRunning $processId)
+    main_computer_marker_and_root_match = $null
+    gateway_identity = $null
+    discovery_gateway_identity = $null
+    live_matches_discovery_creation = $null
+  }
+  try {
+    $live = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $processId) -ErrorAction Stop
+    if ($null -eq $live) {
+      $diag.live_cim_state = "not-present"
+    } else {
+      $diag.live_cim_state = "present"
+      $diag.live_command_line = [string]$live.CommandLine
+      $diag.live_executable = [string]$live.ExecutablePath
+      $diag.live_name = [string]$live.Name
+      $diag.live_creation_date = [string]$live.CreationDate
+      $diag.live_parent_pid = [int]$live.ParentProcessId
+      if (-not [string]::IsNullOrWhiteSpace($diag.live_command_line)) {
+        $diag.main_computer_marker_and_root_match = [bool](Test-OwnedMainComputerPid $processId $RootPath $diag.live_command_line)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($diag.discovery_creation_date) -and -not [string]::IsNullOrWhiteSpace($diag.live_creation_date)) {
+        try {
+          $diag.live_matches_discovery_creation = ([math]::Abs((([datetime]$live.CreationDate).ToUniversalTime() -
+              ([datetime](Get-ObjectPropertyValue $Candidate "verified_creation_date" $null)).ToUniversalTime()).TotalMilliseconds) -lt 1000)
+        } catch { $diag.live_matches_discovery_creation = "comparison-failed: " + $_.Exception.Message }
+      }
+    }
+  } catch {
+    $diag.live_cim_state = "query-failed: " + $_.Exception.Message
+  }
+  if ($role -in @("slh", "slh-supervised-orphan")) {
+    $diag.discovery_gateway_identity = Get-MainComputerSLHGatewayIdentityFacts $diag.discovery_command_line $RootPath
+    $diag.gateway_identity = Get-MainComputerSLHGatewayIdentityFacts $diag.live_command_line $RootPath
+  }
+  return $diag
+}
+
+function Write-UnverifiedPidDiagnostic([object]$Diagnostic) {
+  # One warning explains the decision.  The subsequent lines are ordinary
+  # console output, so a user can paste them with the stop report.
+  Write-Warning ("PID IDENTITY DIAGNOSTIC pid={0} role={1} state={2} reason={3}" -f
+    $Diagnostic.pid, $Diagnostic.role, $Diagnostic.prior_state, $Diagnostic.prior_reason)
+  Write-Host ("  source: " + (@($Diagnostic.sources) -join "; "))
+  Write-Host ("  expected checkout: " + [string]$Diagnostic.expected_root)
+  Write-Host ("  prior command: " + [string]$Diagnostic.previous_command_line)
+  Write-Host ("  discovered command: " + [string]$Diagnostic.discovery_command_line)
+  Write-Host ("  discovered creation: " + [string]$Diagnostic.discovery_creation_date)
+  Write-Host ("  current CIM: " + [string]$Diagnostic.live_cim_state)
+  Write-Host ("  live PID visible to Get-Process: " + [string]$Diagnostic.live_process_present)
+  Write-Host ("  live executable/name: " + [string]$Diagnostic.live_executable + " / " + [string]$Diagnostic.live_name)
+  Write-Host ("  live created/parent: " + [string]$Diagnostic.live_creation_date + " / " + [string]$Diagnostic.live_parent_pid)
+  Write-Host ("  same creation as discovery: " + [string]$Diagnostic.live_matches_discovery_creation)
+  Write-Host ("  live command: " + [string]$Diagnostic.live_command_line)
+  $markerDecision = $(if ($null -eq $Diagnostic.main_computer_marker_and_root_match) { "not-evaluated (live command unavailable)" } else { [string]$Diagnostic.main_computer_marker_and_root_match })
+  Write-Host ("  main-computer marker + root: " + $markerDecision)
+  if ($null -ne $Diagnostic.discovery_gateway_identity) {
+    $d = $Diagnostic.discovery_gateway_identity
+    Write-Host ("  discovery gateway decision: {0}; module={1}; --root={2}; root-matches={3}; actual-root={4}" -f
+      $d.reason, $d.gateway_module_present, $d.root_argument_present, $d.root_matches, $d.actual_root)
+  }
+  if ($null -ne $Diagnostic.gateway_identity) {
+    $g = $Diagnostic.gateway_identity
+    Write-Host ("  gateway decision: {0}; module={1}; --root={2}; root-matches={3}; actual-root={4}" -f
+      $g.reason, $g.gateway_module_present, $g.root_argument_present, $g.root_matches, $g.actual_root)
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Diagnostic.prior_error)) {
+    Write-Host ("  previous error: " + [string]$Diagnostic.prior_error)
+  }
+}
+
+function Force-StopUnverifiedPid([object]$Candidate, [object]$PreviousResult, [string]$RootPath) {
+  # Explicit shared start/stop policy. PID-file/scan candidates may be stale
+  # or reused: this CAN kill an unrelated process. Requested operator override.
+  $processId = [int]$Candidate.pid
+  $role = [string]$Candidate.role
+  $identityDiagnostic = Get-UnverifiedPidDiagnostic $Candidate $PreviousResult $RootPath
+  # Supervisors and their descendants can exit while identity diagnostics are
+  # assembled. Never warn that we are *killing* an already-absent PID.
+  if ($processId -gt 0 -and $processId -ne $PID -and -not (Test-ProcessStillRunning $processId)) {
+    Write-Host "STOP: PID $processId ($role) exited before forced termination; no kill required."
+    return [ordered]@{ pid = $processId; role = $role; sources = $Candidate.sources; state = "not-running"; reason = "exited-before-forced-termination"; identity_verified = $false; prior_state = [string]$PreviousResult.state; identity_diagnostic = $identityDiagnostic }
+  }
+  Write-UnverifiedPidDiagnostic $identityDiagnostic
+  if ($processId -le 0 -or $processId -eq $PID) {
+    Write-Warning "FORCED STOP: invalid or self PID $processId ($role); cannot kill launcher, continuing."
+    return [ordered]@{ pid = $processId; role = $role; sources = $Candidate.sources; state = "force-termination-failed"; identity_verified = $false; prior_state = [string]$PreviousResult.state; identity_diagnostic = $identityDiagnostic }
+  }
+  Write-Warning ("FORCED STOP: killing unverified PID $processId ($role); prior state: " + [string]$PreviousResult.state)
+  $attempts = @()
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    try {
+      $killResult = Invoke-ProcessKill $processId ($role -ne "supervisor")
+      $gone = Wait-ProcessGone $processId 5
+      $attempts += [ordered]@{ attempt = $attempt; exit_code = $killResult.exit_code; output = $killResult.output; process_gone_after_attempt = $gone }
+      if ($gone) {
+        return [ordered]@{ pid = $processId; role = $role; sources = $Candidate.sources; state = "terminated-unverified"; identity_verified = $false; prior_state = [string]$PreviousResult.state; prior_error = [string]$PreviousResult.error; attempts = $attempts; identity_diagnostic = $identityDiagnostic }
+      }
+    } catch {
+      $attempts += [ordered]@{ attempt = $attempt; error = $_.Exception.Message }
+    }
+  }
+  Write-Warning "FORCED STOP: PID $processId ($role) could not be killed. Continuing shutdown anyway."
+  return [ordered]@{ pid = $processId; role = $role; sources = $Candidate.sources; state = "force-termination-failed"; identity_verified = $false; prior_state = [string]$PreviousResult.state; prior_error = [string]$PreviousResult.error; attempts = $attempts; identity_diagnostic = $identityDiagnostic }
+}
+
 function Stop-OnePid([object]$Candidate, [string]$RootPath) {
   $processId = [int]$Candidate.pid
   $role = [string]$Candidate.role
@@ -4041,13 +4239,46 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
   }
 
   $commandLine = Get-ProcessCommandLine $processId
-  if ($role -in @("slh", "slh-supervised-orphan") -and
-      -not (Test-MainComputerOwnedSLHGateway $commandLine $RootPath)) {
-    return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+  if ($role -in @("slh", "slh-supervised-orphan")) {
+    # During live Windows shutdown, CIM may briefly return no CommandLine.
+    # Reuse an earlier verified gateway identity ONLY if CIM's creation time
+    # confirms that this is the same process, never on PID alone.
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+      $cachedCommand = [string](Get-ObjectPropertyValue $Candidate "verified_command_line" "")
+      $cachedCreated = Get-ObjectPropertyValue $Candidate "verified_creation_date" $null
+      if (-not [string]::IsNullOrWhiteSpace($cachedCommand) -and $null -ne $cachedCreated) {
+        try {
+          $liveIdentity = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $processId) -ErrorAction Stop
+          if ($null -ne $liveIdentity -and $null -ne $liveIdentity.CreationDate -and
+              ([math]::Abs((([datetime]$liveIdentity.CreationDate).ToUniversalTime() -
+                ([datetime]$cachedCreated).ToUniversalTime()).TotalMilliseconds) -lt 1000) -and
+              (Test-MainComputerOwnedSLHGateway $cachedCommand $RootPath)) {
+            $commandLine = $cachedCommand
+            Write-Host "SLH IDENTITY: PID $processId live command line unreadable; same CIM creation date verified, using discovery command line."
+          }
+        } catch {
+          # Do not invent identity on a failed CIM recheck.  Forced policy will
+          # log live and cached inputs before attempting taskkill.
+        }
+      }
+    }
+    # The discovery pass precedes supervisor shutdown. Stopping the
+    # supervisor may itself stop this gateway before the later CIM lookup.
+    # That is success, not a lost-ownership failure requiring a forced kill.
+    # Check process existence again after the command-line retry and cached
+    # identity recheck, since either may have outlived the gateway.
+    if (-not (Test-ProcessStillRunning $processId)) {
+      Write-Host "SLH STOP: PID $processId exited before identity recheck completed; no kill required."
+      return [ordered]@{ pid = $processId; role = $role; state = "not-running"; reason = "exited-during-identity-recheck"; sources = $Candidate.sources }
+    }
+    $gatewayFacts = Get-MainComputerSLHGatewayIdentityFacts $commandLine $RootPath
+    if (-not $gatewayFacts.owned) {
+      return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; reason = $gatewayFacts.reason; sources = $Candidate.sources; command_line = $commandLine }
+    }
   }
   if ($role -eq "slh-local-orphan" -and
       -not (Test-MainComputerOwnedSLHLocalService $processId $RootPath)) {
-    return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; sources = $Candidate.sources; command_line = $commandLine }
+    return [ordered]@{ pid = $processId; role = $role; state = "skipped-not-owned"; reason = "local-service-module-or-virtualenv-mismatch"; sources = $Candidate.sources; command_line = $commandLine }
   }
   if ($role -eq "slh-boot-child") {
     try {
@@ -4149,6 +4380,7 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
     return [ordered]@{
       pid = $processId
       role = $role
+      reason = "main-computer-checkout-or-supervisor-identity-mismatch"
       state = $(if ($role -eq "supervisor" -and [string]::IsNullOrWhiteSpace($commandLine)) { "skipped-unverified" } else { "skipped-not-owned" })
       sources = $Candidate.sources
       command_line = $commandLine
@@ -4448,7 +4680,7 @@ function Invoke-DockerComposeDown([object]$Stack) {
   }
 }
 
-function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
+function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]$ForceShutdown = $false) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
   $runtime = Get-StartStopRuntime $RootPath
   Ensure-Directory $runtime
@@ -4470,8 +4702,10 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   $session = Read-JsonFile $sessionPath
   $nanoJevManagerStop = Stop-MainComputerNanoJevManagerGracefully $session
   if ($null -ne $nanoJevManagerStop -and -not [bool](Get-ObjectPropertyValue $nanoJevManagerStop "ok" $false)) {
-    throw ("Refusing to stop Main Computer while NanoJev is still active: {0}" -f
+    $nanoJevError = ("Main Computer NanoJev manager could not stop cleanly: {0}" -f
       (ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJevManagerStop "message" "NanoJev manager did not stop safely") "NanoJev manager did not stop safely"))
+    if ($ForceShutdown) { Write-Warning ("FORCED STOP continuing: " + $nanoJevError) }
+    else { throw $nanoJevError }
   }
   $candidates = @{}
 
@@ -4520,29 +4754,66 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   # Stop both potential SLH launchers *before* their processes.  In particular,
   # a live supervisor can otherwise respawn a child between kill and port check.
   # A missing/stopped Windows task is a successful no-op.
-  $slhBootStop = Stop-MainComputerSLHBootLauncher $RootPath
+  try {
+    $slhBootStop = Stop-MainComputerSLHBootLauncher $RootPath
+  } catch {
+    if (-not $ForceShutdown) { throw }
+    Write-Warning ("FORCED STOP: could not verify the SLH boot launcher; continuing process shutdown: " + $_.Exception.Message)
+    $slhBootStop = [ordered]@{ state = "failed"; owned_listener = $null; error = $_.Exception.Message }
+  }
   foreach ($candidate in @($candidates.Values | Where-Object { [string]$_.role -eq "supervisor" })) {
-    $processResults += Stop-OnePid $candidate $RootPath
+    try {
+      $stopResult = Stop-OnePid $candidate $RootPath
+    } catch {
+      if (-not $ForceShutdown) { throw }
+      $stopResult = [ordered]@{ state = "failed"; error = $_.Exception.Message }
+    }
+    if ($ForceShutdown -and [string]$stopResult.state -in @("skipped-unverified", "skipped-not-owned", "termination-attempted", "failed")) {
+      $stopResult = Force-StopUnverifiedPid $candidate $stopResult $RootPath
+    }
+    $processResults += $stopResult
   }
   # Do not kill any SLH child until the launcher is confirmed absent.
   $supervisorFailures = @($processResults | Where-Object {
     [string]$_.role -eq "supervisor" -and [string]$_.state -in @("termination-attempted", "skipped-unverified")
   })
   if ($supervisorFailures.Count -gt 0) {
-    throw "Supervisor shutdown was not verified; refusing to terminate an SLH child while its launcher may still restart it."
+    if ($ForceShutdown) {
+      Write-Warning "FORCED STOP: continuing despite unresolved supervisor shutdown verification."
+    } else {
+      throw "Supervisor shutdown was not verified; refusing to terminate an SLH child while its launcher may still restart it."
+    }
   }
   foreach ($candidate in ($candidates.Values | Where-Object { [string]$_.role -ne "supervisor" } |
       Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })) {
-    $processResults += Stop-OnePid $candidate $RootPath
+    try {
+      $stopResult = Stop-OnePid $candidate $RootPath
+    } catch {
+      if (-not $ForceShutdown) { throw }
+      $stopResult = [ordered]@{ state = "failed"; error = $_.Exception.Message }
+    }
+    if ($ForceShutdown -and [string]$stopResult.state -in @("skipped-unverified", "skipped-not-owned", "termination-attempted", "failed")) {
+      $stopResult = Force-StopUnverifiedPid $candidate $stopResult $RootPath
+    }
+    $processResults += $stopResult
   }
   # The supervisor is now dead (or was not a verified local launcher).
-  $slhChildStop = Stop-MainComputerSLHListenerAfterLaunchers $RootPath $slhBootStop.owned_listener
+  try {
+    $slhChildStop = Stop-MainComputerSLHListenerAfterLaunchers $RootPath $slhBootStop.owned_listener
+  } catch {
+    if (-not $ForceShutdown) { throw }
+    $slhChildStop = [ordered]@{ state = "failed"; error = $_.Exception.Message; pid = (Get-MainComputerSLHListenerPid) }
+  }
+  if ($ForceShutdown -and [string]$slhChildStop.state -in @("skipped-not-owned", "termination-attempted", "failed") -and [int]$slhChildStop.pid -gt 0) {
+    $slhCandidate = [ordered]@{ pid = [int]$slhChildStop.pid; role = "slh-local-orphan"; sources = @("SLH listener port 8897") }
+    $slhChildStop = Force-StopUnverifiedPid $slhCandidate $slhChildStop $RootPath
+  }
   if ([string]$slhChildStop.state -notin @("not-running", "not-owned")) {
     $processResults += $slhChildStop
   }
-  # ORG-SLH may have survived its Local Service. Never report a clean stop
-  # until the recorded child is independently verified dead.
-  $orgChildStop = Stop-MainComputerORGService $RootPath $launchContext
+  # ORG-SLH may have survived its Local Service. Under shared forced-shutdown
+  # policy, a recorded PID is killed even when identity cannot be verified.
+  $orgChildStop = Stop-MainComputerORGService $RootPath $launchContext $ForceShutdown
 
   Start-Sleep -Milliseconds 500
 
@@ -4563,22 +4834,25 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   $slhListenerStillRunning = (Get-MainComputerSLHListenerPid) -gt 0
   $slhFailedResults = @($processResults | Where-Object {
     [string]$_.role -in @("slh", "slh-supervised-orphan", "slh-boot-child", "slh-local-orphan") -and
-    [string]$_.state -eq "termination-attempted"
+    [string]$_.state -in @("termination-attempted", "force-termination-failed")
   })
   $slhFailure = $slhFailedResults.Count -gt 0 -or
-    [string]$slhChildStop.state -in @("termination-attempted", "skipped-not-owned") -or
-    [string]$orgChildStop.state -eq "failed"
-  # A foreign listener does not make an otherwise successful stop fail; start
-  # will refuse to take it over.  Do not erase owned-process PID evidence when
-  # an owned SLH process resisted shutdown.
+    [string]$slhChildStop.state -in @("termination-attempted", "skipped-not-owned", "force-termination-failed") -or
+    [string]$orgChildStop.state -in @("failed", "force-termination-failed")
+  # Both start and stop explicitly accept forced termination and clear old
+  # managed records; the stop report preserves unresolved kill failures.
   $removedPidFiles = @()
   if (-not $slhFailure) {
+    $removedPidFiles = Remove-ManagedRuntimeFiles $RootPath $session $controlRoot
+  } elseif ($ForceShutdown) {
+    Write-Warning "FORCED STOP: shutdown has unresolved failures; clearing stale managed PID records."
     $removedPidFiles = Remove-ManagedRuntimeFiles $RootPath $session $controlRoot
   }
 
   $report = [ordered]@{
     schema_version = 1
     action = "stop"
+    force_unverified_policy = $ForceShutdown
     stopped_at = Get-UtcNowText
     root = $RootPath
     session_path = $sessionPath
@@ -4597,7 +4871,9 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   Write-JsonFile $reportPath $report
 
   Write-Host ""
-  if ($slhFailure) {
+  if ($slhFailure -and $ForceShutdown) {
+    Write-Warning ("FORCED STOP: shutdown has unresolved failures. Stop report: " + $reportPath)
+  } elseif ($slhFailure) {
     if ($slhFailedResults.Count -eq 0 -and
         [string]$slhChildStop.state -notin @("termination-attempted", "skipped-not-owned") -and
         [string]$orgChildStop.state -eq "failed") {
@@ -4605,7 +4881,11 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
     }
     throw "Verified SLH process did not terminate. Stop report: $reportPath"
   }
-  Write-Host "Main Computer stop completed."
+  if ($slhFailure) {
+    Write-Host "Main Computer stop completed with warnings."
+  } else {
+    Write-Host "Main Computer stop completed."
+  }
   Write-Host ("Stop report: " + $reportPath)
   return $report
 }
@@ -4623,6 +4903,6 @@ switch ($Action) {
     exit (Show-MainComputerStatus $resolvedRoot)
   }
   "stop" {
-    Stop-MainComputer $resolvedRoot ([bool]$NoDocker) | Out-Null
+    Stop-MainComputer $resolvedRoot ([bool]$NoDocker) $true | Out-Null
   }
 }

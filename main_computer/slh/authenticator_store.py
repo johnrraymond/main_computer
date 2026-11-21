@@ -289,6 +289,99 @@ class LocalIdentityStore:
             temporary.unlink(missing_ok=True)
         return _identity_metadata(self.directory, device_id, with_public=True)
 
+    def _software_otp_path(self, device_id: str, service_fingerprint: str) -> Path:
+        _identity_path(self.directory, device_id)
+        if not isinstance(service_fingerprint,str) or not re.fullmatch(r'[a-f0-9]{64}',service_fingerprint):
+            raise IdentityStoreError('INVALID_SLH_FINGERPRINT')
+        return self.directory / (device_id + '.software-otp.' + service_fingerprint + '.json')
+
+    def activate_software_otp(self, device_id: str, service_fingerprint: str) -> dict:
+        """Create a local software OTP factor once; do not rotate P-256 keys.
+
+        The pairing secret is returned only on first activation. The caller must
+        register it to the authenticated Organization Service. Later lookups
+        expose only the current code and nonsecret metadata.
+        """
+        from .software_otp import new_secret
+        identity = self.get(device_id)
+        path = self._software_otp_path(device_id,service_fingerprint)
+        if path.exists() or path.is_symlink():
+            raise IdentityStoreError('SOFTWARE_OTP_ALREADY_ACTIVATED', 409)
+        secret = new_secret()
+        data = {'schema':'main-computer.local-software-otp.v1',
+                'fingerprint':identity['fingerprint'], 'service_fingerprint':service_fingerprint, 'secret':secret}
+        try:
+            _write_exclusive(path, json.dumps(data, sort_keys=True).encode('ascii'))
+            try:
+                secure_private_state_file(path)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+        except FileExistsError:
+            raise IdentityStoreError('SOFTWARE_OTP_ALREADY_ACTIVATED', 409) from None
+        except OSError:
+            raise IdentityStoreError('SOFTWARE_OTP_STORAGE_UNAVAILABLE', 503) from None
+        return {'device_id':device_id, 'fingerprint':identity['fingerprint'],
+                'pairing_secret':secret, 'service_fingerprint':service_fingerprint, 'algorithm':'SHA256', 'digits':8,
+                'period_seconds':30}
+
+    def reset_software_otp(self, device_id: str, service_fingerprint: str) -> None:
+        """Explicit local reset; call only after signed admin server revocation."""
+        self.get(device_id)
+        path=self._software_otp_path(device_id,service_fingerprint)
+        if path.is_symlink():
+            raise IdentityStoreError('SOFTWARE_OTP_FILE_UNSAFE',409)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            raise IdentityStoreError('SOFTWARE_OTP_NOT_ACTIVATED',404) from None
+        except OSError:
+            raise IdentityStoreError('SOFTWARE_OTP_STORAGE_UNAVAILABLE',503) from None
+
+    def software_otp_pairing_secret(self, device_id: str, service_fingerprint: str) -> str:
+        """Server-side LMS use only; never expose through the local public API."""
+        from .software_otp import secret_bytes
+        identity = self.get(device_id)
+        path = self._software_otp_path(device_id,service_fingerprint)
+        if path.is_symlink():
+            raise IdentityStoreError('SOFTWARE_OTP_FILE_UNSAFE',409)
+        try:
+            data = json.loads(path.read_text(encoding='ascii'))
+            if (data.get('schema')!='main-computer.local-software-otp.v1' or
+                data.get('fingerprint')!=identity['fingerprint'] or
+                data.get('service_fingerprint')!=service_fingerprint):
+                raise ValueError('mismatch')
+            secret_bytes(data.get('secret'))
+            return data['secret']
+        except FileNotFoundError:
+            raise IdentityStoreError('SOFTWARE_OTP_NOT_ACTIVATED',404) from None
+        except (OSError,ValueError,TypeError):
+            raise IdentityStoreError('SOFTWARE_OTP_UNAVAILABLE',503) from None
+
+    def current_software_otp(self, device_id: str, service_fingerprint: str) -> dict:
+        from .software_otp import code_at
+        identity = self.get(device_id)
+        path = self._software_otp_path(device_id,service_fingerprint)
+        if path.is_symlink():
+            raise IdentityStoreError('SOFTWARE_OTP_FILE_UNSAFE', 409)
+        try:
+            data = json.loads(path.read_text(encoding='ascii'))
+        except FileNotFoundError:
+            raise IdentityStoreError('SOFTWARE_OTP_NOT_ACTIVATED', 404) from None
+        except (OSError, ValueError, UnicodeError):
+            raise IdentityStoreError('SOFTWARE_OTP_UNAVAILABLE', 503) from None
+        if (not isinstance(data,dict) or data.get('schema')!='main-computer.local-software-otp.v1'
+                or data.get('fingerprint') != identity['fingerprint']
+                or data.get('service_fingerprint') != service_fingerprint):
+            raise IdentityStoreError('SOFTWARE_OTP_IDENTITY_MISMATCH', 409)
+        try:
+            code, counter = code_at(data.get('secret'))
+        except ValueError:
+            raise IdentityStoreError('SOFTWARE_OTP_UNAVAILABLE', 503) from None
+        return {'device_id':device_id, 'fingerprint':identity['fingerprint'],
+                'code':code, 'service_fingerprint':service_fingerprint,
+                'expires_at':(counter+1)*30, 'period_seconds':30}
+
     def load_private_key(self, device_id: str):
         return _private_key(self.directory, device_id)
 

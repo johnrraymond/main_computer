@@ -24,6 +24,10 @@ from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.worker_live_session import _WorkerHubLiveSessionClient, _worker_runtime_public_redacted
 
 
+# Settings reads/merges/writes must be one transaction across viewport threads.
+_WORKER_SETTINGS_IO_LOCK = threading.RLock()
+
+
 DEFAULT_WORKER_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS = 300.0
 
 
@@ -868,6 +872,12 @@ class ViewportEnergyRoutesMixin:
             assigned_ring = ""
         cleaned: dict[str, Any] = {
             "selectedNetwork": selected_network,
+            # MCEL Hub Choice is shared Worker/Requester context, not a runtime
+            # auto-connect instruction or signed Worker session destination.
+            "mcelHubChoice": (text(settings.get("mcelHubChoice"), selected_network).lower()
+                              if text(settings.get("mcelHubChoice"), selected_network).lower() in
+                              {"none", "mainnet", "testnet", "test", "dev", "slh"}
+                              else selected_network),
             "managedSLHUrl": text(settings.get("managedSLHUrl"), ""),
             "managedSLHDeviceId": text(settings.get("managedSLHDeviceId"), ""),
             "managedSLHFingerprint": text(settings.get("managedSLHFingerprint"), ""),
@@ -951,39 +961,124 @@ class ViewportEnergyRoutesMixin:
         return cleaned
 
     def _load_worker_settings(self) -> dict[str, Any]:
-        path = self._worker_settings_path()
-        try:
-            if not path.exists():
+        with _WORKER_SETTINGS_IO_LOCK:
+            path = self._worker_settings_path()
+            try:
+                if not path.exists():
+                    return {}
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return self._sanitize_worker_settings(data)
+            except Exception:
                 return {}
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return self._sanitize_worker_settings(data)
-        except Exception:
-            return {}
 
     def _save_worker_settings(self, settings: dict[str, Any], *, changed_fields: list[str] | None = None) -> dict[str, Any]:
-        # The browser owns editable seller fields, not the persisted offer
-        # state. Preserve server-owned intent across ordinary settings saves.
-        if not isinstance(settings, dict):
-            settings = {}
-        if not all(name in settings for name in ("workerOfferPending", "workerOfferIntent", "workerOfferStatus")):
-            previous = self._load_worker_settings()
-            settings = dict(settings)
-            for name, default in (("workerOfferPending", False), ("workerOfferIntent", {}), ("workerOfferStatus", {})):
-                settings.setdefault(name, previous.get(name, default))
-        incoming = self._sanitize_worker_settings(settings)
-        allowed_changes = {str(field or "").strip() for field in (changed_fields or []) if str(field or "").strip()}
-        if allowed_changes:
-            cleaned = self._sanitize_worker_settings(self._load_worker_settings())
-            for key in allowed_changes:
-                if key in incoming:
-                    cleaned[key] = incoming[key]
-            cleaned = self._sanitize_worker_settings(cleaned)
-        else:
-            cleaned = incoming
-        path = self._worker_settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        return cleaned
+        # Settings patches must merge with the latest persisted state under a
+        # single lock. A concurrent legacy session refresh must never restore
+        # an old MCEL Hub Choice (or clobber server-owned offer state).
+        with _WORKER_SETTINGS_IO_LOCK:
+            if not isinstance(settings, dict):
+                settings = {}
+            if not all(name in settings for name in ("workerOfferPending", "workerOfferIntent", "workerOfferStatus")):
+                previous = self._load_worker_settings()
+                settings = dict(settings)
+                for name, default in (("workerOfferPending", False), ("workerOfferIntent", {}), ("workerOfferStatus", {})):
+                    settings.setdefault(name, previous.get(name, default))
+            incoming = self._sanitize_worker_settings(settings)
+            allowed_changes = {str(field or "").strip() for field in (changed_fields or []) if str(field or "").strip()}
+            if allowed_changes:
+                cleaned = self._sanitize_worker_settings(self._load_worker_settings())
+                for key in allowed_changes:
+                    if key in incoming:
+                        cleaned[key] = incoming[key]
+                cleaned = self._sanitize_worker_settings(cleaned)
+            else:
+                cleaned = incoming
+            path = self._worker_settings_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+            return cleaned
+
+    def _handle_worker_mcel_observation(self) -> None:
+        """Read-only, bounded projection for the native MCEL Worker candidate.
+
+        Do not call network-session LOAD (which checks a Hub and persists the
+        result), runtime SYNC, offer registration, wallet methods, or SLH login.
+        A selected SLH target never establishes worker enrollment.
+        """
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker observation is local-only."},
+                                status=HTTPStatus.FORBIDDEN)
+                return
+            settings = self._load_worker_settings()
+            session_payload = self._worker_network_session_payload(settings, check_hub=False)
+            session = session_payload.get("session") or {}
+            profile = session.get("profile") or {}
+            supervisor = getattr(getattr(self, "server", None), "worker_runtime_supervisor", None)
+            get_status = getattr(supervisor, "status", None)
+            status = get_status() if callable(get_status) else self._worker_runtime_read_only_status()
+            runtime = status.get("runtime") if isinstance(status, dict) else {}
+            if not isinstance(runtime, dict):
+                runtime = {}
+            selected = str(session.get("selected_network") or "none")
+            requested_ring = str(session.get("requested_ring") or "3")
+            try:
+                requested_ring_int = int(requested_ring)
+            except (TypeError, ValueError):
+                requested_ring_int = 3
+            if requested_ring_int not in (0, 1, 2, 3):
+                requested_ring_int = 3
+            connections = session_payload.get("networks") or []
+            choices = [{"network": "none", "label": "None"}]
+            hub_labels = {"mainnet": "Mainnet", "testnet": "Testnet", "test": "Local Test", "dev": "Local Dev"}
+            allowed = set(self._worker_network_order())
+            for item in connections:
+                if isinstance(item, dict) and item.get("network") in allowed:
+                    choices.append({"network": str(item["network"]),
+                                    "label": hub_labels.get(str(item["network"]), str(item.get("display_name") or item["network"]))})
+            choices.append({"network": "slh", "label": "SLH/SEH"})
+            observation = {
+                "ok": True,
+                "schema": "mcel.worker.observation.v1",
+                "destinations": choices,
+                "hubChoice": str(settings.get("mcelHubChoice") or selected),
+                "destination": {
+                    "selectedNetwork": selected,
+                    "connectionStatus": str(session.get("connection_status") or "unverified"),
+                    "hub": str(profile.get("hub_url") or ""),
+                    "chainId": str(profile.get("chain_id") or ""),
+                    "requestedRing": requested_ring_int,
+                    "assignedRing": str(session.get("assigned_ring") or ""),
+                    "workerId": str(session.get("worker_id") or ""),
+                    "explanation": str(session.get("connection_error") or ""),
+                    "slhEnrollment": "NOT_VERIFIED" if selected == "slh" else "NOT_APPLICABLE",
+                },
+                "runtime": {
+                    "state": str(runtime.get("state") or "UNKNOWN"),
+                    "phase": str(runtime.get("phase") or "not_accepting"),
+                    "reason": str(status.get("reason") or "") if isinstance(status, dict) else "",
+                    "activeJobs": max(0, int(runtime.get("active_jobs") or 0)),
+                    "allowedToAccept": bool(runtime.get("allowed_to_accept")),
+                },
+                "slhTarget": {
+                    "hubUrl": str(settings.get("managedSLHUrl") or ""),
+                    "authenticationState": "NOT_VERIFIED",
+                },
+                "policy": {
+                    "sellerEnabled": bool(settings.get("sellerEnabled")),
+                    "availabilityMode": self._normalize_worker_seller_availability_mode(
+                        settings.get("sellerAvailabilityMode")),
+                    "remoteEnabled": bool(settings.get("remoteEnabled")),
+                    "remoteMode": (str(settings.get("remoteMode") or "ask-when-busy")
+                                   if settings.get("remoteMode") in ("never", "ask-when-busy", "auto-when-busy")
+                                   else "ask-when-busy"),
+                },
+            }
+            self._send_json(observation)
+        except Exception as exc:
+            self.server.signal("api-worker-mcel-observation-error", error=str(exc))
+            self._send_json({"ok": False, "error": "Worker observation unavailable."},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _handle_worker_settings_load(self) -> None:
         try:
@@ -1007,7 +1102,10 @@ class ViewportEnergyRoutesMixin:
             if not isinstance(changed_fields, list):
                 changed_fields = None
             settings = self._save_worker_settings(body, changed_fields=changed_fields)
-            self._kick_worker_runtime_supervisor("worker-settings-save")
+            # Choosing the MCEL Hub context must not probe a Hub, invalidate
+            # Worker credentials, or wake the runtime supervisor.
+            if changed_fields != ["mcelHubChoice"]:
+                self._kick_worker_runtime_supervisor("worker-settings-save")
             self.server.signal("api-worker-settings-save", remote_enabled=bool(settings.get("remoteEnabled")))
             self._send_json({"ok": True, "settings": settings})
         except Exception as exc:
@@ -3367,13 +3465,18 @@ class ViewportEnergyRoutesMixin:
             payload = self._worker_network_session_payload(settings, check_hub=bool(settings.get("selectedNetwork") not in {None, "", "none"}))
             session = payload["session"]
             if session["selected_network"] != "none":
+                # The legacy GET refreshes connection status; it does not own
+                # the independent Hub Choice. Only persist fields observed by
+                # this request, merging with the latest settings on disk.
+                updates = ["workerConnectionStatus", "workerConnectedHubUrl", "workerConnectionError"]
                 settings["workerConnectionStatus"] = session["connection_status"]
                 settings["workerConnectedHubUrl"] = session.get("connected_hub_url", "")
                 settings["workerConnectionError"] = session.get("connection_error", "")
                 if session["connection_status"] == "connected":
                     settings["workerConnectedAt"] = worker_now = datetime.now(timezone.utc).isoformat()
                     session["connected_at"] = worker_now
-                self._save_worker_settings(settings)
+                    updates.append("workerConnectedAt")
+                self._save_worker_settings(settings, changed_fields=updates)
             self.server.signal("api-worker-network-session-load", selected=session["selected_network"], status=session["connection_status"])
             self._send_json(payload)
         except Exception as exc:

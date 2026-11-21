@@ -89,7 +89,8 @@
       (schema?.kind==="boolean" && typeof v==="boolean") ||
       (schema?.kind==="integer" && Number.isSafeInteger(v)),"visibility-type-invalid");
     if(s.authority==="renderer-local")assert(modeStates.has(s.id) &&
-      !own(when,"path") && s.schema.kind==="string" && s.schema.enum?.includes(v),
+      !own(when,"path") && s.schema.kind==="string" &&
+      (s.schema.enum?.includes(v) || !s.schema.enum && typeof v==="string"),
       "visibility-view-invalid");
   }
   function contract(ir, composition) {
@@ -100,8 +101,9 @@
     assert((ir.surfaces || []).length === 1, "single-semantic-surface-required");
     const surface = ir.surfaces[0];
     const generated = composition !== undefined;
-    const modeStates=new Set([...intents.values()].filter(i=>i.viewTransition)
-      .map(i=>ref(i.viewTransition.target)));
+    const modeStates=new Set([...intents.values()].flatMap(i=>
+      i.viewTransition?[ref(i.viewTransition.target)]:
+      i.collectionSelection?[ref(i.collectionSelection.target)]:[]));
     if (generated) {
       assert(!surface.interfaceIntent?.hierarchy && !surface.htmlBindings && !(ir.layouts || []).length,
         "generated-layout-source-not-independent");
@@ -505,8 +507,18 @@
           (zone.members.length > 1 ? zone.kind === "tab-group" : zone.kind === "inspector"),
           "workspace-tool-default");
     }
-    assert(names.has("workspace") && covered.size === c.regions.size - 1,
+    // Authored descendants belong to their top-level zone. A nested group
+    // cannot be promoted to an independent dock by insertion order or DOM
+    // position; its parent region owns it and renderRegion retains the tree.
+    const rootChildren=c.children.get(c.rootId)||[];
+    assert(names.has("workspace") && covered.size===rootChildren.length &&
+      rootChildren.every(r=>covered.has(r.id)) &&
+      [...covered].every(id=>c.regions.get(id).parentId===c.rootId),
       "workspace-plan-incomplete");
+    const nested=[...c.regions.values()].filter(r=>r.id!==c.rootId&&r.parentId!==c.rootId)
+      .map(r=>({id:r.id,parentId:r.parentId}));
+    assert(JSON.stringify(plan.nestedGroups||[])===JSON.stringify(nested),
+      "workspace-nested-group-mismatch");
     if(plan.documentWorkbench){
       const layout=plan.documentWorkbench;
       assert(layout.schema==="mcel.document-workbench.v1" &&
@@ -518,8 +530,8 @@
         "document-workbench-anchor-invalid");
       const groups=[[layout.document],layout.navigation,layout.companion,layout.bottom,layout.status];
       const ids=groups.flat();
-      assert(ids.length===c.regions.size-1 && new Set(ids).size===ids.length &&
-        ids.every(id=>c.regions.has(id)) &&
+      assert(ids.length===rootChildren.length && new Set(ids).size===ids.length &&
+        ids.every(id=>c.regions.has(id) && c.regions.get(id).parentId===c.rootId) &&
         layout.navigation.every(id=>c.regions.get(id).purpose==="navigation" && c.regions.get(id).preferences?.side==="start") &&
         layout.companion.every(id=>c.regions.get(id).preferences?.side==="end") &&
         layout.bottom.every(id=>c.regions.get(id).preferences?.side==="bottom") &&
@@ -527,6 +539,43 @@
         "document-workbench-coverage-invalid");
       assert(global.McelSemanticDocumentWorkbench?.mount,
         "document-workbench-engine-missing");
+    }
+    // The semantic template binding is part of the source-verified workspace
+    // plan, not a post-mount application script. The host recomputes policy and
+    // arguments from canonical IR; the browser independently checks exact
+    // coverage and parent/zone ownership before constructing any DOM.
+    if(plan.semanticTemplate){
+      const t=plan.semanticTemplate,a=t.arguments;
+      assert(t.schema==="mcel.semantic-template-binding.v1" &&
+        typeof t.profile==="string" && /^[a-z][a-z0-9-]*$/.test(t.profile) &&
+        t.sourceIrHash===ir.fingerprints?.semantic &&
+        typeof t.argumentHash==="string" && /^sha256:[a-f0-9]{64}$/.test(t.argumentHash) &&
+        t.authority==="canonical-ir-and-deterministic-graph-match" &&
+        a?.profile===t.profile && plan.documentWorkbench &&
+        JSON.stringify(a.docks)===JSON.stringify(plan.documentWorkbench),
+        "semantic-template-source-or-layout-mismatch");
+      assert(["authored","inferred"].includes(a.grouping),"semantic-template-grouping-unknown");
+      if(a.grouping==="inferred"){
+        const region=c.regions.get(a.region), groups=a.groups;
+        assert(region && region.purpose===a.regionPurpose &&
+          plan.documentWorkbench.companion.includes(a.region) &&
+          groups && typeof groups==="object" && !Array.isArray(groups) &&
+          Object.keys(groups).length>=1 && Object.keys(groups).length<=16,
+          "semantic-template-region-invalid");
+        const expected=(region.members||[]).map(m=>ref(m));
+        const actual=[];
+        for(const [name, ids] of Object.entries(groups)){
+          assert(/^[a-z][a-z0-9-]*$/.test(name) && Array.isArray(ids) && ids.length>0 &&
+            ids.every(id=>typeof id==="string" && c.nodes.has(id)),
+            "semantic-template-argument-invalid");
+          actual.push(...ids);
+        }
+        assert(actual.length===expected.length && new Set(actual).size===actual.length &&
+          actual.every(id=>expected.includes(id)),"semantic-template-coverage-invalid");
+      } else {
+        assert(a.groups && Object.keys(a.groups).length===0,
+          "semantic-template-authored-groups-conflict");
+      }
     }
     return plan;
   }
@@ -536,6 +585,235 @@
     if (text !== undefined) n.textContent = String(text);
     return n;
   }
+  // Deterministic candidate scheduler, first certified in independent isolated
+  // comparisons. Patch 4 additionally permits an explicitly opted-in normal
+  // application mount; without that opt-in the incumbent remains authoritative.
+  // Its graph stores dependency identifiers only, not state values or receipts.
+  function createSignalCandidate(config={}) {
+    const isolated=config.isolated===true;
+    const integrated=config.integrated===true&&!isolated;
+    const selectiveNotify=(isolated||integrated)&&config.selectiveInNotify===true;
+    const selectiveKinds=selectiveNotify&&Array.isArray(config.selectiveKinds)
+      ?new Set(config.selectiveKinds.filter(x=>typeof x==="string")):new Set();
+    const getState=typeof config.getState==="function"?config.getState:()=>undefined;
+    const onSchedulerFault=typeof config.onSchedulerFault==="function"
+      ?config.onSchedulerFault:()=>{};
+    const limit=Number.isSafeInteger(config.historyLimit)
+      ?Math.max(1,Math.min(config.historyLimit,512)):128;
+    const consumers=new Map(),history=[];
+    let current=null,pending=null,lastSnapshot=null,lastReceipt=null;
+    const pendingStack=[];
+    let serial=0,lastIsolatedRevision=0,disposed=false;
+    const stats={observations:0,executions:0,skips:0,unsafeFallbacks:0,unknownInvalidations:0};
+    const signature=value=>{
+      try {
+        const encoded=JSON.stringify(value);
+        return encoded===undefined?"<undefined>":encoded;
+      }catch(_){return null;}
+    };
+    const name=value=>typeof value==="string"&&value.length>0&&value.length<=512?value:null;
+    const names=values=>{
+      if(!Array.isArray(values)&&!(values instanceof Set))return null;
+      const result=new Set();
+      for(const value of values){const key=name(value);if(!key)return null;result.add(key);}
+      return result;
+    };
+    const emit=value=>{history.push(value);if(history.length>limit)history.shift();};
+    function ensure(key,render=null,opts={}) {
+      if(disposed)throw Error("MCEL_SIGNAL_CANDIDATE_DISPOSED");
+      if(!name(key))throw Error("MCEL_SIGNAL_CANDIDATE_INVALID_CONSUMER");
+      let item=consumers.get(key);
+      if(!item){
+        item={key,render:null,reads:new Set(),externals:new Set(),observed:false,
+          safeToSkip:false,constant:false,externalContracts:new Set(),generation:0,uncertain:false};
+        consumers.set(key,item);
+      }
+      if(render!==null){
+        if(typeof render!=="function")throw Error("MCEL_SIGNAL_CANDIDATE_INVALID_RENDER");
+        item.render=render;
+      }
+      if(opts.register===true){
+        // Rebinding even a stable key changes its possible dependency set.
+        // Force a fresh observation rather than reusing stale reads.
+        item.observed=false;item.uncertain=true;
+        // Only an isolated test instance can authorize selective execution.
+        // A mounted production observer cannot opt into suppression.
+        item.safeToSkip=(isolated||integrated) && opts.safeToSkip===true;
+        item.constant=opts.constant===true;
+        item.externalContracts=names(opts.externalContracts||[])||new Set();
+        item.generation++;
+      }
+      return item;
+    }
+    function trackStateRead(id){if(current){const key=name(id);if(key)current.reads.add(key);else current.uncertain=true;}}
+    function trackExternalRead(source){if(current){const key=name(source);if(key)current.externals.add(key);else current.uncertain=true;}}
+    function read(id){trackStateRead(id);return getState(id);}
+    function run(item,render,externals=[]) {
+      const previous=current;
+      const capture={reads:new Set(),externals:new Set(),uncertain:false};
+      current=capture;
+      let successful=false;
+      try {
+        const staticNames=names(externals);
+        if(staticNames===null)capture.uncertain=true;
+        else for(const source of staticNames)capture.externals.add(source);
+        const result=render();
+        // Asynchronous reads cannot be tracked by this synchronous observer.
+        // Do not allow a promise-returning consumer to become skippable.
+        if(result&&typeof result.then==="function")capture.uncertain=true;
+        successful=true;return result;
+      }finally{
+        current=previous;
+        item.reads=capture.reads;item.externals=capture.externals;
+        item.uncertain=capture.uncertain||!successful;
+        item.observed=successful;
+        stats.executions++;
+      }
+    }
+    function decision(item,changed,invalidated,unknown=false){
+      if(unknown)return {run:true,reason:"unknown-invalidation"};
+      if(!item.observed||item.uncertain)return {run:true,reason:"unobserved-or-uncertain"};
+      if(!item.safeToSkip)return {run:true,reason:"uncertified-consumer"};
+      if(!item.reads.size&&!item.externals.size&&!item.constant)
+        return {run:true,reason:"undeclared-inputs"};
+      for(const source of item.externals)if(!item.externalContracts.has(source))
+        return {run:true,reason:"uncontracted-external:"+source};
+      for(const source of item.reads)if(changed.has(source))
+        return {run:true,reason:"state-changed:"+source};
+      for(const source of item.externals)if(invalidated.has(source))
+        return {run:true,reason:"external-invalidated:"+source};
+      return {run:false,reason:"unchanged-closed-inputs"};
+    }
+    function beginNotify(state,exactRevision=null,receiptSequence=null){
+      if(disposed||!state||typeof state.entries!=="function")return;
+      const snapshot=new Map(),changed=new Set();let unknown=lastSnapshot===null;
+      try{
+        for(const [id,value] of state.entries()){
+          const key=name(id),encoded=signature(value);
+          if(!key||encoded===null){unknown=true;continue;}
+          snapshot.set(key,encoded);
+          if(!lastSnapshot||lastSnapshot.get(key)!==encoded)changed.add(key);
+        }
+        if(lastSnapshot)for(const key of lastSnapshot.keys())if(!snapshot.has(key))changed.add(key);
+      }catch(_){unknown=true;}
+      if(unknown)stats.unknownInvalidations++;
+      const invalidated=new Set(["clock"]);
+      if(lastReceipt!==null&&receiptSequence!==lastReceipt)invalidated.add("receipts");
+      lastSnapshot=snapshot;lastReceipt=receiptSequence;
+      pendingStack.push(pending);
+      pending={seen:new Set(),revision:++serial,exactRevision:Number.isSafeInteger(exactRevision)?exactRevision:null,
+        changed,invalidated,unknown,executed:0,skipped:0,actualSkipConsumers:[]};
+    }
+    function observe(key,render,externals=[]){
+      let item;
+      try {
+        item=ensure(key);
+        if(selectiveNotify)item.safeToSkip=selectiveKinds.has(key.split("/",1)[0]);
+        const d=pending?decision(item,pending.changed,pending.invalidated,pending.unknown)
+          :{run:true,reason:"outside-notification"};
+        if(pending){
+          pending.seen.add(key);
+          if(selectiveNotify){
+            if(!d.run){
+              pending.skipped++;stats.skips++;
+              if(pending.actualSkipConsumers.length<256)
+                pending.actualSkipConsumers.push({id:item.key,reason:d.reason,
+                  stateReads:[...item.reads].sort(),externalReads:[...item.externals].sort()});
+              return;
+            }
+            pending.executed++;
+          }else{
+            pending.executed++;
+            if(!d.run)pending.skipped++;
+          }
+        }
+      } catch(error) {
+        if(!integrated)throw error;
+        // The scheduler failed BEFORE calling the renderer. Discard its graph
+        // and invoke the incumbent renderer exactly once. Errors originating
+        // inside render itself remain normal application errors, never retries.
+        stats.unsafeFallbacks++;
+        try{onSchedulerFault("CONSUMER_DECISION:"+String(error));}catch(_){}
+        return render();
+      }
+      return run(item,render,externals);
+    }
+    function endNotify(){
+      if(!pending)return;
+      stats.observations++;
+      // Mounted observers are replaced with DOM nodes; old keys must not
+      // retain subscriptions after those nodes disappear. Isolated fixture
+      // registrations are explicitly disposed instead.
+      if(!isolated){
+        const parent=pendingStack[pendingStack.length-1];
+        if(parent)for(const key of pending.seen)parent.seen.add(key);
+        else for(const key of consumers.keys())if(!pending.seen.has(key))consumers.delete(key);
+      }
+      emit({revision:pending.revision,exactRevision:pending.exactRevision,
+        changedStateKeys:[...pending.changed].sort(),
+        invalidatedExternalSources:[...pending.invalidated].sort(),unknown:pending.unknown,
+        incumbentExecutions:selectiveNotify?null:pending.executed,
+        candidateExecutions:selectiveNotify?pending.executed:null,
+        actualSkips:selectiveNotify?pending.skipped:0,
+        actualSkipConsumers:selectiveNotify?pending.actualSkipConsumers:[],
+        skippedConsumerDetailTruncated:selectiveNotify&&pending.skipped>pending.actualSkipConsumers.length,
+        hypotheticalSkips:selectiveNotify?0:pending.skipped});
+      pending=pendingStack.pop()||null;
+    }
+    function register(key,render,opts={}){
+      if(!isolated)throw Error("MCEL_SIGNAL_CANDIDATE_ISOLATED_ONLY");
+      const item=ensure(key,render,{...opts,register:true});
+      const generation=item.generation;
+      return ()=>{if(consumers.get(key)===item&&item.generation===generation)consumers.delete(key);};
+    }
+    function flush(input={}){
+      // No mounted runtime ever calls flush. Only the isolated harness may
+      // suppress a consumer. Every unknown input forces full execution.
+      if(!isolated)throw Error("MCEL_SIGNAL_CANDIDATE_ISOLATED_ONLY");
+      if(disposed)throw Error("MCEL_SIGNAL_CANDIDATE_DISPOSED");
+      const changed=names(input.changedStateIds||[]),invalidated=names(input.externalInvalidations||[]);
+      const unknown=input.unknown===true||changed===null||invalidated===null;
+      const rev=input.revision;
+      if(!Number.isSafeInteger(rev)||rev<=0||rev<lastIsolatedRevision)
+        throw Error("MCEL_SIGNAL_CANDIDATE_REVISION_INVALID");
+      // Repeated identical revision batches are deduplicated. A batch adding
+      // new invalidations within that revision is evaluated again, never lost.
+      const fingerprint=JSON.stringify([rev,[...(changed||[])].sort(),[...(invalidated||[])].sort(),unknown]);
+      const duplicate=rev===lastIsolatedRevision&&fingerprint===flush.lastFingerprint;
+      lastIsolatedRevision=rev;flush.lastFingerprint=fingerprint;
+      const executed=[],skipped=[],reasons={};
+      for(const item of consumers.values()){
+        // Repeated revision batches may skip only previously observed,
+        // fully contracted consumers. Unknown and newly rebound consumers
+        // must still execute. A duplicate cannot silently drop work.
+        const closed=item.observed&&!item.uncertain&&item.safeToSkip&&
+          (item.reads.size>0||item.externals.size>0||item.constant)&&
+          [...item.externals].every(source=>item.externalContracts.has(source));
+        const d=duplicate&&closed?{run:false,reason:"duplicate-closed-revision"}:
+          duplicate?{run:true,reason:"duplicate-unsafe-fallback"}:
+          decision(item,changed||new Set(),invalidated||new Set(),unknown);
+        reasons[item.key]=d.reason;
+        if(!d.run){skipped.push(item.key);stats.skips++;continue;}
+        if(d.reason!=="state-changed"&&d.reason!=="external-invalidated"&&
+          d.reason.startsWith("uncontracted"))stats.unsafeFallbacks++;
+        executed.push(item.key);
+        run(item,item.render,input.externalsByConsumer?.[item.key]||[]);
+      }
+      emit({revision:rev,executed:executed.slice(),skipped:skipped.slice(),unknown});
+      return {revision:rev,executed,skipped,reasons,duplicate};
+    }
+    function report(){return {schema:"mcel.signal-candidate.v1",
+      mode:integrated&&selectiveNotify?"integrated-opt-in":selectiveNotify?"isolated-differential":isolated?"isolated":"observe",
+      certified:false,productionSchedulerChanged:integrated&&selectiveNotify,consumerCount:consumers.size,
+      statistics:{...stats},consumers:[...consumers.values()].map(item=>({
+        id:item.key,reads:[...item.reads].sort(),externalReads:[...item.externals].sort(),
+        observed:item.observed,uncertain:item.uncertain,
+        skipAuthorized:item.safeToSkip&&(isolated||integrated)})),history:history.slice()};}
+    function release(){disposed=true;consumers.clear();history.length=0;current=null;pending=null;pendingStack.length=0;lastSnapshot=null;}
+    return Object.freeze({register,flush,read,trackStateRead,trackExternalRead,
+      beginNotify,observe,endNotify,report,release});
+  }
+
   function mount(root, ir, options = {}) {
     assert(root && root.nodeType === 1, "missing-root");
     assert(!root.hasAttribute("data-mcel-semantic-operational"), "already-mounted");
@@ -607,6 +885,7 @@
     let serial = 0, disposed = false;
     let refreshTimer = null, initialRefreshTimer = null, refreshBusy = false, refreshEnabled = true;
     let inferredLayout=null, generatedResizeObserver=null, generatedResizeListener=null;
+    let naturalInspector=null, naturalWorkspace=null, naturalTree=null;
     let plannedLayout=null,colorPresentation=null;
     const colorOperations=new Set(),colorOutcomes=new Map();
     // Diagnostic-only DOM producer bracket. A diagnostic error must never
@@ -632,24 +911,87 @@
     for (const s of c.states.values()) {
       if (own(s,"initial")) { checkSchema(s.schema,s.initial,s.id); state.set(s.id,clone(s.initial)); }
     }
+    // The browser differential gate remains test-only. Normal application
+    // mounts can opt into the SAME engine only through the explicit per-app
+    // integration contract. All existing mounts default to incumbent execution.
+    const isolatedSignalTest=global.__MCEL_SIGNAL_DIFFERENTIAL_ISOLATED__===true &&
+      options.signalCandidateIsolatedTest===true;
+    const experimentalKinds=["condition","display","selected-record","typed-record"];
+    const requestedKinds=Array.isArray(options.signalCandidateTestKinds)
+      ?options.signalCandidateTestKinds.filter(kind=>experimentalKinds.includes(kind))
+      :experimentalKinds;
+    const integratedAllowed=!isolatedSignalTest && options.signalSchedulerIntegration===true &&
+      (ir.application.appId==="slh"||ir.application.appId==="semantic-task-manager");
+    let integratedActive=integratedAllowed&&options.signalSchedulerStartEnabled===true;
+    let signalFallbacks=0,lastSignalFallback=null;
+    const integratedRequestedKinds=Array.isArray(options.signalSchedulerCertifiedKinds)
+      ?options.signalSchedulerCertifiedKinds.filter(kind=>experimentalKinds.includes(kind))
+      :experimentalKinds;
+    const newIntegratedCandidate=()=>createSignalCandidate({integrated:true,
+      selectiveInNotify:true,selectiveKinds:integratedRequestedKinds,
+      onSchedulerFault:signalFailClosed});
+    let signalCandidate=isolatedSignalTest
+      ?createSignalCandidate({isolated:true,selectiveInNotify:true,selectiveKinds:requestedKinds})
+      :integratedActive?newIntegratedCandidate()
+      :options.signalCandidateDiagnostics===true?createSignalCandidate():null;
+    function signalSchedulingReport(){
+      const base=signalCandidate?.report()||{schema:"mcel.signal-candidate.v1",mode:"disabled",
+        certified:false,productionSchedulerChanged:false};
+      return {...base,integratedSupported:integratedAllowed,
+        integrationEnabled:integratedActive,fallbacks:signalFallbacks,lastFallback:lastSignalFallback};
+    }
+    function signalFailClosed(reason){
+      signalFallbacks++;lastSignalFallback=String(reason).slice(0,160);
+      try{signalCandidate?.release();}catch(_){}
+      integratedActive=false;
+      signalCandidate=options.signalCandidateDiagnostics===true?createSignalCandidate():null;
+    }
+    // Explicit runtime control, including immediate rollback. Re-enabling
+    // installs an empty graph, forcing one complete bootstrap execution.
+    function setSignalSchedulingMode(mode){
+      if(mode!=="incumbent"&&mode!=="certified")return {status:"REFUSED",reason:"UNKNOWN_MODE"};
+      if(disposed)return {status:"REFUSED",reason:"UNMOUNTED"};
+      if(mode==="certified"&&!integratedAllowed)return {status:"REFUSED",reason:"INTEGRATION_NOT_ALLOWED"};
+      if(isolatedSignalTest)return {status:"REFUSED",reason:"ISOLATED_TEST_OWNS_SCHEDULER"};
+      if(integratedActive===(mode==="certified"))return {status:"UNCHANGED",report:signalSchedulingReport()};
+      try{signalCandidate?.release();}catch(_){}
+      integratedActive=mode==="certified";
+      signalCandidate=integratedActive?newIntegratedCandidate():
+        options.signalCandidateDiagnostics===true?createSignalCandidate():null;
+      notify(); // Fresh complete reconciliation; changed dependency graphs cannot leak across modes.
+      return {status:integratedActive?"ENABLED":"ROLLED_BACK",report:signalSchedulingReport()};
+    }
+    const signalTargetIds=new WeakMap();let nextSignalTargetId=0;
+    const signalConsumerKey=(kind,id,targets)=>{
+      const target=Array.isArray(targets)?targets.find(item=>item?.nodeType===1):targets;
+      if(!target||target.nodeType!==1)return kind+'/'+id;
+      let key=signalTargetIds.get(target);
+      if(!key){key=++nextSignalTargetId;signalTargetIds.set(target,key);}
+      return kind+'/'+id+'#'+key;
+    };
     // Diagnostic-only observation. The incumbent state and renderer remain
     // authoritative; failures in the optional oracle cannot affect either.
     let shadowCurrentConsumer = null;
     const read = id => {
+      signalCandidate?.trackStateRead(id);
       if (shadowCurrentConsumer) try {shadowCurrentConsumer.read(id);} catch (_) {}
       return state.get(id);
     };
     function shadowObserve(kind,id,render,targets=null,externalSources=[]) {
       let observation=null;
       try {observation=global.MCELReactivityShadowOracle?.capture?.(root,kind,id,targets)||null;}catch (_) {}
-      if(!observation)return render();
-      const previous=shadowCurrentConsumer;shadowCurrentConsumer=observation;
-      try {
-        for(const source of externalSources)observation.readExternal(source);
-        return render();
-      } finally {shadowCurrentConsumer=previous;try {observation.finish();}catch (_) {}}
+      const invoke=()=>{
+        if(!observation)return render();
+        const previous=shadowCurrentConsumer;shadowCurrentConsumer=observation;
+        try {
+          for(const source of externalSources)observation.readExternal(source);
+          return render();
+        } finally {shadowCurrentConsumer=previous;try {observation.finish();}catch (_) {}}
+      };
+      return signalCandidate?signalCandidate.observe(signalConsumerKey(kind,id,targets),invoke,externalSources):invoke();
     }
     const shadowExternal=name=>{
+      signalCandidate?.trackExternalRead(name);
       if(shadowCurrentConsumer)try {shadowCurrentConsumer.readExternal(name);}catch (_) {}
     };
     // Missing/expired derived state never satisfies operational applicability.
@@ -682,6 +1024,11 @@
     const applicable = n => !n?.visibleWhen || conditionSatisfied(n.visibleWhen);
     const enabled = n => !n?.enabledWhen || conditionSatisfied(n.enabledWhen);
     function notify(exactRevision=null) {
+      // A failed candidate preflight must never reuse an earlier dependency
+      // snapshot. Return immediately to the incumbent before any consumer runs.
+      if(signalCandidate)try{signalCandidate.beginNotify(state,exactRevision,nextReceiptSequence);}
+        catch(error){if(integratedActive)signalFailClosed("BEGIN_NOTIFY:"+String(error));}
+      try {
       try {global.MCELReactivityShadowOracle?.beforeNotify?.(
         root,ir.application.appId,state,nextReceiptSequence,exactRevision);}catch (_) {}
       for (const [r,el] of regionHosts) shadowObserve('region',r.id,()=>{
@@ -747,6 +1094,13 @@
       for (const view of tabSwitchers) shadowObserve('tab-switch',view.stateId,()=>{
         const selected=read(view.stateId);
         view.select.value=selected === undefined ? view.select.value : selected;
+        if(view.subtitle){
+          const choice=read(ref(view.subtitle.state));
+          const label=view.subtitle.labels?.[choice] ?? view.subtitle.fallback;
+          const target=view.buttons.find(button=>button.dataset.value===view.subtitle.forValue)
+            ?.querySelector('[data-mcel-navigation-subtitle]');
+          if(target && target.textContent!==label)target.textContent=label;
+        }
         for (const button of view.buttons) {
           const active = button.dataset.value === selected;
           if(button.getAttribute("aria-pressed")!==String(active))
@@ -818,6 +1172,8 @@
         }
       },root,['theme','generated-layout']);
       try {global.MCELReactivityShadowOracle?.afterNotify?.(root);}catch (_) {}
+      } finally {if(signalCandidate)try{signalCandidate.endNotify();}
+        catch(error){if(integratedActive)signalFailClosed("END_NOTIFY:"+String(error));}}
     }
     // Activity is a generic receipt view. The app may author a specific set of
     // intent/outcome reports using dsl.activity.info/warn/error. Without such
@@ -1186,7 +1542,11 @@
           for(const receiver of resultReceivers.get(target)||[]){
             if(!receiver.input.isConnected || receiver.whenIntent && receiver.whenIntent!==id)continue;
             const next=receiver.pick?value?.[receiver.pick]:value;
-            receiver.input.value=String(next);
+            // A boolean form is a checkbox: value is the form-control's
+            // submission label, whereas checked is its actual semantic state.
+            // Hydrating value alone can silently submit the opposite policy.
+            if(receiver.input.type==="checkbox")receiver.input.checked=(next===true);
+            else receiver.input.value=String(next);
             receiver.input.dispatchEvent(new Event("input",{bubbles:true}));
             if(value && typeof value==="object" && Number.isInteger(value.selectionStart) &&
                Number.isInteger(value.selectionEnd) && typeof receiver.input.setSelectionRange==="function") {
@@ -2105,6 +2465,12 @@
         renderOperationNotebook(n,holder);
       } else if (n.nodeKind === "collection") {
         const list=elt("div",{"data-collection":n.id});
+        // A small, selectable navigation list is a list of destinations, not
+        // a stack of record cards. The hint follows its verified collection
+        // shape and region purpose, never an application or field name.
+        if(region?.purpose==="navigation" && n.selectionIntent &&
+           Array.isArray(n.fields) && n.fields.length<=2)
+          list.setAttribute("data-mcel-navigation-list","compact");
         // Structured multi-field monitoring collections are primary records,
         // not narrow navigation widgets. This presentation hint is derived
         // from IR purpose/tasks/fields, never from an application or region ID.
@@ -2117,6 +2483,14 @@
            Array.isArray(n.fields) && n.fields.length>=4){
           list.setAttribute("data-mcel-structured-list","");
           list.style.setProperty("--mcel-list-columns",String(n.fields.length));
+        }
+        if(n.selectionPresentation==="radio") {
+          assert(n.selectionIntent && n.fields?.length===2 &&
+            !!c.intents.get(ref(n.selectionIntent))?.collectionSelection,
+            "radio-collection-contract-invalid");
+          list.setAttribute("role","radiogroup");
+          list.setAttribute("aria-label",n.label||"Choice");
+          list.setAttribute("data-mcel-radio-choices","");
         }
         holder.append(list); collectionHosts.set(n,list);
         if(n.clearable && n.selectionIntent){
@@ -2281,6 +2655,18 @@
           }else supersedeComputeRequest(true);
         });
         const formFieldNames=Object.keys(n.fields || {});
+        // Typed configuration forms with exactly two choices and two boolean
+        // flags need an ordered form, not a four-column wrap. This is a
+        // presentation shape derived entirely from the admitted field schemas.
+        const fieldSchemas=Object.values(n.fields||{});
+        const booleanEnumPairs=fieldSchemas.length===4 &&
+          fieldSchemas.filter(s=>s.kind==="boolean").length===2 &&
+          fieldSchemas.filter(s=>s.kind==="string" && Array.isArray(s.enum) && s.enum.length).length===2;
+        if(booleanEnumPairs){
+          form.setAttribute("data-mcel-form-pattern","boolean-enum-pairs");
+          formFieldNames.sort((a,b)=>Number(n.fields[a].kind==="boolean")-
+            Number(n.fields[b].kind==="boolean"));
+        }
         // Keep the domain's canonical inputs together; pair range bounds as
         // X Min / X Max and Y Min / Y Max rather than alphabetical X Max / X Min.
         const bounds=name=>/^(.+)(Min|Max)$/.exec(name);
@@ -2295,8 +2681,13 @@
           const schema=n.fields[k];
           const item=renderInput(k,schema);
           if (Object.prototype.hasOwnProperty.call(n.defaults || {},k)) {
-            item.input.value=String(n.defaults[k]);
-            item.input.defaultValue=String(n.defaults[k]);
+            if(schema.kind==="boolean"){
+              item.input.checked=n.defaults[k]===true;
+              item.input.defaultChecked=n.defaults[k]===true;
+            }else{
+              item.input.value=String(n.defaults[k]);
+              item.input.defaultValue=String(n.defaults[k]);
+            }
           }
           form.append(item.wrap);controls[k]=item.input;
           const mappedState=ref(n.fieldState?.[k]);
@@ -2311,7 +2702,10 @@
               }
             };
             const currentValue=read(mappedState);
-            if(currentValue!==undefined && currentValue!==null)item.input.value=String(currentValue);
+            if(currentValue!==undefined && currentValue!==null){
+              if(schema.kind==="boolean")item.input.checked=currentValue===true;
+              else item.input.value=String(currentValue);
+            }
             item.input.addEventListener("input",()=>{
               let next=parseInput(schema,item.input);
               if(schema.kind==="number" && !Number.isFinite(next))return;
@@ -2485,9 +2879,19 @@
                 item.input.value=value;
                 item.input.dispatchEvent(new Event("change",{bubbles:true}));
               });
+              // A semantic navigation subtitle is a projection of a second
+              // renderer-local state, not a new destination or an authorization.
+              // Keep its DOM stable: only its text changes when the choice does.
+              if(n.navigationSubtitle?.forValue===value){
+                tab.replaceChildren(
+                  elt("span",{"data-mcel-navigation-label":""},fmt(value)),
+                  elt("span",{"data-mcel-navigation-subtitle":""},n.navigationSubtitle.fallback)
+                );
+              }
               buttons.push(tab);bar.append(tab);
             }
-            holder.append(bar);tabSwitchers.push({stateId:ref(intent.viewTransition.target),select:item.input,buttons});
+            holder.append(bar);tabSwitchers.push({stateId:ref(intent.viewTransition.target),
+              select:item.input,buttons,subtitle:n.navigationSubtitle||null});
             if(options.navigationRoutes && global.addEventListener) {
               const syncHistory=()=>{
                 const value=Object.keys(options.navigationRoutes).find(key=>
@@ -3028,8 +3432,23 @@
         const key=String(record[n.key]);
         let row=existing.get(key);
         if(!row) {
+          if(n.selectionPresentation==="radio") {
+            const parameter=selection?.input.find(p=>p.id===ref(selection.collectionSelection.input));
+            assert(parameter && selection?.collectionSelection && n.fields?.length===2,
+              "radio-collection-selection-contract-invalid");
+            const labelField=n.fields.find(field=>field!==n.key);
+            row=elt("label",{"data-record-key":key,"data-mcel-radio-choice":""});
+            const input=elt("input",{type:"radio",name:n.id,value:key,"data-select-key":key});
+            input.addEventListener("change",()=>{
+              if(input.checked)void execute(selection.id,{[parameter.sourceName]:key});
+            });
+            row.append(input,elt("span",{"data-record-field":labelField}));
+          }
+        }
+        if(!row) {
           const rowSelection=!!n.rowLayout?.selectOnRow && !!selection?.collectionSelection;
           row=elt("div",{"data-record-key":key,"data-mcel-record-row":"",
+            ...(n.credentialDisclosure?{"data-mcel-credential-row":""}:{}),
             ...(rowSelection?{role:"option",tabindex:"0","data-mcel-row-selectable":"",
               "data-select-key":key}:{})});
           const navList=!!holder.closest('[data-mcel-purpose="navigation"]');
@@ -3069,7 +3488,40 @@
           }
           if(!n.rowLayout){
             const expand=elt("details",{"data-mcel-inline-details":key});
-            expand.append(elt("summary",{},"More details"),elt("dl",{"data-mcel-detail-fields":""}));
+            if(n.credentialDisclosure){
+              const credential=elt("section",{"data-mcel-credential-detail":key,
+                "aria-label":"Identity current passkey"});
+              const state=elt("span",{"data-mcel-passkey-status":"","role":"status"},"Not checked");
+              const code=elt("output",{"data-mcel-passkey-code":"","aria-label":"Current passkey"},"•••• ••••");
+              const seconds=elt("span",{"data-mcel-passkey-remaining":""},"—");
+              const copy=elt("button",{type:"button","data-mcel-passkey-copy":"",disabled:true},"Copy");
+              credential.append(state,code,seconds,copy);
+              expand.append(elt("summary",{},"More details"),credential);
+              expand.addEventListener("toggle",async()=>{
+                if(!expand.open){
+                  code.textContent="•••• ••••";
+                  copy.disabled=true;
+                  state.textContent="Closed";seconds.textContent="—";
+                  return;
+                }
+                state.textContent="Checking passkey…";
+                const current=selection?.collectionSelection && read(ref(selection.collectionSelection.target));
+                if(current!==key && selection?.collectionSelection){
+                  const parameter=selection.input.find(p=>p.id===ref(selection.collectionSelection.input));
+                  const chosen=await execute(selection.id,{[parameter.sourceName]:key});
+                  if(!expand.open)return;
+                  if(read(ref(selection.collectionSelection.target))!==key && chosen?.disposition!=="completed"){
+                    state.textContent="Unavailable — identity selection refused";return;
+                  }
+                }
+                const receipt=await execute(ref(n.credentialDisclosure.intent),{adminDeviceId:key});
+                if(!expand.open)return;
+                if(receipt?.disposition!=="completed" && state.textContent==="Checking passkey…")
+                  state.textContent="Unavailable — "+String(receipt?.reason||receipt?.disposition||"authorization required");
+              });
+            }else{
+              expand.append(elt("summary",{},"More details"),elt("dl",{"data-mcel-detail-fields":""}));
+            }
             row.append(expand);
           }
         }
@@ -3090,14 +3542,17 @@
         }
         const expanded=row.querySelector("[data-mcel-inline-details]");
         if(expanded){
-          const more=Object.entries(record).filter(([key])=>key!==n.key && !(n.fields||[]).includes(key));
-          expanded.hidden=!more.length;
+          const more=n.credentialDisclosure?[]:
+            Object.entries(record).filter(([key])=>key!==n.key && !(n.fields||[]).includes(key));
+          expanded.hidden=!n.credentialDisclosure && !more.length;
           const detail=expanded.querySelector("[data-mcel-detail-fields]");
-          const detailsSignature=JSON.stringify(more);
-          if((expanded.open || !detail.childElementCount) &&
-              detail.__mcelDetailsSignature!==detailsSignature){
-            detail.replaceChildren(...more.flatMap(([key,val])=>[elt("dt",{},fmt(key)),elt("dd",{},plainValue(val))]));
-            detail.__mcelDetailsSignature=detailsSignature;
+          if(detail){
+            const detailsSignature=JSON.stringify(more);
+            if((expanded.open || !detail.childElementCount) &&
+                detail.__mcelDetailsSignature!==detailsSignature){
+              detail.replaceChildren(...more.flatMap(([key,val])=>[elt("dt",{},fmt(key)),elt("dd",{},plainValue(val))]));
+              detail.__mcelDetailsSignature=detailsSignature;
+            }
           }
         }
         const inNavigation=!!holder.closest('[data-mcel-purpose="navigation"]');
@@ -3107,6 +3562,10 @@
           if(chooseButton.textContent!==label)chooseButton.textContent=label;
         }
         const selected=String(selectionValue!==undefined && selectionValue!=="" && key===String(selectionValue));
+        if(n.selectionPresentation==="radio") {
+          const input=row.querySelector('input[type="radio"]');
+          if(input && input.checked!==(selected==="true"))input.checked=(selected==="true");
+        }
         if(row.getAttribute("aria-selected")!==selected)row.setAttribute("aria-selected",selected);
         next.set(key,row);ordered.push(row);
       }
@@ -3187,14 +3646,25 @@
     function renderRegion(id) {
       const r=c.regions.get(id);
       region=r;
-      const tag=allowedTags.has(r.nativeTag) ? r.nativeTag : "section";
+      const isRedundantFormObservation=c.generated && r.recipe==="results" &&
+        r.members?.length===1 && (()=>{
+          const item=c.nodes.get(ref(r.members[0]));
+          if(item?.nodeKind!=="state-value" ||
+             c.states.get(ref(item.value?.state))?.schema?.kind!=="record")return false;
+          const stateId=ref(item.value.state);
+          return [...c.nodes.values()].some(node=>node.nodeKind==="form" &&
+            Object.values(node.acceptResult||{}).some(binding=>ref(binding.state)===stateId));
+        })();
+      const tag=isRedundantFormObservation?"details":
+        allowedTags.has(r.nativeTag) ? r.nativeTag : "section";
       const inferredContent=r.content?.kind ||
         (r.members?.some(member=>["collection","record-notebook","operation-notebook"].includes(c.nodes.get(ref(member))?.nodeKind)) ? "collection" : "");
       const el=elt(tag,{"data-mcel-region":r.id,"data-mcel-purpose":r.purpose || "","data-mcel-priority":r.priority || "", "data-mcel-tasks":(r.tasks || []).join(" "),"data-mcel-content-kind":inferredContent,
         ...(r.preferences?.density ? {"data-mcel-density":r.preferences.density} : {}),
         ...(r.preferences?.widthGroup ? {"data-mcel-width-group":r.preferences.widthGroup} : {}),
         ...(r.preferences?.sizing ? {"data-mcel-sizing":r.preferences.sizing} : {}),
-        ...(r.preferences?.align ? {"data-mcel-align":r.preferences.align} : {})});
+        ...(r.preferences?.align ? {"data-mcel-align":r.preferences.align} : {}),
+        ...(isRedundantFormObservation?{"data-mcel-observed-form-disclosure":""}:{})});
       regionHosts.set(r,el);
       if(c.generated && r.recipe!=="root") {
         const titles={navigation:"Navigation",queries:"Observation query",collection:"Observed records",
@@ -3207,6 +3677,7 @@
         if(r.recipe==="collection" && r.members.length===1){
           const node=c.nodes.get(ref(r.members[0]));
           if(["record-notebook","operation-notebook"].includes(node?.nodeKind))titles.collection=node.title;
+          if(node?.selectionPresentation==="radio")titles.collection=node.label||"Choice";
         }
         if(r.recipe==="results" && r.members.length===1){
           const node=c.nodes.get(ref(r.members[0]));
@@ -3226,7 +3697,7 @@
             a.role==="navigation" && (a.members || []).some(m=>r.members.some(b=>ref(b)===ref(m))));
           if(source)titles.navigation=fmt(source.id);
         }
-        el.append(elt("h2",{},titles[r.recipe]));
+        el.append(elt(isRedundantFormObservation?"summary":"h2",{},titles[r.recipe]));
       }
       for (const annotation of r.staticContent || []) {
         if (!["h1","h2","h3","h4","h5","h6","p","span","strong","em","small","label"].includes(annotation.tag))continue;
@@ -3264,7 +3735,10 @@
         const fields=Object.values(formNode.fields||{});
         const paired=fields.length===2 && fields[0]?.kind==="string" &&
           ["integer","number"].includes(fields[1]?.kind);
-        form.setAttribute("data-mcel-task-fields",paired?"text-number":"stacked");
+        const numericReference=fields.length===1 &&
+          ["integer","number"].includes(fields[0]?.kind);
+        form.setAttribute("data-mcel-task-fields",paired?"text-number":
+          numericReference?"number-reference":"stacked");
         const reference=renderNode(referenceNode);
         form.insertBefore(reference,form.querySelector('button[type="submit"]'));
         // Primary and reset buttons are a footer; a consequential result is
@@ -3277,6 +3751,21 @@
         el.append(formHolder);
         for(const child of c.children.get(id))el.append(renderRegion(child.id));
         return el;
+      }
+      // Resolved template parameters govern the initial semantic region
+      // construction. They do not move previously mounted nodes, create
+      // handlers, or introduce new scroll owners. No group identity is
+      // inferred from DOM order, labels, or application names.
+      const template=workspacePlan?.semanticTemplate?.arguments;
+      const grouped=template?.grouping==="inferred" && template.region===r.id;
+      const groupTargets=new Map();
+      if(grouped){
+        for(const [name,ids] of Object.entries(template.groups)){
+          const section=elt("section",{"data-mcel-semantic-template-group":name,
+            role:"group","aria-label":fmt(name)});
+          el.append(section);
+          for(const memberId of ids)groupTargets.set(memberId,section);
+        }
       }
       let actionFlow=null;
       for (const m of r.members || []) {
@@ -3302,7 +3791,7 @@
           actionFlow=null;
           const rendered=renderNode(node);
           if(inspectorLabel)rendered.prepend(inspectorLabel);
-          el.append(rendered);
+          (grouped ? groupTargets.get(node.id) : el).append(rendered);
         }
       }
       for (const child of c.children.get(id)) el.append(renderRegion(child.id));
@@ -3423,12 +3912,23 @@
       // fallback. A refresh or query button is not a navigation destination.
       const hasAuthoredNavigation=children.some(child=>
         ["navigation","mode-control"].includes(child.getAttribute("data-mcel-purpose")));
-      // In a semantic workbench, the primary computed result is the first
-      // workspace object, before the expression producer. Do not reorder
-      // navigation, inspector, or ordinary secondary results.
-      const firstResult=child=>child.getAttribute("data-mcel-purpose")==="results" &&
-        child.getAttribute("data-mcel-priority")==="primary";
-      const orderedChildren=[...children].sort((a,b)=>Number(firstResult(b))-Number(firstResult(a)));
+      // Primary tasks precede secondary configuration/read controls. A
+      // primary result wins when present (Calculator). Sorting uses semantic
+      // purpose/priority, not app identities or a hand-authored coordinate.
+      const choiceRegions=new Set([...c.regions.values()].filter(r=>
+        r.recipe==="collection" && r.members?.some(m=>
+          c.nodes.get(ref(m))?.selectionPresentation==="radio")).map(r=>r.id));
+      const focusRank=child=>{
+        if(choiceRegions.has(child.getAttribute("data-mcel-region")))return 5;
+        const rank=child.getAttribute("data-mcel-priority")!=="primary"?0:
+          child.getAttribute("data-mcel-purpose")==="results"?3:
+          child.getAttribute("data-mcel-purpose")==="task"?2:1;
+        // A choice collection is the primary input. Dependent configuration
+        // follows the choices rather than appearing above them.
+        if(choiceRegions.size && c.regions.get(child.getAttribute("data-mcel-region"))?.recipe==="operations")return 4;
+        return rank;
+      };
+      const orderedChildren=[...children].sort((a,b)=>focusRank(b)-focusRank(a));
       for (const child of orderedChildren) {
         const purpose=child.getAttribute("data-mcel-purpose")||"";
         if (["navigation","mode-control"].includes(purpose) ||
@@ -3457,6 +3957,7 @@
       // separate, full-width application header.
       tree.setAttribute("data-mcel-natural-layout", "");
       tree.replaceChildren(navigation,workspace,...(inspector?[inspector]:[]));
+      naturalTree=tree;naturalWorkspace=workspace;naturalInspector=inspector;
     }
     if(expert) {
       const rail=tree.querySelector('[data-mcel-zone="navigator"]');
@@ -3509,6 +4010,18 @@
       const layoutGrammar={regions:[...c.regions.values()].map(r=>({id:r.id,
         selector:selector(r.id),children:(c.children.get(r.id)||[]).map(child=>child.id)})),constraints:[]};
       const layoutHost=root.querySelector(selector(rootRegion.id));
+      const placeNaturalInspector=()=>{
+        if(!naturalInspector || !naturalWorkspace || !naturalTree)return;
+        const width=layoutHost.getBoundingClientRect().width || global.innerWidth || 320;
+        // At constrained widths an inspector below a 200px-high workarea
+        // creates two independently scrolling fragments of the same task.
+        // Keep the original live nodes and put all non-navigation content in
+        // the one workspace scroll owner. Restore the dock at wide widths.
+        const host=width<1160?naturalWorkspace:naturalTree;
+        if(naturalInspector.parentElement!==host)host.append(naturalInspector);
+        naturalInspector.setAttribute("data-mcel-placement",width>=1160?"dock-end":
+          width>=680?"dock-bottom":"disclosure-after-anchor");
+      };
       let layoutScheduled=false;
       const updateGeometry=()=>{
         if(disposed)return;
@@ -3516,15 +4029,7 @@
         // Do not apply an inferred grid to the root (its regions are now
         // composed under navigator/workspace scroll owners).
         if (layoutHost.hasAttribute("data-mcel-natural-layout")) {
-          // Natural inspector rails are real bounded scroll owners. Declare the
-          // same responsive placement contract as planned inspectors so that
-          // independent viewport validation can verify their ownership.
-          const side=layoutHost.querySelector(':scope > [data-mcel-natural-scroller="inspection"]');
-          if(side){
-            const width=layoutHost.getBoundingClientRect().width || global.innerWidth || 320;
-            side.setAttribute("data-mcel-placement",width>=1160?"dock-end":
-              width>=680?"dock-bottom":"disclosure-after-anchor");
-          }
+          placeNaturalInspector();
           engine.reflowAdaptiveControlGrids?.(root);
           return;
         }
@@ -3585,6 +4090,8 @@
     if(navigationRoots.length===1)void execute(navigationRoots[0].loader.id);
     return Object.freeze({execute,setNotebookAuthorization:changeNotebookAuthorization,activateNotebooks,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
+      signalCandidateReport:signalSchedulingReport,
+      setSignalSchedulingMode,
       colorPresentation:()=> (usingController
         ? colorLaw.operationalColorReport(root) : colorPresentation?.report?.()) ||
         {schema:"mcel.semantic-color-presentation.v1",status:"legacy-unmigrated",authored:0},
@@ -3593,6 +4100,7 @@
         : colorPresentation?.setTheme?.(theme,palette)) || {status:"legacy-unmigrated"},
       unmount:()=>{disposed=true;
         try {global.MCELReactivityShadowOracle?.release?.(root);}catch (_) {}
+        signalCandidate?.release();
         for(const session of operationNotebooks.values())session.semanticUpdater?.dispose();
         if(usingController)
           colorLaw.releaseOperationalColor(root);
@@ -3612,5 +4120,5 @@
         if(documentHosts.size) global.MainComputerMonacoAdapter?.dispose?.("semantic-unmount");
         root.replaceChildren();root.removeAttribute("data-mcel-semantic-operational");}});
   }
-  global.McelSemanticOperationalRuntime = Object.freeze({mount,checkSchema,contract});
+  global.McelSemanticOperationalRuntime = Object.freeze({mount,checkSchema,contract,createSignalCandidate});
 })(typeof globalThis !== "undefined" ? globalThis : this);

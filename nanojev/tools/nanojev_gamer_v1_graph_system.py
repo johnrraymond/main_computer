@@ -116,6 +116,19 @@ def acquire(*, checkpoint, certificate, teaching_prompt, previous_memory=None,
             'generated_tokens':0,'game_name_key_used':False}
 
 
+def g2_query(*,prompt,version='MIT',root='../runtime/reports/gamer-v1',
+             output=None,device='cuda'):
+    """Versioned G2 cutover: scope-aware MIT by default, prior MIT/legacy rollback.
+
+    This is separate from the generic G1--G7 checkpoint query: its G2
+    provenance is pinned to 0087/0088 and cannot be silently transplanted
+    onto a checkpoint with unrelated weights or calibrated caps.
+    """
+    from tools import nanojev_gamer_v1_g2_active as active
+    return active.query(prompt=prompt,version=version,root=root,
+                        output=output,device=device)
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest='cmd',required=True)
@@ -123,13 +136,21 @@ def main(argv=None):
     q.add_argument('--checkpoint',required=True);q.add_argument('--prompt',required=True)
     q.add_argument('--certificate');q.add_argument('--memory')
     q.add_argument('--device',default='cuda');q.add_argument('--max-length',type=int,default=2048)
+    g=sub.add_parser('g2-query',help='MIT G2 default; --version legacy to rollback')
+    g.add_argument('--prompt',required=True)
+    g.add_argument('--version',choices=('MIT','MIT-0001','legacy'),default='MIT')
+    g.add_argument('--root',default='../runtime/reports/gamer-v1')
+    g.add_argument('--output');g.add_argument('--device',default='cuda')
     a=sub.add_parser('acquire')
     a.add_argument('--checkpoint',required=True);a.add_argument('--certificate',required=True)
     a.add_argument('--teaching-prompt',required=True);a.add_argument('--output',required=True)
     a.add_argument('--previous-memory')
     a.add_argument('--device',default='cuda');a.add_argument('--max-length',type=int,default=2048)
     args=p.parse_args(argv)
-    if args.cmd=='query':r=query(checkpoint=args.checkpoint,prompt=args.prompt,
+    if args.cmd=='g2-query':
+        r=g2_query(prompt=args.prompt,version=args.version,root=args.root,
+                   output=args.output,device=args.device)
+    elif args.cmd=='query':r=query(checkpoint=args.checkpoint,prompt=args.prompt,
        certificate=args.certificate,memory=args.memory,device=args.device,
        max_length=args.max_length)
     else:r=acquire(checkpoint=args.checkpoint,certificate=args.certificate,

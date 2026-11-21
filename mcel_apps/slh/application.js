@@ -310,12 +310,28 @@ module.exports = mcel.defineApp(
         })
       ]
     });
+    // One-time credential disclosure is a property of each local identity.
+    // The eight-digit code is not modeled as state or written to activity.
+    // Only the semantic operation and its nonsensitive receipt enter MCEL IR.
+    const otpReceiptShape=dsl.field.record({outcome:text,message:text,deviceId:text});
+    const otpReceipt=dsl.state.derived("software-authenticator-receipt",otpReceiptShape);
+    const otpControl=dsl.capability.external("slh-software-authenticator-control",{
+      risk:"consequential",description:"Reveal the current local identity's authorized enrollment passkey"
+    });
+    otpControl.operation("reveal","revealSlhSoftwareAuthenticator",{
+      inputs:{adminDeviceId:text},result:otpReceiptShape,risk:"consequential"
+    });
+    const revealPasskey=dsl.intent.capabilityRequest("software-authenticator-reveal",otpControl,{
+      operation:"reveal",inputs:{adminDeviceId:text},resultTo:otpReceipt,
+      confirmationRequired:false
+    });
     const identityNavigation=dsl.surface.region("identities",{
       role:"navigation",priority:"secondary",prefer:{side:"start"},children:[
         dsl.surface.collection("available-local-identities",{
-          key:"deviceId",fields:["label","deviceId","defaultStatus"],
+          key:"deviceId",fields:["label","defaultStatus"],
           state:identities,select:chooseIdentity,clearable:true,
-          roleFrom:{state:enrolled,key:"id",roleField:"role"}
+          roleFrom:{state:enrolled,key:"id",roleField:"role"},
+          credentialDisclosure:{intent:revealPasskey,identityField:"deviceId"}
         })
       ]
     });
@@ -399,7 +415,8 @@ module.exports = mcel.defineApp(
       ["Reactivate organization identity",notebookActions[3]],
       ["Permanently remove identity",notebookActions[4]],
       ["Change Trash retention",setRetention],
-      ["Empty Trash",emptyTrash]
+      ["Empty Trash",emptyTrash],
+      ["Reveal identity passkey",revealPasskey]
     ];
     const activityEntries = meaningfulActivity.flatMap(([label,intent]) => [
       dsl.activity.info(label+": completed",{intent,dispositions:["completed"]}),
@@ -437,9 +454,9 @@ module.exports = mcel.defineApp(
         dsl.surface.relate(serviceDetails,"informs",identityNotebook)]
     });
     return {
-      states:[identities,identitySummary,adminDevice,target,lifecycle,setupResult,networkSession,remoteSehSession,sehStatus,sehDeployment,sehDeploymentReceipt,pending,enrolled,trash,retention,notebookResult],
-      capabilities:[observer,setup,networkConnection,remoteSehConnection,sehLifecycleRead,sehLifecycleWrite,deploymentReader,deploymentWriter,administration,administrationRead],
-      intents:[refreshIdentities,refreshIdentityStatus,refreshLifecycle,chooseIdentity,
+      states:[identities,identitySummary,adminDevice,target,otpReceipt,lifecycle,setupResult,networkSession,remoteSehSession,sehStatus,sehDeployment,sehDeploymentReceipt,pending,enrolled,trash,retention,notebookResult],
+      capabilities:[observer,otpControl,setup,networkConnection,remoteSehConnection,sehLifecycleRead,sehLifecycleWrite,deploymentReader,deploymentWriter,administration,administrationRead],
+      intents:[refreshIdentities,refreshIdentityStatus,refreshLifecycle,revealPasskey,chooseIdentity,
         selectTarget,connectNetwork,disconnectNetwork,connectRemoteSeh,disconnectRemoteSeh,readSehStatus,...Object.values(sehLifecycleActions),inspectDeployment,...Object.values(deploymentIntents),configureAndEnable,toggleEnablement,toggleOrganization,
         ...notebookReads,...notebookActions,setRetention,emptyTrash],
       surfaces:[surface]

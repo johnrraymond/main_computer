@@ -52,6 +52,7 @@ ENDPOINTS = (
     Endpoint('POST','/v1/local/authenticator/identities','local_authenticator_create','local_identity'),
     Endpoint('GET','/v1/local/authenticator/identities/{id}','local_authenticator_get','local_identity'),
     Endpoint('POST','/v1/local/authenticator/identities/{id}/sign','local_authenticator_sign','local_identity'),
+    Endpoint('POST','/v1/local/authenticator/identities/{id}/software-otp','local_authenticator_software_otp','local_identity'),
     Endpoint('POST','/v1/bootstrap/begin','bootstrap_begin','local_bootstrap'),
     Endpoint('PUT','/v1/bootstrap/{id}/administrator','bootstrap_stage_admin','local_bootstrap'),
     Endpoint('GET','/v1/bootstrap/{id}/status','bootstrap_transaction_status','local_bootstrap'),
@@ -81,6 +82,9 @@ ENDPOINTS = (
     Endpoint('GET','/v1/admin/users','users'),
     Endpoint('GET','/v1/admin/enrollments','enrollments'),
     Endpoint('POST','/v1/admin/enrollments/{id}/keys','issue_key'),
+    Endpoint('GET','/v1/admin/authenticator/software-otp','software_otp_status'),
+    Endpoint('POST','/v1/admin/authenticator/software-otp','provision_software_otp'),
+    Endpoint('POST','/v1/admin/authenticator/software-otp/revoke','revoke_software_otp'),
     Endpoint('POST','/v1/admin/enrollments/{id}/inspect','inspect'),
     Endpoint('POST','/v1/admin/enrollments/{id}/deny','deny'),
     Endpoint('GET','/v1/admin/policies','get_policy'),
@@ -169,7 +173,7 @@ class SLHAPI:
                 op['security']=[{'ORGLocalRoot':[]}]
                 op['description']='Bearer LOCAL-AUTH-KEY plus fresh proof of the selected P-256 identity.'
             elif e.access=='optional_key':
-                op['description']='Either an admin bearer session or a single-use enrollment_key; same approval engine.'
+                op['description']='An admin bearer session, a single-use enrollment_key, or an identity-bound software authenticator OTP.'
             if e.method in ('POST','PATCH','PUT'):
                 op['requestBody']={'content':{'application/json':{'schema':AUTH_REQUESTS.get(e.handler,{'type':'object'})}}}
             paths.setdefault(e.path,{})[e.method.lower()]=op
@@ -209,7 +213,7 @@ class SLHAPI:
                 raise SLHError('LOCAL_TRANSPORT_ONLY',403)
             if e.access=='admin':identity=self.authority.authenticate(token,admin=True)
             elif e.access=='known':identity=self.authority.authenticate(token)
-            elif e.access=='optional_key' and not body.get('enrollment_key'):
+            elif e.access=='optional_key' and not body.get('enrollment_key') and not body.get('one_time_code'):
                 identity=self.authority.authenticate(token,admin=True)
             if e.handler == 'local_seh_management':
                 from .seh_deployment_management import management_request, SEHManagementRefused
@@ -304,8 +308,15 @@ class SLHAPI:
             row=next((r for r in a.queue() if r['id']==p['id']),None)
             if not row:raise SLHError('ENROLLMENT_NOT_FOUND',404)
             return {'request_id':p['id'],'status':row['status']}
-        if op=='approve_enrollment':return a.approve(b.get('request_id'),admin_id=actor,
-                                                     enrollment_key=b.get('enrollment_key'))
+        if op=='approve_enrollment':
+            if 'one_time_code' in b:
+                if set(b)!={'request_id','admin_identity','one_time_code'} or ident is not None:
+                    raise SLHError('INVALID_APPROVAL_REQUEST',400)
+                return a.approve_with_software_otp(b['request_id'],b['admin_identity'],b['one_time_code'])
+            if set(b)-{'request_id','enrollment_key'}:
+                raise SLHError('INVALID_APPROVAL_REQUEST',400)
+            return a.approve(b.get('request_id'),admin_id=actor,
+                             enrollment_key=b.get('enrollment_key'))
         if op=='challenge':return a.challenge(b.get('device_id'))
         if op=='verify':return a.verify_login(b)
         if op in ('private_submit','private_status'):
@@ -346,6 +357,16 @@ class SLHAPI:
             return a.empty_trash(actor)
         if op=='users':return {'users':a.users()}
         if op=='enrollments':return {'enrollments':a.queue()}
+        if op=='software_otp_status':
+            if b:raise SLHError('INVALID_REQUEST',400)
+            return a.software_otp_status(actor)
+        if op=='revoke_software_otp':
+            if b:raise SLHError('INVALID_REQUEST',400)
+            return a.revoke_software_otp(actor)
+        if op=='provision_software_otp':
+            if set(b)!={'secret','code','service_fingerprint'} or b['service_fingerprint']!=a.service_fingerprint():
+                raise SLHError('SOFTWARE_OTP_AUDIENCE_MISMATCH',403)
+            return a.provision_software_otp(actor,ident['device_id'],b['secret'],b['code'])
         if op=='issue_key':return a.issue_key(p['id'],actor,ttl=b.get('ttl_seconds',300))
         if op=='inspect':return a.mark_inspected(p['id'],actor)
         if op=='deny':return a.deny(p['id'],actor)

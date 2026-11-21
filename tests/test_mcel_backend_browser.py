@@ -98,12 +98,13 @@ def test_browser_addition_preserves_original_desktop_oracle():
     assert '"mount":"legacy","launcher":true' in promoted
 
 
-def test_browser_child_page_is_pixels_not_a_remote_dom_proxy():
+def test_browser_child_page_uses_isolated_frontend_execution():
     html=render_browser_page()
-    assert 'id="browser-image"' in html
+    assert 'id="browser-frame"' in html
     assert "/api/applications/browser/control" in html
-    assert "/api/applications/browser/frame" in html
-    assert 'srcdoc=' not in html and '<iframe' not in html
+    assert "surface-start" in html
+    assert "/api/applications/browser/frame" not in html
+    assert 'srcdoc=' not in html and 'sandbox="allow-scripts allow-same-origin' in html
 
 
 def test_new_browser_tab_starts_blank_instead_of_loading_recursive_mcel_shell():
@@ -127,8 +128,8 @@ def test_browser_deep_link_route_preserves_host_and_child_navigation():
     assert 'target.hash = location.hash' in shell
     assert 'function requestedAddress()' in page
     assert 'function syncAddressRoute(remoteUrl)' in page
-    assert 'host.history.replaceState(host.history.state, "", canonical)' in page
-    assert 'address = requestedAddress()' in page
+    assert "host.history.replaceState(host.history.state, '', canonical)" in page
+    assert 'const initial = requestedAddress()' in page
     assert 'setStatus((error.message || String(error)) + ". Install Chromium' not in page
 
 

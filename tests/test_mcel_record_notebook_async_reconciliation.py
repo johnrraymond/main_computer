@@ -69,8 +69,8 @@ MOCK = r'''() => {
 }'''
 
 
-def _launch(browser):
-    page=browser.new_page(viewport={"width":1150,"height":850})
+def _launch(browser, *, viewport_height=850):
+    page=browser.new_page(viewport={"width":1150,"height":viewport_height})
     page.on("pageerror",lambda error:print("PAGE ERROR",error))
     page.evaluate(MOCK)
     page.set_content(render_slh_page())
@@ -95,7 +95,9 @@ def test_initial_pending_tab_hydrates_after_identity_and_target_restore_without_
     with sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True,executable_path=shutil.which('chromium') or None,args=['--no-sandbox'])
         try:
-            page=_launch(browser)
+            page=_launch(browser, viewport_height=650)
+            # The notebook begins below the viewport: before it enters view, no authentication is allowed.
+            assert page.evaluate("() => document.querySelector('[data-mcel-notebook]').getBoundingClientRect().top >= innerHeight")
             # The unrelated top-of-page UI must not authenticate on mount.
             assert _calls(page,'authenticate')==0
             assert _calls(page,'read-pending')==0

@@ -266,6 +266,23 @@ class NetworkSlhClient:
         allowed={(m,p) for m,p in _READS.values()} | {(m,p) for m,p in _ACTIONS.values() if '{id}' not in p}
         allowed_path=any(re.fullmatch(p.replace('{id}',r'[A-Za-z0-9_.-]{1,160}'),path) and m==method
                          for m,p in _ACTIONS.values() if '{id}' in p)
+        if (method,path)==('POST','/v1/admin/authenticator/software-otp/revoke'):
+            if body != {}:
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+            self._check_session_transport(ticket)
+            return self._authenticated_request(ticket,method,path,body)
+        if (method,path) in {('GET','/v1/org/identity'),
+                             ('GET','/v1/admin/authenticator/software-otp')}:
+            if body is not None:
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+            self._check_session_transport(ticket)
+            return self._authenticated_request(ticket,method,path)
+        if (method,path)==('POST','/v1/admin/authenticator/software-otp'):
+            if (type(body) is not dict or set(body)!={'secret','code','service_fingerprint'} or
+                not all(isinstance(x,str) for x in body.values())):
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+            self._check_session_transport(ticket)
+            return self._authenticated_request(ticket,method,path,body)
         if (method,path) not in allowed and not allowed_path:
             raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
         self._check_session_transport(ticket)

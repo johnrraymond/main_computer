@@ -64,6 +64,10 @@ class OrganizationWorkerClient:
             ("POST", "/v1/org/admin/seh/deployment/selection"),
             ("POST", "/v1/org/admin/seh/deployment/harness"),
             ("GET", "/v1/auth/session"),
+            ("GET", "/v1/org/identity"),
+            ("GET", "/v1/admin/authenticator/software-otp"),
+            ("POST", "/v1/admin/authenticator/software-otp"),
+            ("POST", "/v1/admin/authenticator/software-otp/revoke"),
             ("POST", "/v1/auth/logout"),
             ("POST", "/v1/auth/challenge"),
             ("POST", "/v1/auth/verify"),
@@ -85,6 +89,13 @@ class OrganizationWorkerClient:
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
         elif body is not None:
             allowed_body = (
+                ((method,path)==('POST','/v1/admin/authenticator/software-otp') and
+                 isinstance(body,dict) and set(body)=={'secret','code','service_fingerprint'} and
+                 all(isinstance(v,str) for v in body.values()) and
+                 re.fullmatch(r'[A-Z2-7]{52}',body['secret']) and
+                 re.fullmatch(r'[0-9]{8}',body['code']) and
+                 re.fullmatch(r'[a-f0-9]{64}',body['service_fingerprint'])) or
+                ((method,path)==('POST','/v1/admin/authenticator/software-otp/revoke') and body=={}) or
                 ((method,path)==('POST','/v1/org/admin/seh/connection') and
                  isinstance(body,dict) and set(body)=={'action'} and
                  body['action'] in ('start','stop','restart')) or

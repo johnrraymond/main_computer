@@ -81,6 +81,10 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
   border:1px solid var(--edge);border-radius:8px;background:var(--panel);
   color:inherit;text-decoration:none;text-align:left;overflow-wrap:anywhere;
 }
+:where(body.mcel-workbench-page) [data-mcel-purpose="navigation"] [data-mcel-navigation-subtitle]{
+  display:block;margin-top:3px;font-size:.82em;line-height:1.3;
+  font-weight:normal;color:inherit;opacity:.85;
+}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-mcel-purpose="navigation"] [data-mcel-mode-tabs] :is(a[aria-current="page"],button[aria-pressed="true"]){
   background:#34637b;border-color:#84bfd3;color:#fff;
 }
@@ -1182,7 +1186,7 @@ body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mce
    grid-template-columns:44px 0px 0px minmax(0,1fr) 0px 0px;
  }
  .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-document-workbench]:not([data-mcel-layout-rung="wide"]) > [data-mcel-document-companion]{
-   position:absolute;right:0;top:38px;bottom:26px;width:min(var(--mcel-document-companion-width),calc(100% - 48px));
+   grid-area:unset!important;position:absolute;right:0;top:38px;bottom:26px;height:auto!important;max-height:none!important;width:min(var(--mcel-document-companion-width),calc(100% - 48px));
    z-index:6;box-shadow:-5px 0 20px #0005;
  }
  .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-document-workbench]:not([data-mcel-layout-rung="wide"]) > [data-mcel-document-splitter="companion"]{display:none}
@@ -1191,7 +1195,7 @@ body.mcel-expert-page #mcel-expanded-root [data-mcel-natural-layout] > [data-mce
    grid-template-columns:44px 0px 0px minmax(0,1fr) 0px 0px;
  }
  .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-document-workbench][data-mcel-layout-rung="narrow"] > [data-mcel-document-explorer]{
-   position:absolute;top:38px;bottom:26px;left:44px;width:min(var(--mcel-document-explorer-width),calc(100% - 44px));
+   grid-area:unset!important;position:absolute;top:38px;bottom:26px;left:44px;height:auto!important;max-height:none!important;width:min(var(--mcel-document-explorer-width),calc(100% - 44px));
    z-index:5;box-shadow:5px 0 20px #0005;
  }
  .mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-document-workbench][data-mcel-layout-rung="narrow"] > [data-mcel-document-splitter="explorer"]{display:none}
@@ -1207,4 +1211,177 @@ body.mcel-workbench-page:has([data-mcel-document-workbench]) > #mcel-workbench-s
 body.mcel-workbench-page:has([data-mcel-document-workbench]) > #mcel-workbench-status[data-error="true"]{
   position:absolute;left:6px;right:6px;bottom:28px;z-index:10;
   max-height:30vh;overflow:auto;border:1px solid var(--edge);background:var(--panel);padding:8px;
+}
+
+/* Native semantic ergonomics: compact keyed navigation, typed policy forms,
+ * and one scroll owner when the inspector flows under a narrow workspace.
+ * All selectors are admitted IR structure / types, not application identities. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="navigation"] [data-collection][data-mcel-navigation-list="compact"]{
+  max-height:none;min-height:0;overflow:visible;scrollbar-gutter:auto;
+  display:grid;gap:2px;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="navigation"] [data-collection][data-mcel-navigation-list="compact"] > [data-record-key]{
+  display:flex;flex-direction:column;align-items:stretch;gap:0;
+  min-height:0;padding:0;margin:0;border:0;border-radius:6px;
+  background:transparent;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key] [data-record-field]{display:none}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key] button[data-select-key]{
+  display:block;width:100%;margin:0;min-width:0;min-height:34px;
+  padding:7px 9px;border:1px solid transparent;border-radius:5px;
+  font-size:.82rem;font-weight:560;line-height:1.25;text-align:left;
+  background:transparent;white-space:normal;overflow-wrap:anywhere;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key][aria-selected="true"] button[data-select-key]{
+  background:color-mix(in srgb,var(--mcel-color-accent,#559cb4) 18%,transparent);
+  border-color:var(--edge,#355062);font-weight:700;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"]{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  column-gap:12px;row-gap:9px;align-items:end;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"] > label{
+  width:100%;max-width:none;min-width:0;min-height:0;margin:0;
+  font-size:.79rem;line-height:1.3;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"] > label:has(> input[type="checkbox"]){
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 10px;border:1px solid var(--edge,#355062);
+  border-radius:7px;min-height:36px;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"] input[type="checkbox"]{
+  flex:0 0 17px;width:17px;height:17px;min-height:17px;max-width:17px;
+  margin:0;padding:0;accent-color:var(--mcel-color-accent,#68b8c9);
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"] > button[type="submit"]{
+  grid-column:1/-1;justify-self:end;min-height:32px;
+  padding:5px 12px;font-size:.82rem;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"] > [data-mcel-form-result]{
+  grid-column:1/-1;margin:0;min-height:0;
+}
+/* Ordinary zero-input refresh controls are a compact command strip rather
+ * than a large pseudo-application pane. This is keyed by the verified IR role. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="workspace"] > [data-mcel-purpose="query-controls"]:has(> [data-mcel-action-flow]){
+  padding:7px 10px;box-shadow:none;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="workspace"] > [data-mcel-purpose="query-controls"]:has(> [data-mcel-action-flow]) > h2{display:none}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="query-controls"] [data-mcel-action-flow]{
+  display:flex;flex-wrap:wrap;align-items:center;gap:5px;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="query-controls"] [data-mcel-action-flow] button{
+  min-height:28px;padding:4px 8px;font-size:.75rem;
+}
+/* Record values already accepted by the form remain inspectable, but do not
+ * monopolize workspace height as a duplicate expanded JSON panel. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-observed-form-disclosure]{padding:9px 12px!important;box-shadow:none!important}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-observed-form-disclosure] > summary{
+  cursor:pointer;color:var(--mute,#b4c5cd);font-size:.8rem;font-weight:650;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-observed-form-disclosure]:not([open]) > [data-mcel-node]{display:none}
+/* A narrow semantic inspector follows the last workspace region. It does
+ * not receive another scroll track: the main workspace is the scroll owner. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="workspace"] > [data-mcel-natural-scroller="inspection"]{
+  display:flex;flex-direction:column;gap:12px;flex:0 0 auto;
+  min-width:0;width:100%;max-height:none;min-height:0;
+  overflow:visible;padding:0;margin:0;border:0;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="workspace"] > [data-mcel-natural-scroller="inspection"] > [data-mcel-region]{
+  width:100%;min-width:0;max-width:100%;height:auto;min-height:0;
+  flex:0 0 auto;padding:10px 12px;
+  background:var(--panel);border:1px solid var(--edge);border-radius:10px;
+}
+@media(max-width:420px){
+ :where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-form-pattern="boolean-enum-pairs"]{grid-template-columns:minmax(0,1fr)}
+}
+/* One compact numeric task parameter and its selected reference are peers.
+ * All operations retain their original typed input and consequence guard. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="task"] form[data-mcel-task-fields="number-reference"]{
+  grid-template-columns:minmax(90px,140px) minmax(0,1fr);
+  align-items:end;gap:9px 12px;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="task"] form[data-mcel-task-fields="number-reference"] > [data-node-kind="state-value"]{
+  grid-column:2;align-self:end;border-top:0;padding:0;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="task"] form[data-mcel-task-fields="number-reference"] > [data-mcel-task-actions]{
+  grid-column:1/-1;
+}
+@media(max-width:460px){
+ :where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="task"] form[data-mcel-task-fields="number-reference"]{
+   grid-template-columns:minmax(0,1fr);
+ }
+ :where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="task"] form[data-mcel-task-fields="number-reference"] > [data-node-kind="state-value"]{
+  grid-column:1;
+ }
+}
+
+/* A keyed single-choice collection uses native radio semantics, not navigation cards. */
+:where(body.mcel-workbench-page) [data-mcel-radio-choices]{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;min-width:0}
+:where(body.mcel-workbench-page) [data-mcel-radio-choice]{display:flex;align-items:center;gap:10px;padding:9px 12px;min-width:0;cursor:pointer;border:1px solid var(--edge);border-radius:7px}
+:where(body.mcel-workbench-page) [data-mcel-radio-choice] input{margin:0;flex:none;accent-color:var(--mcel-color-accent,#68b8c9)}
+:where(body.mcel-workbench-page) [data-mcel-radio-choice] span{min-width:0;overflow-wrap:anywhere}
+:where(body.mcel-workbench-page) [data-mcel-radio-choice]:has(input:checked){background:var(--panel);border-color:var(--mcel-color-accent,#68b8c9)}
+:where(body.mcel-workbench-page) [data-mcel-radio-choice]:focus-within{outline:2px solid var(--mcel-color-accent,#68b8c9);outline-offset:1px}
+/* A credential disclosure is a full-width child of its identity row.
+   The generic collection uses flex rows; credential-bearing rows must stack
+   their controls and details instead of growing outside the navigation rail.
+   This structure is generated from credentialDisclosure, never an app-specific
+   element ID, and does not change ordinary keyed navigation collections. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="navigation"] [data-mcel-credential-row]{
+  display:flex;flex-direction:column;align-items:stretch;
+  min-width:0;width:100%;gap:5px;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-credential-row] > [data-mcel-inline-details]{
+  display:block;flex:none;align-self:stretch;
+  width:100%;max-width:100%;min-width:0;margin:0;
+  padding:2px 0 4px;overflow-wrap:anywhere;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-credential-row] [data-mcel-credential-detail]{
+  width:100%;max-width:100%;min-width:0;
+}
+/* An identity's temporary credential belongs to its own More details.
+   Keep the narrow navigation rail readable; do not expose key fingerprints. */
+:where(body.mcel-workbench-page) [data-mcel-credential-detail]{
+  display:grid;gap:5px;min-width:0;max-width:100%;padding:4px 0 8px;
+  font-size:.8rem;
+}
+:where(body.mcel-workbench-page) [data-mcel-passkey-code]{
+  display:block;min-width:0;max-width:100%;overflow-wrap:anywhere;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  letter-spacing:.06em;font-size:1.08rem;font-weight:700;
+}
+:where(body.mcel-workbench-page) [data-mcel-passkey-status][data-mcel-passkey-usable="true"]{
+  font-weight:600;
+}
+:where(body.mcel-workbench-page) [data-mcel-credential-detail] button{
+  min-height:24px;width:100%;max-width:100%;font-size:.75rem;
 }

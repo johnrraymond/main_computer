@@ -3,6 +3,8 @@
 > **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
 > **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
 
+**Deterministic semantic layouts:** [How MCEL derives template applicability and argument bindings directly from verified semantic graph relationships](mcel-deterministic-semantic-argument-resolution.md). Runtime layout does not consult metric thresholds, spectral analysis, application names, or override JSON files.
+
 For the **finished MCEL V1 product** start with the [normative product contract](mcel-v1-product-contract.md) and [paired authoring format](mcel-v1-authoring-format.md); the current APIs, engine mechanics, historical experiments and proof status in this guide remain descriptive of existing implementation. All four [reference applications](mcel-v1-four-app-acceptance.md) must qualify before claiming V1.
 
 

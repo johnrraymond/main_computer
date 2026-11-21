@@ -7,7 +7,7 @@
   const SCHEMA='mcel.document-workbench.v1';
   const STORAGE='mcel.semantic-document-workbench.v1:';
   const DEFAULT=Object.freeze({explorerWidth:238,companionWidth:310,bottomHeight:196,
-    explorerOpen:true,companionOpen:true,bottomOpen:true,companionTab:0,bottomTab:0});
+    explorerOpen:true,companionOpen:true,bottomOpen:true,companionTab:0,bottomTab:0,narrowActive:"explorer"});
   const RANGES=Object.freeze({explorerWidth:[160,480],companionWidth:[210,560],bottomHeight:[100,440]});
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
   function readPreferences(win,key){
@@ -21,6 +21,8 @@
     }
     for(const key of ['explorerOpen','companionOpen','bottomOpen'])
       if(typeof saved.preferences[key]==='boolean')result[key]=saved.preferences[key];
+    if(['explorer','companion'].includes(saved.preferences.narrowActive))
+      result.narrowActive=saved.preferences.narrowActive;
     for(const key of ['companionTab','bottomTab'])
       if(Number.isSafeInteger(saved.preferences[key])&&saved.preferences[key]>=0&&saved.preferences[key]<32)
         result[key]=saved.preferences[key];
@@ -31,13 +33,26 @@
       throw Error('document-workbench-contract-invalid');
     const d=plan.documentWorkbench,doc=tree.ownerDocument,win=doc.defaultView;
     const ids=[d.document,...d.navigation,...d.companion,...d.bottom,...d.status];
-    if(ids.length!==regions.size-1||new Set(ids).size!==ids.length||ids.some(id=>!regions.has(id)))
+    if(new Set(ids).size!==ids.length||ids.some(id=>!regions.has(id)))
       throw Error('document-workbench-region-coverage');
+    // Workspace zones own every descendant declared below them. A nested
+    // semantic group never becomes a separate dock or a DOM-order heuristic.
+    const listed=new Set(ids);
+    for(const [id,node] of regions){
+      if(id===plan.rootId||listed.has(id))continue;
+      let parent=node.parentElement,owner=null;
+      while(parent&&parent!==tree){
+        const regionId=parent.getAttribute('data-mcel-region');
+        if(listed.has(regionId)){owner=regionId;break;}
+        parent=parent.parentElement;
+      }
+      if(!owner)throw Error('document-workbench-nested-group-unowned:'+id);
+    }
     if(d.navigation.length!==1||d.status.length!==1)
       throw Error('document-workbench-single-explorer-and-status-required');
     const key=STORAGE+plan.rootId.replace(/^interface-region:/,'').split('.')[0];
     const prefs=readPreferences(win,key);
-    let disposed=false,rung='',resizeObserver=null,windowResize=null,raf=0;
+    let disposed=false,rung='',resizeObserver=null,windowResize=null,raf=0,contractFrame=0;
     const make=(tag,attrs={},text)=>{
       const el=doc.createElement(tag);
       for(const [k,v] of Object.entries(attrs))el.setAttribute(k,String(v));
@@ -76,11 +91,11 @@
       host.append(bar,...panels);
       const group={bar,buttons,panels,members};tabGroups[kind]=group;
       buttons.forEach((button,i)=>{
-        button.addEventListener('click',()=>{prefs[kind+'Tab']=i;prefs[kind+'Open']=true;apply(true);});
+        button.addEventListener('click',()=>{prefs[kind+'Tab']=i;prefs[kind+'Open']=true;if(kind==='companion')prefs.narrowActive='companion';apply(true);});
         button.addEventListener('keydown',event=>{
           const step=event.key==='ArrowRight'?1:event.key==='ArrowLeft'?-1:0;
           const next=event.key==='Home'?0:event.key==='End'?buttons.length-1:step?(i+step+buttons.length)%buttons.length:null;
-          if(next!==null){event.preventDefault();prefs[kind+'Tab']=next;prefs[kind+'Open']=true;apply(true);buttons[next].focus();}
+          if(next!==null){event.preventDefault();prefs[kind+'Tab']=next;prefs[kind+'Open']=true;if(kind==='companion')prefs.narrowActive='companion';apply(true);buttons[next].focus();}
         });
       });
       return group;
@@ -104,9 +119,15 @@
         tabGroups[kind].panels[index].id);
       activityButtons.push({button,kind,index});rail.append(button);
       button.addEventListener('click',()=>{
-        if(kind==='explorer')prefs.explorerOpen=!prefs.explorerOpen;
-        else if(prefs[kind+'Open']&&prefs[kind+'Tab']===index)prefs[kind+'Open']=false;
-        else{prefs[kind+'Open']=true;prefs[kind+'Tab']=index;}
+        const visible=surface.getAttribute('data-mcel-'+kind+'-open')==='true';
+        if(kind==='explorer'){
+          prefs.explorerOpen=!visible;
+          if(prefs.explorerOpen)prefs.narrowActive='explorer';
+        } else if(visible&&prefs[kind+'Tab']===index)prefs[kind+'Open']=false;
+        else{
+          prefs[kind+'Open']=true;prefs[kind+'Tab']=index;
+          if(kind==='companion')prefs.narrowActive='companion';
+        }
         apply(true);
       });
       return button;
@@ -124,7 +145,12 @@
     const companionToggle=tool('companion','Secondary sidebar');
     const reset=tool('reset','Reset layout');
     for(const [kind,button] of [['explorer',explorerToggle],['bottom',bottomToggle],['companion',companionToggle]])
-      button.addEventListener('click',()=>{prefs[kind+'Open']=!prefs[kind+'Open'];apply(true);});
+      button.addEventListener('click',()=>{
+        const visible=surface.getAttribute('data-mcel-'+kind+'-open')==='true';
+        prefs[kind+'Open']=!visible;
+        if(prefs[kind+'Open']&&(kind==='explorer'||kind==='companion'))prefs.narrowActive=kind;
+        apply(true);
+      });
     reset.addEventListener('click',()=>{Object.assign(prefs,DEFAULT);apply(true);});
     function persist(){
       try{win.localStorage.setItem(key,JSON.stringify({schema:SCHEMA,preferences:prefs}));}catch(_){}
@@ -132,6 +158,42 @@
     function announceLayout(){
       if(raf||disposed)return;
       raf=win.requestAnimationFrame(()=>{raf=0;if(!disposed)win.dispatchEvent(new win.Event('resize'));});
+    }
+    function inspectSurface(){
+      // Pure geometry/interaction observation: no capabilities, no mutation
+      // arguments and no Chrome material decisions are made here.
+      if(!surface.isConnected)return {status:'not-mounted',violations:['surface-not-mounted']};
+      const outer=surface.getBoundingClientRect(),violations=[];
+      const bounded=(name,element,required)=>{
+        if(!required)return;
+        const rect=element.getBoundingClientRect();
+        if(rect.width<24||rect.height<24)violations.push(name+':zero-or-unusable-geometry');
+        if(rect.left<outer.left-1||rect.right>outer.right+1||
+            rect.top<outer.top-1||rect.bottom>outer.bottom+1)
+          violations.push(name+':out-of-bounds');
+      };
+      bounded('editor',primary,true);
+      bounded('explorer',explorer,surface.dataset.mcelExplorerOpen==='true');
+      bounded('companion',companion,surface.dataset.mcelCompanionOpen==='true');
+      bounded('bottom',bottom,surface.dataset.mcelBottomOpen==='true');
+      for(const [kind,group] of Object.entries(tabGroups)){
+        if(surface.getAttribute('data-mcel-'+kind+'-open')!=='true')continue;
+        const panel=group.panels[prefs[kind+'Tab']];
+        const overflow=win.getComputedStyle(panel).overflowY;
+        if(!['auto','scroll'].includes(overflow))violations.push(kind+':scroll-ownership');
+      }
+      if(doc.documentElement.scrollWidth>win.innerWidth+1)
+        violations.push('document:horizontal-overflow');
+      return {status:violations.length?'failed':'pass',violations};
+    }
+    function recordContract(){
+      contractFrame=0;
+      if(disposed)return;
+      const inspection=inspectSurface();
+      surface.setAttribute('data-mcel-surface-contract',inspection.status);
+      if(inspection.violations.length)
+        surface.setAttribute('data-mcel-surface-violations',inspection.violations.join(' '));
+      else surface.removeAttribute('data-mcel-surface-violations');
     }
     function apply(save=false){
       if(disposed)return;
@@ -146,8 +208,15 @@
       surface.style.setProperty('--mcel-document-explorer-width',clamp(prefs.explorerWidth,160,maxExplorer)+'px');
       surface.style.setProperty('--mcel-document-companion-width',clamp(prefs.companionWidth,210,maxCompanion)+'px');
       surface.style.setProperty('--mcel-document-bottom-height',clamp(prefs.bottomHeight,100,Math.max(100,availableHeight-250))+'px');
+      const visible={explorer:prefs.explorerOpen,companion:prefs.companionOpen,bottom:prefs.bottomOpen};
+      // At narrow widths only one overlay can cover the editor at a time.
+      // This is an interaction constraint, not an application-specific choice.
+      // Preserve the user's wider-workspace preferences across rung changes.
+      if(next==='narrow'&&visible.explorer&&visible.companion){
+        visible[prefs.narrowActive==='companion'?'explorer':'companion']=false;
+      }
       for(const kind of ['explorer','companion','bottom']){
-        surface.setAttribute('data-mcel-'+kind+'-open',String(prefs[kind+'Open']));
+        surface.setAttribute('data-mcel-'+kind+'-open',String(visible[kind]));
       }
       for(const [kind,group] of Object.entries(tabGroups)){
         group.buttons.forEach((button,i)=>{
@@ -157,18 +226,20 @@
         });
       }
       for(const {button,kind,index} of activityButtons){
-        button.setAttribute('aria-pressed',String(prefs[kind+'Open']&&(kind==='explorer'||prefs[kind+'Tab']===index)));
+        button.setAttribute('aria-pressed',String(visible[kind]&&(kind==='explorer'||prefs[kind+'Tab']===index)));
       }
       for(const [kind,button] of [['explorer',explorerToggle],['bottom',bottomToggle],['companion',companionToggle]])
-        button.setAttribute('aria-pressed',String(prefs[kind+'Open']));
+        button.setAttribute('aria-pressed',String(visible[kind]));
       for(const [kind,handle] of [['explorer',leftDivider],['companion',rightDivider],['bottom',bottomDivider]]){
         const prop=kind==='bottom'?'bottomHeight':kind+'Width';
         const [min,max]=RANGES[prop];
         handle.setAttribute('aria-valuemin',String(min));handle.setAttribute('aria-valuemax',String(max));
         handle.setAttribute('aria-valuenow',String(prefs[prop]));
         handle.setAttribute('aria-valuetext',String(prefs[prop])+' pixels');
-        handle.setAttribute('aria-disabled',String(!prefs[kind+'Open']||kind!=='bottom'&&rung!=='wide'));
+        handle.setAttribute('aria-disabled',String(!visible[kind]||kind!=='bottom'&&rung!=='wide'));
       }
+      if(contractFrame)win.cancelAnimationFrame?.(contractFrame);
+      contractFrame=win.requestAnimationFrame(recordContract);
       if(save){persist();announceLayout();}
     }
     function resize(kind,delta,save){
@@ -215,13 +286,18 @@
     tree.setAttribute('data-mcel-planned-root','');
     tree.append(surface);
     if(typeof win.ResizeObserver==='function'){
-      resizeObserver=new win.ResizeObserver(()=>apply());resizeObserver.observe(tree);
+      resizeObserver=new win.ResizeObserver(()=>apply());
+      // Watch the surface contract's physical participants, not merely the
+      // outer tree. A CSS or dock change can collapse a child track without
+      // resizing its containing root.
+      for(const element of [tree,primary,explorer,companion,bottom])
+        resizeObserver.observe(element);
     } else {
       windowResize=()=>apply();win.addEventListener('resize',windowResize);
     }
     apply();
-    return Object.freeze({refresh:()=>apply(),getRung:()=>rung,preferences:()=>({...prefs}),unmount:()=>{
-      disposed=true;if(raf)win.cancelAnimationFrame?.(raf);
+    return Object.freeze({refresh:()=>apply(),validate:inspectSurface,getRung:()=>rung,preferences:()=>({...prefs}),unmount:()=>{
+      disposed=true;if(raf)win.cancelAnimationFrame?.(raf);if(contractFrame)win.cancelAnimationFrame?.(contractFrame);
       resizeObserver?.disconnect();if(windowResize)win.removeEventListener('resize',windowResize);
     }});
   }

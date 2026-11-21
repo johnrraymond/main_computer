@@ -1002,8 +1002,11 @@ function createDsl(metadata, source) {
       Number.isSafeInteger(when.maxAgeSeconds) && when.maxAgeSeconds>=1 && when.maxAgeSeconds<=600,
       "MCEL_DSL_VIEW_CONDITION_INVALID", "Freshness needs a derived timestamped record.");
     if (target.record.authority==="renderer-local") {
-      assert(schema.kind==="string" && Array.isArray(schema.enum) && when.path===undefined,
-        "MCEL_DSL_VIEW_CONDITION_INVALID", "Local visibility requires an explicit view enum.");
+      const fromCollection=intents.some(intent=>intent.record.collectionSelection?.target?.ref===target.id);
+      assert(schema.kind==="string" && when.path===undefined &&
+        (Array.isArray(schema.enum) || fromCollection),
+        "MCEL_DSL_VIEW_CONDITION_INVALID",
+        "Local visibility requires a view enum or verified collection selection.");
     }
     return {state:ref(target),...(when.path!==undefined?{path:when.path}:{}),equals:value,
       ...(when.maxAgeSeconds!==undefined?{maxAgeSeconds:when.maxAgeSeconds}:{})};
@@ -1303,7 +1306,7 @@ function createDsl(metadata, source) {
           update:ref(retention.update)},empty:ref(options.empty)});
     },
     collection(name, options = {}) {
-      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "clearable", "roleFrom", "when", "rowLayout"], `surface.collection:${name}`);
+      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "clearable", "roleFrom", "when", "rowLayout", "selectionPresentation", "label", "credentialDisclosure"], `surface.collection:${name}`);
       assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");
       assert(Array.isArray(options.fields) && options.fields.length > 0 && options.fields.every(x => typeof x === "string"),
         "MCEL_DSL_COLLECTION_FIELDS_REQUIRED", "Collection requires visible fields.");
@@ -1319,6 +1322,15 @@ function createDsl(metadata, source) {
       if(options.clearable!==undefined)assert(typeof options.clearable==="boolean" &&
         (!options.clearable || options.select instanceof IntentHandle),
         "MCEL_DSL_COLLECTION_CLEAR_INVALID","Clearing requires a collection selection intent.");
+      if(options.label!==undefined)assert(typeof options.label==="string" &&
+        options.label.length>0 && options.label.length<=80,
+        "MCEL_DSL_COLLECTION_LABEL_INVALID", "Choice label must be a bounded heading.");
+      if(options.selectionPresentation!==undefined)assert(
+        options.selectionPresentation==="radio" && options.select instanceof IntentHandle &&
+        options.fields.length===2 && options.fields.includes(options.key) &&
+        options.state.record.schema.items.fields[options.fields.find(field=>field!==options.key)]?.kind==="string",
+        "MCEL_DSL_COLLECTION_RADIO_INVALID",
+        "Radio choice requires a keyed collection with one string label and a collection selection intent.");
       let roleFrom;
       if(options.roleFrom){
         const join=options.roleFrom;
@@ -1330,6 +1342,25 @@ function createDsl(metadata, source) {
           options.state.record.schema.items.fields?.[options.key]?.kind==="string",
           "MCEL_DSL_COLLECTION_ROLE_SOURCE_INVALID","Roles require a verified derived organization record list.");
         roleFrom={state:ref(join.state),key:join.key,roleField:join.roleField};
+      }
+      // A credential disclosure is an explicit row-owned operation, not a
+      // field from the record. Its secret never enters declarative app state.
+      let credentialDisclosure;
+      if(options.credentialDisclosure!==undefined){
+        const disclosure=options.credentialDisclosure;
+        assert(disclosure && typeof disclosure==="object" && !Array.isArray(disclosure),
+          "MCEL_DSL_COLLECTION_CREDENTIAL_INVALID", "Credential disclosure must be declared.");
+        knownOptions(disclosure,["intent","identityField"],`surface.collection:${name}.credentialDisclosure`);
+        assert(disclosure.intent instanceof IntentHandle &&
+          disclosure.intent.record.operationKind==="capability" &&
+          disclosure.intent.record.risk==="consequential" &&
+          disclosure.identityField===options.key &&
+          disclosure.intent.record.input?.length===1 &&
+          disclosure.intent.record.input[0].sourceName==="adminDeviceId" &&
+          disclosure.intent.record.input[0].schema.kind==="string",
+          "MCEL_DSL_COLLECTION_CREDENTIAL_INVALID",
+          "Row credential requires a key-bound, consequential one-identity operation.");
+        credentialDisclosure={intent:ref(disclosure.intent),identityField:options.key};
       }
       const actions = options.actions || {};
       for (const [key, value] of Object.entries(actions)) assert(["add", "update", "remove"].includes(key) && value instanceof IntentHandle,
@@ -1355,10 +1386,13 @@ function createDsl(metadata, source) {
         rowLayout={identity:[...id],description:layout.description,metadata:[...more],selectOnRow:true};
       }
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "collection", sourceName: name,
-        key: options.key, fields: [...options.fields],...(rowLayout?{rowLayout}:{}),
+        key: options.key, fields: [...options.fields],
+        ...(options.label?{label:options.label}:{}),...(rowLayout?{rowLayout}:{}),
+        ...(options.selectionPresentation?{selectionPresentation:options.selectionPresentation}:{}),
         ...(options.state ? {state: ref(options.state)} : {}),
         ...(options.select ? {selectionIntent: ref(options.select)} : {}),
         ...(options.clearable?{clearable:true}:{}),...(roleFrom?{roleFrom}:{}),
+        ...(credentialDisclosure?{credentialDisclosure}:{}),
         actions: Object.fromEntries(Object.entries(actions).map(([key, value]) => [key, ref(value)])),
         ...modeCondition(options, `surface.collection:${name}`)};
       return surfaceNode(name, record);
@@ -1375,7 +1409,7 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen", "label", "labelByState", "color"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs", "when", "enabledWhen", "label", "labelByState", "navigationSubtitle", "color"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const resetOutputs=[];
       for(const item of options.resetOutputs||[]){
@@ -1400,12 +1434,32 @@ function createDsl(metadata, source) {
           "MCEL_DSL_ACTION_DYNAMIC_LABEL_INVALID","State-dependent action labels require a typed derived state.");
         labelByState={state:ref(spec.state),path:spec.path,labels:{...spec.labels},fallback:spec.fallback};
       }
+      let navigationSubtitle;
+      if(options.navigationSubtitle){
+        const spec=options.navigationSubtitle;
+        assert(options.intent.record.viewTransition &&
+          spec.state instanceof StateHandle && stateById.get(spec.state.id)===spec.state &&
+          spec.state.record.authority==="renderer-local" &&
+          spec.state.record.schema.kind==="string" &&
+          spec.state.record.schema.enum===undefined &&
+          typeof spec.forValue==="string" &&
+          options.intent.record.input[0]?.schema?.enum?.includes(spec.forValue) &&
+          typeof spec.fallback==="string" && spec.fallback.length>0 && spec.fallback.length<=80 &&
+          spec.labels && typeof spec.labels==="object" && !Array.isArray(spec.labels) &&
+          Object.keys(spec.labels).length>=1 && Object.keys(spec.labels).length<=12 &&
+          Object.entries(spec.labels).every(([key,value])=>typeof key==="string" && key.length>0 && key.length<=80 &&
+            typeof value==="string" && value.length>0 && value.length<=80),
+          "MCEL_DSL_NAVIGATION_SUBTITLE_INVALID","Navigation subtitle requires a bounded renderer-local string selection.");
+        navigationSubtitle={state:ref(spec.state),forValue:spec.forValue,
+          fallback:spec.fallback,labels:{...spec.labels}};
+      }
       if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 &&
         options.label.length<=80,"MCEL_DSL_ACTION_LABEL_INVALID","Action label must be bounded text.");
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
         ...authoredColor(options,`surface.action:${name}`),
         ...(options.label?{label:options.label}:{}),...(labelByState?{labelByState}:{}),
+        ...(navigationSubtitle?{navigationSubtitle}:{}),
         ...(resetOutputs.length?{resetOutputs}:{}),...modeCondition(options, `surface.action:${name}`),
         ...(options.enabledWhen===undefined?{}:{enabledWhen:visibilityCondition(options.enabledWhen, `surface.action:${name}.enabledWhen`)}),
       };

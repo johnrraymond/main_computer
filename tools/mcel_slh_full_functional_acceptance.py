@@ -233,6 +233,9 @@ def run_shadow_lane(*, destination: Path, timeout: int) -> dict:
                "--output", str(destination)]
     start = time.monotonic()
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    # Shadow checks are the incumbent reference oracle. Their historical
+    # invariants cannot be used to certify intentional signal suppression.
+    env.pop("MCEL_SIGNAL_SCHEDULER_SLH", None)
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace") as log:
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
@@ -354,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-cases", type=int, default=0,
                         help="run at most this many new cases; 0 means no batch limit")
     parser.add_argument("--resume", action="store_true", help="resume only when source fingerprint matches")
+    parser.add_argument("--signals", choices=("off", "integrated"), default="off",
+                        help="opt in to signal scheduling in normal SLH page mounts")
+    parser.add_argument("--signals-timeout", type=int, default=900,
+                        help="maximum duration of integrated differential/class certification")
     parser.add_argument("--shadow", choices=("on", "off"), default="on",
                         help="run independent mocked SLH lifecycle with shadow oracle (default: on)")
     parser.add_argument("--shadow-timeout", type=int, default=120,
@@ -367,6 +374,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.max_cases < 0:
         parser.error("--max-cases must be nonnegative")
+    if not 15 <= args.signals_timeout <= 3600:
+        parser.error("--signals-timeout must be between 15 and 3600 seconds")
+    if args.signals == "integrated" and (args.mode != "isolated" or args.live_host_url):
+        parser.error("--signals integrated is supported only in isolated mode without a live host")
+    # The child case supervisor inherits this explicit per-application opt-in.
+    os.environ["MCEL_SIGNAL_SCHEDULER_SLH"] = (
+        "certified" if args.signals == "integrated" else "incumbent")
     if args.shadow_timeout < 5 or args.shadow_timeout > 900:
         parser.error("--shadow-timeout must be between 5 and 900 seconds")
     if args.timeout < 5 or args.timeout > 900:
@@ -386,7 +400,9 @@ def main(argv: list[str] | None = None) -> int:
     results = {}
     target = args.report if args.report.is_absolute() else ROOT / args.report
     target.parent.mkdir(parents=True, exist_ok=True)
-    fingerprint = source_fingerprint()
+    effective_signals = args.signals == "integrated"
+    fingerprint = hashlib.sha256((source_fingerprint() +
+        ("integrated" if effective_signals else "incumbent")).encode()).hexdigest()
     if args.resume and target.exists():
         previous = json.loads(target.read_text(encoding="utf-8"))
         if previous.get("source_fingerprint") != fingerprint:
@@ -422,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 cmd = [sys.executable, "-m", "tools.mcel_slh_full_functional_acceptance",
                        "--mode", "isolated", "--profile", "full", "--case", item.id,
                        "--resume", "--timeout", str(args.timeout), "--report", str(target),
-                       "--shadow", "off"]
+                       "--shadow", "off", "--signals", args.signals]
                 with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as log:
                     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                     child = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
@@ -457,6 +473,10 @@ def main(argv: list[str] | None = None) -> int:
                                         "reason": "SUPERVISED_CASE_TIMEOUT" if timed_out else "SUPERVISED_CASE_NO_RESULT"}
                 checkpoint()
                 print("SLH_FUNCTIONAL", item.id, results[item.id]["status"], flush=True)
+                if results[item.id]["status"] not in ("PASS", "NOT_TESTED"):
+                    print("SLH_FUNCTIONAL_FAILURE_DETAIL", item.id,
+                          results[item.id].get("reason", ""),
+                          results[item.id].get("output_tail", "")[-1800:], flush=True)
         else:
             by_node: dict[str, dict] = {}
             for item in ordered:
@@ -472,6 +492,10 @@ def main(argv: list[str] | None = None) -> int:
                     by_node[item.node] = results[item.id]
                 checkpoint()
                 print("SLH_FUNCTIONAL", item.id, results[item.id]["status"], flush=True)
+                if results[item.id]["status"] not in ("PASS", "NOT_TESTED"):
+                    print("SLH_FUNCTIONAL_FAILURE_DETAIL", item.id,
+                          results[item.id].get("reason", ""),
+                          results[item.id].get("output_tail", "")[-1800:], flush=True)
     output = report_for(results, mode=args.mode)
     if args.mode == "isolated" and args.shadow == "on":
         shadow_path = target.with_name(target.stem + "-shadow.json")
@@ -497,12 +521,41 @@ def main(argv: list[str] | None = None) -> int:
     else:
         output["shadow"] = {"status":"NOT_REQUESTED", "coverageStatus":"NOT_RUN",
                             "selectiveSchedulingCertified":False}
+    output["signalIntegration"] = {"status":"NOT_REQUESTED","productionDefault":"INCUMBENT"}
+    if args.signals == "integrated" and args.mode == "isolated" and not args.case:
+        path = target.with_name(target.stem + "-signals.json")
+        path.unlink(missing_ok=True)
+        command = [sys.executable,"-m","tools.mcel_signal_integrated_acceptance",
+                   "--app","slh","--profile",args.profile,"--output",str(path)]
+        try:
+            lane = subprocess.run(command,cwd=ROOT,capture_output=True,text=True,
+                                  timeout=args.signals_timeout)
+            proof = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            valid = (lane.returncode == 0 and proof.get("schema") ==
+                     "mcel.signal-integrated-acceptance.v1" and
+                     proof.get("status") == "PASS_MAIN_PATH_INTEGRATION" and
+                     len(proof.get("results",[])) == 1 and
+                     proof["results"][0].get("app") == "slh" and
+                     proof["results"][0].get("actualSkips",0) > 0)
+            output["signalIntegration"] = {"status":"PASS_MAIN_PATH_INTEGRATION" if valid else "BLOCKED",
+                "report":str(path),"actualSkips":proof.get("results",[{}])[0].get("actualSkips",0),
+                "outputTail":(lane.stdout+lane.stderr)[-1600:]}
+        except (OSError,subprocess.TimeoutExpired,ValueError,KeyError,IndexError) as exc:
+            output["signalIntegration"] = {"status":"BLOCKED","reason":type(exc).__name__}
+        print("SLH_FUNCTIONAL_SIGNALS",output["signalIntegration"]["status"],
+              "skips="+str(output["signalIntegration"].get("actualSkips",0)),flush=True)
     output["combined_status"] = (
         "FAIL" if output["status"] == "FAIL" or output["shadow"]["status"] == "FAIL"
         else "INCOMPLETE" if output["status"] != "PASS_ISOLATED_FUNCTIONAL" or
              output["shadow"]["status"] == "UNVERIFIED"
         else "PASS_FUNCTIONAL_WITH_SHADOW_OBSERVATION" if output["shadow"]["status"] == "PASS_OBSERVATION"
         else output["status"])
+    if args.signals == "integrated" and not args.case:
+        if output["signalIntegration"]["status"] != "PASS_MAIN_PATH_INTEGRATION":
+            output["combined_status"] = "BLOCKED_SIGNAL_INTEGRATION"
+        elif output["combined_status"] in ("PASS_ISOLATED_FUNCTIONAL",
+                  "PASS_FUNCTIONAL_WITH_SHADOW_OBSERVATION"):
+            output["combined_status"] = "PASS_FUNCTIONAL_WITH_INTEGRATED_SIGNALS"
     output["source_fingerprint"] = fingerprint
     output["completed_cases"] = len(results)
     output["total_cases"] = len(CASES)
@@ -526,6 +579,9 @@ def main(argv: list[str] | None = None) -> int:
     target.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("SLH_FUNCTIONAL_OVERALL", output["status"], output["counts"],
           f"cases={len(results)}/{len(CASES)}", "report:", str(target), flush=True)
+    if args.signals == "integrated" and not args.case and (
+        output["signalIntegration"]["status"] != "PASS_MAIN_PATH_INTEGRATION"):
+        return 1
     if output["live"]["status"] == "INCOMPLETE" and args.live_host_url: return 3
     if output["shadow"]["status"] == "FAIL": return 1
     if output["shadow"]["status"] == "UNVERIFIED": return 3

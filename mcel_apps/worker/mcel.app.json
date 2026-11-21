@@ -1,0 +1,54 @@
+{
+  "schema": "mcel.application-package.v1",
+  "appId": "worker",
+  "title": "Worker",
+  "template": {
+    "id": "mcel.host-bound-authoritative-application",
+    "version": "0.1.0"
+  },
+  "requirements": "requirements.md",
+  "blueprint": "blueprint.json",
+  "contracts": {
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "adapter": "contracts/adapter.js",
+    "surface": "contracts/surface.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "acceptance": "contracts/acceptance.js"
+  },
+  "tests": {
+    "root": "tests",
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json"
+  },
+  "conformance": {
+    "currentMode": "structural-only",
+    "targetMode": "semantic-runtime-proven",
+    "missingBridges": [
+      "identity-projection-from-mother-authority",
+      "authenticated-network-slh-worker-enrollment",
+      "marketplace-wallet-and-signing-intent-parity",
+      "funding-offer-registration-and-multisession-parity",
+      "browser-and-live-backend-acceptance",
+      "applications-shell-launcher-promotion"
+    ],
+    "scope": "native-generated-three-view-worker-with-exclusive-hub-choice-and-bounded-slh-target-control"
+  },
+  "authoring": {
+    "schema": "mcel.application-authoring.v1",
+    "status": "runtime-hosted-semantic",
+    "source": "application.js"
+  },
+  "projection": {
+    "mountMode": "host-bound",
+    "presentationAuthority": "generated-semantic-composition",
+    "hostBoundRuntimeActive": true,
+    "liveRuntimeChanged": false,
+    "generatedArtifactsAreDerived": true
+  },
+  "promotion": {
+    "promotionEligible": false,
+    "promotionExecuted": false,
+    "truthStatus": "structural-only"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": "worker",
+  "bindings": [
+    {
+      "id": "worker.binding.candidate",
+      "acceptanceContractId": "worker.acceptance.candidate",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_package_acceptance_candidate"
+      ]
+    }
+  ]
+}

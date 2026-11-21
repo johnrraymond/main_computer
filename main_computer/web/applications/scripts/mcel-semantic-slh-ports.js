@@ -66,6 +66,12 @@
        req.runtimeMethod!==(read?"observeSehConnection":"controlSehConnection"))return null;
     return read?"status":action;
   }
+  const softwareAuthenticator=Object.freeze({
+    "intent:read-software-authenticator-status":["status","observeSlhSoftwareAuthenticator","external-read","capability:slh-software-authenticator-observer"],
+    "intent:software-authenticator-pair":["pair","pairSlhSoftwareAuthenticator","consequential","capability:slh-software-authenticator-control"],
+    "intent:software-authenticator-reveal":["reveal","revealSlhSoftwareAuthenticator","consequential","capability:slh-software-authenticator-control"],
+    "intent:software-authenticator-revoke":["revoke","revokeSlhSoftwareAuthenticator","consequential","capability:slh-software-authenticator-control"]
+  });
   const rename = "intent:rename-worker";
   const firstRun = Object.freeze({
     "intent:start-local": ["start", "startSlhLocal", []],
@@ -83,6 +89,7 @@
   function permitted(req) {
     if(!req || req.appId!=="slh" || !plain(req.arguments))return false;
     if(notebookOperation(req)||sehLifecycleOperation(req)||
+       softwareAuthenticatorOperation(req)||
        global.McelSemanticSehDeploymentPort?.operation(req))return true;
     const spec=admitted[req.intentId];
     if(spec)return req.risk==="external-read" && req.effectId==="effect:"+req.intentId.slice(7)+".request" &&
@@ -100,10 +107,124 @@
       typeof req.arguments.deviceId==="string" && typeof req.arguments.label==="string";
     return false;
   }
+  function softwareAuthenticatorOperation(req){
+    if(!plain(req) || req.appId!=="slh" || !plain(req.arguments))return null;
+    const spec=softwareAuthenticator[req.intentId];
+    if(!spec || req.operation!==spec[0] || req.runtimeMethod!==spec[1] ||
+      req.risk!==spec[2] || req.capabilityId!==spec[3] ||
+      req.effectId!=="effect:"+req.intentId.slice(7)+".request" ||
+      Object.keys(req.arguments).join(",")!=="adminDeviceId" ||
+      typeof req.arguments.adminDeviceId!=="string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(req.arguments.adminDeviceId))return null;
+    return spec[0];
+  }
   function create(options={}) {
     if(options.appId!=="slh")throw Error("MCEL_SLH_PORT:unknown-app");
     const fetcher=options.fetcher || global.fetch?.bind(global);
     if(typeof fetcher!=="function")throw Error("MCEL_SLH_PORT:missing-fetch");
+    let otpClose=()=>{};
+    // Ephemeral credential presentation, owned by the identity disclosure.
+    // The code stays in this closure and the live output element only: never
+    // in MCEL state, receipts, activity, localStorage, or a standalone modal.
+    function renderCurrentCode(result){
+      const valid=result && typeof result.deviceId==="string" &&
+        Number.isSafeInteger(result.expiresAt) &&
+        result.expiresAt*1000>Date.now() &&
+        result.expiresAt*1000<=Date.now()+61000 &&
+        result.periodSeconds===30 && typeof result.usable==="boolean" &&
+        (result.usable ? typeof result.code==="string" && /^[0-9]{8}$/.test(result.code) : result.code===null);
+      if(!valid)throw Error("MCEL_SLH_OTP:INVALID_CURRENT_CODE");
+      const doc=global.document;
+      const host=[...(doc?.querySelectorAll("[data-mcel-credential-detail]")||[])].find(
+        el=>el.getAttribute("data-mcel-credential-detail")===result.deviceId);
+      if(!host || !host.closest("details")?.open)
+        throw Error("MCEL_SLH_OTP:IDENTITY_DETAIL_CLOSED");
+      otpClose();
+      const status=host.querySelector("[data-mcel-passkey-status]");
+      const display=host.querySelector("[data-mcel-passkey-code]");
+      const remaining=host.querySelector("[data-mcel-passkey-remaining]");
+      const copy=host.querySelector("[data-mcel-passkey-copy]");
+      if(!status||!display||!remaining||!copy)
+        throw Error("MCEL_SLH_OTP:IDENTITY_DETAIL_INCOMPLETE");
+      const deviceId=result.deviceId,epoch=identityEpoch;
+      let secret=result.usable?result.code:"";
+      let expiresAt=result.expiresAt;
+      let closed=false,refreshing=false;
+      let lastChecked=0;
+      const clearSecret=()=>{secret="";display.textContent="•••• ••••";
+        copy.disabled=true;};
+      const paint=()=>{
+        if(closed)return;
+        const seconds=Math.max(0,Math.ceil((expiresAt*1000-Date.now())/1000));
+        if(seconds===0)clearSecret();
+        const usable=!!secret && seconds>0;
+        status.textContent=usable?"Usable":"Old / expired";
+        status.setAttribute("data-mcel-passkey-usable",String(usable));
+        display.textContent=usable?secret:"•••• ••••";
+        remaining.textContent=seconds+"s remaining";
+        copy.disabled=!usable;
+      };
+      const refresh=async()=>{
+        if(closed||refreshing||!host.closest("details")?.open ||
+          epoch!==identityEpoch||activeIdentity!==deviceId||!accessToken)return;
+        refreshing=true;
+        try{
+          const {response,data}=await authorizedJsonRequest("/api/applications/slh/software-authenticator",{
+            method:"POST",headers:{"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"software-authenticator"},
+            body:JSON.stringify({operation:"current",deviceId}),replayOnInvalidSession:false
+          });
+          if(closed||epoch!==identityEpoch||!host.closest("details")?.open)return;
+          const next=data?.result;
+          if(!response?.ok||data?.ok!==true || !next||next.deviceId!==deviceId ||
+             next.periodSeconds!==30||typeof next.usable!=="boolean" ||
+             !Number.isSafeInteger(next.expiresAt) ||
+             next.expiresAt*1000<=Date.now()||next.expiresAt*1000>Date.now()+61000 ||
+             (next.usable?!/^[0-9]{8}$/.test(next.code):next.code!==null)){
+            clearSecret();status.textContent="Unavailable";remaining.textContent="Authorization unavailable";
+            return;
+          }
+          secret=next.usable?next.code:"";
+          expiresAt=next.expiresAt;
+          paint();
+        }catch{
+          if(!closed){clearSecret();status.textContent="Unavailable";remaining.textContent="Authorization unavailable";}
+        }finally{refreshing=false;}
+      };
+      const onCopy=async()=>{
+        if(closed||!secret||Date.now()>=expiresAt*1000)return;
+        try{
+          if(typeof global.navigator?.clipboard?.writeText!=="function")throw Error("CLIPBOARD_UNAVAILABLE");
+          await global.navigator.clipboard.writeText(secret);
+        }catch{remaining.textContent="Clipboard unavailable";}
+      };
+      const onDisclosure=()=>{if(!host.closest("details")?.open)otpClose();};
+      const onVisibility=()=>{if(doc.visibilityState==="hidden")otpClose();};
+      const owner=host.closest("details");
+      const timer=global.setInterval(()=>{
+        if(closed)return;
+        if(!host.isConnected||!owner?.open||epoch!==identityEpoch||activeIdentity!==deviceId){otpClose();return;}
+        paint();
+        const now=Date.now();
+        if((now>=expiresAt*1000 || now-lastChecked>=5000) && !refreshing){
+          lastChecked=now;
+          void refresh();
+        }
+      },1000);
+      otpClose=()=>{
+        if(closed)return;
+        closed=true;global.clearInterval(timer);
+        owner?.removeEventListener("toggle",onDisclosure);
+        doc.removeEventListener("visibilitychange",onVisibility);
+        copy.removeEventListener("click",onCopy);
+        clearSecret();status.textContent="Not displayed";remaining.textContent="—";
+        otpClose=()=>{};
+      };
+      copy.addEventListener("click",onCopy);
+      owner?.addEventListener("toggle",onDisclosure);
+      doc.addEventListener("visibilitychange",onVisibility);
+      paint();
+    }
     let accessToken="";
     let tokenExpiresAt=0; // Ephemeral, server-issued Unix expiry; never browser persistence.
     let activeIdentity="";
@@ -149,7 +270,7 @@
     function discardIdentity(next=""){
       if(next===activeIdentity)return;
       const oldToken=accessToken;
-      activeIdentity=next;accessToken="";tokenExpiresAt=0;pendingAuthentication=null;
+      otpClose();activeIdentity=next;accessToken="";tokenExpiresAt=0;pendingAuthentication=null;
       ++identityEpoch;workerViewOverview=null;
       authenticationChanged(false);
       if(oldToken){
@@ -163,7 +284,7 @@
     function invalidateToken(token,notify=true){
       // Do not revoke a newer login just because an older request settled late.
       if(!token || accessToken!==token)return;
-      accessToken="";tokenExpiresAt=0;
+      otpClose();accessToken="";tokenExpiresAt=0;
       // During an immediate re-login, defer the UI authorization transition:
       // resetting the record notebook would discard its in-flight action.
       // The backend remains the authority; a failed re-login revokes the UI.
@@ -308,7 +429,7 @@
       connect: async value=>{
         if(typeof value!=="string" || value.length<24 || value.length>256 || !/^[\x21-\x7e]+$/.test(value))
           throw Error("MCEL_SLH_PORT:invalid-session");
-        accessToken="";tokenExpiresAt=0;
+        otpClose();accessToken="";tokenExpiresAt=0;
         await readWorkers(value);
         accessToken=value;
         authenticationChanged(true);
@@ -323,6 +444,7 @@
       authorize: async req=>{
         if(!permitted(req))return false;
         if(notebookOperation(req)||sehLifecycleOperation(req)||
+           (softwareAuthenticatorOperation(req)&&softwareAuthenticatorOperation(req)!=="status")||
            req.intentId===rename ||
            (req.intentId==="intent:refresh-worker-summary" && options.initialView!=="overview") ||
            req.intentId==="intent:refresh-workers"){
@@ -335,9 +457,55 @@
       },
       invoke: async req=>{
         if(!permitted(req))throw Error("MCEL_SLH_PORT:undeclared-operation");
-        if(notebookOperation(req)||sehLifecycleOperation(req)||req.intentId===rename)
+        if(notebookOperation(req)||sehLifecycleOperation(req)||
+           (softwareAuthenticatorOperation(req)&&softwareAuthenticatorOperation(req)!=="status")||
+           req.intentId===rename)
           await ensureAuthorization();
         if(notebookOperation(req))return notebook(req);
+        const otpOperation=softwareAuthenticatorOperation(req);
+        if(otpOperation){
+          const deviceId=req.arguments.adminDeviceId;
+          if(!activeIdentity || activeIdentity!==deviceId)
+            throw Error("MCEL_SLH_OTP:SELECTED_IDENTITY_REQUIRED");
+          // MCEL notebooks observe their active tab on mount. An unlogged
+          // observer must NEVER silently invoke P-256 signing as a side effect
+          // of opening this application or selecting an identity.
+          if(otpOperation==="status" && !accessToken)return {
+            active:false,localFactor:false,status:"UNOBSERVED",deviceId,
+            periodSeconds:30,message:"Administrator login required before authenticator status can be verified"
+          };
+          const {response,data}=await authorizedJsonRequest("/api/applications/slh/software-authenticator",{
+            method:"POST",headers:{"Content-Type":"application/json",
+              "X-MCEL-SLH-Operation":"software-authenticator"},
+            body:JSON.stringify({operation:otpOperation==="reveal"?"current":otpOperation,deviceId})
+          });
+          if(!response?.ok||data?.ok!==true){
+            const code=data?.error?.code;
+            throw Error("MCEL_SLH_OTP:"+(typeof code==="string"&&/^[A-Z_]{3,64}$/.test(code)?code:"REQUEST_REFUSED"));
+          }
+          if(otpOperation==="reveal"){
+            if(data.result?.deviceId!==deviceId ||
+               Object.keys(data.result).sort().join(",")!=="code,deviceId,expiresAt,periodSeconds,usable")
+              throw Error("MCEL_SLH_OTP:IDENTITY_RESULT_MISMATCH");
+            renderCurrentCode(data.result);
+            return {outcome:"DISPLAYED",message:"Identity passkey detail updated",deviceId};
+          }
+          const result=data.result;
+          if(!plain(result) || result.deviceId!==deviceId)
+            throw Error("MCEL_SLH_OTP:INVALID_RESULT");
+          if(otpOperation==="status"){
+            if(Object.keys(result).sort().join(",")!=="active,deviceId,localFactor,message,periodSeconds,status" ||
+               typeof result.active!=="boolean" || typeof result.localFactor!=="boolean" ||
+               result.periodSeconds!==30 || typeof result.message!=="string" ||
+               result.message.length>256 || !["PAIRED","LOCAL_PAIRING_REQUIRED","REGISTRATION_REQUIRED","NOT_PAIRED","UNOBSERVED"].includes(result.status))
+              throw Error("MCEL_SLH_OTP:INVALID_STATUS");
+          }else if(Object.keys(result).sort().join(",")!=="deviceId,message,outcome" ||
+                   result.outcome!==(otpOperation==="pair"?"PAIRED":"REVOKED") ||
+                   typeof result.message!=="string" || result.message.length>256)
+            throw Error("MCEL_SLH_OTP:INVALID_RECEIPT");
+          return result;
+        }
+
         const deployment=global.McelSemanticSehDeploymentPort?.operation(req);
         if(deployment){
           // This Computer goes straight to resident LMS. No selected signer,

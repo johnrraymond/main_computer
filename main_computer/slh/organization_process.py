@@ -1,7 +1,8 @@
 """ORG-SLH process identity shared by the child, its Local Service and ./stop.
 
-The PID file is an identity record, not permission to kill an arbitrary PID:
-PID, creation time, state directory and the live module command must agree.
+Ordinary stop requires PID, creation time, state directory and module to agree.
+The explicitly selected restart force policy can kill a recorded, unverified
+PID, including a recycled PID belonging to an unrelated process.
 """
 from __future__ import annotations
 
@@ -274,22 +275,29 @@ def _wait_exited(proc: psutil.Process, timeout: float) -> bool:
 
 
 def _matching_process_for_stop(record: dict, state_dir: Path) -> psutil.Process | None:
-    """Retry transient unavailable or incomplete command lines during shutdown.
+    """Retry uncertain Windows command-line observations without relaxing identity.
 
-    An incomplete observation never proves exit or ownership. Before each retry, check
-    the recorded PID's creation time and liveness; refuse if those checks are
-    unavailable or the original process remains unverifiable after retries.
+    An incomplete observation, and even an apparently foreign observation, are
+    not authority to terminate a process. A single foreign observation can be
+    transient (for example, while Windows is constructing its process command
+    line). Before *every* retry, recheck the original PID's creation time and
+    liveness. Only a full matching module and state-dir may authorize a kill;
+    persistent foreign or unavailable observations refuse shutdown.
     """
+    retryable = {
+        'Cannot verify ORG-SLH command line',
+        'ORG-SLH PID belongs to an unverified process; refusing termination',
+    }
     for attempt in range(4):
         try:
             return _matching_process(record, state_dir)
         except RuntimeError as exc:
-            if str(exc) != 'Cannot verify ORG-SLH command line':
+            if str(exc) not in retryable:
                 raise
             try:
                 proc = psutil.Process(record['pid'])
                 if abs(proc.create_time() - record['created']) > 0.05:
-                    return None  # Original exited; this PID belongs to a replacement.
+                    return None  # The original has exited; do not touch the new PID owner.
                 if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
                     return None
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
@@ -297,13 +305,37 @@ def _matching_process_for_stop(record: dict, state_dir: Path) -> psutil.Process 
             except psutil.AccessDenied as identity_exc:
                 raise RuntimeError('Cannot verify ORG-SLH process identity') from identity_exc
             if attempt == 3:
-                raise  # Still alive, but command line cannot establish ownership.
+                raise  # Four unsuccessful observations never establish identity.
+            _trace_identity('identity-retry', attempt=attempt + 1,
+                            reason=str(exc), pid=record['pid'])
             time.sleep(0.1)
     raise AssertionError('unreachable')
 
 
-def stop_recorded_process(state_dir: Path, *, timeout: float = 5.0) -> dict:
-    """Stop only the exact recorded ORG-SLH instance; missing is a no-op."""
+def stop_recorded_process(state_dir: Path, *, timeout: float = 5.0,
+                          force_unverified: bool = False) -> dict:
+    """Stop recorded ORG-SLH; explicit forced shutdown is deliberately unsafe.
+
+    This API defaults to exact process identity verification. Both CLI stop
+    and restart may explicitly override it, killing the recorded PID if
+    identity verification or ordinary termination fails.
+    """
+    if force_unverified:
+        try:
+            original = _path(state_dir).read_bytes()
+        except FileNotFoundError:
+            return {'state': 'not-running', 'pid': None}
+        try:
+            result = stop_recorded_process(state_dir, timeout=timeout)
+        except (OSError, RuntimeError) as exc:
+            return _force_stop_recorded_pid(state_dir, str(exc), timeout, original)
+        # The strict helper can classify a mismatched creation time as a
+        # no-op and clear the record. In forced mode the requested policy is
+        # instead to kill that *live* recorded PID, despite the mismatch.
+        pid = result.get('pid')
+        if result.get('state') == 'not-running' and type(pid) is int and pid > 0 and pid != os.getpid() and psutil.pid_exists(pid):
+            return _force_stop_recorded_pid(state_dir, 'recorded PID is live but process identity did not match', timeout, original)
+        return result
     record = read_record(state_dir)
     if record is None:
         return {'state': 'not-running', 'pid': None}
@@ -328,15 +360,70 @@ def stop_recorded_process(state_dir: Path, *, timeout: float = 5.0) -> dict:
     return {'state': 'terminated', 'pid': record['pid']}
 
 
+
+def _force_stop_recorded_pid(state_dir: Path, reason: str,
+                             timeout: float, original: bytes | None = None) -> dict:
+    """Explicit start/stop policy: attempt kill even without identity proof.
+
+    This may kill a foreign process if a PID has been reused. The operator has
+    explicitly chosen that tradeoff for both start and stop. Regardless of kill
+    outcome, remove only the unchanged old record so it cannot block lifecycle.
+    """
+    path = _path(state_dir)
+    if original is None:
+        try:
+            original = path.read_bytes()
+        except FileNotFoundError:
+            return {'state': 'not-running', 'pid': None}
+    pid = None
+    try:
+        raw = json.loads(original)
+        candidate = raw.get('pid') if isinstance(raw, dict) else None
+        if type(candidate) is int and candidate > 0 and candidate != os.getpid():
+            pid = candidate
+    except (ValueError, TypeError):
+        pass
+    state = 'force-termination-failed'
+    kill_error = None
+    if pid is None:
+        kill_error = 'PID record contains no usable process ID'
+    else:
+        try:
+            proc = psutil.Process(pid)
+            # Kill, not terminate, because shutdown is explicitly forceful.
+            proc.kill()
+            state = 'terminated-unverified' if _wait_exited(proc, timeout) else 'force-termination-failed'
+            if state != 'terminated-unverified':
+                kill_error = 'PID remains alive after forced kill'
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            state = 'not-running'
+        except (psutil.AccessDenied, OSError) as exc:
+            kill_error = f'{type(exc).__name__}: {exc}'
+    try:
+        if path.read_bytes() == original:
+            path.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        kill_error = f'{kill_error}; cannot clear record: {exc}' if kill_error else f'Cannot clear record: {exc}'
+    warning = (f'FORCED STOP: ORG-SLH PID {pid} could not be verified '
+               f'({reason}); kill attempted without identity proof. '
+               f'Result: {state}.' + (f' {kill_error}' if kill_error else ''))
+    return {'state': state, 'pid': pid, 'warning': warning, 'identity_verified': False,
+            'force_kill_attempted': pid is not None}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Verified ORG-SLH process cleanup')
     parser.add_argument('command', choices=['stop'])
     parser.add_argument('--state-dir', type=Path, required=True)
+    parser.add_argument('--force-unverified', action='store_true',
+                        help='On start or stop: force-kill the recorded PID if verification fails')
     args = parser.parse_args(argv)
     trace: list[dict] = []
     token = _STOP_IDENTITY_TRACE.set(trace)
     try:
-        result = stop_recorded_process(args.state_dir)
+        result = stop_recorded_process(args.state_dir, force_unverified=args.force_unverified)
     except (OSError, RuntimeError) as exc:
         # Record the exact first-read argv and PID record observed *during* the
         # rejecting stop, rather than a different service started afterward.

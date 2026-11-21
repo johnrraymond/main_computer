@@ -44,46 +44,53 @@
       }
     }
 
-    aiderTimeoutSeconds.addEventListener("change", normalizedAiderTimeoutSeconds);
-    aiderTimeoutSeconds.addEventListener("blur", normalizedAiderTimeoutSeconds);
-    normalizedAiderTimeoutSeconds();
-    aiderPreview.addEventListener("click", () => sendAiderAction("/api/applications/aider/prepare", "aider preview"));
-    aiderRun.addEventListener("click", () => sendAiderAction("/api/applications/aider/run", "aider running"));
-    aiderArchiveList.addEventListener("change", () => {
-      syncAiderThreadRoute(aiderArchiveList.value || "", {replace: false});
-      renderSelectedAiderArchiveMeta();
-      renderAttachedAiderActivity({force: true});
-      syncAiderActivityPolling();
-      updateAiderRunButtonState();
-    });
-    aiderArchiveCurrent.addEventListener("click", () => updateAiderContext(
-      "/api/applications/aider/context/archive",
-      {repo_dir: aiderRepo.value || ".", files: [...fileMapMarked].sort()},
-      "aider context archived"
-    ));
-    aiderResetContext.addEventListener("click", () => updateAiderContext(
-      "/api/applications/aider/context/reset",
-      {repo_dir: aiderRepo.value || ".", files: [...fileMapMarked].sort()},
-      "aider context reset"
-    ));
-    aiderLoadArchive.addEventListener("click", () => {
-      if (!aiderArchiveList.value) {
-        aiderArchiveMeta.textContent = "Select archived content first.";
-        return;
-      }
-      updateAiderContext(
-        "/api/applications/aider/context/load",
-        {archive_id: aiderArchiveList.value},
-        "aider archived content loaded"
-      ).catch(() => {});
-    });
-    fileMapRefresh.addEventListener("click", loadFileMap);
-    fileMapApply.addEventListener("click", syncAiderFilesFromMarked);
-    fileMapSearch.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        loadFileMap();
-      }
-    });
+    // Bind only when the complete incumbent Aider surface exists.  The native
+    // Code Editor replaces that markup with an inert legacy stub in the shared
+    // applications page; no legacy Aider operation may attach to a missing DOM.
+    if (aiderInstruction && aiderTimeoutSeconds && aiderPreview && aiderRun &&
+        aiderArchiveList && aiderArchiveCurrent && aiderResetContext &&
+        aiderLoadArchive && fileMapRefresh && fileMapApply && fileMapSearch) {
+      aiderTimeoutSeconds.addEventListener("change", normalizedAiderTimeoutSeconds);
+      aiderTimeoutSeconds.addEventListener("blur", normalizedAiderTimeoutSeconds);
+      normalizedAiderTimeoutSeconds();
+      aiderPreview.addEventListener("click", () => sendAiderAction("/api/applications/aider/prepare", "aider preview"));
+      aiderRun.addEventListener("click", () => sendAiderAction("/api/applications/aider/run", "aider running"));
+      aiderArchiveList.addEventListener("change", () => {
+        syncAiderThreadRoute(aiderArchiveList.value || "", {replace: false});
+        renderSelectedAiderArchiveMeta();
+        renderAttachedAiderActivity({force: true});
+        syncAiderActivityPolling();
+        updateAiderRunButtonState();
+      });
+      aiderArchiveCurrent.addEventListener("click", () => updateAiderContext(
+        "/api/applications/aider/context/archive",
+        {repo_dir: aiderRepo.value || ".", files: [...fileMapMarked].sort()},
+        "aider context archived"
+      ));
+      aiderResetContext.addEventListener("click", () => updateAiderContext(
+        "/api/applications/aider/context/reset",
+        {repo_dir: aiderRepo.value || ".", files: [...fileMapMarked].sort()},
+        "aider context reset"
+      ));
+      aiderLoadArchive.addEventListener("click", () => {
+        if (!aiderArchiveList.value) {
+          aiderArchiveMeta.textContent = "Select archived content first.";
+          return;
+        }
+        updateAiderContext(
+          "/api/applications/aider/context/load",
+          {archive_id: aiderArchiveList.value},
+          "aider archived content loaded"
+        ).catch(() => {});
+      });
+      fileMapRefresh.addEventListener("click", loadFileMap);
+      fileMapApply.addEventListener("click", syncAiderFilesFromMarked);
+      fileMapSearch.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          loadFileMap();
+        }
+      });
 
-    updateAiderRunButtonState();
+      updateAiderRunButtonState();
+    }

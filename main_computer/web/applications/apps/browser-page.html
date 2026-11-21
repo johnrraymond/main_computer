@@ -13,18 +13,18 @@
       <button id="browser-forward" type="button" title="Forward" aria-label="Forward">→</button>
       <button id="browser-reload" type="button" title="Reload" aria-label="Reload">↻</button>
       <label class="browser-address-label" for="browser-address">Address</label>
-      <input id="browser-address" type="text" spellcheck="false" aria-label="Address or localhost-relative path" placeholder="/ or https://example.org" />
+      <input id="browser-address" type="text" spellcheck="false" aria-label="Remote website address" placeholder="https://example.org" />
       <button id="browser-go" type="submit">Go</button>
     </form>
     <div class="browser-status" role="status" aria-live="polite">
-      <span id="browser-page-title">Backend Chromium</span>
-      <span id="browser-status">Connecting to local browser…</span>
+      <span id="browser-page-title">Scramjet</span>
+      <span id="browser-status">Starting isolated browser…</span>
     </div>
-    <div class="browser-surface" id="browser-surface" tabindex="0" role="application" aria-label="Remote browser viewport; click and type to interact">
-      <img id="browser-image" alt="Backend-rendered browser page" draggable="false" />
-      <div class="browser-empty" id="browser-empty">Browser renderer initializing…</div>
+    <div class="browser-surface" id="browser-surface" role="region" aria-label="Isolated browser viewport">
+      <iframe id="browser-frame" title="Untrusted website in isolated Scramjet origin" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads" referrerpolicy="no-referrer" allow="fullscreen"></iframe>
+      <div class="browser-empty" id="browser-empty">Docker browser initializing…</div>
     </div>
-    <div class="browser-hint">Paths like <code>/applications</code> resolve against this Main Computer's localhost base. Full HTTP(S) addresses are preserved. Ctrl+L edits the address.</div>
+    <div class="browser-hint">Remote websites execute in a separate Docker-backed origin. MCEL localhost and private networks are blocked. Ctrl+L edits the address.</div>
   </main>
   <script>/* BROWSER_SCRIPT */</script>
 </body>

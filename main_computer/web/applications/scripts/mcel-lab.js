@@ -77,7 +77,9 @@
       "code-editor": Object.freeze({label: "Code Editor", route: "/applications/code-editor",
         rootId: "mcel-workbench", irId: "mcel-workbench-ir", appId: "semantic-code-editor"}),
       slh: Object.freeze({label: "SLH", route: "/applications/slh",
-        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "slh", wrappedIr: true})
+        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "slh", wrappedIr: true}),
+      worker: Object.freeze({label: "Worker candidate", route: "/applications/mcel-semantic-worker",
+        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "worker", wrappedIr: true})
     });
     function selectedMcelSemanticPreviewApp() {
       const value = document.getElementById("mcel-semantic-preview-app")?.value ||

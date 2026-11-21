@@ -83,6 +83,8 @@ class ViewportServer(ThreadingHTTPServer):
         config = apply_dev_chain_runtime_config(config, self.debug_root)
         self.activity = ActivityBus(self.debug_root)
         self.backend_browser = BackendBrowser()
+        from main_computer.mcel_scramjet_docker import ScramjetDockerManager
+        self.scramjet_docker = ScramjetDockerManager(self.debug_root)
         self.chat_ai_processes = ChatAISubprocessManager()
         self.config = config
         self.mounted_windows_path_resolver = build_mounted_windows_path_resolver(config)
@@ -132,6 +134,7 @@ class ViewportServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         try:
+            self.scramjet_docker.close()
             self.backend_browser.close()
         finally:
             super().server_close()

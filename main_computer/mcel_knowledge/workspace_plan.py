@@ -86,16 +86,43 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
     root_id = interface["hierarchy"]["rootId"]
     if root_id not in by_id or by_id[root_id].get("parentId") is not None:
         raise ValueError("Unresolved workspace root")
-    # Compiler retains HTML declaration order; ordinals are sibling-local.
-    children = [r for r in regions if r["id"] != root_id]
-    if any(r.get("parentId") != root_id for r in children):
-        raise ValueError("S1 cannot flatten nested regions; nested hierarchy requires explicit planning")
+    # Only direct children of the root own workspace zones. Descendants are
+    # semantically named groups INSIDE a zone, never extra dock destinations.
+    # This honors the authored HTML hierarchy rather than flattening it or
+    # guessing from the position of generated DOM controls.
+    children = [r for r in regions if r.get("parentId") == root_id]
+    nested = [r for r in regions if r["id"] != root_id and r.get("parentId") != root_id]
+    by_parent = {}
+    for r in regions:
+        by_parent.setdefault(r.get("parentId"), []).append(r)
+    # A nested group's side is relative to its parent, not an independent
+    # workspace dock; until inner docking is implemented, refuse such hints.
+    if any((r.get("preferences") or {}).get("side") for r in nested):
+        raise ValueError("Nested semantic groups cannot independently prefer a workspace side")
+    def descendants(region_id):
+        seen = set()
+        ordered = []
+        def collect(at):
+            if at in seen or at not in by_id:
+                raise ValueError("Invalid or cyclic authored semantic group hierarchy")
+            seen.add(at)
+            ordered.append(by_id[at])
+            for item in sorted(by_parent.get(at, []), key=lambda r: r["ordinal"]):
+                collect(item["id"])
+        collect(region_id)
+        return ordered
+    grouped = {r["id"]: descendants(r["id"]) for r in children}
+    covered = {item["id"] for group in grouped.values() for item in group}
+    if len(covered) != len(regions) - 1:
+        raise ValueError("Semantic groups must be owned by exactly one top-level workspace zone")
     nodes = {n["id"]: n for n in surface.get("nodes", [])}
     intents = {i["id"]: i for i in ir.get("intents", [])}
     owned = [m["ref"] for r in regions for m in r.get("members", [])]
     if set(owned) != set(nodes) or len(owned) != len(set(owned)):
         raise ValueError("S1 requires exactly-once node ownership")
-    facts = {r["id"]: _region_facts(r, nodes, intents) for r in children}
+    facts = {r["id"]: _region_facts(
+        {**r, "members": [member for item in grouped[r["id"]] for member in item["members"]]},
+        nodes, intents) for r in children}
 
     # Explicit authored mode semantics are stronger than region purpose. When
     # a view selector governs multiple alternate regions, those regions share
@@ -135,11 +162,17 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
     # review requirement rather than assuming a human-quality result.
     unresolved = []
     for r in children:
-        f = facts[r["id"]]
-        if f["memberCount"] >= 14 or f["controlCount"] >= 10:
-            unresolved.append({"kind": "coarse-region", "region": r["id"],
-                               "memberCount": f["memberCount"], "controlCount": f["controlCount"],
-                               "reason": "S1 cannot infer independent subworkflows inside one region"})
+        # Evaluate each *direct* authored membership set, including parents
+        # with their own controls. A large sidebar is not ungrouped merely
+        # because it contains many smaller, independently authored groups.
+        for item in grouped[r["id"]]:
+            if not item["members"]:
+                continue
+            f = _region_facts(item, nodes, intents)
+            if f["memberCount"] >= 14 or f["controlCount"] >= 10:
+                unresolved.append({"kind": "coarse-region", "region": item["id"],
+                                   "memberCount": f["memberCount"], "controlCount": f["controlCount"],
+                                   "reason": "S1 cannot infer independent subworkflows inside one region"})
     if len(tools) > 1:
         unresolved.append({"kind": "tool-default-requires-review", "regions": tools,
                            "reason": "Author order is deterministic, not proof of user-preferred default"})
@@ -188,17 +221,17 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
     mode_subtabs = []
     for variant in variants:
         members = variant["members"]
-        grouped = [rid for rid in members if by_id[rid].get("subviewGroup")]
-        if not grouped:
+        mode_grouped = [rid for rid in members if by_id[rid].get("subviewGroup")]
+        if not mode_grouped:
             continue
-        groups = {by_id[rid]["subviewGroup"] for rid in grouped}
-        if len(groups) != 1 or set(grouped) != set(members) or len(grouped) < 2:
+        groups = {by_id[rid]["subviewGroup"] for rid in mode_grouped}
+        if len(groups) != 1 or set(mode_grouped) != set(members) or len(mode_grouped) < 2:
             raise ValueError("Authored mode subtabs must cover one complete conditional mode")
         pairing = next(pair for pair in mode_pairs if pair["equals"] == variant["equals"])
         if pairing["pairs"]:
             raise ValueError("Mode subtabs cannot separate a verified input/result pair")
         mode_subtabs.append({"state": variant["state"], "equals": variant["equals"],
-                             "group": next(iter(groups)), "members": grouped,
+                             "group": next(iter(groups)), "members": mode_grouped,
                              "rule": "authored-subview-group"})
     zones.append({"id": "workspace", "kind": "protected-anchor", "members": anchor_members,
                   "modeVariants": variants, "modePairs": mode_pairs, "modeSubtabs": mode_subtabs,
@@ -212,7 +245,7 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
         wide_tool_workflow = any(
             node.get("nodeKind") == "form" and len(node.get("fields") or {}) >= 3
             and intents.get(_ref(node.get("intent")), {}).get("risk") == "consequential"
-            for rid in tools for member in by_id[rid]["members"]
+            for rid in tools for item in grouped[rid] for member in item["members"]
             for node in [nodes[member["ref"]]]
         )
         selected_states = set().union(*(set(f["selectionTargets"]) for f in facts.values()))
@@ -253,8 +286,8 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
                       "reasons": ["purpose:status", "evidence-follows-inspector" if attached
                                   else "evidence-owns-responsive-rail"]})
     assigned = [r for zone in zones for r in zone["members"]]
-    if len(assigned) != len(set(assigned)) or set(assigned) != set(ids) - {root_id}:
-        raise ValueError("Workspace plan must cover each nonroot region exactly once")
+    if len(assigned) != len(set(assigned)) or set(assigned) != {r["id"] for r in children}:
+        raise ValueError("Workspace plan must cover each top-level semantic region exactly once")
 
     derived = []
     anchor_refs = set().union(*(set(facts[r]["reads"]) | set(facts[r]["displays"]) for r in anchor_members))
@@ -292,7 +325,7 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
     # An absent or incomplete preference set keeps the existing generic plan.
     editor_anchors = [r for r in primary if any(
         nodes[member["ref"]].get("nodeKind") == "document-editor"
-        for member in r["members"])]
+        for item in grouped[r["id"]] for member in item["members"])]
     document_workbench = None
     if len(editor_anchors) == 1 and len(anchor_members) == 1 and navigation and tools and status:
         others = [r for r in children if r["id"] != editor_anchors[0]["id"]]
@@ -321,6 +354,8 @@ def plan_workspace(ir: Mapping, *, scheme: str = SCHEME) -> dict:
               "authoredRelations": interface.get("relations", []), "derivedRelations": derived,
               "regionFacts": [{"id": r["id"], **facts[r["id"]]} for r in children],
               "unresolved": unresolved, "runtimeEnabled": True,
+              **({"nestedGroups": [{"id": r["id"], "parentId": r["parentId"]}
+                  for r in nested]} if nested else {}),
               **({"documentWorkbench": document_workbench} if document_workbench else {})}
     result["fingerprint"] = sha(result)
     return result

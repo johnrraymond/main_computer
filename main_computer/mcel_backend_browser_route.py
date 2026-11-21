@@ -115,6 +115,22 @@ def handle_browser_post(handler) -> None:
         payload = json.loads(handler.rfile.read(length).decode("utf-8"))
         if not isinstance(payload, dict):
             raise BrowserError("Expected a JSON browser command")
+        if payload.get("operation") in {"surface-start", "surface-touch", "surface-close"}:
+            from main_computer.mcel_scramjet_docker import ScramjetError
+            try:
+                manager = handler.server.scramjet_docker
+                action = payload["operation"]
+                if action == "surface-start":
+                    result = manager.open()
+                    result["base_url"] = _port_base(handler) + "/"
+                else:
+                    token = _session_id(payload.get("session"))
+                    result = manager.touch(token) if action == "surface-touch" else manager.release(token)
+            except ScramjetError as exc:
+                handler._send_json({"ok": False, "error": str(exc)[:360]}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            handler._send_json(result)
+            return
         result = _command(handler, payload)
         if payload.get("operation") == "start":
             result["base_url"] = _port_base(handler) + "/"

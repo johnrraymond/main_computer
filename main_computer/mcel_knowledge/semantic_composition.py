@@ -74,6 +74,8 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     # not an authored layout, a permission or an inferred backend effect.
     mode_transitions = {t.get("viewTransition", {}).get("target", {}).get("ref")
                         for t in intents.values() if isinstance(t.get("viewTransition"), Mapping)}
+    collection_transitions = {t.get("collectionSelection", {}).get("target", {}).get("ref")
+                              for t in intents.values() if isinstance(t.get("collectionSelection"), Mapping)}
     def check_condition(when, depth=0):
         if not isinstance(when, Mapping) or depth > 4:
             raise ValueError("Invalid semantic visibility condition")
@@ -109,10 +111,11 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                  schema.get("kind") == "integer" and type(value) is int)
         if not valid:
             raise ValueError("Visibility condition type mismatch")
-        if authority == "renderer-local" and (state_id not in mode_transitions or
-                "path" in when or schema.get("kind") != "string" or
-                value not in schema.get("enum", [])):
-            raise ValueError("Local visibility requires a verified view transition")
+        if authority == "renderer-local" and (
+                "path" in when or schema.get("kind") != "string" or not (
+                    state_id in mode_transitions and value in schema.get("enum", []) or
+                    state_id in collection_transitions and "enum" not in schema)):
+            raise ValueError("Local visibility requires a verified view or collection selection")
     for node in nodes:
         if "visibleWhen" in node:
             check_condition(node["visibleWhen"])
@@ -251,6 +254,11 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     # Application purpose controls organization, but cannot create reads, timers, or actions.
     order = ("navigation", "controls", "queries", "collection", "selection-echo", "operations", "task", "commands", "inspection", "results", "evidence") if purpose == "monitor" else (
         "navigation", "controls", "queries", "selection-echo", "collection", "operations", "task", "commands", "inspection", "results", "evidence")
+    # A declared single-choice collection is the configuration input, not a
+    # monitoring record table. Put the radio choices before the actionable
+    # configuration form; no app-ID or presentation coordinates are consulted.
+    if any(by_node[ident].get("selectionPresentation")=="radio" for ident in groups["collection"]):
+        order=("navigation","collection",*tuple(item for item in order if item not in {"navigation","collection"}))
     # A compound record notebook is downstream of service configuration/commands.
     # Other collections retain their previous synthesized order.
     if groups["collection"] and all(by_node[id]["nodeKind"] in {"record-notebook", "operation-notebook"} for id in groups["collection"]):

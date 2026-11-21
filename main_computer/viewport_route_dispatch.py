@@ -2027,6 +2027,13 @@ def dispatch_get(self) -> None:
                     return
         self._send_json(observe_slh(query["view"][0], admin_token=token))
         return
+    if route_path == "/applications/mcel-semantic-worker":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Worker semantic preview is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_worker_application import render_worker_page
+        self._send_text(render_worker_page(), "text/html; charset=utf-8")
+        return
     if route_path == "/applications/mcel-semantic-shell":
         # Isolated, local-only MCEL parent-shell candidate. No route promotion.
         if not _hard_halt_client_is_local(self):
@@ -2413,6 +2420,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_load()
         return
+    if route_path == "/api/applications/worker/mcel-observation":
+        self._handle_worker_mcel_observation()
+        return
     if route_path == "/api/applications/worker/runtime-status":
         self._handle_worker_runtime_status()
         return
@@ -2481,6 +2491,10 @@ def dispatch_post(self) -> None:
     if urlsplit(self.path).path == "/api/applications/slh/remote-seh/connect":
         from main_computer.mcel_slh_remote_seh_route import handle_remote_seh_connect
         handle_remote_seh_connect(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/slh/software-authenticator":
+        from main_computer.mcel_slh_software_authenticator_route import handle_software_authenticator
+        handle_software_authenticator(self)
         return
     if urlsplit(self.path).path == "/api/applications/slh/identity-notebook":
         from main_computer.mcel_slh_identity_notebook_route import handle_identity_notebook

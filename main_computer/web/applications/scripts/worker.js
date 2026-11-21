@@ -1205,6 +1205,7 @@
       workerRenderTokenList(workerRecoveryEmailList, workerBridgeState.recoveryEmails, "No recovery emails added.", "data-worker-remove-recovery-email");
       workerRenderTokenList(workerRecoveryWalletList, workerBridgeState.recoveryWallets, "No recovery wallets added.", "data-worker-remove-recovery-wallet");
       renderWorkerNetworkSurface();
+      if (document.getElementById("worker-wallet-session-context")) updateWorkerWalletSessionContext();
     }
 
     function workerActiveRecoveryEmails() {
@@ -2309,6 +2310,10 @@
     }
 
     function workerPassiveWalletHydrationShouldRun() {
+      // The native Wallet adapter may open without an injected provider.
+      // Do not block its Connect button on a doomed passive ethers import.
+      if(document.getElementById("worker-wallet-session-context") &&
+         !window.ethereum && !workerWalletSelectedProvider) return false;
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       if (selected === WORKER_NETWORK_NONE) return false;
       if (workerNetworkSession.connection_status !== "connected") return false;
@@ -5336,6 +5341,130 @@
           workerRefreshSellerAvailabilityControls();
           workerLoadRuntimeStatus();
         }
+      });
+    }
+
+    // MCEL wallet migration bridge: initialize the original wallet/MSK logic
+    // without auto-connecting a Hub, synchronizing the Worker runtime, changing
+    // marketplace settings, or starting background Worker supervision.
+    function initWorkerWalletOnly() {
+      loadWorkerBridgeState();
+      renderWorkerBridgeReadiness();
+      const sessionLoad = workerLoadNetworkSessionFromBackend(); // read-only
+      workerRefreshHubCreditBridgeConfig();
+      workerRefreshFaucetRuntimeStatus();
+      workerBindWalletProviderEvents();
+      workerBindPassiveWalletHydrationEvents();
+      Promise.resolve(sessionLoad).finally(() => {
+        // No wallet installed: do not strand Connect in an indefinite
+        // automatic hydration attempt that needs the ethers CDN/provider.
+        // EIP-6963 announcements still schedule hydration when available.
+        if(window.ethereum || workerWalletSelectedProvider)
+          workerSchedulePassiveWalletHydration("mcel-wallet-page-load");
+        updateWorkerWalletSessionContext();
+      });
+      const bind = (node, event, handler) => {
+        if (!node || node.dataset.workerWalletBound) return;
+        node.dataset.workerWalletBound = "true";
+        node.addEventListener(event, handler);
+      };
+      // The existing wallet handlers operate on the active Worker session,
+      // NOT on the independent saved Hub Choice. Prevent accidental signing
+      // against a stale, absent, or mismatched marketplace session.
+      const compatibilityRoot=document.querySelector(".mcel-worker-wallet-compat");
+      const protectedIds=new Set([
+        "worker-connect-wallet","worker-request-multisession-key",
+        "worker-revoke-multisession-key","worker-request-faucet","worker-fund-hub-credit"
+      ]);
+      if (compatibilityRoot) {
+        compatibilityRoot.addEventListener("click",event=>{
+          const element=event.target instanceof Element?event.target.closest("button"):null;
+          if (!element || !protectedIds.has(element.id) || workerWalletOnlyContextVerified()) return;
+          event.preventDefault();event.stopImmediatePropagation();
+          if(workerSaveStatus)workerSaveStatus.textContent="Choose a marketplace Hub and establish its matching Worker session before wallet signing, keys, or funding.";
+        },true);
+        compatibilityRoot.addEventListener("submit",event=>{
+          if(event.target?.id!=="worker-hub-credit-form" || workerWalletOnlyContextVerified())return;
+          event.preventDefault();event.stopImmediatePropagation();
+          if(workerSaveStatus)workerSaveStatus.textContent="A matching active Worker session is required before funding.";
+        },true);
+      }
+      bind(workerConnectWallet, "click", connectWorkerPrimaryWallet);
+      bind(workerDisconnectWallet, "click", disconnectWorkerPrimaryWallet);
+      bind(workerRefreshBridgeReadiness, "click", async () => {
+        loadWorkerBridgeState();
+        if (workerBridgeState.wallet.connected && workerBridgeState.wallet.address) {
+          await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address,"manual-refresh");
+          await checkWorkerHubCreditBalance();
+        }
+        renderWorkerBridgeReadiness();
+        workerRefreshFaucetRuntimeStatus();
+        await workerRefreshHubCreditBridgeConfig({force:true});
+      });
+      if(workerFaucetAmount){workerFaucetAmount.value=WORKER_FAUCET_AMOUNT_CREDITS;workerFaucetAmount.disabled=true;}
+      bind(workerRequestFaucet,"click",requestWorkerFaucetCredits);
+      bind(workerHubCreditForm,"submit",fundWorkerHubCredit);
+      bind(workerHubCreditAmount,"input",()=>{workerSaveHubCreditInputs();renderWorkerBridgeReadiness();});
+      bind(workerCheckHubCreditBalance,"click",checkWorkerHubCreditBalance);
+      bind(workerFundHubCredit,"click",fundWorkerHubCredit);
+      bind(workerAddRecoveryEmailForm,"submit",event=>{
+        event.preventDefault();
+        addWorkerRecoveryMethod("email",workerRecoveryEmailInput?.value||"");
+        if(workerRecoveryEmailInput)workerRecoveryEmailInput.value="";
+      });
+      bind(workerAddRecoveryWalletForm,"submit",event=>{
+        event.preventDefault();
+        addWorkerRecoveryMethod("wallet",workerRecoveryWalletInput?.value||"");
+        if(workerRecoveryWalletInput)workerRecoveryWalletInput.value="";
+      });
+      bind(workerRecoveryEmailList,"click",event=>{
+        const node=event.target instanceof Element ? event.target.closest("[data-worker-remove-recovery-email]"):null;
+        if(node)removeWorkerRecoveryMethod("email",node.getAttribute("data-worker-remove-recovery-email")||"");
+      });
+      bind(workerRecoveryWalletList,"click",event=>{
+        const node=event.target instanceof Element ? event.target.closest("[data-worker-remove-recovery-wallet]"):null;
+        if(node)removeWorkerRecoveryMethod("wallet",node.getAttribute("data-worker-remove-recovery-wallet")||"");
+      });
+      bind(workerConfirmRecovery,"click",confirmWorkerRecoverySetup);
+      bind(workerRequestMultisessionKey,"click",requestWorkerMultisessionKey);
+      bind(workerRevokeMultisessionKey,"click",revokeWorkerMultisessionKey);
+    }
+
+    function workerWalletOnlyContextVerified() {
+      const choice=window.__mcelWorker?.app?.readState("state:selected-network")||"none";
+      const current=workerNetworkKey(workerNetworkSession.selected_network);
+      return ["mainnet","testnet","test","dev"].includes(current)
+        && current===choice && workerNetworkSession.connection_status==="connected";
+    }
+
+    function updateWorkerWalletSessionContext() {
+      const label=document.getElementById("worker-wallet-session-context");
+      if(!label)return;
+      const network=workerNetworkKey(workerNetworkSession.selected_network);
+      const name=workerNetworkDisplayName(network);
+      const status=String(workerNetworkSession.connection_status||"disconnected");
+      const choice=window.__mcelWorker?.app?.readState("state:selected-network")||"none";
+      const ready=workerWalletOnlyContextVerified();
+      label.textContent="Hub Choice: "+choice+". Active Worker session: "+name+" ("+status+"). "+
+        (ready?"Marketplace wallet context verified.":"Wallet signing and funding require a matching connected marketplace Worker session.");
+      if(ready) {
+        workerRenderWalletControls();
+        const active=workerActiveMultisessionKey();
+        if(workerRequestMultisessionKey)workerRequestMultisessionKey.disabled=workerMultisessionInFlight||!!active;
+        if(workerRevokeMultisessionKey)workerRevokeMultisessionKey.disabled=workerMultisessionInFlight||!active;
+        if(workerRequestFaucet)workerRequestFaucet.disabled=!workerComputeFaucetReadiness().ready;
+        if(workerFundHubCredit)workerFundHubCredit.disabled=!workerComputeHubCreditFundingReadiness().ready;
+      }
+      for(const id of ["worker-connect-wallet","worker-request-multisession-key", "worker-revoke-multisession-key","worker-request-faucet","worker-fund-hub-credit"]){
+        const button=document.getElementById(id);
+        if(button && !ready)button.disabled=true;
+      }
+    }
+
+    function refreshWorkerWalletOnly() {
+      return workerLoadNetworkSessionFromBackend().then(() => {
+        updateWorkerWalletSessionContext();
+        renderWorkerBridgeReadiness();
       });
     }
 

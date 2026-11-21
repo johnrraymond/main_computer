@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .authenticator_store import LocalIdentityStore, IdentityStoreError
 
-_ROUTE = re.compile(r'^/v1/local/authenticator/identities/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(/sign)?$')
+_ROUTE = re.compile(r'^/v1/local/authenticator/identities/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(/sign|/software-otp)?$')
 
 
 class LocalAuthenticatorAPI:
@@ -48,10 +48,20 @@ class LocalAuthenticatorAPI:
                 device_id, sign_suffix = matched.groups()
                 if method == 'GET' and not sign_suffix:
                     return 200, store.get(device_id)
-                if method == 'POST' and sign_suffix:
+                if method == 'POST' and sign_suffix == '/sign':
                     if set(body) != {'challenge'}:
                         raise IdentityStoreError('INVALID_REQUEST')
                     return 200, store.sign(device_id, body['challenge'])
+                if method == 'POST' and sign_suffix == '/software-otp':
+                    if set(body) != {'action','service_fingerprint'}:
+                        raise IdentityStoreError('INVALID_REQUEST')
+                    if body['action'] == 'activate':
+                        result=store.activate_software_otp(device_id,body['service_fingerprint'])
+                        result.pop('pairing_secret',None)  # never reveal setup seed through HTTP
+                        return 201, result
+                    if body['action'] == 'current':
+                        return 200, store.current_software_otp(device_id,body['service_fingerprint'])
+                    raise IdentityStoreError('INVALID_REQUEST')
             return 404, {'error': {'code': 'ENDPOINT_NOT_FOUND'}}
         except IdentityStoreError as exc:
             return exc.status, {'error': {'code': exc.code}}

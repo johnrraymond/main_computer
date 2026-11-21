@@ -44,6 +44,9 @@ _SEH_ADMIN_EXACT = frozenset({
     ('GET', '/v1/auth/session'), ('POST', '/v1/auth/logout'),
     ('GET', '/v1/enrollment/admins'), ('POST', '/v1/enrollment/requests'),
     ('POST', '/v1/enrollment/approvals'),
+    ('GET', '/v1/admin/authenticator/software-otp'),
+    ('POST', '/v1/admin/authenticator/software-otp'),
+    ('POST', '/v1/admin/authenticator/software-otp/revoke'),
     ('GET', '/v1/admin/devices'), ('GET', '/v1/admin/devices/trash'),
     ('POST', '/v1/admin/devices/trash/empty'),
     ('GET', '/v1/admin/enrollments'),
@@ -209,7 +212,8 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         authority = self.server.authority
         if method == 'GET' and path == '/v1/org/identity':
             self._respond(200, {'schema': 'main-computer.slh-org-identity.v1',
-                                'tls_sha256': self.server.fingerprint})
+                                'tls_sha256': self.server.fingerprint,
+                                'service_fingerprint': authority.service_fingerprint()})
             return
         if method == 'GET' and path == '/v1/org/status' and restricted:
             # The Remote SEH handshake needs readiness, not host, scheduler,
