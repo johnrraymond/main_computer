@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from main_computer.mcel_dsl_compiler import compile_dsl_application
+from main_computer.mcel_applications_registry import attach_inert_presentation
 from main_computer.mcel_knowledge.semantic_composition import (
     P3_POLICY, synthesize_composition, verify_composition,
 )
@@ -50,13 +51,17 @@ def compile_worker_application(repo: Path = ROOT) -> tuple[dict, dict]:
     capabilities = {cap["id"]: cap for cap in ir.get("capabilities", [])}
     if set(capabilities) != {"capability:worker-observer", "capability:worker-hub-choice-control",
                              "capability:worker-destination-control", "capability:worker-policy-control",
-                             "capability:worker-slh-target-control"}:
+                             "capability:worker-slh-target-control", "capability:worker-marketplace-observer",
+                             "capability:worker-marketplace-settings", "capability:worker-marketplace-actions"}:
         raise WorkerSemanticApplicationError("Worker migration may not invent external authorities")
     risks = {"capability:worker-observer": "external-read",
              "capability:worker-hub-choice-control": "consequential",
              "capability:worker-destination-control": "consequential",
              "capability:worker-policy-control": "consequential",
-             "capability:worker-slh-target-control": "consequential"}
+             "capability:worker-slh-target-control": "consequential",
+             "capability:worker-marketplace-observer": "external-read",
+             "capability:worker-marketplace-settings": "consequential",
+             "capability:worker-marketplace-actions": "consequential"}
     if any(capabilities[key].get("risk") != risk for key, risk in risks.items()):
         raise WorkerSemanticApplicationError("Worker capability risk mismatch")
     try:
@@ -91,18 +96,20 @@ def render_worker_page(repo: Path = ROOT) -> str:
     if "</style" in wallet_css.lower():
         raise WorkerSemanticApplicationError("Unsafe Wallet compatibility stylesheet")
     scripts = "".join(_script(repo, path) for path in ASSETS)
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Worker · MCEL candidate</title><style>{css}
 {wallet_css}
-.mcel-worker-wallet-compat {{ display:none; color:var(--mcel-fg, #e4edf2); --ink:var(--mcel-fg,#e4edf2); --gold:#f6c75b; --muted:#b6c6d0; --sky:#8bcff2; width:100%; min-width:0; }}
+.mcel-worker-wallet-compat {{ display:none; color:var(--mcel-theme-ink,#e4edf2); --ink:var(--mcel-theme-ink,#e4edf2); --gold:var(--mcel-theme-accent,#f6c75b); --muted:var(--mcel-theme-muted,#b6c6d0); --sky:var(--mcel-theme-accent-2,#8bcff2); width:100%; min-width:0; }}
 .mcel-worker-wallet-compat.is-visible {{display:block}}
 .mcel-worker-wallet-compat .worker-wallet-inner {{display:grid;gap:12px;min-width:0;}}
 .mcel-worker-wallet-compat .worker-wallet-card-grid {{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:10px}}
 .mcel-worker-wallet-compat .worker-wallet-compat-header {{padding:8px 0;}}
 .mcel-worker-wallet-compat .worker-wallet-compat-header p {{margin:4px 0;font-size:12px;}}
 .mcel-worker-wallet-compat .worker-wallet-session {{color:var(--mcel-fg,#e4edf2)}}
-.mcel-worker-wallet-compat .worker-card {{min-width:0;max-width:100%;}}
+.mcel-worker-wallet-compat .worker-card {{min-width:0;max-width:100%;background:var(--mcel-theme-card,#090b08);border-color:var(--mcel-theme-line,#355062);color:var(--mcel-theme-ink,#e4edf2);border-radius:var(--mcel-form-panel-radius,10px);}}
+.mcel-worker-wallet-compat .worker-card :is(input,select,button) {{border-radius:var(--mcel-form-control-radius,8px);}}
+.mcel-worker-wallet-compat .worker-card h4 {{color:var(--mcel-theme-accent,#f6c75b);}}
 .mcel-worker-wallet-compat input,.mcel-worker-wallet-compat button {{max-width:100%;}}
 .mcel-worker-wallet-compat #worker-save-status {{display:block;white-space:normal;overflow-wrap:anywhere;padding:9px;}}
 .mcel-worker-hub-selection-status {{display:block;font-size:12px;padding:5px 0;overflow-wrap:anywhere;}}
@@ -173,6 +180,79 @@ try{{
     try{{ await app.execute("intent:choose-network",{{key:network}}); showWallet(); }}
     finally{{ syncingObserved=false; }}
   }};
+  const identityPreferenceKey="mcel.worker.selected-identity.v1";
+  // Identity inventory observation is independent of Hub observation and
+  // must recover from startup races. Never silently turn a failed read into
+  // an empty/verified identity directory.
+  const refreshIdentities=async()=>{{
+    const statusRead=await app.execute("intent:refresh-identity-status");
+    if(statusRead?.disposition!=="completed")
+      throw Error("identity-status-"+String(statusRead?.reason||statusRead?.disposition||"unverified"));
+    const inventory=await app.execute("intent:refresh-identities");
+    if(inventory?.disposition!=="completed")
+      throw Error("identity-inventory-"+String(inventory?.reason||inventory?.disposition||"unverified"));
+    const observed=port.lastIdentityObservation();
+    const records=app.readState("state:local-identities");
+    const state=app.readState("state:local-identity-status");
+    if(observed?.state!=="AVAILABLE" || state?.state!=="AVAILABLE" ||
+       !Array.isArray(records) || records.length!==observed.identities.length)
+      throw Error("identity-state-not-published");
+    const selected=app.readState("state:selected-local-identity")||"";
+    const valid=observed.identities.some(row=>row.deviceId===selected);
+    if(selected && !valid){{
+      await app.execute("intent:choose-identity",{{key:""}});
+    }}
+    if(!selected){{
+      let remembered="";
+      try{{remembered=window.sessionStorage?.getItem(identityPreferenceKey)||"";}}catch(_){{}}
+      if(remembered && observed.identities.some(row=>row.deviceId===remembered))
+        await app.execute("intent:choose-identity",{{key:remembered}});
+    }}
+    return true;
+  }};
+  const identityRetryDelays=[250,750,1500,3000,6000,12000];
+  let identityRetryCount=0;
+  let identityRetryTimer=null;
+  let identityReadInFlight=false;
+  let identityReady=false;
+  const identityDiagnostic=(reason)=>{{
+    const category=String(reason?.message||reason||"unknown")
+      .replace(/[^A-Za-z0-9:_-]/g,"_").slice(0,160);
+    console.warn("MCEL_WORKER_IDENTITY_REFRESH",{{attempt:identityRetryCount+1,category}});
+    status.dataset.error="true";
+    status.textContent="Worker identity inventory unavailable ("+category+"); retrying. No authentication assumed.";
+  }};
+  const attemptIdentityRefresh=async()=>{{
+    if(identityReadInFlight)return;
+    identityReadInFlight=true;
+    if(identityRetryTimer!==null){{clearTimeout(identityRetryTimer);identityRetryTimer=null;}}
+    try{{
+      await refreshIdentities();
+      identityReady=true;
+      identityRetryCount=0;
+      status.dataset.error="false";
+      status.textContent="Worker identities observed. SLH/SEH access is not authenticated.";
+    }}catch(error){{
+      identityReady=false;
+      identityDiagnostic(error);
+      if(identityRetryCount<identityRetryDelays.length){{
+        const delay=identityRetryDelays[identityRetryCount++];
+        identityRetryTimer=setTimeout(()=>{{identityRetryTimer=null;void attemptIdentityRefresh();}},delay);
+      }}else{{
+        status.textContent="Worker identity refresh exhausted retries. Reopen the Worker or return to this tab to retry.";
+      }}
+    }}finally{{identityReadInFlight=false;}}
+  }};
+  const resumeIdentityRefresh=()=>{{
+    if(!identityReady && !identityReadInFlight && identityRetryTimer===null){{
+      identityRetryCount=0;
+      void attemptIdentityRefresh();
+    }}
+  }};
+  window.addEventListener("pageshow",resumeIdentityRefresh);
+  document.addEventListener("visibilitychange",()=>{{
+    if(document.visibilityState==="visible")resumeIdentityRefresh();
+  }});
   const refresh=async({{resetSelection=false}}={{}})=>{{
     let complete=true;
     const revisionAtStart=localChoiceRevision;
@@ -190,12 +270,19 @@ try{{
     if(view==="worker"){{
       const runtime=await app.execute("intent:refresh-runtime");
       const policy=await app.execute("intent:refresh-policy");
-      complete=complete && runtime?.disposition==="completed" && policy?.disposition==="completed";
+      const seller=await app.execute("intent:refresh-seller");
+      const marketplace=await app.execute("intent:refresh-marketplace-status");
+      complete=complete && runtime?.disposition==="completed" && policy?.disposition==="completed" &&
+        seller?.disposition==="completed" && marketplace?.disposition==="completed";
+    }} else if(view==="requester"){{
+      const requester=await app.execute("intent:refresh-requester");
+      complete=complete && requester?.disposition==="completed";
     }} else if(view==="hub-choice" && app.readState("state:selected-network")==="slh"){{
       const slh=await app.execute("intent:refresh-slh-target");
       complete=complete && slh?.disposition==="completed";
     }}
-    status.textContent=complete
+    // A Hub observation must not erase an identity-startup failure diagnostic.
+    if(status.dataset.error!=="true") status.textContent=complete
       ? "Worker context observed. Hub selection is not authentication or enrollment."
       : "Worker observation incomplete; no authorization assumed.";
   }};
@@ -247,6 +334,24 @@ try{{
     }}
   }};
   document.getElementById("mcel-workbench").addEventListener("mcel:collection-selection",event=>{{
+    if(event.detail?.intentId==="intent:choose-identity"){{
+      const deviceId=app.readState("state:selected-local-identity")||"";
+      const known=port.lastIdentityObservation();
+      if(deviceId && (known?.state!=="AVAILABLE" ||
+          !known.identities.some(row=>row.deviceId===deviceId))){{
+        void app.execute("intent:choose-identity",{{key:""}});
+        status.textContent="Identity selection refused: local identity not verified.";
+        return;
+      }}
+      try{{
+        if(deviceId)window.sessionStorage?.setItem(identityPreferenceKey,deviceId);
+        else window.sessionStorage?.removeItem(identityPreferenceKey);
+      }}catch(_){{}}
+      status.textContent=deviceId
+        ? "Identity selected. SLH/SEH access still requires a separate enrollment and authentication."
+        : "No Worker identity selected; access remains unverified.";
+      return;
+    }}
     if(event.detail?.intentId!=="intent:choose-network")return;
     showWallet(); // project the selected Hub immediately, before persistence settles
     if(syncingObserved)return;
@@ -261,16 +366,47 @@ try{{
     const intent=event.detail?.intentId;
     if(intent==="intent:switch-view") showWallet();
     if(intent==="intent:select-destination") void refreshWorkerWalletOnly().catch(()=>{{}});
-    if(["intent:switch-view","intent:save-policy","intent:save-slh-target"].includes(intent))
+    if(["intent:switch-view","intent:save-policy","intent:save-slh-target",
+        "intent:save-seller","intent:save-requester","intent:register-offer",
+        "intent:work-now","intent:finish-work-now","intent:pause-selling",
+        "intent:retry-hub","intent:disconnect"].includes(intent))
       refreshFromSelection();
     // The ring form binds its verified capability result directly to destination.
   }});
-  void refresh({{resetSelection:true}}).catch(()=>{{
-    status.textContent="Worker observation unavailable; no Worker mutation attempted.";
-  }});
+  // Live Work Now countdown and supervisor evidence are observed through the
+  // existing read-only MCEL capability. Refresh a running countdown every five
+  // seconds, otherwise sample the Worker once per thirty seconds. A hidden
+  // frame never polls. This neither starts work nor changes marketplace state.
+  let monitorTick=0;
+  let marketplaceReadBusy=false;
+  const monitorMarketplace=()=>{{
+    if(document.visibilityState==="hidden"||
+       app.readState("state:worker-view")!=="worker"||marketplaceReadBusy)return;
+    const current=app.readState("state:marketplace-status");
+    if(current?.workNowState!=="ACTIVE" && ++monitorTick%6!==0)return;
+    marketplaceReadBusy=true;
+    void app.execute("intent:refresh-marketplace-status")
+      .catch(()=>{{}}).finally(()=>{{marketplaceReadBusy=false;}});
+  }};
+  const marketplaceMonitor=setInterval(monitorMarketplace,5000);
+  window.addEventListener("pagehide",()=>clearInterval(marketplaceMonitor),{{once:true}});
+  // Run after the semantic mount has committed its DOM and state bindings.
+  // Do not chain the Hub observation behind identity initialization: either
+  // reader can fail independently and both retain their own recovery path.
+  const launchInitialReads=()=>{{
+    void attemptIdentityRefresh();
+    void refresh({{resetSelection:true}}).catch(()=>{{
+      status.textContent="Worker observation unavailable; no Worker mutation attempted.";
+    }});
+  }};
+  if(typeof window.requestAnimationFrame==="function")
+    window.requestAnimationFrame(()=>window.requestAnimationFrame(launchInitialReads));
+  else setTimeout(launchInitialReads,0);
 }}catch(error){{
   status.textContent="Worker MCEL mount refused: "+String(error?.message||error);
   document.body.dataset.mcelWorkerPhase="refused";
 }}
 }})();</script>
 </body></html>'''
+    return attach_inert_presentation(page, repo, 'worker', 'mcel-workbench',
+                                     promoted=True, semantic_candidate=True)

@@ -53,9 +53,24 @@ def test_missing_ui_coverage_or_disposable_effect_cannot_be_dressed_up_as_pass(m
 def test_all_curated_lanes_can_certify_only_when_every_case_passes():
     synthetic = {item.id: {"status": "PASS"} for item in full.CASES}
     result = full.report_for(synthetic, mode="isolated")
-    assert result["counts"] == {"PASS": 32, "FAIL": 0, "NOT_TESTED": 0, "UNVERIFIED": 0}
+    assert result["counts"] == {"PASS": 33, "FAIL": 0, "NOT_TESTED": 0, "UNVERIFIED": 0}
     assert result["status"] == "PASS_ISOLATED_FUNCTIONAL"
     assert result["live"]["status"] == "NOT_RUN"  # No live production claim from mock evidence.
+
+
+def test_software_authenticator_requires_three_executed_behavioral_lanes(monkeypatch):
+    evidence = {item.id: {"status": "PASS"} for item in full.CASES}
+    assert full.report_for(evidence, mode="isolated")["status"] == "PASS_ISOLATED_FUNCTIONAL"
+    for lane, test_id in (("ui", "software-authenticator-reveal-ui"),
+                          ("adapter", "software-authenticator-reveal-adapter"),
+                          ("isolated-effect", "software-authenticator-reveal-isolated")):
+        partial = dict(evidence)
+        partial.pop(test_id)
+        outcome = full.report_for(partial, mode="isolated")
+        row = next(x for x in outcome["intents"] if x["intent"] == "intent:software-authenticator-reveal")
+        assert row["status"] == "NOT_TESTED"
+        assert row["lanes"][lane]["status"] == "NOT_TESTED"
+        assert outcome["status"] == "INCOMPLETE"
 
 
 def test_failed_behavioral_case_cannot_be_overridden_by_another_pass():

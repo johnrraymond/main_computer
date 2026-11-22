@@ -56,6 +56,9 @@ CASES: tuple[Case, ...] = (
     case("identity-ui", "ui", "tests/test_mcel_slh_persistent_identity_target_context.py::test_selected_identity_survives_target_change_and_remote_pin_stays_distinct", "choose-identity select-target", "selected identity and target persist independently"),
     case("identity-discovery", "adapter", "tests/test_mcel_slh_identity_oracle_v4b.py::test_v4b_real_local_identity_api_recovers_default_without_new_keys", "refresh-identities refresh-identity-status", "local identity discovery preserves canonical keys"),
     case("identity-rail-ui", "ui", "tests/test_mcel_slh_identity_oracle_v4b.py::test_v4b_browser_reflects_selected_identity_without_exposing_login", "refresh-identities refresh-identity-status", "browser projects verified identity inventory"),
+    case("software-authenticator-reveal-ui", "ui", "tests/test_mcel_slh_identity_passkey_disclosure.py::test_current_identity_passkey_is_inline_counted_and_not_in_activity", "software-authenticator-reveal", "identity-rail expansion executes semantic reveal, shows current code, copies it, and erases it on close without activity leakage"),
+    case("software-authenticator-reveal-adapter", "adapter", "tests/test_mcel_slh_software_authenticator_ui.py::test_otp_route_enforces_local_same_origin_and_no_store", "software-authenticator-reveal", "actual local POST adapter refuses forged and nonlocal requests and forbids caching"),
+    case("software-authenticator-reveal-isolated", "isolated-effect", "tests/test_mcel_slh_software_authenticator_ui.py::test_pair_current_revoke_no_secret_or_code_in_mcel_receipts", "software-authenticator-reveal", "disposable local identity and pinned administrator backend gate current code availability and keep secrets out of receipts"),
     case("lifecycle-setup-route-adapter", "adapter", "tests/test_mcel_slh_setup_action_adapter_contract.py::test_declared_lifecycle_actions_require_same_origin_and_dispatch_correctly", "configure-and-enable-organization toggle-organization toggle-organization-enablement", "actual same-origin setup route dispatches declared lifecycle actions and rejects forged requests"),
     case("lifecycle-observation-ui", "ui", "tests/test_mcel_slh_lifecycle_disable_enablement_oracle.py::test_configure_footer_actions_follow_authoritative_lifecycle", "refresh-lifecycle", "lifecycle observation updates controls"),
     case("lifecycle-configuration-ui", "ui", "tests/test_mcel_slh_configure_enable_disable.py::test_lifecycle_browser_explicit_transitions_preserve_selected_identity", "configure-and-enable-organization toggle-organization-enablement", "form submission and enabled/disabled state reconcile"),
@@ -101,6 +104,10 @@ CASES: tuple[Case, ...] = (
 # A passing form-presence test is insufficient: each previously missing facet
 # requires its particular execution test, even if other UI tests are green.
 MANDATORY_CASES = {
+    # A static semantic declaration alone is not evidence of actual passkey disclosure.
+    ("intent:software-authenticator-reveal", "ui"): {"software-authenticator-reveal-ui"},
+    ("intent:software-authenticator-reveal", "adapter"): {"software-authenticator-reveal-adapter"},
+    ("intent:software-authenticator-reveal", "isolated-effect"): {"software-authenticator-reveal-isolated"},
     ("intent:connect-remote-seh", "isolated-effect"): {"remote-seh-session-real-isolated"},
     ("intent:disconnect-remote-seh", "ui"): {"remote-seh-disconnect-ui-execution"},
     ("intent:disconnect-remote-seh", "isolated-effect"): {"remote-seh-session-real-isolated"},
@@ -235,7 +242,7 @@ def run_shadow_lane(*, destination: Path, timeout: int) -> dict:
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     # Shadow checks are the incumbent reference oracle. Their historical
     # invariants cannot be used to certify intentional signal suppression.
-    env.pop("MCEL_SIGNAL_SCHEDULER_SLH", None)
+    env["MCEL_SIGNAL_SCHEDULER_SLH"] = "incumbent"
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace") as log:
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
@@ -521,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         output["shadow"] = {"status":"NOT_REQUESTED", "coverageStatus":"NOT_RUN",
                             "selectiveSchedulingCertified":False}
-    output["signalIntegration"] = {"status":"NOT_REQUESTED","productionDefault":"INCUMBENT"}
+    output["signalIntegration"] = {"status":"NOT_REQUESTED","productionDefault":"CERTIFIED_SLH_AND_TASK_MANAGER"}
     if args.signals == "integrated" and args.mode == "isolated" and not args.case:
         path = target.with_name(target.stem + "-signals.json")
         path.unlink(missing_ok=True)

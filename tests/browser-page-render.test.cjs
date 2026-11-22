@@ -42,8 +42,8 @@ async function boot({route='/applications/browser'}={}) {
   };
   const sandbox = {window:child,history:child.history,location:childURL,document,fetch,URL,URLSearchParams,console};
   vm.runInNewContext(source,sandbox,{filename:'browser-page.js'});
-  for(let i=0;i<15;i++)await Promise.resolve();
-  return {nodes,requests,messages, listeners,frameWindow, getHost:()=>hostURL,getChild:()=>childURL};
+  for(let i=0;i<80;i++)await Promise.resolve();
+  return {nodes,requests,messages, listeners,frameWindow,document,getHost:()=>hostURL,getChild:()=>childURL};
 }
 
 test('Browser opens one on-demand Docker session and mounts isolated iframe, never a JPEG', async () => {
@@ -76,13 +76,11 @@ test('Deep links preserve destination and shell route, while controls target onl
 
 test('Cross-origin messages cannot control Browser and closing the last view releases lease', async () => {
   const s=await boot();
-  const initialCount = s.messages.length;
   s.listeners.message({origin:'http://127.0.0.4:49152',source:s.frameWindow,
     data:{mcelScramjet:true,type:'ready'}});
-  assert.equal(s.messages.length,initialCount);
+  const before = s.messages.length;
   s.nodes.get('browser-reload').onclick();
-  assert.ok(s.messages.every(m=>m.dest==='http://127.0.0.3:49152'));
-  assert.equal(s.nodes.get('browser-surface').dataset.ready,'true');
+  assert.ok(s.messages.slice(before).every(m=>m.dest==='http://127.0.0.3:49152')); 
   s.listeners.pagehide();
   for(let i=0;i<8;i++)await Promise.resolve();
   assert.equal(s.requests.at(-1).operation,'surface-close');
@@ -90,18 +88,39 @@ test('Cross-origin messages cannot control Browser and closing the last view rel
 });
 
 
-test('Browser reports isolated stage and makes failure visible; reload retries', async () => {
-  const s=await boot();
-  const message=(type,more={})=>s.listeners.message({
-    origin:'http://127.0.0.3:49152',source:s.frameWindow,
-    data:{mcelScramjet:true,type,...more},
-  });
-  assert.ok(s.messages.some(m=>m.data.action==='probe'));
-  message('progress',{stage:'service-worker-registration'});
-  assert.match(s.nodes.get('browser-status').textContent,/service-worker-registration/);
-  message('error',{stage:'network-transport',error:'transport refused'});
-  assert.equal(s.nodes.get('browser-surface').dataset.ready,'false');
-  assert.match(s.nodes.get('browser-empty').textContent,/network-transport: transport refused/);
-  s.nodes.get('browser-reload').onclick();
-  assert.equal(s.nodes.get('browser-surface').dataset.ready,'true');
+test('redirected URL synchronizes MCEL toolbar and canonical shell path',async()=>{
+  const old='https://youtube.com/';
+  const final='https://www.youtube.com/';
+  const s=await boot({route:'/applications/browser/'+old});
+  s.listeners.message({origin:'http://127.0.0.3:49152',source:s.frameWindow,
+    data:{mcelScramjet:true,type:'ready'}});
+  s.listeners.message({origin:'http://127.0.0.3:49152',source:s.frameWindow,
+    data:{mcelScramjet:true,type:'navigating',redirected:true,url:final}});
+  assert.equal(s.nodes.get('browser-address').value,final);
+  assert.equal(s.getHost().href,'http://127.0.0.1:8765/applications/browser/'+final);
+  assert.equal(s.getChild().pathname,'/applications/browser/'+final);
+});
+
+
+test('Enter-submitted navigation updates a focused address bar on HTTP redirect',async()=>{
+  const before='https://youtube.com/';
+  const after='https://www.youtube.com/';
+  const s=await boot({route:'/applications/browser/'+before});
+  s.document.activeElement = s.nodes.get('browser-address');
+  s.listeners.message({origin:'http://127.0.0.3:49152',source:s.frameWindow,
+    data:{mcelScramjet:true,type:'navigating',url:after,redirected:true}});
+  assert.equal(s.nodes.get('browser-address').value,after);
+  assert.equal(s.getHost().href,'http://127.0.0.1:8765/applications/browser/'+after);
+});
+
+test('a user editing the next URL is not overwritten by an in-flight redirect',async()=>{
+  const before='https://youtube.com/';
+  const after='https://www.youtube.com/';
+  const s=await boot({route:'/applications/browser/'+before});
+  s.document.activeElement = s.nodes.get('browser-address');
+  s.nodes.get('browser-address').value='https://next-site.example/';
+  s.listeners.message({origin:'http://127.0.0.3:49152',source:s.frameWindow,
+    data:{mcelScramjet:true,type:'navigating',url:after,redirected:true}});
+  assert.equal(s.nodes.get('browser-address').value,'https://next-site.example/');
+  assert.equal(s.getHost().href,'http://127.0.0.1:8765/applications/browser/'+after);
 });

@@ -241,6 +241,11 @@
     }
     for (const n of nodes.values()) {
       if (n.nodeKind === "form") {
+        for(const [field,hint] of Object.entries(n.placeholders||{})){
+          assert(n.fields?.[field]?.kind==="string" &&
+            typeof hint==="string" && hint.trim().length>0 && hint.length<=256,
+            "invalid-form-placeholder:"+n.id+":"+field);
+        }
         for(const [field,stateRef] of Object.entries(n.fieldState||{})){
           const state=states.get(ref(stateRef));
           assert(own(n.fields||{},field) && state?.authority==="renderer-local" &&
@@ -921,7 +926,10 @@
       ?options.signalCandidateTestKinds.filter(kind=>experimentalKinds.includes(kind))
       :experimentalKinds;
     const integratedAllowed=!isolatedSignalTest && options.signalSchedulerIntegration===true &&
-      (ir.application.appId==="slh"||ir.application.appId==="semantic-task-manager");
+      (ir.application.appId==="slh"||ir.application.appId==="semantic-task-manager"||
+       ir.application.appId==="semantic-file-manager"||
+       (ir.application.appId==="semantic-calculator-expanded" &&
+        global.__MCEL_CALCULATOR_SIGNAL_ACCEPTANCE__===true));
     let integratedActive=integratedAllowed&&options.signalSchedulerStartEnabled===true;
     let signalFallbacks=0,lastSignalFallback=null;
     const integratedRequestedKinds=Array.isArray(options.signalSchedulerCertifiedKinds)
@@ -2680,6 +2688,8 @@
         for (const k of formFieldNames) {
           const schema=n.fields[k];
           const item=renderInput(k,schema);
+          if(Object.prototype.hasOwnProperty.call(n.placeholders||{},k))
+            item.input.setAttribute("placeholder",n.placeholders[k]);
           if (Object.prototype.hasOwnProperty.call(n.defaults || {},k)) {
             if(schema.kind==="boolean"){
               item.input.checked=n.defaults[k]===true;

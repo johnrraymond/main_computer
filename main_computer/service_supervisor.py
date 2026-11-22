@@ -319,6 +319,10 @@ CHILD_SPECS: tuple[ChildSpec, ...] = (
         start_priority=0,
         stop_priority=1000,
     ),
+    # Staged HTTPS bootstrap: one supervised auth service, started before the
+    # legacy Viewport. The legacy ingress remains untouched until cutover.
+    ChildSpec(name="auth", module="main_computer.auth_bootstrap_service",
+              args=("run",), start_priority=5, stop_priority=10),
     ChildSpec(name="app", module="main_computer.app_control", args=("run",)),
     ChildSpec(name="executor", module="main_computer.executor_service", args=("boot", "--watch")),
     ChildSpec(name="applications", module="main_computer.applications_service", args=("boot", "--watch")),
@@ -365,6 +369,11 @@ class ServiceSupervisor:
         # --no-slh-hub must not start SLH through the resident supervisor;
         # --no-dev-hub never affects this setting.
         self.supervise_slh = os.environ.get("MAIN_COMPUTER_SUPERVISE_SLH", "1") != "0"
+        # Windows ./start enables authentication bootstrap by default. Linux
+        # source tests may opt in explicitly with an isolated state directory.
+        # The Windows ./start launcher explicitly sets this policy. Keeping
+        # direct Python/test harness invocation opt-in preserves their contracts.
+        self.supervise_auth = os.environ.get("MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED", "0") == "1"
 
         self.runtime_dir = self.root / "runtime" / "service_supervisor"
         self.state_path = self.runtime_dir / "state.json"
@@ -473,7 +482,8 @@ class ServiceSupervisor:
                 enumerate(CHILD_SPECS),
                 key=lambda item: (item[1].start_priority, item[0]),
             )
-            if self.supervise_slh or spec.name != "slh"
+            if (self.supervise_slh or spec.name != "slh")
+            and (self.supervise_auth or spec.name != "auth")
         ]
 
     def _stop_ordered_children(self) -> list[tuple[str, ChildRuntime]]:
@@ -668,6 +678,9 @@ class ServiceSupervisor:
         if target in {"blockchain", "chain", "anvil", "ethereum"}:
             return self._restart_child("blockchain", source=source, parameters=parameters)
 
+        if target in {"auth", "authentication", "auth-bootstrap"}:
+            return self._restart_child("auth", source=source, parameters=parameters)
+
         if target in {"slh", "secure-local-hub", "slh-gateway"}:
             return self._restart_child("slh", source=source, parameters=parameters)
 
@@ -694,6 +707,7 @@ class ServiceSupervisor:
                 "applications",
                 "blockchain",
                 "slh",
+                "auth",
                 "main-log",
                 "all",
                 "onlyoffice",
@@ -706,6 +720,9 @@ class ServiceSupervisor:
         }
 
     def _restart_child(self, name: str, *, source: str = "", parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+        if name == "auth" and not self.supervise_auth:
+            return {"ok": False, "state": "disabled-by-startup-policy",
+                    "message": "auth bootstrap supervision disabled", "child": name}
         if name == "slh" and not self.supervise_slh:
             return {
                 "ok": False,
@@ -1133,6 +1150,7 @@ class ServiceSupervisor:
             },
             "children": child_states,
             "slh_supervised": self.supervise_slh,
+            "auth_supervised": self.supervise_auth,
             "control": control_status(self.root),
         }
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -1442,7 +1460,7 @@ def render_service_supervisor_summary(root: Path | str) -> str:
 
     children = supervisor.get("children") if isinstance(supervisor.get("children"), dict) else {}
     if children:
-        for child_name in (MAIN_LOG_CHILD_NAME, "app", "executor", "applications", "blockchain", "slh"):
+        for child_name in (MAIN_LOG_CHILD_NAME, "auth", "app", "executor", "applications", "blockchain", "slh"):
             child = children.get(child_name)
             if not isinstance(child, dict):
                 continue
@@ -1503,6 +1521,8 @@ def render_service_supervisor_summary(root: Path | str) -> str:
             f"  supervisor={root_path / 'runtime' / 'service_supervisor' / 'state.json'}",
             f"  main_log={root_path / 'runtime' / 'main_log' / 'state.json'}",
             f"  main_log_pid={root_path / '.main_computer_main_log_service.pid'}",
+            f"  auth_pid={root_path / '.main_computer_auth_bootstrap.pid'}",
+            "  auth_login=https://mc.test:8875/auth/login",
             f"  app_pid={root_path / '.main_computer_viewport.pid'}",
             f"  heartbeat_pid={root_path / '.main_computer_heartbeat.pid'}",
             f"  executor={root_path / 'runtime' / 'executor_service' / 'state.json'}",
@@ -1546,6 +1566,7 @@ def print_service_supervisor_summary(
             and bool(children.get("applications"))
             and bool(children.get("blockchain"))
             and (not state.get("slh_supervised", True) or bool(children.get("slh")))
+            and (not state.get("auth_supervised", False) or bool(children.get("auth")))
         )
         if state.get("ok") and has_children:
             break

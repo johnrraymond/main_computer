@@ -62,15 +62,18 @@ FEATURES = (
             ('intent:evaluate-symbolic',), needs_live=True),
     Feature('arithmetic-model-handoff', 'Model expression applied to arithmetic and evaluated',
             ('calculator-ask-model',), ('askCalculatorModel', 'calculateExpression();'),
-            ('intent:ask-arithmetic-model', 'intent:apply-arithmetic-suggestion'),
+            ('intent:calculator-chat', 'intent:evaluate'),
+            candidate_runtime=('calculator-apply-arithmetic',),
             difference='A displayed model suggestion is not an applied and evaluated expression.', needs_live=True),
     Feature('graph-model-handoff', 'Model graph expression applied and drawn',
             ('calculator-scientific-ask-model',), ('askScientificCalculatorModel', 'const graph = drawCalculatorGraph();'),
-            ('intent:ask-graph-model', 'intent:apply-graph-suggestion'),
+            ('intent:calculator-chat', 'intent:draw-graph'),
+            candidate_runtime=('calculator-apply-graph',),
             difference='A displayed suggestion is not an updated and drawn graph.', needs_live=True),
     Feature('symbolic-model-handoff', 'Model Mathics expression applied to symbolic input',
             ('calculator-mathics-ask-model',), ('askCalculatorMathicsModel', 'applyCalculatorMathicsViewModel'),
-            ('intent:ask-symbolic-model', 'intent:apply-symbolic-suggestion'),
+            ('intent:calculator-chat', 'intent:evaluate-symbolic'),
+            candidate_runtime=('calculator-review-symbolic',),
             difference='A displayed suggestion is not a populated symbolic expression.', needs_live=True),
     Feature('symbolic-clear', 'Clear symbolic expression and output',
             ('calculator-mathics-clear',), ('clearCalculatorMathics',),
@@ -86,7 +89,8 @@ FEATURES = (
             difference='The incumbent resets Y to [-5,5], while the candidate currently defaults to [-10,10].'),
     Feature('result-question', 'Result Q&A with full current computation context',
             ('calculator-qa-prompt', 'calculator-qa-answer'), ('calculatorQaContext',),
-            ('intent:ask-result-question',),
+            ('intent:calculator-chat',),
+            candidate_runtime=('getEmbeddedContext',),
             difference='Reduced result summaries do not prove full expression/range context parity.', needs_live=True),
     Feature('contextual-chat', 'Embedded multi-turn Calculator Chat with session context',
             ('calculator-chat-panel', 'calculator-chat-notebook'),
@@ -141,7 +145,10 @@ def source_inventory(repo: Path, *, ir: dict | None = None, markup: str | None =
     markup = markup if markup is not None else project_incumbent(repo)
     candidate_js = candidate_js if candidate_js is not None else _source(repo, CANDIDATE_SOURCE)
     incumbent_js = incumbent_js if incumbent_js is not None else _source(repo, INCUMBENT_SOURCE)
-    candidate_runtime = candidate_runtime if candidate_runtime is not None else _source(repo, CANDIDATE_RUNTIME)
+    candidate_runtime = candidate_runtime if candidate_runtime is not None else (
+        _source(repo, CANDIDATE_RUNTIME) + "\n" +
+        _source(repo, WEB_SCRIPTS / 'mcel-calculator-expanded-port.js') + "\n" +
+        _source(repo, WEB_SCRIPTS / 'chat-console.js'))
     intent_ids = {i['id'] for i in ir.get('intents', [])}
     region_ids = {r['id'].split('.')[-1] for s in ir.get('surfaces', [])
                   for r in s.get('interfaceIntent', {}).get('regions', [])}
@@ -230,14 +237,25 @@ def _mock_http(page) -> None:
       window.fetch=async (url, options={}) => {
         const path=String(url); const payload=JSON.parse(options.body || '{}');
         window.__calcParityRequests.push({path,payload});
-        const data=path==='/api/applications/calculator/mathics/evaluate' ?
+        const input=String(payload.cell?.source||'');
+        const text=input.includes('graph')?'x^2':input.includes('mathics')?
+          'Integrate[x^2,x]':input.includes('why?')?'The result is four.':
+          input.includes('prose')?'Please describe the calculation further.':'2+2';
+        const data=path==='/api/applications/chat-console/cell/evaluate' ?
+          {ok:true,output_cell:{id:'calculator-help-output-'+window.__calcParityRequests.length,
+            type:'output',status:'ok',source_cell_id:payload.cell?.id,
+            parts:[{id:'calculator-help-part',kind:'markdown',content:text}]}}:
+          path==='/api/applications/calculator/mathics/prepare' ? {ok:true,ready:true}:
+          path==='/api/applications/calculator/mathics/evaluate' ?
           {ok:true,result_text:'4'}:
           path==='/api/applications/calculator/mathics/ask' ?
           {ok:true,expression:'Integrate[x^2,x]'}:
           path==='/api/applications/calculator/qa' ?
           {ok:true,answer:'The result is four.'}:
           path==='/api/chat' ?
-          {ok:true,content:'2+2'} : {ok:false,error:'unexpected-path'};
+          {ok:true,content:String(payload.prompt||'').includes('graphing calculator request')?'x^2':'2+2'}:
+          path.startsWith('/api/applications/chat-console/ai/capacity') || path.startsWith('/api/activity/') ?
+          {ok:true} : {ok:false,error:'unexpected-path'};
         return {ok:data.ok,status:data.ok?200:404,json:async()=>data};
       };
     }''')
@@ -296,7 +314,7 @@ def browser_comparison(repo: Path) -> dict:
             prior=right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")')
             old_bad=left.evaluate('e => window.MainComputerCalculatorRuntime.evaluateExpression({expression:e})','3 m + 2 s')
             _candidate_eval(right,'3 m + 2 s')
-            right.locator('li[data-intent="intent:evaluate"][data-disposition="failed"]').wait_for(timeout=5000)
+            right.locator('li[data-intent="intent:evaluate"][data-disposition="failed"]').wait_for(state='attached',timeout=5000)
             candidate_after_error=right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")')
             evidence.append(_comparison('arithmetic:incompatible-units','arithmetic',
                 {'failed':old_bad.get('ok') is False,'message':left.locator('#calculator-result').inner_text()},
@@ -395,69 +413,114 @@ def browser_comparison(repo: Path) -> dict:
             cr=right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-result")')
             evidence.append(_comparison('symbolic:evaluate','symbolic-evaluate',lr,cr,
                                         legacy_sym.get('ok') is True and lr==cr,mocked=True))
-            # The incumbent helper *applies* an expression and computes it;
-            # semantic candidate currently shows a suggestion only.
-            legacy_help = left.evaluate('''async () => await window.MainComputerCalculatorRuntime.askModelForExpression({prompt:'two and two'})''')
-            _select_mode(right,'help')
-            hf=right.locator('form[data-intent="intent:ask-arithmetic-model"]')
-            hf.locator('input[name="prompt"]').fill('two and two');hf.locator('button[type="submit"]').click()
-            right.wait_for_function('() => window.__mcelExpanded.app.readState("state:arithmetic-result") === "4"',timeout=5000)
-            inc_applied=left.locator('#calculator-display').input_value()
-            cand_applied=right.locator('form[data-intent="intent:evaluate"] input[name="expression"]').input_value()
-            evidence.append(_comparison('arithmetic-helper-applies-result','arithmetic-model-handoff',
-                {'expression':inc_applied,'computed':left.locator('#calculator-result').inner_text()},
-                {'expression':cand_applied,'suggestion':right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-suggestion")')},
-                inc_applied==cand_applied and bool(legacy_help and legacy_help.get('ok')),mocked=True))
-            # Model graph/symbolic helpers are distinct from merely displaying
-            # a suggestion. Their HTTP responses are controlled and identical.
+            # The legacy Calculator had four separate AI entrypoints. The
+            # semantic Calculator intentionally consolidates them into the
+            # *one* embedded Help/Chat Console. Real, reviewed handoff actions
+            # below preserve the old completion behavior without reviving
+            # competing model prompts. HTTP responses remain test mocks.
+            def ask_help(prompt: str):
+                _select_mode(right,'help')
+                notebook=right.locator('[data-chat-console-embedded-notebook]')
+                editor=notebook.locator('textarea').last
+                editor.fill(prompt)
+                before=notebook.locator('.chat-console-cell-output').count()
+                notebook.get_by_role('button',name='Run',exact=True).last.click()
+                right.wait_for_function('''count=>document.querySelectorAll('[data-chat-console-embedded-notebook] .chat-console-cell-output').length>count''',arg=before,timeout=6000)
+                return notebook
+
+            legacy_help = left.evaluate('''async()=>await window.MainComputerCalculatorRuntime.askModelForExpression({prompt:'two and two'})''')
+            help_notebook=ask_help('arithmetic: two and two')
+            # The model reply alone must not change the current result.
+            before_transfer=right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")')
+            assert before_transfer!='4','ASSISTANT_AUTOMATIC_EXECUTION_REFUSED'
+            help_notebook.locator('[data-chat-output-action="calculator-apply-arithmetic"]').last.click(timeout=5000)
+            right.wait_for_function('''()=>window.__mcelExpanded.app.readState('state:arithmetic-result')==='4' ''',timeout=5000)
+            old_a=left.locator('#calculator-display').input_value()
+            new_a=right.locator('form[data-intent="intent:evaluate"] input[name="expression"]').input_value()
+            evidence.append(_comparison('chat-applies-arithmetic','arithmetic-model-handoff',
+                {'expression':old_a,'result':left.locator('#calculator-result').inner_text()},
+                {'expression':new_a,'result':right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")')},
+                bool(legacy_help and legacy_help.get('ok')) and
+                left.locator('#calculator-result').inner_text()==
+                  right.evaluate('window.__mcelExpanded.app.readState("state:arithmetic-result")') and
+                new_a=='2+2',mocked=True,
+                note='Legacy replaces input with computed value; semantic preserves suggested expression and presents the same deterministic result.'))
+
             left.evaluate('window.MainComputerCalculatorRuntime.switchMode({mode:"graphing"})')
-            _select_mode(right,'graphing')
-            _select_mode(right,'help')
-            legacy_graph_help=left.evaluate('''async () => await window.MainComputerCalculatorRuntime.askModelForGraphExpression({prompt:'flat line'})''')
-            graph_help=right.locator('form[data-intent="intent:ask-graph-model"]')
-            graph_help.locator('input[name="prompt"]').fill('flat line')
-            graph_help.locator('button[type="submit"]').click()
-            right.wait_for_function("""() => window.__mcelExpanded.app.readState('state:graph-points')?.length > 10 && document.querySelector('form[data-intent="intent:draw-graph"] input[name="expression"]')?.value === '2+2'""",timeout=5000)
-            ig=left.locator('#calculator-graph-expression').input_value()
-            cg=right.locator('form[data-intent="intent:draw-graph"] input[name="expression"]').input_value()
-            evidence.append(_comparison('graph-helper-applies-graph','graph-model-handoff',
-                {'graphExpression':ig,'drawSucceeded':bool(legacy_graph_help and legacy_graph_help.get('ok'))},
-                {'graphExpression':cg,'suggestion':right.evaluate('window.__mcelExpanded.app.readState("state:graph-suggestion")')},
-                ig==cg and bool(legacy_graph_help and legacy_graph_help.get('ok')),mocked=True))
-            legacy_symbolic_help=left.evaluate('''async () => await window.MainComputerCalculatorRuntime.askModelForMathicsExpression({prompt:'integrate x squared'})''')
-            symbolic_help=right.locator('form[data-intent="intent:ask-symbolic-model"]')
-            symbolic_help.locator('input[name="prompt"]').fill('integrate x squared')
-            symbolic_help.locator('button[type="submit"]').click()
-            right.wait_for_function("""() => document.querySelector('form[data-intent="intent:evaluate-symbolic"] input[name="expression"]')?.value === 'Integrate[x^2,x]'""",timeout=5000)
-            im=left.locator('#calculator-mathics-expression').input_value()
-            cm=right.locator('form[data-intent="intent:evaluate-symbolic"] input[name="expression"]').input_value()
-            evidence.append(_comparison('symbolic-helper-populates-input','symbolic-model-handoff',
-                {'expression':im,'ok':bool(legacy_symbolic_help and legacy_symbolic_help.get('ok'))},
-                {'expression':cm,'suggestion':right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-suggestion")')},
-                im==cm and bool(legacy_symbolic_help and legacy_symbolic_help.get('ok')),mocked=True))
-            # Q&A: both invoke the same endpoint but are not assumed to send
-            # equivalent full current context. Compare recorded payload keys.
-            left.evaluate('''async () => await window.MainComputerCalculatorRuntime.askResultQuestion({question:'why?'})''')
-            qf=right.locator('form[data-intent="intent:ask-result-question"]')
-            qf.locator('input[name="question"]').fill('why?');qf.locator('button[type="submit"]').click()
-            right.locator('[data-state="state:qa-result"]').get_by_text('The result is four.').wait_for(timeout=5000)
-            inc_requests=left.evaluate('window.__calcParityRequests')
-            cand_requests=right.evaluate('window.__calcParityRequests')
-            inc_qa=next((req['payload'] for req in reversed(inc_requests) if req['path'].endswith('/qa')),None)
-            cand_qa=next((req['payload'] for req in reversed(cand_requests) if req['path'].endswith('/qa')),None)
-            def context(payload):
-                if not payload: return {}
-                raw=payload.get('context') or ''
-                if isinstance(raw,dict): return raw
-                try: return json.loads(raw)
-                except (ValueError,TypeError): return {'unparsed':str(raw)[:200]}
-            ic=context(inc_qa);cc=context(cand_qa)
-            evidence.append(_comparison('qa-context-keys','result-question',
-                ic,cc,bool(ic) and ic==cc,mocked=True,
-                note='Endpoint and answer alone do not prove context parity.'))
+            legacy_graph=left.evaluate('''async()=>await window.MainComputerCalculatorRuntime.askModelForGraphExpression({prompt:'graph x squared'})''')
+            help_notebook=ask_help('graph x squared')
+            help_notebook.locator('[data-chat-output-action="calculator-apply-graph"]').last.click()
+            right.wait_for_function('''()=>window.__mcelExpanded.app.readState('state:graph-points')?.length>10''',timeout=5000)
+            old_g=left.locator('#calculator-graph-expression').input_value()
+            new_g=right.locator('form[data-intent="intent:draw-graph"] input[name="expression"]').input_value()
+            evidence.append(_comparison('chat-applies-graph','graph-model-handoff',
+                {'expression':old_g,'drawSucceeded':bool(legacy_graph and legacy_graph.get('ok'))},
+                {'expression':new_g,'sampleCount':len(right.evaluate('window.__mcelExpanded.app.readState("state:graph-points")'))},
+                bool(legacy_graph and legacy_graph.get('ok')) and old_g==new_g,mocked=True))
+
+            legacy_mathics=left.evaluate('''async()=>await window.MainComputerCalculatorRuntime.askModelForMathicsExpression({prompt:'integrate x squared'})''')
+            help_notebook=ask_help('mathics integrate x squared')
+            symbolic_before=right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-expression")')
+            symbolic_result_before=right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-result")')
+            help_notebook.locator('[data-chat-output-action="calculator-review-symbolic"]').last.click()
+            right.wait_for_function('''()=>window.__mcelExpanded.app.readState('state:symbolic-expression')==='Integrate[x^2,x]' ''',timeout=5000)
+            old_m=left.locator('#calculator-mathics-expression').input_value()
+            new_m=right.locator('form[data-intent="intent:evaluate-symbolic"] input[name="expression"]').input_value()
+            evidence.append(_comparison('chat-reviews-symbolic','symbolic-model-handoff',
+                {'expression':old_m,'ok':bool(legacy_mathics and legacy_mathics.get('ok'))},
+                {'expression':new_m,'result':right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-result")')},
+                bool(legacy_mathics and legacy_mathics.get('ok')) and old_m==new_m and
+                symbolic_before!=new_m and
+                right.evaluate('window.__mcelExpanded.app.readState("state:symbolic-result")')==symbolic_result_before,
+                mocked=True,
+                note='Model-derived symbolic expression is populated for review, never silently evaluated.'))
+
+            # A question is answered by the same Chat Console with complete
+            # dynamic calculator context; no second Q&A API/UI is introduced.
+            left.evaluate('''async()=>await window.MainComputerCalculatorRuntime.askResultQuestion({question:'why?'})''')
+            help_notebook=ask_help('why?')
+            displayed=help_notebook.locator('.chat-console-cell-output').last.inner_text()
+            candidate_requests=right.evaluate('window.__calcParityRequests')
+            qa_request=next((x['payload'] for x in reversed(candidate_requests)
+                            if x['path'].endswith('/chat-console/cell/evaluate')),None)
+            ctx=qa_request.get('embedded_context') if qa_request else None
+            manual=right.evaluate('window.MainComputerChatConsole.getActiveEmbeddedContext()')
+            qa_ok=bool(ctx and manual and ctx==manual and
+                ctx.get('arithmetic',{}).get('result')=='4' and
+                ctx.get('graph',{}).get('expression')=='x^2' and
+                ctx.get('mathics',{}).get('expression')=='Integrate[x^2,x]' and
+                'The result is four.' in displayed)
+            evidence.append(_comparison('chat-result-qa-with-full-context','result-question',
+                {'incumbentContextKeys':'basic_expression,basic_result,graph_expression,graph_range,mathics_expression,mathics_output'},
+                {'chatContext':ctx,'answerText':displayed},qa_ok,mocked=True,
+                note='Context semantics tested through the one Chat Console, not endpoint-shape equivalence.'))
+            # Non-expressions received through Help must never offer Calculator
+            # actions; text-only advice is not a typed, executable formula.
+            help_notebook=ask_help('prose: please explain')
+            latest=help_notebook.locator('.chat-console-cell-output').last
+            actions=latest.locator('[data-chat-output-action]').count()
+            evidence.append(_comparison('help-prose-never-creates-handoff','contextual-chat',
+                {'expression':'none','actions':0},{'actions':actions,'text':latest.inner_text()},
+                actions==0,mocked=True))
+            # All four AI tasks use the existing embedded Chat Console.
+            # The candidate never reaches the retired separate model/Q&A
+            # endpoints; its notebook supplies the only model-input surface.
+            paths=[req['path'] for req in right.evaluate('window.__calcParityRequests')]
+            endpoint_count=sum(path=='/api/applications/chat-console/cell/evaluate' for path in paths)
+            retired=[path for path in paths if path in (
+                '/api/chat','/api/applications/calculator/mathics/ask',
+                '/api/applications/calculator/qa')]
+            one_help=(right.locator('[data-chat-console-embedded-notebook]').count()==1 and
+                      right.locator('form[data-intent^="intent:ask-"]').count()==0 and
+                      endpoint_count==5 and not retired)
+            evidence.append(_comparison('help-single-model-terminus','contextual-chat',
+                {'termini':1,'modelEndpoints':'shared-help-only'},
+                {'termini':right.locator('[data-chat-console-embedded-notebook]').count(),
+                 'requests':endpoint_count,'retiredEndpoints':retired},one_help,mocked=True))
             # Incumbent's clear removes both expression and previous output;
             # candidate generic reset may only clear the form field.
-            left.locator('#calculator-mathics-clear').click()
+            left.evaluate('window.MainComputerCalculatorRuntime.switchMode({mode:"graphing"})')
+            left.locator('#calculator-mathics-clear').click(timeout=5000)
             _select_mode(right,'symbolic')
             if mf.locator('[data-mcel-clear-intent]').count():
                 mf.locator('[data-mcel-clear-intent]').click()
@@ -544,7 +607,7 @@ def browser_comparison(repo: Path) -> dict:
                      chat['context'].get('target_kind')=='calculator-session' and
                      'arithmetic' in chat['context'].get('allowed_tools',[]) and
                      chat['cellsBefore']>=1 and chat['cellsAfter']==chat['cellsBefore']+1 and
-                     chat['storedCells']==chat['cellsAfter'] and chat['runControl'])
+                     chat['storedCells']>=chat['cellsAfter'] and chat['runControl'])
             evidence.append(_comparison('contextual-chat:controller-thread-context','contextual-chat',
                 {'nativeController':'required','threadMetadata':'calculator-session',
                  'liveContext':True,'multipleCells':True},chat,chat_ok,

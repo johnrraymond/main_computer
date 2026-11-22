@@ -4155,6 +4155,7 @@ class ViewportEnergyRoutesMixin:
             "revoked_at": str(key.get("revoked_at") or key.get("revokedAt") or ""),
             "wallet_address": wallet_address,
             "chain_id": str(key.get("chain_id") or key.get("chainId") or ""),
+            "cluster_id": str(key.get("cluster_id") or key.get("clusterId") or ""),
             "request_id": str(key.get("request_id") or key.get("requestId") or ""),
             "origin": str(key.get("origin") or ""),
             "hub_url": self._clean_hub_url(str(key.get("hub_url") or hub_url), allow_empty=True),
@@ -4178,7 +4179,7 @@ class ViewportEnergyRoutesMixin:
             or ""
         )
         record = self._normalize_worker_multisession_key_record(
-            key,
+            {**key, "cluster_id": key.get("cluster_id") or result.get("cluster_id") or ""},
             hub_url=hub_url,
             fallback_wallet_address=str(fallback_wallet),
         )
@@ -4200,6 +4201,9 @@ class ViewportEnergyRoutesMixin:
             "inactive_on_hub_at": str(record.get("inactive_on_hub_at") or ""),
             "wallet_address": str(record.get("wallet_address") or ""),
             "chain_id": str(record.get("chain_id") or ""),
+            # Logical Hub cluster ID is public metadata, not the MSK bearer ID.
+            # Revocation must sign this exact identity after a local-cache reload.
+            "cluster_id": str(record.get("cluster_id") or ""),
             "hub_url": str(record.get("hub_url") or ""),
             "server_side_key": True,
             "key_redacted": not reveal_key,
@@ -5155,15 +5159,20 @@ class ViewportEnergyRoutesMixin:
             requested_chain = str(body.get("chain_id") or "").strip()
             if requested_chain and requested_chain != chain_id:
                 raise ValueError("Offer chain does not match the selected Worker network.")
-            key_id = str(body.get("active_multisession_key_id") or body.get("multisession_key_id") or "").strip()
-            if not key_id:
-                raise ValueError("An active Hub-scoped multi-session key is required to register an offer.")
+            # The browser receives a key id only when an MSK is first issued.
+            # Subsequent cache loads deliberately redact this bearer credential.
+            # Resolve an omitted id from the private, Hub/wallet-scoped cache;
+            # an explicitly supplied id must still match that active record.
+            requested_key_id = str(body.get("active_multisession_key_id") or body.get("multisession_key_id") or "").strip()
             matched_authorization = self._worker_multisession_authorization_for_wallet(
                 hub_url=destination.hub_url, wallet_address=wallet,
-                chain_id=chain_id, requested_key_id=key_id,
+                chain_id=chain_id, requested_key_id=requested_key_id,
             )
             if not self._worker_offer_chain_matches(matched_authorization.get("chain_id"), chain_id):
                 raise ValueError("Worker multi-session key is for a different chain.")
+            key_id = str(matched_authorization.get("key_id") or "").strip()
+            if not key_id:
+                raise ValueError("No active saved multi-session key was found for this wallet and Hub.")
             intent = {"network": destination.network, "hub_url": destination.hub_url,
                       "chain_id": chain_id, "requested_ring": ring,
                       "wallet_address": wallet, "active_multisession_key_id": key_id,

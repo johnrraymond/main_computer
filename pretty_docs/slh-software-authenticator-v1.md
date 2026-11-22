@@ -5,8 +5,10 @@
 Preserve the existing LMS-held P-256 identity, private signing key, ordinary
 challenge/response, local root authorization, and existing enrollment-token
 approval. Add a **distinct software OTP authenticator** for administrators
-that can authorize a pending Worker/Requester enrollment on a different machine.
-The identity is **not** the OTP and the OTP is **not** the P-256 private key.
+for administrator-side authorization of pending Worker/Requester enrollment.
+The requesting device submits only its own access request; it does not collect
+an administrator identity, passkey, or approval credential. The identity is
+**not** the OTP and the OTP is **not** the P-256 private key.
 
 ## Implemented protocol
 
@@ -26,9 +28,11 @@ The identity is **not** the OTP and the OTP is **not** the P-256 private key.
   the pairing secret or the P-256 key. This is a temporary operator interface
   until the MCEL SLH page gets a sensitive ephemeral show/hide control.
 - The existing `/v1/enrollment/approvals` endpoint accepts
-  `{request_id, admin_identity, one_time_code}` as a **third** approval method.
+  `{request_id, admin_identity, one_time_code}` as a **third, backend** approval method.
   The `admin_identity` must match the request's `selected_admin`, must have an
   active administrator device, and must have an enrolled software factor.
+  This API capability does not authorize putting administrator fields or OTP
+  redemption controls into the requester's enrollment dialog.
 - The code is accepted at most once per identity/SLH 30-second step, using an
   atomic SQLite write that also approves the enrollment. Failed attempts are
   persisted; five incorrect numeric codes lock that administrator factor for
@@ -110,15 +114,21 @@ manually reconcile the local factor; never silently generate new authority.
 - MCEL SLH **Show Current One-Time Code / Hide / Copy** sensitive-content
   dialog, with bounded TTL and no persistence into MCEL application state,
   activity logs, localStorage or snapshots.
-- Worker → Hub Choice → SLH/SEH → **Request Enrollment** dialog and expandable
-  **For Admin Use Only** section accepting administrator identity and current
-  code; the Worker must have a device-local identity and a pending enrollment
-  request before submitting.
+- Worker → Hub Choice → SLH/SEH → **Request Enrollment** dialog: choose
+  the SLH/SEH and requesting local identity, submit a signed request, and show
+  Pending / Approved / Rejected status. No administrator identity, passkey,
+  one-time code, `For Admin Use Only` expander, or approval/redeem action
+  belongs in this user-facing dialog.
+- Administrator approval or rejection occurs separately in the SLH
+  administrator enrollment queue, under that administrator's own authorized
+  identity/session. An administrator-side OTP proof, if supported, stays
+  entirely on the administrator side of that workflow.
 - Native target discovery, SEH cross-network browser adapter admission, and
   live user/administrator acceptance in the running installation.
 
-Do not claim the native Worker is enrolled merely because a code is entered.
-Verification and audited approval belong to ORG-SLH, not the browser.
+Do not claim the native Worker is enrolled merely because a request is
+submitted. Verification and audited approval belong to ORG-SLH, not the
+requesting browser.
 
 ## Known security and deployment limits
 

@@ -37,6 +37,12 @@
     let walletOperationSerial = 0;
     let walletProviderEventsBound = false;
 
+    // Native MCEL Worker embeds wallet.js without the standalone Wallet page's
+    // ethers UMD loader.  The Worker connection already imports this exact ESM
+    // module; importing the same URL here reuses the browser module cache.
+    // Never require the Dev-chain Wallet app to initialize before Testnet MSK signing.
+    const WALLET_WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
+    let walletMskEthersModulePromise = null;
     const WALLET_DEV_CHAIN_ID_DECIMAL = 42424242;
     const WALLET_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WALLET_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
@@ -195,6 +201,26 @@
     function walletBrowserProvider() {
       const ethersLib = walletGetEthers();
       return new ethersLib.BrowserProvider(walletInjectedProvider());
+    }
+
+    async function walletMultisessionBrowserProvider() {
+      // Preserve the proven standalone Wallet global loader if it is present.
+      if (walletEthersReady()) return walletBrowserProvider();
+      // The native Worker uses workerGetEthers() to import this same module for
+      // Connect Wallet, but intentionally does not assign it to window.ethers.
+      if (!walletMskEthersModulePromise) {
+        walletMskEthersModulePromise = import(WALLET_WORKER_ETHERS_ESM_URL).catch((error) => {
+          // A transient CDN failure must not permanently poison subsequent tries.
+          walletMskEthersModulePromise = null;
+          throw error;
+        });
+      }
+      const ethersModule = await walletMskEthersModulePromise;
+      if (!ethersModule || typeof ethersModule.BrowserProvider !== "function") {
+        walletMskEthersModulePromise = null;
+        throw new Error("MSK signer cannot load ethers BrowserProvider.");
+      }
+      return new ethersModule.BrowserProvider(walletInjectedProvider(), "any");
     }
 
     function walletFormatAddress(value) {
@@ -1138,7 +1164,7 @@
       };
     }
 
-    async function requestMultiSessionKeySignature({requestContext = {}, origin = ""} = {}) {
+    async function walletSignMultiSessionKeyMessage({requestContext = {}, origin = "", revocationKeyId = ""} = {}) {
       // Worker selects the Hub network.  Signing must NEVER switch it to the
       // standalone Wallet application's default Dev network.
       const requestedChainId = walletNormalizeChainIdHex(requestContext.chain_id || requestContext.chainId);
@@ -1146,7 +1172,7 @@
         throw new Error("Multi-session key signing requires an explicit valid Worker chain_id.");
       }
 
-      const provider = walletBrowserProvider();
+      const provider = await walletMultisessionBrowserProvider();
       const signer = await provider.getSigner();
       const walletAddress = await signer.getAddress();
       const normalizedChainId = walletNormalizeChainIdHex(await walletNetworkChainId(provider));
@@ -1167,6 +1193,14 @@
         chainId: requestedChainId,
         origin
       });
+      if (revocationKeyId) {
+        // The Hub binds revocation to this exact key and recovered wallet.
+        // The key identifier is never logged or persisted in browser storage.
+        message.action = "revoke_multisession_key";
+        message.key_id = revocationKeyId;
+        message.cluster_id = String(requestContext.cluster_id || requestContext.clusterId || "");
+        message.request_id = `revoke:${revocationKeyId}`;
+      }
       const messageText = JSON.stringify(message);
       const signature = await signer.signMessage(messageText);
 
@@ -1190,12 +1224,25 @@
       };
     }
 
+    function requestMultiSessionKeySignature({requestContext = {}, origin = ""} = {}) {
+      return walletSignMultiSessionKeyMessage({requestContext, origin});
+    }
+
+    function revokeMultiSessionKeySignature({requestContext = {}, origin = "", keyId = ""} = {}) {
+      if (typeof keyId !== "string" || !/^msk[-_][A-Za-z0-9_-]{1,128}$/.test(keyId)) {
+        throw new Error("Wallet-signed revocation requires an exact issued multi-session key ID.");
+      }
+      return walletSignMultiSessionKeyMessage({requestContext, origin, revocationKeyId: keyId});
+    }
+
     window.MainComputerWalletLibrary = {
       ...(window.MainComputerWalletLibrary || {}),
       requestMultiSessionKeySignature,
+      revokeMultiSessionKeySignature,
       buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage,
       constants: {
         devChainIdHex: WALLET_DEV_CHAIN_ID_HEX,
+        mskEthersLoader: "worker-esm-or-global-v1",
         purpose: "request_multi_session_key",
         kind: "main_computer_multisession_key_request"
       }
@@ -1282,6 +1329,7 @@
         hydrateDnsControlProfiles: hydrateWalletDnsControlProfiles,
         requestDnsControlSave: requestWalletDnsControlSave,
         requestMultiSessionKeySignature,
+        revokeMultiSessionKeySignature,
         buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage
       };
     }

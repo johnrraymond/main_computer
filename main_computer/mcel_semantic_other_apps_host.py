@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from main_computer.mcel_applications_registry import attach_inert_presentation, CONTROLLER_JS
+from main_computer.mcel_signal_scheduler_rollout import start_certified
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_knowledge.semantic_template_pipeline import plan_semantic_workspace, verify_semantic_workspace_plan
 from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
@@ -163,7 +164,7 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
  const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined,
     navigationContextLabel:"{context_label}",navigationRoutes:{navigation_routes_payload},
     signalSchedulerIntegration:{str(name == "task-manager").lower()},
-    signalSchedulerStartEnabled:{str(name == "task-manager" and os.environ.get("MCEL_SIGNAL_SCHEDULER_TASK_MANAGER") == "certified").lower()}}});
+    signalSchedulerStartEnabled:{str(name == "task-manager" and promoted and start_certified("semantic-task-manager")).lower()}}});
  window.__mcelWorkbench=Object.freeze({{app,appId:ir.application.appId}});
  const initialView={initial_view_payload};
  if(initialView && initialView!=="server-processes") app.execute("intent:switch-view",{{choice:initialView}}).catch(e=>{{status.dataset.error="true";status.textContent="Initial view refused: "+String(e?.message||e);}});

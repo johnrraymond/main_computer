@@ -18,7 +18,12 @@ function trustedWorkerPage(page) {
   try {
     const url = new URL(page.url())
     return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) &&
-      url.port === '8765' && url.pathname === '/applications/worker'
+      url.port === '8765' && (url.pathname === '/applications/worker' || (
+        process.env.MC_WORKER_LIVE_GATE &&
+        process.env.MC_WORKER_TEST_URL === 'http://127.0.0.1:8765/applications/mcel-semantic-worker' &&
+        url.hostname === '127.0.0.1' &&
+        url.pathname === '/applications/mcel-semantic-worker'
+      ))
   } catch { return false }
 }
 
@@ -102,7 +107,9 @@ async function safeConnectControlState(page) {
       const text = String(button?.textContent || '').trim()
       return {
         present: Boolean(button),
-        handlerBound: button?.dataset?.workerBound === 'true',
+        // The legacy Worker uses workerBound; native MCEL wallet-only uses workerWalletBound.
+        handlerBound: button?.dataset?.workerBound === 'true' ||
+          button?.dataset?.workerWalletBound === 'true',
         disabled: Boolean(button?.disabled),
         busy: button?.getAttribute('aria-busy') === 'true',
         state: /^Connect Wallet$/i.test(text) ? 'idle'
@@ -123,7 +130,8 @@ export async function startWorkerWalletConnection(page, {
   try {
     await page.waitForFunction(allowConnected => {
       const button = document.querySelector('#worker-connect-wallet')
-      if (button?.dataset?.workerBound !== 'true') return false
+      if (button?.dataset?.workerBound !== 'true' &&
+          button?.dataset?.workerWalletBound !== 'true') return false
       // A reused profile can already be connected. The application's
       // Connected button is intentionally disabled: do not click it again.
       if (allowConnected && String(button.textContent || '').trim() === 'Connected') return true

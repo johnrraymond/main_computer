@@ -16,6 +16,7 @@ The fixture Wisp allowlist is intentionally SMOKE ONLY. A pass is not a security
 from __future__ import annotations
 
 import argparse
+import hashlib
 from contextlib import suppress
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +46,51 @@ FIXTURE_URL = 'http://127.0.0.9:48081/'  # INSIDE the container
 TRAP_URL = 'http://127.0.0.10:48082/mcel-secret'  # denied by Wisp allowlist
 LABEL = 'mcel.browser.scramjet.smoke'
 CONTAINER = 'mcel-browser-scramjet-smoke'
+
+# EVERY executable/config input to the Docker image participates in its tag.
+# A pinned upstream Git commit alone does not identify MCEL's patched image.
+DOCKER_ASSETS = (
+    'Dockerfile', 'patch-server.mjs', 'fixture.mjs', 'entrypoint.mjs',
+    'mcel-surface.html', 'mcel-surface.js', 'mcel-sw-probe.js',
+    'mcel-scramjet-db.js', 'patch-stock-init.mjs',
+)
+REQUIRED_RUNTIME_ASSETS = (
+    ('mcel-surface.html', 150),
+    ('mcel-surface.js', 5000),
+    ('mcel-sw-probe.js', 80),
+    ('mcel-scramjet-db.js', 1200),
+    ('sw.js', 200),
+)
+
+
+def build_fingerprint(repo: Path) -> str:
+    """Fingerprint ALL MCEL patch inputs, so changed files force a fresh image."""
+    hasher = hashlib.sha256()
+    hasher.update(COMMIT.encode('ascii'))
+    for filename in DOCKER_ASSETS:
+        item = repo / 'docker' / 'mcel-browser-scramjet' / filename
+        if not item.is_file():
+            raise RuntimeError('Scramjet Docker build asset missing: ' + str(item))
+        hasher.update(filename.encode('utf-8') + b'\x00')
+        hasher.update(item.read_bytes())
+        hasher.update(b'\x00')
+    return hasher.hexdigest()[:16]
+
+
+def expected_image(repo: Path) -> str:
+    return IMAGE + '-c' + build_fingerprint(repo)
+
+
+def resource_preflight(url: str) -> tuple[bool, str]:
+    """Reject stale images which have a working homepage but lack MCEL assets."""
+    for asset, minimum in REQUIRED_RUNTIME_ASSETS:
+        try:
+            http, length = fetch_status(url.rstrip('/') + '/' + asset, timeout=4)
+        except Exception as exc:
+            return False, f'{asset}: {type(exc).__name__}: {exc}'
+        if http != 200 or length < minimum:
+            return False, f'{asset}: HTTP {http}, {length} bytes (expected >= {minimum})'
+    return True, 'all MCEL runtime assets present'
 
 
 def report_dir(repo: Path) -> Path:
@@ -134,8 +180,7 @@ def prepare_build_context(repo: Path, *, no_bootstrap: bool) -> Path:
             if source:
                 dest.write_bytes(source.read())
     assets = repo / 'docker' / 'mcel-browser-scramjet'
-    for name in ('Dockerfile','patch-server.mjs','fixture.mjs','entrypoint.mjs','mcel-surface.html','mcel-surface.js','mcel-sw-probe.js',
-                 'mcel-scramjet-db.js','patch-stock-init.mjs'):
+    for name in DOCKER_ASSETS:
         if not (assets / name).is_file():
             raise RuntimeError('Docker smoke assets missing: ' + str(assets / name))
         dest = context / ('Dockerfile' if name == 'Dockerfile' else 'mcel-docker/' + name)
@@ -144,14 +189,15 @@ def prepare_build_context(repo: Path, *, no_bootstrap: bool) -> Path:
     return context
 
 
-def build_image(repo: Path, *, rebuild: bool, no_bootstrap: bool) -> None:
-    if not rebuild and docker_cmd('image', 'inspect', IMAGE, check_ok=False).returncode == 0:
-        print('SCRAMJET_DOCKER image cached ' + IMAGE, flush=True)
-        return
+def build_image(repo: Path, *, rebuild: bool, no_bootstrap: bool) -> str:
+    image = expected_image(repo)
+    if not rebuild and docker_cmd('image', 'inspect', image, check_ok=False).returncode == 0:
+        print('SCRAMJET_DOCKER verified source image cached ' + image, flush=True)
+        return image
     context = prepare_build_context(repo, no_bootstrap=no_bootstrap)
     log_path = report_dir(repo) / 'build.log'
-    print('SCRAMJET_DOCKER building pinned image ' + IMAGE, flush=True)
-    cmd = ['docker', 'build', '--progress=plain', '--tag', IMAGE, '--file', str(context / 'Dockerfile'), str(context)]
+    print('SCRAMJET_DOCKER building source-fingerprinted image ' + image, flush=True)
+    cmd = ['docker', 'build', '--progress=plain', '--tag', image, '--file', str(context / 'Dockerfile'), str(context)]
     with log_path.open('w', encoding='utf-8') as stream:
         stream.write(' '.join(cmd) + '\n')
         stream.flush()
@@ -163,6 +209,7 @@ def build_image(repo: Path, *, rebuild: bool, no_bootstrap: bool) -> None:
         tail = '\n'.join(log_path.read_text(encoding='utf-8', errors='replace').splitlines()[-25:])
         raise RuntimeError(f'Docker build failed ({p.returncode}); log={log_path}\n{tail}')
     print('SCRAMJET_DOCKER image built; log=' + str(log_path), flush=True)
+    return image
 
 
 def state_path(repo: Path) -> Path:
@@ -186,10 +233,24 @@ def inspect_owned(container: str) -> bool:
 
 def status(repo: Path) -> dict | None:
     state = load_state(repo)
-    if not state or not inspect_owned(state.get('container', '')) or state.get('ip') != ISOLATED_IP:
+    if not state or state.get('ip') != ISOLATED_IP:
         return None
-    p = docker_cmd('inspect', '--format', '{{.State.Running}}', state['container'], check_ok=False)
-    if p.returncode or p.stdout.strip() != 'true':
+    desired = expected_image(repo)
+    if state.get('image') != desired or state.get('fingerprint') != build_fingerprint(repo):
+        print('SCRAMJET_DOCKER STALE sidecar image: stored=' + str(state.get('image')) +
+              ' expected=' + desired, flush=True)
+        return None
+    if not inspect_owned(state.get('container', '')):
+        return None
+    p = docker_cmd('inspect', '--format', '{{.Config.Image}}|{{.State.Running}}',
+                   state['container'], check_ok=False)
+    if p.returncode or p.stdout.strip() != desired + '|true':
+        print('SCRAMJET_DOCKER STALE running image: ' + p.stdout.strip() +
+              ' expected=' + desired + '|true', flush=True)
+        return None
+    valid, reason = resource_preflight(state.get('url', ''))
+    if not valid:
+        print('SCRAMJET_DOCKER STALE runtime resources: ' + reason, flush=True)
         return None
     return state
 
@@ -204,6 +265,8 @@ def stop(repo: Path) -> None:
 
 
 def start(repo: Path, *, rebuild: bool = False, no_bootstrap: bool = False) -> dict:
+    desired = expected_image(repo)
+    old_state = load_state(repo)
     live = status(repo)
     if live and rebuild:
         stop(repo)
@@ -220,7 +283,9 @@ def start(repo: Path, *, rebuild: bool = False, no_bootstrap: bool = False) -> d
     old = load_state(repo)
     if old and inspect_owned(old.get('container','')):
         stop(repo)
-    build_image(repo, rebuild=rebuild, no_bootstrap=no_bootstrap)
+    # A known-current tag that fails runtime preflight must be rebuilt.
+    force_build = rebuild or (old_state is not None and old_state.get('image') == desired)
+    image = build_image(repo, rebuild=force_build, no_bootstrap=no_bootstrap)
     port = port_for(ISOLATED_IP)
     name = CONTAINER + '-' + secrets.token_hex(4)
     cmd = ['run', '--detach', '--name', name, '--label', LABEL + '=true',
@@ -228,27 +293,69 @@ def start(repo: Path, *, rebuild: bool = False, no_bootstrap: bool = False) -> d
            '--cap-drop=ALL', '--security-opt=no-new-privileges',
            '--pids-limit=256', '--memory=768m', '--cpus=2', '--read-only',
            '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--user', 'node',
-           '--env', 'MCEL_SCRAMJET_SMOKE=1', IMAGE]
+           '--env', 'MCEL_SCRAMJET_SMOKE=1', image]
     p = docker_cmd(*cmd, timeout=60)
     state = {'container': name, 'container_id': p.stdout.strip(),
              'ip': ISOLATED_IP, 'port': port, 'url': f'http://{ISOLATED_IP}:{port}/',
-             'image': IMAGE, 'git_commit': COMMIT, 'fixture_url': FIXTURE_URL,
+             'image': image, 'fingerprint': build_fingerprint(repo), 'git_commit': COMMIT, 'fixture_url': FIXTURE_URL,
              'created_utc': datetime.now(timezone.utc).isoformat()}
     state_path(repo).write_text(json.dumps(state, indent=2) + '\n', encoding='utf-8')
+    # Docker --detach reports "container created", not "HTTP server ready".
+    # src/index.js starts AFTER the internal fixture starts. An unreachable
+    # endpoint or incomplete asset during this window is expected, NOT stale.
+    # Never call status(repo) during cold startup: status() deliberately
+    # requires every runtime asset to be served, which is circular here.
     deadline = time.monotonic() + 45
+    last_problem = 'HTTP server has not started'
+    last_notice = 0.0
+    attempts = 0
+    stopped = False
     while time.monotonic() < deadline:
+        attempts += 1
         try:
-            if fetch_status(state['url'], 0.8)[0] == 200:
-                print('SCRAMJET_DOCKER READY ' + state['url'], flush=True)
-                return state
-        except (OSError, URLError, TimeoutError):
-            pass
-        if not status(repo):
+            http_code, _ = fetch_status(state['url'], timeout=1.2)
+            if http_code != 200:
+                last_problem = f'Homepage returned HTTP {http_code}'
+            else:
+                valid, reason = resource_preflight(state['url'])
+                if valid:
+                    print('SCRAMJET_DOCKER READY ' + state['url'] + ' image=' + image +
+                          f' attempts={attempts}', flush=True)
+                    return state
+                last_problem = 'runtime resources not yet ready: ' + reason
+        except (OSError, URLError, TimeoutError) as exc:
+            last_problem = f'HTTP startup pending: {type(exc).__name__}: {exc}'
+        # Monitor the actual Docker process. A container that exited cannot
+        # become ready; surface its exit code and logs immediately instead of
+        # reporting a generic readiness failure.
+        probe = docker_cmd('inspect', '--format',
+                           '{{.State.Running}}|{{.State.ExitCode}}|{{.State.Error}}',
+                           name, check_ok=False, timeout=10)
+        if probe.returncode == 0 and probe.stdout.strip().startswith('false|'):
+            stopped = True
+            last_problem = 'Docker process exited: ' + probe.stdout.strip()
             break
+        now = time.monotonic()
+        if now - last_notice >= 5:
+            print('SCRAMJET_DOCKER STARTUP_PENDING ' + last_problem[:240], flush=True)
+            last_notice = now
         time.sleep(0.4)
-    tail = docker_cmd('logs', '--tail', '40', name, check_ok=False).stdout
-    stop(repo)
-    raise RuntimeError('Docker Scramjet sidecar failed health check: ' + tail[-1200:])
+    # Capture Docker logs BEFORE removing the failed container.  Docker's
+    # entrypoint may have logged MCEL_FIXTURE_READY and then crashed while
+    # importing the actual Scramjet HTTP service.
+    tail = docker_cmd('logs', '--tail', '150', name, check_ok=False).stdout
+    output = report_dir(repo) / 'startup-failure.log'
+    output.write_text('image=' + image + '\nurl=' + state['url'] +
+                      '\nreason=' + last_problem + '\nDocker logs:\n' + tail,
+                      encoding='utf-8')
+    try:
+        stop(repo)
+    except Exception as cleanup_error:
+        print('SCRAMJET_DOCKER WARNING cleanup failed: ' + str(cleanup_error)[:350],flush=True)
+    kind = 'exited' if stopped else 'not ready after 45s'
+    raise RuntimeError('Docker Scramjet sidecar ' + kind + ': ' + last_problem[:450] +
+                       '\nDocker logs:\n' + tail[-1400:] +
+                       '\nFull diagnostics: ' + str(output))
 
 
 class MockTrustedMCEL(BaseHTTPRequestHandler):
@@ -322,7 +429,7 @@ class MockTrustedMCEL(BaseHTTPRequestHandler):
 def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
     from playwright.sync_api import sync_playwright, expect
     report = {'timestamp_utc':datetime.now(timezone.utc).isoformat(), 'status':'ERROR',
-              'image': IMAGE, 'source_commit': COMMIT, 'container': sidecar['container'],
+              'image': expected_image(repo), 'source_commit': COMMIT, 'container': sidecar['container'],
               'sidecar_url': sidecar['url'], 'checks':{}, 'browser_trace':[],
               'scope':'Actual production MCEL Browser frontend with Docker session backend stub; Docker lifecycle covered independently'}
     report_file = report_dir(repo) / 'report.json'
@@ -348,6 +455,8 @@ def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
         baseline = (repo / 'main_computer' / 'mcel_backend_browser.py').read_text(encoding='utf-8')
         check(report, 'legacy-screenshot-bridge-recognized', 'screenshot' in baseline.lower())
         check(report, 'docker-running-on-demand', status(repo) is not None)
+        check(report, 'docker-image-matches-local-source', sidecar.get('image') == expected_image(repo),
+              sidecar.get('image', 'missing'))
         check(report, 'isolated-host-ip', fetch_status(sidecar['url'])[0] == 200, sidecar['url'])
         try:
             fetch_status(f'http://{TRUSTED_IP}:{sidecar["port"]}/', timeout=0.8)
@@ -420,6 +529,28 @@ def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
                     page.locator('#browser-address').fill('http://127.0.0.9:48081/next')
                     page.locator('#browser-go').click()
                     expect(remote.locator('#next-title')).to_have_text('Native navigation succeeded', timeout=20000)
+                    # A real 301 redirect must be handled by Scramjet, including
+                    # crossing to a different authority (port). MCEL must show
+                    # the FINAL website URL, not the originally requested one.
+                    page.locator('#browser-address').fill('http://127.0.0.9:48081/redirect-301')
+                    page.locator('#browser-go').click()
+                    expect(remote.locator('#redirected-title')).to_have_text('HTTP 301 target loaded', timeout=20000)
+                    check(report, 'mcel-http301-cross-origin-redirect', True)
+                    final_url = 'http://127.0.0.9:48083/redirected?source=301'
+                    expect(page.locator('#browser-address')).to_have_value(final_url, timeout=12000)
+                    check(report, 'mcel-redirect-address-bar-updated', True)
+                    expect(page).to_have_url('http://' + TRUSTED_IP + ':' + str(host.server_port) +
+                                            '/applications/browser/' + final_url, timeout=12000)
+                    check(report, 'mcel-redirect-shell-route-updated', True)
+                    # Also verify relative Location headers; final URL must
+                    # resolve against the original website, not the MCEL IP.
+                    page.locator('#browser-address').fill('http://127.0.0.9:48081/redirect-relative')
+                    page.locator('#browser-go').click()
+                    expect(remote.locator('#next-title')).to_have_text('Native navigation succeeded', timeout=20000)
+                    check(report, 'mcel-http302-relative-redirect', True)
+                    expect(page.locator('#browser-address')).to_have_value('http://127.0.0.9:48081/next', timeout=12000)
+                    check(report, 'mcel-relative-redirect-address-bar-updated', True)
+
                     check(report, 'mcel-toolbar-controls-primary-surface', True)
                     check(report, 'mcel-surface-is-not-screenshot-bridge', page.locator('#browser-surface img').count() == 0)
                     check(report, 'main-surface-fills-region', page.locator('#browser-frame').evaluate('e=>Math.abs(e.getBoundingClientRect().width-e.parentElement.getBoundingClientRect().width)<2 && Math.abs(e.getBoundingClientRect().height-e.parentElement.getBoundingClientRect().height)<2'))
@@ -463,7 +594,7 @@ def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
                 context.close()
             finally:
                 browser.close()
-        required = ('mock-trusted-cookie-present','actual-mcel-browser-layout-mounted','docker-running-on-demand','isolated-host-ip','not-bound-on-trusted-ip',
+        required = ('docker-image-matches-local-source','mock-trusted-cookie-present','actual-mcel-browser-layout-mounted','docker-running-on-demand','isolated-host-ip','not-bound-on-trusted-ip',
                     'scramjet-client-bundle','scramjet-ast-wasm','bare-mux','network-transport',
                     'service-worker-script','mcel-main-surface-resource', 'mcel-main-surface-controller',
                     'mcel-service-worker-diagnostic-resource', 'mcel-scramjet-idb-initializer',
@@ -471,7 +602,10 @@ def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
                     'mcel-main-surface-ast-fetch','production-browser-session-api-used','mcel-main-surface-css','mcel-main-surface-pointer',
                     'mcel-main-surface-keyboard','mcel-main-surface-selection',
                     'smoke-wisp-denies-nonfixture-private-endpoint', 'sidecar-origin-does-not-own-trusted-cookie',
-                    'cross-origin-mcel-frame-barrier','mcel-toolbar-controls-primary-surface',
+                    'cross-origin-mcel-frame-barrier','mcel-http301-cross-origin-redirect',
+                    'mcel-redirect-address-bar-updated','mcel-redirect-shell-route-updated','mcel-http302-relative-redirect',
+                    'mcel-relative-redirect-address-bar-updated',
+                    'mcel-toolbar-controls-primary-surface',
                     'mcel-surface-is-not-screenshot-bridge','main-surface-fills-region')
         missing = [n for n in required if report['checks'].get(n,{}).get('status') != 'PASS']
         report['status'] = 'PASS_DOCKER_MCEL_SURFACE_SMOKE_NOT_SECURITY_CERTIFIED' if not missing else 'BLOCKED'
@@ -490,6 +624,11 @@ def acceptance(repo: Path, sidecar: dict, *, headful: bool) -> int:
 
 
 def main() -> int:
+    # Version-2 is the default smoke. The pinned v1 acceptance remains at
+    # `--v1`, so failures do not erase the existing known-working test.
+    if '--v1' not in sys.argv[1:] and '--legacy-local' not in sys.argv[1:]:
+        from tools import mcel_browser_scramjet_v2_smoke
+        return mcel_browser_scramjet_v2_smoke.main()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', default='run', choices=('run','start','stop','status','build'))
     parser.add_argument('--rebuild', action='store_true', help='Rebuild the pinned Docker image')
@@ -497,7 +636,7 @@ def main() -> int:
     parser.add_argument('--keep', action='store_true', help='Keep the on-demand container running after the smoke')
     parser.add_argument('--headful', action='store_true', help='Show Edge/Chromium for interactive debugging')
     parser.add_argument('--legacy-local', action='store_true', help='Execute the previous local Node smoke instead of Docker')
-    args = parser.parse_args()
+    args = parser.parse_args([value for value in sys.argv[1:] if value != '--v1'])
     if args.legacy_local:
         from tools import mcel_browser_scramjet_smoke_local
         sys.argv = [sys.argv[0]] + (['--no-bootstrap'] if args.no_bootstrap else []) + (['--headful'] if args.headful else [])

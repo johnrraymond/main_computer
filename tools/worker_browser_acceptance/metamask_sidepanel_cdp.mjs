@@ -74,6 +74,25 @@ function qualifiedTargets(targets, extensionId) {
   })
 }
 
+// MetaMask may render its signature request inside the existing home.html
+// tab instead of opening a notification/sidepanel target. Only the MSK
+// signer probes this extra surface; the general connect/network approver
+// retains its narrower target allowlist. The MSK signer still validates the
+// complete displayed request before dispatching any click.
+function qualifiedMskTargets(targets, extensionId) {
+  const approvals = qualifiedTargets(targets, extensionId)
+  const known = new Set(approvals.map(target => target.targetId))
+  const homes = (targets || []).filter(target => {
+    if (!['page','other'].includes(target.type) || known.has(target.targetId)) return false
+    try {
+      const url = new URL(target.url)
+      return url.protocol === 'chrome-extension:' && url.host === extensionId &&
+        url.pathname === '/home.html'
+    } catch { return false }
+  })
+  return [...approvals, ...homes]
+}
+
 // CDP Target.attachToTarget(flatten:false) bridges an otherwise-unmapped
 // extension target. The deprecated nested transport remains fail-closed: if a
 // Chromium revision removes it, this harness reports an explicit refusal.
@@ -154,7 +173,12 @@ export async function advanceSidepanelApproval(context, workerPage, extensionId,
     const url = new URL(workerPage.url())
     trustedWorkerOrigin = url.protocol === 'http:' &&
       ['127.0.0.1', 'localhost'].includes(url.hostname) &&
-      url.port === '8765' && url.pathname === '/applications/worker'
+      url.port === '8765' && (url.pathname === '/applications/worker' || (
+        process.env.MC_WORKER_LIVE_GATE &&
+        process.env.MC_WORKER_TEST_URL === 'http://127.0.0.1:8765/applications/mcel-semantic-worker' &&
+        url.hostname === '127.0.0.1' &&
+        url.pathname === '/applications/mcel-semantic-worker'
+      ))
   } catch { /* Older, fully qualified extension-origin prompts still work. */ }
   const root = await context.newCDPSession(workerPage)
   try {
@@ -175,9 +199,12 @@ export async function advanceSidepanelApproval(context, workerPage, extensionId,
 // click. The wallet signs a JSON message, not a transaction. Validate the
 // rendered request against the disposable wallet before issuing mouse input.
 // NEVER return or log the rendered message or any signature to the harness.
-export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWorkerOrigin = false} = {}) {
+export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWorkerOrigin = false, action = 'issue', expectedKeyId = ''} = {}) {
   const invalid = reason => ({kind:'msk-signature', verified:false, reason, button:null})
   if (!trustedWorkerOrigin || !/^0x[0-9a-f]{40}$/i.test(expectedWallet)) return invalid('worker-or-wallet-untrusted')
+  if (!['issue','revoke'].includes(action) ||
+      (action === 'revoke' && !/^msk[-_][A-Za-z0-9_-]{1,128}$/.test(expectedKeyId)))
+    return invalid('action-or-key-untrusted')
   const body = document.body?.innerText || ''
   if (!body || body.length > 32768) return invalid('surface-unavailable')
   const visible = element => {
@@ -217,7 +244,12 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
   catch { return invalid('message-not-parsable') }
   if (!message || Array.isArray(message) || typeof message !== 'object') return invalid('message-shape')
   const keys = ['purpose','request_id','user_slug','wallet_address','chain_id','origin','issued_at','expires_at','version']
+  if (action === 'revoke') keys.push('action','key_id','cluster_id')
   if (Object.keys(message).sort().join(',') !== keys.sort().join(',')) return invalid('message-keys')
+  if (action === 'revoke' && (message.action !== 'revoke_multisession_key' ||
+      message.key_id !== expectedKeyId || message.request_id !== `revoke:${expectedKeyId}` ||
+      typeof message.cluster_id !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(message.cluster_id)))
+    return invalid('revocation-key-or-intent-mismatch')
   if (message.purpose !== 'request_multi_session_key' ||
       typeof message.user_slug !== 'string' || !/^[0-9a-f]{64}$/.test(message.user_slug) ||
       message.version !== 'main-computer-multisession-key-request-v1' ||
@@ -225,7 +257,8 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
       message.wallet_address.toLowerCase() !== expectedWallet.toLowerCase() ||
       message.chain_id !== '0x28757b1' ||
       message.origin !== 'http://127.0.0.1:8765' ||
-      typeof message.request_id !== 'string' || !/^msk_req_[a-z0-9-]{12,80}$/i.test(message.request_id)) {
+      typeof message.request_id !== 'string' ||
+      (action === 'issue' && !/^msk_req_[a-z0-9-]{12,80}$/i.test(message.request_id))) {
     return invalid('message-identity-mismatch')
   }
   if (typeof message.issued_at !== 'string' || typeof message.expires_at !== 'string' ||
@@ -251,7 +284,12 @@ function isTrustedWorkerPage(page) {
   try {
     const url = new URL(page.url())
     return url.protocol === 'http:' && url.hostname === '127.0.0.1' &&
-      url.port === '8765' && url.pathname === '/applications/worker'
+      url.port === '8765' && (url.pathname === '/applications/worker' || (
+        process.env.MC_WORKER_LIVE_GATE &&
+        process.env.MC_WORKER_TEST_URL === 'http://127.0.0.1:8765/applications/mcel-semantic-worker' &&
+        url.hostname === '127.0.0.1' &&
+        url.pathname === '/applications/mcel-semantic-worker'
+      ))
   } catch { return false }
 }
 
@@ -259,12 +297,13 @@ function isTrustedWorkerPage(page) {
 // is reachable only after the test has explicitly clicked Request Key, and
 // is authorized for one matching message and one matching account only.
 export async function approveWorkerMskSignature(context, workerPage, extensionId, expectedWallet, {
-  timeoutMs = 30_000, pollMs = 350,
+  action = 'issue', expectedKeyId = '', timeoutMs = 30_000, pollMs = 350,
   now = () => Date.now(), sleep = ms => new Promise(resolve => setTimeout(resolve,ms)),
-  onProgress = () => {}
+  onProgress = () => {}, onDiagnostic = () => {}
 } = {}) {
   if (!EXTENSION_ID.test(extensionId) || !isTrustedWorkerPage(workerPage) ||
-      !/^0x[0-9a-f]{40}$/i.test(expectedWallet)) {
+      !/^0x[0-9a-f]{40}$/i.test(expectedWallet) || !['issue','revoke'].includes(action) ||
+      (action === 'revoke' && !/^msk[-_][A-Za-z0-9_-]{1,128}$/.test(expectedKeyId))) {
     throw new Error('MSK signature refused: untrusted test wallet, extension, or Worker origin')
   }
   const start = now()
@@ -273,19 +312,39 @@ export async function approveWorkerMskSignature(context, workerPage, extensionId
     let root
     try {
       root = await context.newCDPSession(workerPage)
-      const targets = qualifiedTargets((await root.send('Target.getTargets')).targetInfos,extensionId)
+      const targets = qualifiedMskTargets((await root.send('Target.getTargets')).targetInfos,extensionId)
+      if (!targets.length) {
+        lastReason = 'approval-target-not-found'
+        onDiagnostic('msk.target.none')
+      }
       for (const target of targets) {
+        let isHome = false
+        try { isHome = new URL(target.url).pathname === '/home.html' } catch {}
+        onDiagnostic(isHome ? 'msk.target.home' : 'msk.target.approval')
         let sessionId
         try {
           sessionId = (await root.send('Target.attachToTarget',{targetId:target.targetId, flatten:false})).sessionId
           const nested = new NestedTargetSession(root,sessionId)
           await nested.send('Runtime.enable')
-          const expression = `(${inspectWorkerMskSignatureSurface.toString()})(${JSON.stringify({expectedWallet, trustedWorkerOrigin:true})})`
+          const expression = `(${inspectWorkerMskSignatureSurface.toString()})(${JSON.stringify({expectedWallet, trustedWorkerOrigin:true, action, expectedKeyId})})`
           const data = await nested.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:false,silent:true})
           const state = data?.result?.value
           if (!state || state.kind !== 'msk-signature') continue
-          lastReason = typeof state.reason === 'string' && /^[a-z-]{1,60}$/.test(state.reason)
-            ? state.reason : 'inspection-unavailable'
+          const recognizedReasons = new Set([
+            'worker-or-wallet-untrusted','action-or-key-untrusted','surface-unavailable',
+            'not-signature-request','network-mismatch','origin-mismatch','message-not-unique',
+            'message-not-parsable','message-shape','message-keys',
+            'revocation-key-or-intent-mismatch','message-identity-mismatch',
+            'message-time-invalid','confirm-disabled','confirm-obstructed','validated'
+          ])
+          const reason = recognizedReasons.has(state.reason) ? state.reason : 'inspection-unavailable'
+          // A background home tab with no signature must not mask a more
+          // informative rejection found in a dedicated approval target.
+          if (!isHome || reason !== 'not-signature-request' ||
+              ['panel-not-found','approval-target-not-found'].includes(lastReason)) {
+            lastReason = reason
+          }
+          onDiagnostic('msk.inspect.' + reason)
           if (!state.verified) continue
           const b = state.button
           if (!b || b.label !== 'Confirm' || !Number.isInteger(b.x) || !Number.isInteger(b.y) ||
@@ -294,12 +353,12 @@ export async function approveWorkerMskSignature(context, workerPage, extensionId
           await nested.send('Input.dispatchMouseEvent',{...mouse,type:'mouseMoved'})
           await nested.send('Input.dispatchMouseEvent',{...mouse,type:'mousePressed'})
           await nested.send('Input.dispatchMouseEvent',{...mouse,type:'mouseReleased'})
-          onProgress('metamask.msk-signature')
+          onProgress(action === 'revoke' ? 'metamask.msk-revocation-signature' : 'metamask.msk-signature')
           return {type:'msk-signature', action:'Confirm'}
-        } catch { lastReason = 'cdp-target-unavailable' }
+        } catch { lastReason = 'cdp-target-unavailable'; onDiagnostic('msk.cdp.target-unavailable') }
         finally { if (sessionId) await root.send('Target.detachFromTarget',{sessionId}).catch(()=>undefined) }
       }
-    } catch { lastReason = 'cdp-unavailable' }
+    } catch { lastReason = 'cdp-unavailable'; onDiagnostic('msk.cdp.unavailable') }
     finally { await root?.detach()?.catch(()=>undefined) }
     await sleep(pollMs)
   }

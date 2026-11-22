@@ -30,10 +30,13 @@ def test_worker_native_source_has_generated_layout_and_distinct_authorities():
     assert {cap["id"] for cap in ir["capabilities"]} == {
         "capability:worker-observer", "capability:worker-hub-choice-control", "capability:worker-destination-control",
         "capability:worker-policy-control", "capability:worker-slh-target-control",
+        "capability:worker-marketplace-observer", "capability:worker-marketplace-settings",
+        "capability:worker-marketplace-actions",
     }
     assert {intent["id"] for intent in ir["intents"] if intent["risk"] == "consequential"} == {
         "intent:select-destination", "intent:commit-hub-choice", "intent:disconnect", "intent:save-policy",
-        "intent:save-slh-target",
+        "intent:save-slh-target", "intent:retry-hub", "intent:save-seller", "intent:save-requester",
+        "intent:register-offer", "intent:work-now", "intent:finish-work-now", "intent:pause-selling",
     }
 
 
@@ -179,8 +182,7 @@ const fetcher=async(url,req)=>{
       observation.slhTarget.hubUrl=body.managedSLHUrl;
     }else{
       Object.assign(observation.policy,{sellerEnabled:body.settings.sellerEnabled,
-        availabilityMode:body.settings.sellerAvailabilityMode,
-        remoteEnabled:body.settings.remoteEnabled,remoteMode:body.settings.remoteMode});
+        availabilityMode:body.settings.sellerAvailabilityMode});
     }
   }
   return {ok:true,json:async()=>url.endsWith('/mcel-observation')?structuredClone(observation):{ok:true}};
@@ -227,13 +229,13 @@ function req(name,cap,op,method,risk,args={}){
   const slhPatch=JSON.parse(calls.filter(x=>x.url.endsWith('/settings')).at(-1).req.body);
   assert.deepEqual(slhPatch,{managedSLHUrl:'https://internal.example:8899',changed_fields:['managedSLHUrl']});
   const policy=req('save-policy' ,'worker-policy-control','save','saveWorkerPolicy','consequential',
-    {sellerEnabled:true,availabilityMode:'ai_idle',remoteEnabled:false,remoteMode:'ask-when-busy'});
+    {sellerEnabled:true,availabilityMode:'ai_idle'});
   assert.equal(port.authorize(policy),true);
   assert.equal(port.authorize({...policy,arguments:{...policy.arguments,secret:'x'}}),false);
   await port.invoke(policy);
   const patch=JSON.parse(calls.filter(x=>x.url.endsWith('/settings')).at(-1).req.body);
   assert.deepEqual(patch.changed_fields,[
-    'sellerEnabled','rentalEnabled','sellerAvailabilityMode','remoteEnabled','remoteMode']);
+    'sellerEnabled','rentalEnabled','sellerAvailabilityMode']);
   assert.equal(patch.settings.signedWorkerConnection,undefined);
   assert.equal(patch.settings.workerHubRegistration,undefined);
   assert.equal(patch.settings.managedSLHDeviceId,undefined);

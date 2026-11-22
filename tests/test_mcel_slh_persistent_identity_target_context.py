@@ -114,13 +114,27 @@ def test_selected_identity_survives_target_change_and_remote_pin_stays_distinct(
             page.locator('[data-select-key="dev-alt"]').click()
             page.wait_for_function('''()=>window.__mcelSlh.app.readState('state:selected-local-identity')==='dev-alt' ''')
             page.evaluate('window.dispatchEvent(new Event("pagehide"))')
-            page.evaluate('window.nonIdentityLocalCalls=[]')
+            # set_content() replaces HTML in the same JS realm: a previous local
+            # mount can still complete a pending read after synthetic pagehide.
+            # Capture the *new* network mount's fetch closure separately, so
+            # the assertion cannot confuse an old local read with a network read.
+            page.evaluate('''() => {
+              window.nonIdentityLocalCalls=[];
+              window.networkMountNonIdentityLocalCalls=[];
+              const previousMountFetch=window.fetch;
+              window.fetch=async(url,options={})=>{
+                if(url!=='/api/applications/slh/identities' &&
+                   url!=='/api/applications/slh/network/connect')
+                  window.networkMountNonIdentityLocalCalls.push(String(url));
+                return previousMountFetch(url,options);
+              };
+            }''')
             page.set_content(render_slh_page('network'))
             _wait_identities(page)
             assert page.evaluate('window.__mcelSlh.app.readState("state:selected-local-identity")')=='dev-default'
             page.locator('[data-select-key="dev-alt"]').click()
             page.wait_for_function("() => window.__mcelSlh.app.readState('state:selected-local-identity')==='dev-alt'")
-            assert page.evaluate('window.nonIdentityLocalCalls')==[]
+            assert page.evaluate('window.networkMountNonIdentityLocalCalls')==[]
             form=page.locator('form[data-intent="intent:connect-network-slh"]')
             form.locator('input[name="address"]').fill('192.168.1.20')
             form.locator('button[type="submit"]').click()

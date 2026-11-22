@@ -22,7 +22,7 @@ class ScramjetError(Exception):
 
 # A distinct tag guarantees that a cached SMOKE image cannot be promoted to
 # production when security-sensitive source patches have changed.
-PRODUCTION_IMAGE = 'mcel-browser-scramjet-app:f6f83cbc9309-v4'
+PRODUCTION_IMAGE = 'mcel-browser-scramjet-app:f6f83cbc9309-v5'
 LABEL = 'mcel.browser.scramjet.app'
 NAME_PREFIX = 'mcel-browser-scramjet-app-'
 IP = '127.0.0.3'
@@ -66,15 +66,25 @@ class ScramjetDockerManager:
 
     def _owned(self, state: dict) -> bool:
         name = state.get('container', '')
-        if not isinstance(name, str) or not re.fullmatch(r'mcel-browser-scramjet-app-[a-f0-9]{8}', name):
+        if not isinstance(name, str) or not re.fullmatch(r'mcel-browser-scramjet-(?:app|v2-app)-[a-f0-9]{8}', name):
             return False
         info = self._docker('inspect', '--format', '{{index .Config.Labels "'+LABEL+'"}}|{{.Config.Image}}|{{.State.Running}}',
                             name, check_ok=False)
-        return (info.returncode == 0 and info.stdout.strip().startswith('true|mcel-browser-scramjet-app:f6f83cbc9309-v')
-                and info.stdout.strip().endswith('|true'))
+        actual = info.stdout.strip()
+        image_name = state.get('image', '')
+        valid_tag = isinstance(image_name,str) and (
+            re.fullmatch(r'mcel-browser-scramjet-app:f6f83cbc9309-v[0-9]+',image_name)
+            or re.fullmatch(r'mcel-browser-scramjet-app:v2-2\.0\.67-alpha\.2-[0-9a-f]{16}',image_name))
+        return bool(info.returncode == 0 and valid_tag and
+                    actual == f'true|{image_name}|true')
 
     def _healthy(self, state: dict) -> bool:
-        if state.get('image') != PRODUCTION_IMAGE or not self._owned(state):
+        from tools import mcel_browser_scramjet_v2 as v2
+        if v2.enabled(self.root):
+            expected = v2.image(self.root,'app')
+        else:
+            expected = PRODUCTION_IMAGE
+        if state.get('image') != expected or not self._owned(state):
             return False
         url = state.get('url', '')
         p = urlsplit(url)
@@ -84,9 +94,13 @@ class ScramjetDockerManager:
         try:
             # A working Scramjet homepage is insufficient: the Browser embeds
             # MCEL-specific assets that may be absent in a stale cached image.
-            for resource, minimum in (('', 100), ('mcel-surface.html', 150),
-                                      ('mcel-surface.js', 500), ('mcel-sw-probe.js', 80), ('mcel-scramjet-db.js', 500), ('sw.js', 200),
-                                      ('scram/scramjet.all.js', 1000)):
+            requirements = ([(resource, 12) for resource in v2.REQUIRED]
+                if v2.enabled(self.root) else
+                [('', 100), ('mcel-surface.html', 150),
+                 ('mcel-surface.js', 500), ('mcel-sw-probe.js', 80),
+                 ('mcel-scramjet-db.js', 500), ('sw.js', 200),
+                 ('scram/scramjet.all.js', 1000)])
+            for resource, minimum in requirements:
                 code, length = fetch_status(url + resource, timeout=3)
                 if code != 200 or length < minimum:
                     return False
@@ -105,6 +119,9 @@ class ScramjetDockerManager:
         self._container = None
 
     def _start(self) -> dict:
+        from tools import mcel_browser_scramjet_v2 as v2
+        if v2.enabled(self.root):
+            return self._start_v2()
         from tools.mcel_browser_scramjet_smoke import (
             COMMIT, prepare_build_context, port_for, require_docker, fetch_status,
         )
@@ -158,6 +175,24 @@ class ScramjetDockerManager:
             time.sleep(.5)
         self._stop()
         raise ScramjetError('Scramjet sidecar did not become healthy; use docker logs for diagnosis')
+
+    def _start_v2(self) -> dict:
+        from tools import mcel_browser_scramjet_v2 as v2
+        existing = self._read_state()
+        if existing and self._healthy(existing):
+            self._container = existing
+            return existing
+        if existing:
+            self._stop()
+        try:
+            tag = v2.build(self.root, 'app')
+            state = v2.run_container(self.root, 'app', tag, ip=IP, smoke=False)
+        except Exception as exc:
+            raise ScramjetError('Scramjet v2 Docker startup failed: ' + str(exc)[:1200]) from exc
+        self._container = state
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(state,indent=2)+'\n',encoding='utf8')
+        return state
 
     def _expire(self) -> None:
         now = time.monotonic()

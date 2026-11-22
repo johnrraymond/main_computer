@@ -44,11 +44,16 @@ BACKEND = r'''() => {
     if(address.endsWith('/xlag/dev/faucet') && method==='GET')return reply({runtime_ready:false});
     if(address.endsWith('/multisession-key/request') && method==='POST') {
       state.keys=[{id:'msk-0001',status:'active',wallet_address:state.wallet,
-        hub_url:'https://test-hub.example',created_at:'2026-11-20T00:00:00Z'}];
+        hub_url:'https://test-hub.example',cluster_id:'greatlibrary-testnet',created_at:'2026-11-20T00:00:00Z'}];
       return reply({key:state.keys[0],verification:{recovered_address:state.wallet}});
     }
     if(address.endsWith('/multisession-key/revoke') && method==='POST') {
-      state.keys=[];return reply({keys:[],hub_revoke:{ok:true}});
+      if(body.key_id!=='msk-0001' || body.signed_request?.message?.action!=='revoke_multisession_key' ||
+          body.signed_request?.message?.key_id!=='msk-0001' ||
+          body.signed_request?.message?.request_id!=='revoke:msk-0001' ||
+          body.signed_request?.message?.cluster_id!=='greatlibrary-testnet')
+        throw new Error('Unsigned or mismatched revocation must not be accepted');
+      state.keys=[];return reply({revoked:true,keys:[],hub_revoke:{ok:true}});
     }
     if(address.endsWith('/multisession-keys/load') && method==='POST')return reply({keys:state.keys});
     if(address.endsWith('/wallet-funding/balance') && method==='POST')return reply({balance:{}});
@@ -109,6 +114,12 @@ def test_wallet_browser_mount_and_msk_actions_without_implicit_worker_mutations(
               window.MainComputerWalletLibrary.requestMultiSessionKeySignature=async () => ({
                 signature:'0xmocked',wallet_address:window.workerState.wallet,
                 chain_id:'0x28757b1',message:{request_id:'test'},kind:'main_computer_multisession_key_request'});
+              window.MainComputerWalletLibrary.revokeMultiSessionKeySignature=async ({requestContext,keyId}) => ({
+                signature:'0xmocked',wallet_address:requestContext.wallet_address,
+                chain_id:requestContext.chain_id,
+                message:{action:'revoke_multisession_key',key_id:keyId,
+                  cluster_id:requestContext.cluster_id,request_id:`revoke:${keyId}`},
+                kind:'main_computer_multisession_key_request'});
               renderWorkerBridgeReadiness();
             }''')
             page.locator('#worker-request-multisession-key').click()
@@ -117,6 +128,10 @@ def test_wallet_browser_mount_and_msk_actions_without_implicit_worker_mutations(
             page.locator('#worker-revoke-multisession-key').click()
             page.wait_for_function("() => window.requests.some(r=>r.address.endsWith('/multisession-key/revoke') && r.method==='POST')")
             page.wait_for_function("() => document.getElementById('worker-multisession-key-state')?.textContent.includes('No active key')")
+            revocations = page.evaluate("window.requests.filter(r=>r.address.endsWith('/multisession-key/revoke') && r.method==='POST')")
+            assert len(revocations) == 1
+            assert revocations[0]['body']['signed_request']['message']['request_id'] == 'revoke:msk-0001'
+            assert revocations[0]['body']['signed_request']['message']['cluster_id'] == 'greatlibrary-testnet'
             assert len([r for r in page.evaluate('window.requests') if r['address'].endswith('/network-session') and r['method']=='POST'])==0
             page.locator('[data-mcel-purpose="navigation"] [data-value="worker"]').click()
             assert page.locator('#worker-connect-wallet').is_hidden()
@@ -192,5 +207,51 @@ def test_hub_navigation_and_wallet_workspace_follow_radio_before_server_save():
             assert page.locator(nav).inner_text()=='Hub Choice\nSLH/SEH'
             assert not page.locator('#worker-multisession-card').is_visible()
             assert errors==[],errors
+        finally:
+            browser.close()
+
+
+def test_wallet_bridge_refresh_reconciles_button_after_hub_session_changes():
+    """The native UI can select Testnet before the legacy wallet cache catches up.
+
+    A successful backend refresh must re-enable Connect; a mismatched session
+    must disable it. Neither state transition performs a wallet RPC or Hub POST.
+    """
+    pw=pytest.importorskip('playwright.sync_api')
+    executable=shutil.which('chromium') or shutil.which('chromium-browser')
+    with pw.sync_playwright() as driver:
+        browser=driver.chromium.launch(headless=True,
+            **({'executable_path':executable} if executable else {}))
+        try:
+            page=browser.new_page()
+            page.evaluate(BACKEND)
+            page.evaluate("window.workerState.session='mainnet'")
+            page.set_content(render_worker_page(ROOT))
+            page.wait_for_function("() => window.__mcelWorker?.app.readState('state:selected-network')==='testnet'")
+            page.wait_for_function("() => document.getElementById('worker-wallet-session-context')?.textContent.includes('matching connected')")
+            assert page.locator('#worker-connect-wallet').is_disabled()
+
+            # The backend changes from Mainnet to the selected Testnet Hub.
+            # The refresh must update the disabled control, not just its cache.
+            page.evaluate("window.workerState.session='testnet'")
+            page.evaluate("() => window.McelWorkerLegacyMarketplace.refresh()")
+            assert 'Marketplace wallet context verified.' in page.locator('#worker-wallet-session-context').inner_text()
+            assert page.locator('#worker-connect-wallet').is_enabled()
+
+            # Passive hydration or an in-flight wallet request still wins over
+            # a verified Hub context; the refresh must not force-enable it.
+            page.evaluate("() => {workerWalletHookState='hydrating';renderWorkerBridgeReadiness()}")
+            page.evaluate("() => window.McelWorkerLegacyMarketplace.refresh()")
+            assert page.locator('#worker-connect-wallet').is_disabled()
+            page.evaluate("() => {workerWalletHookState='idle';renderWorkerBridgeReadiness()}")
+            page.evaluate("() => window.McelWorkerLegacyMarketplace.refresh()")
+            assert page.locator('#worker-connect-wallet').is_enabled()
+
+            # Conversely, a now-mismatched session must fail closed.
+            page.evaluate("window.workerState.session='mainnet'")
+            mismatch=page.evaluate("() => window.McelWorkerLegacyMarketplace.refresh().then(()=>'accepted',()=> 'rejected')")
+            assert mismatch=='rejected'
+            assert page.locator('#worker-connect-wallet').is_disabled()
+            assert all(req['method']=='GET' for req in page.evaluate('window.requests'))
         finally:
             browser.close()

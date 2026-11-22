@@ -328,11 +328,12 @@ test('RPC proof timeout reports RPC rather than an approval issue', async () => 
 
 // A visible Worker panel is not sufficient: its click binding may still be
 // installing or passive hydration may have disabled Connect Wallet.
-function connectStartFixture({bound = true, disabled = false, activity = 'trace', connected = false} = {}) {
+function connectStartFixture({bound = true, binding = 'legacy', disabled = false, activity = 'trace', connected = false} = {}) {
   let clicks = 0
   const trace = []
   const button = {
-    dataset: {workerBound: bound ? 'true' : undefined},
+    dataset: {workerBound: bound && binding === 'legacy' ? 'true' : undefined,
+      workerWalletBound: bound && binding === 'native' ? 'true' : undefined},
     disabled,
     textContent: connected ? 'Connected' : disabled ? 'Checking Wallet…' : 'Connect Wallet',
     busy: false,
@@ -365,6 +366,32 @@ test('Connect Wallet waits for actual Worker handler and enabled control', async
     await assert.rejects(startWorkerWalletConnection(f.page), /never became handler-bound and enabled/)
     assert.equal(f.getClicks(), 0)
   }
+})
+
+test('native MCEL wallet-only binding permits Connect Wallet without the legacy controller', async () => {
+  const f = connectStartFixture({binding:'native', activity:'trace'})
+  const phases = []
+  await startWorkerWalletConnection(f.page, {onProgress: event => phases.push(event)})
+  assert.equal(f.getClicks(), 1)
+  assert.deepEqual(phases, ['worker.connect.control-ready', 'worker.connect.click-dispatched', 'worker.connect.activity-observed'])
+})
+
+test('native MCEL binding still requires an actual handler and enabled control', async () => {
+  for (const fixture of [{bound:false}, {disabled:true}]) {
+    const f = connectStartFixture({...fixture, binding:'native'})
+    await assert.rejects(startWorkerWalletConnection(f.page), /never became handler-bound and enabled/)
+    assert.equal(f.getClicks(), 0)
+  }
+})
+
+test('native MCEL connected state may be reused only when its wallet-only handler is bound', async () => {
+  const connected = connectStartFixture({binding:'native', connected:true, disabled:true})
+  assert.deepEqual(await startWorkerWalletConnection(connected.page, {allowAlreadyConnected:true}), {alreadyConnected:true})
+  assert.equal(connected.getClicks(), 0)
+  const unbound = connectStartFixture({binding:'native', connected:true, disabled:true, bound:false})
+  await assert.rejects(startWorkerWalletConnection(unbound.page, {allowAlreadyConnected:true}),
+    /never became handler-bound and enabled/)
+  assert.equal(unbound.getClicks(), 0)
 })
 
 test('work-cycle reuses the already-connected disposable wallet without clicking again', async () => {

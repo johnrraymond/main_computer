@@ -44,12 +44,12 @@ Worker and locally running SLH applications supply built-in authenticators. The 
 
 Each first-time Worker, Requester, phone or remote administration client generates its own protected device keypair, verifies the intended SLH public identity through an authenticated enrollment channel, and submits a pending request with `device_public_key`, requested role, device label, user claim and public-key fingerprint.
 
-The new-device screen offers an administrator **public display alias** (administrators opt in to listing; avoid disclosing privileged account details) and an optional **administrator-issued enrollment key**. Choosing an administrator alone never grants access.
+The requesting-device UI offers **Request enrollment** and Pending / Approved / Rejected status. It does not select, disclose, or solicit an administrator identity; SLH routes pending requests to its administrator queue. **The requester UI must not contain administrator identity credentials, passkey/OTP input, an admin-only expander, `Enroll with key`, or direct approval controls.**
 
-- **Enroll with key:** An administrator has issued a short-lived, one-use, scoped enrollment capability, preferably bound to the exact pending request and device public key. After validation, the server calls the **same approval operation** that the administrator UI uses. A reusable administrator password, login token or private signing key is *never* entered on the user's computer.
-- **Request approval:** Without an enrollment key, the request stays in the named administrator's **New Device Authorization Queue**. The administrator can review, annotate, approve, reject, or defer pending **physical inspection** of that machine. A policy may require that an administrator authenticate at the user's physical workstation before approval. Merely entering a transferable code does not prove physical presence.
+- **User request:** The signed request stays in the SLH administrator **New Device Authorization Queue**. The administrator reviews, annotates, approves, rejects, or defers it for **physical inspection** in their own SLH administrator interface and authenticated session. Physical inspection requires independent administrator attestation, never an OTP typed into the requester dialog.
+- **Backend compatibility:** A short-lived, one-use, request-scoped enrollment capability may still be validated by the existing server-side approval engine for legacy/internal clients. This remains a protocol method, **not** an alternative enrollment choice presented to the requesting user. No reusable administrator password, login token, or private signing key may be exported to another machine.
 
-Both approaches result in the identical `Known Device` record, role assignment, approval audit, and subsequent challenge/response authentication. Neither creates a certificate.
+Both server-side authorization mechanisms converge on the same `Known Device` record, role assignment, approval audit, and subsequent challenge/response authentication. Neither creates a certificate.
 
 ### Canonical enrollment API [TARGET]
 
@@ -64,7 +64,7 @@ POST /v1/auth/verify                     -> signed proof -> limited session
 POST /v1/admin/devices/{id}/revoke       -> admin-authorized revocation, session fencing
 ```
 
-The server **normalizes the two authorization mechanisms into one `approve_enrollment(...)` decision**, enforces the administrator's rights and physical-presence policy, consumes the one-time capability transactionally, and records `approved_by`, method, device fingerprint, requested/actual permissions and time. A retry must not enroll twice. API names are proposed, not deployed routes.
+The server **normalizes the administrator-session and legacy capability authorization mechanisms into one `approve_enrollment(...)` decision**, enforces the administrator's rights and physical-presence policy, consumes the one-time capability transactionally, and records `approved_by`, method, device fingerprint, requested/actual permissions and time. A retry must not enroll twice. API names are proposed, not deployed routes.
 
 ### Device registry [TARGET]
 

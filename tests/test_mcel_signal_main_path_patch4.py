@@ -1,4 +1,4 @@
-"""Patch 4: normal application path is opt-in, reversible, and fail-closed."""
+"""Patch 4 behavior and Patch 5 default: reversible, fail-closed, per-app."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,25 +10,28 @@ from tools import mcel_signal_integrated_acceptance as integrated
 from tools import mcel_signal_differential_acceptance as diff
 
 
-def test_app_hosts_do_not_enable_signals_without_explicit_per_app_opt_in(monkeypatch):
-    monkeypatch.delenv('MCEL_SIGNAL_SCHEDULER_SLH',raising=False)
-    monkeypatch.delenv('MCEL_SIGNAL_SCHEDULER_TASK_MANAGER',raising=False)
+def test_app_hosts_default_to_certified_only_with_reversible_explicit_policy(monkeypatch):
+    for key in ('MCEL_SIGNAL_SCHEDULER_SLH','MCEL_SIGNAL_SCHEDULER_TASK_MANAGER',
+                'MCEL_SIGNAL_SCHEDULER_DISABLE'):
+        monkeypatch.delenv(key,raising=False)
     for app,html in (
         ('slh',render_slh_page()),
         ('task-manager',render_semantic_page('task-manager',promoted=True)),
     ):
         assert html.count('signalSchedulerIntegration:true')==1,app
-        assert html.count('signalSchedulerStartEnabled:false')==1,app
-        assert 'signalSchedulerStartEnabled:true' not in html
+        assert html.count('signalSchedulerStartEnabled:true')==1,app
     assert 'signalSchedulerIntegration:false' in render_semantic_page('file-manager',promoted=True)
+    monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_SLH','incumbent')
+    assert render_slh_page().count('signalSchedulerStartEnabled:false')==1
+    assert render_semantic_page('task-manager',promoted=True).count('signalSchedulerStartEnabled:true')==1
+    monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_TASK_MANAGER','incumbent')
+    assert render_semantic_page('task-manager',promoted=True).count('signalSchedulerStartEnabled:false')==1
     monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_SLH','certified')
     assert render_slh_page().count('signalSchedulerStartEnabled:true')==1
-    assert render_semantic_page('task-manager',promoted=True).count('signalSchedulerStartEnabled:false')==1
-    monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_TASK_MANAGER','certified')
-    assert render_semantic_page('task-manager',promoted=True).count('signalSchedulerStartEnabled:true')==1
     monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_SLH','CERTIFIED')
     assert render_slh_page().count('signalSchedulerStartEnabled:false')==1
-    monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_TASK_MANAGER','anything')
+    monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_DISABLE','1')
+    assert render_slh_page().count('signalSchedulerStartEnabled:false')==1
     assert render_semantic_page('task-manager',promoted=True).count('signalSchedulerStartEnabled:false')==1
 
 

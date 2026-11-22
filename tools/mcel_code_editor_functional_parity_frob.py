@@ -193,10 +193,17 @@ def calls(page,suffix):
 def receipt(page,identifier):
     return page.evaluate('(id)=>window.__mcelWorkbench.app.receipts().filter(x=>x.intentId==="intent:"+id).at(-1)',identifier)
 
+def reveal(page, target):
+    """Select the actual document-workbench tab owning a form/control."""
+    panel=target.evaluate('el=>el.closest("[data-mcel-document-tabpanel]")?.id||null')
+    if panel:
+        tab=page.locator(f'[role="tab"][aria-controls="{panel}"]')
+        if tab.count() and tab.get_attribute('aria-selected')!='true':tab.click()
+
+
 def click(page,name):
     target=page.locator(f'button[data-intent="intent:{name}"]')
-    panel=target.evaluate('el=>el.closest("[data-mcel-tool-panel]")?.id||null')
-    if panel:page.locator(f'[data-mcel-tool-tabs] [aria-controls="{panel}"]').click()
+    reveal(page,target)
     target.click()
 
 def ready(page,identifier='open-source'):
@@ -284,7 +291,8 @@ def browser_acceptance(repo:Path)->dict:
           return [await p.authorize(req('../private.txt')),await p.authorize(req('src/secret.js')),
             await p.authorize(req('src/a.js'))];
         }''')
-        case(cases,'authorization','forged-file-refusal',[False,False,True],portProbe,portProbe==[False,False,True])
+        case(cases,'authorization','forged-file-refusal',[False,False,False],portProbe,portProbe==[False,False,False],
+             'A forged direct capability envelope is refused even for an observed path; the normal source-open/read pipeline is tested independently.')
         # A fresh dirty A should be eligible for a reviewed *prepare* which
         # cannot itself write. Explicit apply uses one exact server handle.
         page.locator('[data-fake-monaco-path="src/a.js"]').fill('const a=11;\n')
@@ -301,6 +309,7 @@ def browser_acceptance(repo:Path)->dict:
         case(cases,'review-apply','review-content-applied','const a=11;\n',page.evaluate('window.__editorFiles["src/a.js"]'),page.evaluate('window.__editorFiles["src/a.js"]')=='const a=11;\n')
         # Aider preview is source-scoped and has no source mutation.
         form=page.locator('form[data-intent="intent:preview-aider-plan"]')
+        reveal(page,form)
         form.locator('input[name="instruction"]').fill('Summarize this code')
         form.locator('button[type="submit"]').click()
         page.wait_for_function('window.__mcelWorkbench.app.receipts().some(x=>x.intentId==="intent:preview-aider-plan" && x.disposition==="completed")')
@@ -315,6 +324,7 @@ def browser_acceptance(repo:Path)->dict:
         # An explicit Aider job is accepted asynchronously, never equivalent
         # to a completed source write. No task outside the fake service runs.
         form=page.locator('form[data-intent="intent:run-aider"]')
+        reveal(page,form)
         form.locator('input[name="instruction"]').fill('Make a harmless change')
         form.locator('input[name="files"]').fill('')
         form.locator('button[type="submit"]').click()
@@ -382,6 +392,7 @@ def browser_acceptance(repo:Path)->dict:
         # Context mutations are separate consequential operations. Each is
         # triggered explicitly; neither grants source-file write authority.
         form=page.locator('form[data-intent="intent:load-aider-archive"]')
+        reveal(page,form)
         form.locator('input[name="archiveId"]').fill('archive-1')
         form.locator('button[type="submit"]').click()
         page.wait_for_function('window.__mcelWorkbench.app.receipts().some(x=>x.intentId==="intent:load-aider-archive")')
@@ -400,6 +411,7 @@ def browser_acceptance(repo:Path)->dict:
         case(cases,'documentation','viewport-config-observed','completed',receipt(page,'read-component-doc-viewport-config')['disposition'],
              receipt(page,'read-component-doc-viewport-config')['disposition']=='completed')
         form=page.locator('form[data-intent="intent:run-component-doc-script"]')
+        reveal(page,form)
         form.locator('textarea[name="script"]').fill('vram.fillRect(0,0,2,2,[255,0,0,255]);')
         form.locator('button[type="submit"]').click()
         page.wait_for_function('window.__mcelWorkbench.app.receipts().some(x=>x.intentId==="intent:run-component-doc-script")',timeout=9000)
@@ -440,6 +452,7 @@ def browser_acceptance(repo:Path)->dict:
              receipt(page,'studio-proof-select') is not None)
         for op in ('studio-proof-inspect','studio-proof-export','studio-repair-packet'):
             form=page.locator(f'form[data-intent="intent:{op}"]')
+            reveal(page,form)
             form.locator('input[name="filter"]').fill('all')
             form.locator('button[type="submit"]').click()
             page.wait_for_function('(id)=>window.__mcelWorkbench.app.receipts().some(x=>x.intentId==="intent:"+id)',arg=op)

@@ -75,8 +75,16 @@ Use `GET /v1/bootstrap/status` to identify unclaimed local installation. The fir
 1. The device creates a keypair, chooses an SLH administrator from `GET /v1/enrollment/admins`, and signs its full enrollment request object (with `version=1`, `action=slh.device.enrollment.request`, and the SLH's `org_id`).
 2. `POST /v1/enrollment/requests` records the pending request, public key fingerprint, requested role, device name and claimed owner. The request does not authorize execution.
 3. An authenticated administrator reviews `GET /v1/admin/enrollments`; optionally records an inspection **attestation** at `POST /v1/admin/enrollments/{id}/inspect`.
-4. The administrator either uses `POST /v1/enrollment/approvals` with their active administrator session, **or** creates a one-time, request-bound enrollment key via `POST /v1/admin/enrollments/{id}/keys`. The client supplies that key to the **same** approvals endpoint.
+4. The administrator either uses `POST /v1/enrollment/approvals` with their active administrator session, **or** creates a one-time, request-bound enrollment key via `POST /v1/admin/enrollments/{id}/keys`. A legacy/internal client supplies that key to the **same** approvals endpoint.
 5. In both cases the same transactional approval method creates a Known Device entry. Unused, expired, incorrectly scoped, or replayed keys do not grant authorization.
+
+**Current user-interface policy:** The documented two authorization paths are
+backend/API capabilities, not two controls in a user enrollment dialog.
+The requester submits a signed request and views Pending / Approved / Rejected;
+only an administrator, in the separate SLH administrator interface, performs
+approval. Do not put administrator identity, passkey/OTP, one-time-key redemption,
+`For Admin Use Only`, or approval fields in the requesting device UI. The
+legacy key approval API may remain implemented for existing clients.
 
 `physical_inspection_required` is a configurable policy. When true, approval and key issuance are refused until an administrator explicitly attests the inspection. **This is an administrator attestation, not an automated proof of physical presence.**
 

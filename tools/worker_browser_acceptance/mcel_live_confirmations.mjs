@@ -1,0 +1,50 @@
+// Strict browser confirmation admission for explicitly authorized native MCEL
+// Worker live acceptance. Do not auto-accept arbitrary JavaScript dialogs.
+// Native MCEL uses different wording for form submissions versus action buttons.
+// Keep both exact: a consequential action may only be approved for its own intent.
+const formWarning = 'This action may stop a process or server. Continue?'
+const actionWarning = 'This may stop a process or server. Continue?'
+const titles = Object.freeze({
+  'select-destination': 'Select Destination',
+  'save-requester': 'Save Requester',
+  'save-seller': 'Save Seller',
+  'save-policy': 'Save Policy',
+  'register-offer': 'Register Offer',
+  'work-now': 'Work Now',
+  'finish-work-now': 'Finish Work Now',
+})
+const actionIntents = new Set(['register-offer', 'finish-work-now'])
+
+export function expectedMcelConfirmation(intent, type, message, options={}) {
+  const title=titles[intent]
+  if(!title || type!=='confirm' || typeof message!=='string')return false
+  const lines=message.split(/\r?\n/)
+  if(actionIntents.has(intent)){
+    return lines.length===2 && lines[0]===`Confirm consequential operation: ${title}` &&
+      lines[1]===actionWarning
+  }
+  if(lines[lines.length-1]!==formWarning)return false
+  if(lines[0]!==`Confirm ${title}?` || lines.length<3)return false
+  if(intent==='select-destination'){
+    if(!Number.isInteger(options.expectedRing) || options.expectedRing<0 || options.expectedRing>3)return false
+    return lines.length===3 && lines[1]===`Requested Ring: ${options.expectedRing}`
+  }
+  return true
+}
+
+export async function clickMcelConfirmed(page, locator, intent, options={}) {
+  let accepted=0, unexpected=false
+  const handler=async dialog=>{
+    const permit=expectedMcelConfirmation(intent,dialog.type(),dialog.message(),options)
+    if(permit){accepted++;await dialog.accept()}
+    else{unexpected=true;await dialog.dismiss()}
+  }
+  page.on('dialog',handler)
+  try{
+    await locator.click()
+    if(unexpected)throw Error('Unexpected MCEL confirmation refused')
+    if(accepted!==1)throw Error('Expected MCEL confirmation absent or duplicate')
+  }finally{
+    page.off('dialog',handler)
+  }
+}

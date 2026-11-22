@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
@@ -10,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
-from main_computer.multisession_key_signing import normalize_chain_id, verify_personal_sign_blob
+from main_computer.multisession_key_signing import normalize_chain_id, verify_personal_sign_blob, build_personal_sign_blob
 from main_computer.viewport_server import ViewportServer
 
 
@@ -77,6 +78,25 @@ def _signed_msk_blob(
         "signature": _TEST_SIGNATURE,
     }
 
+
+def _signed_msk_revocation(key_id: str) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    message = {
+        'purpose': 'request_multi_session_key',
+        'action': 'revoke_multisession_key',
+        'request_id': 'revoke:' + key_id,
+        'key_id': key_id,
+        'wallet_address': _TEST_WALLET_ADDRESS,
+        'chain_id': '0x28757b2',
+        'origin': 'pytest',
+        'issued_at': now.isoformat(),
+        'expires_at': (now + timedelta(minutes=5)).isoformat(),
+        'version': 'main-computer-multisession-key-request-v1',
+    }
+    return build_personal_sign_blob(
+        message=message, private_key='0x' + '0' * 63 + '1',
+        wallet_address=_TEST_WALLET_ADDRESS, chain_id='0x28757b2',
+    )
 
 
 def test_multisession_chain_id_normalization_accepts_decimal_and_hex_text() -> None:
@@ -217,11 +237,18 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub_and_caches_key_by_w
             assert loaded["keys"][0]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
             assert "id" not in loaded["keys"][0]  # type: ignore[operator]
 
+            status, unsigned = _post_json_error(
+                f"{viewport_url}/api/applications/worker/multisession-key/revoke",
+                {"hub_url": hub_url, "wallet_address": _TEST_WALLET_ADDRESS},
+            )
+            assert status == 400 and unsigned['ok'] is False
             revoked = _post_json(
                 f"{viewport_url}/api/applications/worker/multisession-key/revoke",
                 {
                     "hub_url": hub_url,
                     "wallet_address": _TEST_WALLET_ADDRESS,
+                    "key_id": data['key']['id'],
+                    "signed_request": _signed_msk_revocation(data['key']['id']),
                 },
             )
             assert revoked["ok"] is True

@@ -5105,6 +5105,24 @@
       const copyButton = chatConsoleButton("Copy", () => copyChatConsoleOutputCell(cell.id));
       copyButton.className = "chat-output-copy";
       actions.append(copyButton, chatConsoleButton("Delete output", () => deleteChatConsoleCell(cell.id)));
+      // An embedded application may supply review-only output actions. These
+      // attach to the existing chat reply; they never create another model
+      // prompt, execute at render time, or bypass the application's own UI.
+      const embedded = chatConsoleActiveEmbeddedSessionForPayload();
+      if (embedded?.host?.contains?.(activeChatConsoleNotebook()) &&
+          typeof embedded.options?.outputActions === "function") {
+        let offered = [];
+        try { offered = embedded.options.outputActions(cell) || []; }
+        catch (_) { offered = []; }  // A host must not break the chat renderer.
+        if (Array.isArray(offered)) for (const item of offered.slice(0, 4)) {
+          if (!item || typeof item.label !== "string" ||
+              typeof item.run !== "function") continue;
+          const action = chatConsoleButton(item.label, () => item.run());
+          if (item.id && /^[a-z0-9-]+$/.test(item.id))
+            action.dataset.chatOutputAction = item.id;
+          actions.append(action);
+        }
+      }
       chrome.append(actions);
       const body = document.createElement("div");
       body.className = "chat-output-cell-body";

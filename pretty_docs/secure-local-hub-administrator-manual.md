@@ -148,15 +148,16 @@ The phone may later reach this SLH through LAN discovery **or** through an SEH r
 
 **[IMPLEMENTED BACKEND]** Device enrollment uses a protected P-256 signing keypair, an administrator-reviewed request and approval of **that exact public key**. Enrolled devices authenticate through fresh Known Device challenges and short-lived sessions. No organizational client-certificate CA is required. **[TARGET UI]** General phone/person-factor policy remains a separate future workflow; being an enrolled device alone never grants broad administration.
 
-### 4.1 The two first-connection choices — same backend approval
+### 4.1 Request on the client; approve in the SLH administrator interface
 
 1. **[TARGET]** In Worker, Requester, phone, or SLH **Connect** mode, discover or enter the SLH address and verify its public-key identity out of band.
-2. **[TARGET]** The client generates its own private signing key locally; creates an enrollment request with proposed device name, user, intended type, public key and fingerprint; and shows an opt-in list of administrator display aliases.
-3. **[TARGET]** Select an administrator. The UI offers **Administrator-issued enrollment key (optional)** and **Request administrator approval**.
-4. **[TARGET]** With a valid one-time enrollment key scoped to the request or device public key, **Enroll with key** invokes the *same backend approval operation* as an administrator approving from the SLH queue. The key is never an administrator's reusable password or signing key.
-5. **[TARGET]** Without an enrollment key, the request waits in that administrator's **New Device Authorization Queue**. The administrator may approve, deny, comment, assign an owner, or mark **Physical inspection required**. Company policy may require the administrator to log in at the device before approving it.
-6. **[TARGET]** The common approval service verifies authorization and policy, consumes any key once, records administrator/method/time, and activates one immutable device identity. It then challenges the device to prove possession of its private key.
-7. **[TARGET]** On later connections, device signs a fresh nonce-bound Known Device challenge. An optional additional authentication factor is required only if organization policy demands it; any cryptographic factor uses the same identity model. Enrollment of **any** identity does not itself grant administration privileges.
+2. **[TARGET]** The client selects its own requesting identity, uses its locally protected private signing key, and submits a signed enrollment request with proposed device name, user, intended type, public key and fingerprint. The SLH determines the responsible administrator queue; the user does not choose or supply an administrator identity.
+3. **[TARGET UI]** The user sees **Request enrollment** and a status view: **Pending**, **Approved**, or **Rejected** (and any policy-driven inspection requirement). The request dialog has **no administrator identity field, administrator passkey/OTP field, `For Admin Use Only` section, `Enroll with key` action, or other direct-approval control**.
+4. **[TARGET UI]** The pending request appears in the SLH **New Device Authorization Queue** within the administrator application. The administrator uses their own authorized identity/session to review, approve, deny, comment, assign an owner, or require physical inspection. Administration does not occur inside the requester's dialog.
+5. **[TARGET]** The common approval service independently verifies administrator authority and policy, records administrator/method/time, and activates the approved public-key identity. The requesting device then proves possession of its private key.
+6. **[TARGET]** On later connections, the device signs a fresh nonce-bound Known Device challenge. An optional additional authentication factor is required only if organization policy demands it; any cryptographic factor uses the same identity model. Enrollment of **any** identity does not itself grant administration privileges.
+
+**Backend compatibility boundary:** Existing request-scoped enrollment keys and software-OTP approval verification may remain available to internal/legacy clients. They do **not** create a second user-facing enrollment path or justify putting administrator credentials on the requesting machine.
 
 ### 4.2 Administrator device list
 
@@ -273,7 +274,7 @@ All of these are **user activities**, not mandated widget/layout choices for MCE
 **Longer-term SLH acceptance:**
 
 - **[TARGET]** ORG-SLH startup persists and reuses `LOCAL-AUTH-KEY`; root-authorized first-admin registration and later recovery require the matching root and possession of the chosen identity key. Network-origin restrictions alone cannot prevent misuse of a stolen root.
-- Worker/Requester/phone/remote-admin clients generate their own device signing keys. **Enroll with key** and **admin approves from queue** execute the same policy-controlled approval code.
+- Worker/Requester/phone/remote-admin clients generate their own device signing keys and submit request-only enrollment forms. Administrator approval occurs in the SLH queue; the legacy key-approval mechanism remains a backend compatibility path, not a user UI action.
 - Administrators can require physical presence before approval and see device name, owner, notes, roles, fingerprint, status and audit.
 - The same Known Device and optional personal-authenticator challenge works directly on LAN and through SEH.
 - A locally logged-in SLH administrator and equivalently privileged administrator using their own SLH application receive the same authorized backend information/actions, including SEH/Coolify and marketplace controls, without disclosing secrets.

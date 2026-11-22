@@ -93,6 +93,63 @@
     function setCalculatorMode(mode){
       if(["basic","graphing","symbolic"].includes(mode))lastCalculatorMode=mode;
     }
+    // The Calculator has ONE AI terminus: its embedded Help/Chat Console.
+    // These controls act only on completed chat output after an explicit user
+    // click; no assistant text may become executable Calculator state merely
+    // because it arrived from a model. Each handoff uses an existing semantic
+    // form, so the same validation/authority/receipts apply as manual input.
+    function assistantExpression(cell) {
+      if (!cell || cell.type!=="output" || cell.status==="error") return "";
+      const parts=Array.isArray(cell.parts)?cell.parts:[];
+      if (parts.length!==1 || !["text","markdown"].includes(parts[0]?.kind)) return "";
+      const content=parts[0].content;
+      if(typeof content!=="string")return "";
+      let out=content.trim();
+      const fenced=/^```(?:text|math|wolfram|mathics)?\s*\n([\s\S]*?)\n```$/i.exec(out);
+      if(fenced)out=fenced[1].trim();
+      out=out.replace(/^(?:f\(x\)|y)\s*=\s*/i,"").trim();
+      return out.length>0 && out.length<=4096 && !/[\r\n<>`]/.test(out)?out:"";
+    }
+    function calculatorForm(name) {
+      const form=global.document?.querySelector('form[data-intent="intent:'+name+'"]');
+      const input=form?.querySelector('input[name="expression"]');
+      return form && input && form.isConnected ? {form,input} : null;
+    }
+    function writeFormExpression(target,expression,submit) {
+      const node=calculatorForm(target);
+      if(!node)throw Error("MCEL_CALC_EXPANDED:handoff-target-unavailable:"+target);
+      // Navigate via the existing declarative MCEL mode control; never
+      // write hidden fields or bypass the runtime's input bindings.
+      const mode=target==="evaluate"?"basic":target==="draw-graph"?"graphing":"symbolic";
+      const tab=global.document?.querySelector('[data-mcel-mode-tabs] button[data-value="'+mode+'"]');
+      if(!tab)throw Error("MCEL_CALC_EXPANDED:handoff-mode-unavailable:"+mode);
+      tab.click();
+      if(!node.form.getClientRects().length)
+        throw Error("MCEL_CALC_EXPANDED:handoff-target-not-visible:"+target);
+      node.input.value=expression;
+      node.input.dispatchEvent(new Event("input",{bubbles:true}));
+      node.input.dispatchEvent(new Event("change",{bubbles:true}));
+      if(submit)node.form.requestSubmit();
+    }
+    function outputActions(cell) {
+      const expression=assistantExpression(cell);
+      if(!expression)return [];
+      const result=[];
+      let arithmetic=null,graph=null;
+      try{arithmetic=core.evaluateCalculatorExpression(expression);}catch(_){}
+      if(arithmetic?.ok===true) result.push({id:"calculator-apply-arithmetic",
+        label:"Use in Calculator",run:()=>writeFormExpression("evaluate",expression,true)});
+      try{graph=core.sampleCalculatorGraphExpression(expression,
+        {xMin:-10,xMax:10,yMin:-5,yMax:5},20);}catch(_){}
+      if(graph?.ok===true && graph.samples?.some(x=>x.visible))
+        result.push({id:"calculator-apply-graph",label:"Graph expression",
+          run:()=>writeFormExpression("draw-graph",expression,true)});
+      // Mathics is a symbolic input: never auto-execute model-authored code.
+      if(/^[A-Za-z][A-Za-z0-9]*\[[^\r\n<>`]{1,4000}\]$/.test(expression))
+        result.push({id:"calculator-review-symbolic",label:"Review in Mathics",
+          run:()=>writeFormExpression("evaluate-symbolic",expression,false)});
+      return result;
+    }
     function mountEmbeddedChat(host,node,read){
       if(!host || node?.targetKind!=="calculator-session" || node?.targetId!=="calculator" ||
          !global.MainComputerChatConsole?.mountEmbedded)
@@ -116,6 +173,7 @@
         statusId:"calculator-chat-status",threadTitle:"Calculator Chat",
         targetKind:node.targetKind,targetId:node.targetId,layout:"conversation",
         showThreadRail:false,showCurrentThreadBar:true,getEmbeddedContext,
+        outputActions,
         buildThreadMetadata(context){return {
           origin_app:"calculator",embedded_chat:true,
           linked_targets:[{app:"calculator",kind:"calculator-session",id:"calculator",path:"applications/calculator"}],

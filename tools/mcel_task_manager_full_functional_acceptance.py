@@ -198,7 +198,7 @@ def main(argv=None) -> int:
         else: print('TASK_FUNCTIONAL_SHADOW',shadow.get('status'),shadow.get('reason',''))
     state='PASS_ISOLATED_FUNCTIONAL' if unit['status']=='PASS' and (
         args.shadow=='off' or shadow['status']=='PASS_OBSERVATION') else 'FAIL_OR_INCOMPLETE'
-    signal={'status':'NOT_REQUESTED','productionDefault':'INCUMBENT'}
+    signal={'status':'NOT_REQUESTED','productionDefault':'CERTIFIED_SLH_AND_TASK_MANAGER'}
     if args.signals=='integrated':
         integrated_path=report_path.with_name('report-signals.json')
         integrated_path.unlink(missing_ok=True)

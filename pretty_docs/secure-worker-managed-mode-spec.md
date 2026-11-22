@@ -39,7 +39,7 @@ The current Worker presents **only a public-Hub selection**. It does **not** pre
 | --- | --- |
 | Connection | Public Marketplace / Managed by SLH; transition drains already accepted work |
 | SLH selection | Discover local SLH, manually enter address, optional remote SEH domain; always verify pinned SLH identity |
-| First connect | Select an administrator's public display alias, enter optional one-time enrollment key, **Enroll with key** or **Request admin approval** |
+| First connect | Choose the SLH/SEH and local requesting identity, and **Request enrollment**. Show Pending / Approved / Rejected; no administrator credential or direct approval control |
 | Enrollment | Not enrolled / Pending admin / Physical inspection needed / Approved / Denied / Revoked |
 | Authenticator | Device key generated/protected; Known Device authentication; personal built-in or phone approval when required |
 | Managed status | Authenticating / Connected / Restricted / Disconnected / Revoked; show actual backend evidence |
@@ -47,22 +47,22 @@ The current Worker presents **only a public-Hub selection**. It does **not** pre
 | USB | Export SLH public identity+invitation / export device public-key request / import approval; do not export private keys |
 | Remote | Direct SLH / SEH relay / Untrusted endpoint / Relay unavailable, with same Known Device permission checks |
 
-The user interface must never claim enrollment succeeded because an enrollment key was typed; only the SLH's common approval response and verified device-key proof can establish success.
+The user interface must never claim enrollment succeeded because the request was submitted; only the SLH's administrator approval and verified device-key proof can establish success. No administrator identity input, passkey/OTP field, `For Admin Use Only` expander, or `Enroll with key` control belongs in the Worker request dialog.
 
 ## 4. First connection and subsequent authentication
 
 ### A. Direct SLH, LAN or VPN
 
 1. Worker generates a device signing keypair using protected local storage; none of this is a blockchain wallet.
-2. The user chooses a verified SLH and selects an available enrollment administrator alias, without thereby acquiring any administrator rights.
+2. The user chooses a verified SLH and their own local requesting identity; SLH routes the request to its administrator queue.
 3. The Worker submits the device public key, label, proposed user, requested type/permissions and challenge-proof as one pending enrollment record.
-4. A **valid administrator-issued, single-use enrollment capability** calls the same `approve_enrollment` server action that the administrator queue uses. **Without a key**, the request goes to the selected administrator's New Device Authorization Queue.
-5. The administrator may approve from their SLH application locally or remotely, or mark the request **Physical inspection required** and approve only after authenticating on the user's machine. A transferable key alone does not prove physical presence.
+4. The request enters the SLH administrator **New Device Authorization Queue**. The Worker displays only request status and cannot authorize its own enrollment.
+5. The administrator reviews and approves or rejects from the **SLH administrator interface** using their own authorized identity/session, or defers approval for **Physical inspection required**. Any required inspection must be independently attested; the Worker request dialog must not accept administrator credentials.
 6. SLH stores a Known Device registry entry; Worker proves possession of its enrolled key with a fresh challenge. User signs in with their personal authenticator only when SLH policy requires it. Unattended devices may receive narrowly limited machine-only worker authority.
 
 ### B. USB / sneaker-net
 
-Export a short-lived invitation and SLH public identity, have the device generate a local signing key and export only its enrollment request/public key, then import the request into the same administrator queue. Administrator approval (or scoped enrollment capability) is exported back as a protected response. There are **no CSR, client certificates or organizational CA**. This transports enrollment approval; it does not itself implement offline computation.
+Export a short-lived invitation and SLH public identity, have the device generate a local signing key and export only its enrollment request/public key, then import the request into the same administrator queue. The administrator's approval is exported back as a protected response. There are **no CSR, client certificates or organizational CA**. This transports enrollment approval; it does not itself implement offline computation.
 
 ### C. Phone and SEH
 
@@ -83,7 +83,7 @@ GET  /api/applications/worker/managed/status             # local adapter [TARGET
 
 POST /v1/enrollment/requests                             # common SLH enrollment record
 GET  /v1/enrollment/admins                               # public display aliases, opt-in only
-POST /v1/enrollment/approvals                            # same approval engine for key or admin session
+POST /v1/enrollment/approvals                            # administrator approval engine; legacy key path is backend compatibility only
 POST /v1/enrollment/complete                             # device proves possession
 POST /v1/auth/challenge                                  # fresh channel-bound challenge
 POST /v1/auth/verify                                     # signed proof / scoped session
@@ -105,9 +105,9 @@ The worker execution protocol retains `slh.worker.hello`, `slh.worker.heartbeat`
 
 1. Extend existing Worker connection mode selector and authenticator component, without breaking current Ring 2 public mode.
 2. Add direct SLH transport and stable pinned SLH identity verification; create/store per-device key in managed mode.
-3. Add common pending-enrollment request with selected admin alias and optional one-time enrollment key; bind it to SLH's **one approval API**.
+3. Add a request-only pending-enrollment screen with read-only request status; administrator approval uses SLH's separate administration UI and existing approval API.
 4. Implement Known Device signed challenges, session fencing, optional current-user authenticator and policies for unattended workers.
 5. Support offline USB enrollment transfer and optional SEH end-to-end transport without changing enrollment identity or permissions.
 6. Feed actual worker capabilities, capacity and outcomes to the SLH worker scheduler; verify multiworker wallet delegation later.
 
-**Acceptance:** two newly installed Workers use the different enrollment approval methods, converge on identical registry state, and prove their device keys; revoked/unknown machines fail. At least one pending request is deferred for physical inspection. A remote Worker performs the same Known Device exchange via SEH, with no leaked private keys and no marketplace wallet on the Worker. A simulated authenticator must exercise real signing and failure checks. All of these are **TARGET** tests, not existing results.
+**Acceptance:** two newly installed Workers each submit a request without any administrator credentials in their own UI; administrator approvals from the SLH queue converge on the expected registry state, and both devices prove their keys; revoked/unknown machines fail. At least one pending request is deferred for physical inspection. A remote Worker performs the same Known Device exchange via SEH, with no leaked private keys and no marketplace wallet on the Worker. A simulated authenticator must exercise real signing and failure checks. All of these are **TARGET** tests, not existing results.

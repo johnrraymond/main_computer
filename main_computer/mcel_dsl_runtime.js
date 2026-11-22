@@ -1067,7 +1067,7 @@ function createDsl(metadata, source) {
   }
   const surface = {
     form(name, options = {}) {
-      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "resetControl", "submitLabel", "color"], `surface.form:${name}`);
+      knownOptions(options, ["id", "label", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit", "resetControl", "submitLabel", "placeholders", "color"], `surface.form:${name}`);
       if(options.label!==undefined)assert(typeof options.label==="string" && options.label.length>0 && options.label.length<=120,
         "MCEL_DSL_FORM_LABEL_INVALID", "Form label must be nonempty semantic text.");
       if(options.submitLabel!==undefined)assert(typeof options.submitLabel==="string" &&
@@ -1089,6 +1089,14 @@ function createDsl(metadata, source) {
                (schema.kind==="boolean" && typeof v==="boolean"),
           "MCEL_DSL_FORM_DEFAULT_INVALID", "Form default must match its typed field.");
         defaults[k]=v;
+      }
+      const placeholders={};
+      for (const [field,value] of Object.entries(options.placeholders || {})) {
+        assert(Object.hasOwn(fields,field) && fields[field].kind==="string" &&
+          typeof value==="string" && value.trim().length>0 && value.length<=256,
+          "MCEL_DSL_FORM_PLACEHOLDER_INVALID",
+          "Placeholders require a declared string field and a bounded, nonempty hint.");
+        placeholders[field]=value;
       }
       if (options.intent !== undefined) assert(options.intent instanceof IntentHandle,
         "MCEL_DSL_FORM_INTENT_REQUIRED", "Bound form requires intent handle.");
@@ -1130,7 +1138,8 @@ function createDsl(metadata, source) {
         "MCEL_DSL_FORM_RESET_CONTROL_INVALID","Reset control must be boolean and required for reset-and-submit.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
         sourceName: name, fields, ...authoredColor(options,`surface.form:${name}`), ...(options.label?{label:options.label}:{}),
-        ...(options.submitLabel!==undefined?{submitLabel:options.submitLabel}:{}), ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
+        ...(options.submitLabel!==undefined?{submitLabel:options.submitLabel}:{}), ...(Object.keys(defaults).length ? {defaults} : {}),
+        ...(Object.keys(placeholders).length?{placeholders}:{}), ...(options.intent ? {intent: ref(options.intent)} : {}),
         ...(Object.keys(fieldState).length?{fieldState}:{}),...(Object.keys(acceptResult).length?{acceptResult}:{}),
         ...(editor?{editor}:{}),...(options.clearIntent?{clearIntent:ref(options.clearIntent)}:{}),
         ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...(options.resetControl===false?{resetControl:false}:{}),

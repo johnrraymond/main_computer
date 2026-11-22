@@ -82,18 +82,18 @@ def test_complete_browser_differential_and_explicit_gaps():
     assert report['humanDesignApproval']=='UNVERIFIED'
     assert report['browser']['status']=='PASS'
     assert report['browser'].get('reason') is None, report['browser'].get('reason')
-    assert len(report['browser']['cases'])==21
+    assert len(report['browser']['cases'])==23
     assert not report['browser']['pageErrors']['incumbent']
     assert not report['browser']['pageErrors']['candidate']
     cases={x['id']:x for x in report['browser']['cases']}
     required=(
         'arithmetic:3 m + 40 cm','keypad-equals','graph:x^2','symbolic:evaluate',
         'mode-preserves-arithmetic-input','arithmetic:incompatible-units',
-        'graph-reset-defaults','graph-reset-redraw','qa-context-keys',
-        'arithmetic-helper-applies-result','graph-helper-applies-graph',
-        'symbolic-helper-populates-input','symbolic-clear-output',
+        'graph-reset-defaults','graph-reset-redraw',
+        'chat-result-qa-with-full-context','chat-applies-arithmetic','chat-applies-graph',
+        'chat-reviews-symbolic','symbolic-clear-output',
         'graph-editor:sin()','graph-editor:x','graph-editor:backspace','graph-editor:clear',
-        'contextual-chat:controller-thread-context',
+        'contextual-chat:controller-thread-context','help-prose-never-creates-handoff','help-single-model-terminus',
     )
     for case_id in required:
         assert cases[case_id]['status']=='PASS',case_id

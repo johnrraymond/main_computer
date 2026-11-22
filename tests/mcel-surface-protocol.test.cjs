@@ -15,7 +15,9 @@ async function simulate({failServiceWorker = false, hangWithExistingWorker = fal
   const order = [];
   const parent = {postMessage: (payload, target) => messages.push({payload, target})};
   const errorNode = {textContent: '', style: {display: 'none'}};
-  const iframe = {id: '', addEventListener(){}, src: ''};
+  const iframeListeners = {};
+  const iframe = {id: '', src: '', contentWindow: {location:{href:'about:blank'}},
+    addEventListener(type,fn){iframeListeners[type]=fn;}};
   const frame = {frame: iframe, go(url) {scripts.push(url);}, addEventListener(){}, reload(){}, back(){}, forward(){}};
   const doc = {getElementById: id => id === 'mcel-surface-error' ? errorNode : null,
     body: {appendChild(child) {assert.equal(child, iframe);}}};
@@ -54,7 +56,7 @@ async function simulate({failServiceWorker = false, hangWithExistingWorker = fal
     assert.ok(fn, 'Missing listener for ' + type);
     fn({origin:parentOrigin,source:parent,data:{mcelBrowserControl:true,...data}});
   }
-  return {messages,handlers,errorNode,iframe,scripts,dispatch,order};
+  return {messages,handlers,errorNode,iframe,iframeListeners,scripts,dispatch,order};
 }
 
 test('isolated surface sends deterministic staged ready handshake and navigates fixture',async()=>{
@@ -101,4 +103,42 @@ test('controller failure prevents any Service Worker attempt',async()=>{
   assert.ok(e.messages.some(m=>m.payload.type==='error' && /controller failed/.test(m.payload.error)));
   assert.ok(!e.order.includes('sw-registration'));
   assert.ok(!e.messages.some(m=>m.payload.type==='ready'));
+});
+
+
+test('HTTP 301 final Scramjet frame URL is reported to trusted MCEL parent',async()=>{
+  const e = await simulate();
+  const final='http://127.0.0.9:48083/redirected?source=301';
+  const encoded=encodeURIComponent(final);
+  e.iframe.contentWindow.location.href = 'http://127.0.0.3:45678/scramjet/' + encoded;
+  const prior = e.messages.length;
+  e.iframeListeners.load();
+  const updates = e.messages.slice(prior).filter(m => m.payload.type==='navigating');
+  assert.equal(updates.length,1);
+  assert.equal(updates[0].payload.url,final);
+  assert.equal(updates[0].payload.redirected,true);
+  assert.equal(updates[0].target,parentOrigin);
+  e.iframeListeners.load();
+  assert.equal(e.messages.filter(m=>m.payload.type==='navigating'&&m.payload.url===final).length,1);
+});
+
+test('non-web or unrecognized proxied frame URLs are not reported as destinations',async()=>{
+  const e = await simulate();
+  for (const uri of [
+    'http://127.0.0.3:45678/other-route',
+    'http://127.0.0.3:45678/scramjet/javascript%3Aalert(1)',
+    'http://127.0.0.3:45678/scramjet/https%3A%2F%2Fusername%3Apassword%40evil.example%2F',
+  ]) {
+    e.iframe.contentWindow.location.href = uri;
+    const before = e.messages.filter(m=>m.payload.type==='navigating').length;
+    e.iframeListeners.load();
+    assert.equal(e.messages.filter(m=>m.payload.type==='navigating').length,before);
+  }
+});
+
+test('Scramjet virtual location shim reports final URL after a redirect',async()=>{
+  const e = await simulate();
+  e.iframe.contentWindow.location.href = 'https://www.youtube.com/watch?v=abc';
+  e.iframeListeners.load();
+  assert.ok(e.messages.some(m=>m.payload.type==='navigating' && m.payload.url === 'https://www.youtube.com/watch?v=abc'));
 });

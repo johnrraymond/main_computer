@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+import pytest
+
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
 from main_computer.multisession_key_signing import build_personal_sign_blob
@@ -65,7 +67,8 @@ def test_deleted_worker_page_rest_endpoint_returns_404_without_registration(tmp_
         thread.join(timeout=3)
 
 
-def test_worker_start_proxy_registers_msk_authorized_worker_with_selected_hub(monkeypatch) -> None:
+@pytest.mark.parametrize("include_offer_key_id", [True, False])
+def test_worker_start_proxy_registers_msk_authorized_worker_with_selected_hub(monkeypatch, include_offer_key_id) -> None:
     previous_networks_file = os.environ.get("MAIN_COMPUTER_HUB_NETWORKS_FILE")
     previous_cwd = Path.cwd()
     with tempfile.TemporaryDirectory() as tmp:
@@ -146,7 +149,7 @@ def test_worker_start_proxy_registers_msk_authorized_worker_with_selected_hub(mo
             offer_result = _post_json(f"{viewport_url}/api/applications/worker/offer-sync", {
                 "hub_url": hub_url, "network": "dev", "chain_id": "42424242",
                 "requested_ring": "2", "wallet_address": _TEST_WORKER_WALLET,
-                "active_multisession_key_id": key_id,
+                **({"active_multisession_key_id": key_id} if include_offer_key_id else {}),
                 "worker": {"node_id": "signed-ui-worker-001", "model": "mock-ai-model-signed-worker",
                            "models": ["mock-ai-model-signed-worker"],
                            "pricing": {"credits_per_token": "0.001", "target_output_tokens": 1024},

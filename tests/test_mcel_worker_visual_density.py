@@ -100,10 +100,12 @@ def test_worker_layout_preserves_navigation_radio_semantics_and_responsive_struc
             assert page.locator('input[name="hubUrl"]').input_value() == 'https://slh.example:8899'
             page.locator('[data-mcel-purpose="navigation"] [data-value="worker"]').click()
             page.wait_for_function("() => window.__mcelWorker.app.readState('state:policy')?.availabilityMode==='ai_idle'")
-            assert page.locator('[data-mcel-form-pattern="boolean-enum-pairs"]').count() == 1
             assert page.locator('input[name="sellerEnabled"]').is_checked()
-            assert page.locator('input[name="remoteEnabled"]').is_checked() is False
+            assert page.locator('input[name="remoteEnabled"]').is_visible() is False
             assert page.locator('select[name="availabilityMode"]').input_value() == 'ai_idle'
+            page.locator('[data-mcel-purpose="navigation"] [data-value="requester"]').click()
+            assert page.locator('input[name="remoteEnabled"]').is_visible()
+            page.locator('[data-mcel-purpose="navigation"] [data-value="worker"]').click()
 
             page.set_viewport_size({'width': 1280, 'height': 720})
             page.wait_for_function('''() => document.querySelector('[data-mcel-natural-scroller="inspection"]')

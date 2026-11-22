@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from main_computer.mcel_applications_registry import attach_inert_presentation
+from main_computer.mcel_signal_scheduler_rollout import start_certified
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from main_computer.mcel_slh_target_navigation import TAB_STYLE, target_tabs
 from main_computer.mcel_slh_worker_bridge import (
@@ -345,7 +346,7 @@ const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-wor
   {{capabilities:adapter,composition:data.composition,presentation:"expert",
     navigationChrome:document.getElementById("mcel-slh-navigation-context"),
     signalSchedulerIntegration:true,
-    signalSchedulerStartEnabled:{json.dumps(os.environ.get("MCEL_SIGNAL_SCHEDULER_SLH") == "certified")}}});
+    signalSchedulerStartEnabled:{json.dumps(start_certified("slh"))}}});
 diagnosticState.mount="completed";
 recordDiagnostic("semantic-mount","completed");
 const scopeKey=identityKey;

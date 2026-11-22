@@ -3,6 +3,7 @@
 const MSK_EVENTS = new Set([
   'request.start', 'request.blocked', 'request.ignored',
   'signature.created', 'hub.response', 'request.failed',
+  'revoke.start', 'revoke.signature.created', 'revoke.local.response', 'revoke.hub.verified', 'revoke.failed',
 ])
 
 // The viewport embeds wallet.js once at Python module import. Applying a
@@ -21,6 +22,7 @@ export async function assertServedWorkerMskContract(page) {
       // Report booleans only. Do not expose user entropy or any signed payload.
       return {
         builderAvailable: true,
+        hasNativeEthersLoader: window.MainComputerWalletLibrary?.constants?.mskEthersLoader === 'worker-esm-or-global-v1',
         hasUserSlug: typeof message?.user_slug === 'string' && /^[0-9a-f]{64}$/.test(message.user_slug),
         correctChain: message?.chain_id === '0x28757b1',
         correctPurpose: message?.purpose === 'request_multi_session_key',
@@ -29,10 +31,10 @@ export async function assertServedWorkerMskContract(page) {
       return {builderAvailable: true, builderFailed: true}
     }
   })
-  if (observed?.builderAvailable && observed.hasUserSlug && observed.correctChain && observed.correctPurpose) {
+  if (observed?.builderAvailable && observed.hasNativeEthersLoader && observed.hasUserSlug && observed.correctChain && observed.correctPurpose) {
     return true
   }
-  throw new Error('Served Worker wallet signer lacks the required signed user_slug or is invalid. ' +
+  throw new Error('Served Worker wallet signer lacks the native MCEL ethers loader, signed user_slug, or valid chain schema. ' +
     'The viewport embeds wallet.js at server startup: restart the local Main Computer viewport server ' +
     'after applying the wallet.js patch, then rerun acceptance. No MSK signature was requested.')
 }
@@ -46,6 +48,32 @@ export function isMskEndpointRequest(request) {
   if (!request || request.method() !== 'POST') return false
   try { return new URL(request.url()).pathname === '/api/applications/worker/multisession-key/request' }
   catch { return false }
+}
+
+// Revocation needs its own endpoint evidence. The issuance HTTP 200 does NOT
+// prove that the second signed request reached the local backend or Hub.
+export function isMskRevocationEndpointRequest(request) {
+  if (!request || request.method() !== 'POST') return false
+  try { return new URL(request.url()).pathname === '/api/applications/worker/multisession-key/revoke' }
+  catch { return false }
+}
+
+// Report only fixed reason categories. The Hub's raw error may contain signed
+// material, wallet addresses or private HTTP details and must never be echoed.
+export function classifyMskRevocationRejection(rejection) {
+  const value = String(rejection?.reason || '').toLowerCase()
+  if (/cluster[_ -]?id|cluster mismatch/.test(value)) return 'hub-cluster-mismatch'
+  if (/wallet_revocation_intent_mismatch|revocation.intent.mismatch|invalid wallet-signed key revocation intent|request[_ -]?id mismatch/.test(value)) return 'signed-intent-mismatch'
+  if (/wallet_revocation_owner_mismatch|key does not belong|not belong to/.test(value)) return 'wallet-owner-mismatch'
+  if (/no active saved|not active|already.inactive|not found for signing wallet/.test(value)) return 'key-not-active'
+  if (/hub_revocation_unverified/.test(value)) return 'hub-unverified'
+  if (/expired|stale|timestamp|issued_at|expires_at/.test(value)) return 'signed-intent-expired'
+  if (/signature|personal_sign|signer|recovered.*address/.test(value)) return 'signature-rejected'
+  if (/unreachable|timed? out|network|dns|tls/.test(value)) return 'hub-unreachable'
+  if (/hub-http-5\d\d|http 5\d\d/.test(value)) return 'hub-http-5xx'
+  if (/hub-http-4\d\d|http 4\d\d/.test(value)) return 'hub-http-4xx'
+  if (Number.isInteger(rejection?.httpStatus))return 'local-api-rejected'
+  return 'unclassified'
 }
 
 // Only inspect the LOCAL MSK endpoint's failed response. The endpoint emits

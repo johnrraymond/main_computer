@@ -1,6 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {classifyWorkerMsk, isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, workerMskFailureCategory, safeMskApiRejection, readMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract} from './worker_msk_outcome.mjs'
+import {classifyWorkerMsk, isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, workerMskFailureCategory, safeMskApiRejection, readMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract, isMskRevocationEndpointRequest, classifyMskRevocationRejection} from './worker_msk_outcome.mjs'
 
 const base = {events:['request.start','signature.created','hub.response']}
 
@@ -121,12 +121,12 @@ test('redacts sensitive values and refuses arbitrary request material in error m
 // The earlier user_slug source patch was correct, but the local viewport server
 // retained a pre-patch in-memory HTML snapshot. Reject that SERVED version.
 test('served signer schema is validated before MetaMask signing', async () => {
-  const valid = {builderAvailable:true,hasUserSlug:true,correctChain:true,correctPurpose:true}
+  const valid = {builderAvailable:true,hasNativeEthersLoader:true,hasUserSlug:true,correctChain:true,correctPurpose:true}
   assert.equal(await assertServedWorkerMskContract({evaluate:async()=>valid}),true)
 })
 
 test('stale served signer missing user_slug refuses before a wallet signature', async () => {
-  const stale = {builderAvailable:true,hasUserSlug:false,correctChain:true,correctPurpose:true}
+  const stale = {builderAvailable:true,hasNativeEthersLoader:true,hasUserSlug:false,correctChain:true,correctPurpose:true}
   await assert.rejects(assertServedWorkerMskContract({evaluate:async()=>stale}), error =>
     /restart the local Main Computer viewport server/.test(error.message) &&
     /No MSK signature was requested/.test(error.message) &&
@@ -138,8 +138,37 @@ test('missing, throwing, or wrong-chain served builder fails closed', async () =
     {builderAvailable:false},
     {builderAvailable:true,builderFailed:true},
     {builderAvailable:true,hasUserSlug:true,correctChain:false,correctPurpose:true},
+    {builderAvailable:true,hasNativeEthersLoader:false,hasUserSlug:true,correctChain:true,correctPurpose:true},
     {builderAvailable:true,hasUserSlug:true,correctChain:true,correctPurpose:false},
   ]) {
     await assert.rejects(assertServedWorkerMskContract({evaluate:async()=>state}), /Served Worker wallet signer/)
   }
+})
+
+test('revocation has a distinct exact POST endpoint and event inventory', () => {
+  const revoke = (url, method='POST')=>({url:()=>url,method:()=>method})
+  assert.equal(isMskRevocationEndpointRequest(revoke('http://127.0.0.1:8765/api/applications/worker/multisession-key/revoke')),true)
+  assert.equal(isMskRevocationEndpointRequest(revoke('http://127.0.0.1:8765/api/applications/worker/multisession-key/request')),false)
+  assert.equal(isMskRevocationEndpointRequest(revoke('http://127.0.0.1:8765/api/applications/worker/multisession-key/revoke','GET')),false)
+  assert.equal(isMskRevocationEndpointRequest(revoke('invalid')),false)
+  for(const event of ['revoke.start','revoke.signature.created','revoke.local.response','revoke.hub.verified','revoke.failed'])
+    assert.equal(workerMskEvent(`[worker-msk] ${event}`),event)
+  assert.equal(workerMskEvent('[worker-msk] revoke.private.message'),null)
+})
+
+test('revocation categorizes backend and Hub errors without exposing signed data', () => {
+  assert.equal(classifyMskRevocationRejection({httpStatus:400,reason:'hub-http-400: invalid wallet-signed key revocation intent'}),'signed-intent-mismatch')
+  assert.equal(classifyMskRevocationRejection({httpStatus:400,reason:'hub-http-400: cluster_id mismatch'}),'hub-cluster-mismatch')
+  assert.equal(classifyMskRevocationRejection({httpStatus:400,reason:'No active saved multi-session key was found for this wallet and Hub.'}),'key-not-active')
+  assert.equal(classifyMskRevocationRejection({httpStatus:400,reason:'Hub returned HTTP 400'}),'hub-http-4xx')
+  assert.equal(classifyMskRevocationRejection({httpStatus:400,reason:'private details 0x'+'b'.repeat(40)}),'local-api-rejected')
+  assert.equal(classifyMskRevocationRejection(null),'unclassified')
+})
+
+test('revocation failure response may be inspected, but never successful response with key IDs',async()=>{
+  const rejected=await readMskApiRejection({status:()=>400,json:async()=>({error:'hub_revocation_unverified'})})
+  assert.equal(classifyMskRevocationRejection(rejected),'hub-unverified')
+  let readSuccess=false
+  assert.equal(await readMskApiRejection({status:()=>200,json:async()=>{readSuccess=true;throw Error('sensitive')}}),null)
+  assert.equal(readSuccess,false)
 })

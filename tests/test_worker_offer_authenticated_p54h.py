@@ -251,3 +251,65 @@ def test_offer_update_refuses_session_close_deferred_by_racing_active_work(tmp_p
     assert 'Worker job began' in result['error']
     assert not v.outbound
     assert not v._load_worker_settings()['workerOfferPending']
+
+
+def _use_real_private_msk_authorization(view, *, keys):
+    """Exercise the production cache-based MSK authorization, not the fake receipt."""
+    from types import MethodType
+    view._worker_multisession_authorization_for_wallet = MethodType(
+        ViewportEnergyRoutesMixin._worker_multisession_authorization_for_wallet, view)
+    def matching_keys(*, wallet_address, hub_url):
+        return [key for key in keys if key['wallet_address'] == wallet_address
+                and key['hub_url'] == hub_url]
+    view._worker_multisession_keys_for_wallet = matching_keys
+
+
+def test_redacted_browser_msk_id_is_resolved_from_server_cache_for_offer(tmp_path):
+    v = _Viewport(tmp_path, network='testnet')
+    v.body.pop('active_multisession_key_id')
+    hub = v.body['hub_url']
+    _use_real_private_msk_authorization(v, keys=[{
+        'id': KEY, 'status': 'active', 'wallet_address': WALLET,
+        'chain_id': '42424241', 'hub_url': hub,
+    }])
+    result, kwargs = _sync(v)
+    assert kwargs == {}
+    assert result['ok'] and result['status'] == 'accepted'
+    assert v.outbound[0][1]['multisession_authorization']['key_id'] == KEY
+    assert v._load_worker_settings()['workerOfferIntent']['active_multisession_key_id'] == KEY
+
+
+def test_missing_active_private_msk_denies_offer_without_hub_side_effects(tmp_path):
+    v = _Viewport(tmp_path, network='testnet')
+    v.body.pop('active_multisession_key_id')
+    _use_real_private_msk_authorization(v, keys=[])
+    result, kwargs = _sync(v)
+    assert result['ok'] is False and kwargs['status'] == 400
+    assert 'No active saved multi-session key' in result['error']
+    assert not v.outbound and not v._load_worker_settings().get('workerOfferPending')
+
+
+def test_explicit_wrong_msk_id_does_not_fallback_to_another_cached_key(tmp_path):
+    v = _Viewport(tmp_path, network='testnet')
+    v.body['active_multisession_key_id'] = 'msk-not-the-active-one'
+    _use_real_private_msk_authorization(v, keys=[{
+        'id': KEY, 'status': 'active', 'wallet_address': WALLET,
+        'chain_id': '42424241', 'hub_url': v.body['hub_url'],
+    }])
+    result, kwargs = _sync(v)
+    assert result['ok'] is False and kwargs['status'] == 400
+    assert 'with that id' in result['error']
+    assert not v.outbound
+
+
+def test_wrong_chain_private_msk_does_not_authorize_offer(tmp_path):
+    v = _Viewport(tmp_path, network='testnet')
+    v.body.pop('active_multisession_key_id')
+    _use_real_private_msk_authorization(v, keys=[{
+        'id': KEY, 'status': 'active', 'wallet_address': WALLET,
+        'chain_id': '42424240', 'hub_url': v.body['hub_url'],
+    }])
+    result, kwargs = _sync(v)
+    assert result['ok'] is False and kwargs['status'] == 400
+    assert 'different chain' in result['error']
+    assert not v.outbound

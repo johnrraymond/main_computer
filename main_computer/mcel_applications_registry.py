@@ -130,7 +130,8 @@ def read_registry(repo: Path, *, validate_presentation: bool = True) -> dict:
     return registry
 
 
-def resolve_presentation(registry: dict, app_id: str, *, promoted: bool = True) -> dict:
+def resolve_presentation(registry: dict, app_id: str, *, promoted: bool = True,
+                         semantic_candidate: bool = False) -> dict:
     """Pure resolution: system defaults, then sparse per-app overrides."""
     app = next((a for a in [*registry["apps"], *registry.get("runtimeApps", [])] if a["id"] == app_id), None)
     if app is None:
@@ -138,7 +139,13 @@ def resolve_presentation(registry: dict, app_id: str, *, promoted: bool = True) 
     profiles = dict(registry["presentation"]["system"])
     profiles.update(app.get("presentation", {}))
     rollout = registry["presentation"]["rollout"]
-    eligible = promoted and app["mount"] == "semantic"
+    # The native Worker candidate is hosted on its own semantic route while
+    # /applications/worker is still the canonical legacy marketplace Worker.
+    # Opt-in is intentionally explicit and restricted to this one application;
+    # never promote the production registry entry to make styling work.
+    if semantic_candidate and (app_id != "worker" or app["mount"] != "legacy"):
+        raise CandidateHostError("Unknown semantic presentation candidate")
+    eligible = promoted and (app["mount"] == "semantic" or semantic_candidate)
     enabled = bool(eligible and rollout["apps"].get(app_id, rollout["defaultEnabled"]))
     return {
         "schema": SELECTION_SCHEMA,
@@ -261,7 +268,8 @@ def inert_presentation_mount(repo: Path, app_id: str, root_id: str, *, controlle
             + '}catch(e){window.__mcelPresentationSelection=Object.freeze({status:"registry-unavailable",reason:String(e)});}})();</script>')
 
 
-def attach_inert_presentation(page: str, repo: Path, app_id: str, root_id: str, *, promoted: bool) -> str:
+def attach_inert_presentation(page: str, repo: Path, app_id: str, root_id: str, *,
+                                promoted: bool, semantic_candidate: bool = False) -> str:
     """Mount the system presentation for a registered promoted MCEL app.
 
     Presentation is a core MCEL runtime facility, not an app-owned dependency.
@@ -281,7 +289,8 @@ def attach_inert_presentation(page: str, repo: Path, app_id: str, root_id: str, 
     # A damaged/unavailable policy cannot prevent an otherwise valid MCEL app
     # from mounting. Disable presentation and retain incumbent rendering.
     try:
-        selection = resolve_presentation(read_registry(repo), app_id)
+        selection = resolve_presentation(read_registry(repo), app_id,
+                                             semantic_candidate=semantic_candidate)
     except (OSError, ValueError, CandidateHostError) as error:
         LOGGER.warning("MCEL presentation registry unavailable for %s: %s", app_id, error)
         selection = {"schema": SELECTION_SCHEMA, "appId": app_id,

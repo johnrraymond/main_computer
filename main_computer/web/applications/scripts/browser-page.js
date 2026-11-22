@@ -206,8 +206,12 @@
       }
     } else if (msg.type === 'navigating') {
       if (typeof msg.url === 'string' && /^https?:\/\//.test(msg.url)) {
+        const previousUrl = currentUrl;
         currentUrl = msg.url;
-        if (document.activeElement !== ui.address) ui.address.value = currentUrl;
+        // Enter leaves focus in the address field. Update it after a redirect
+        // unless the user has started typing an entirely new destination.
+        if (document.activeElement !== ui.address || ui.address.value === previousUrl)
+          ui.address.value = currentUrl;
         syncAddressRoute(currentUrl);
       }
       status('Navigating to ' + currentUrl);

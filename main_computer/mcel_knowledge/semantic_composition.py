@@ -246,9 +246,17 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     # Target-dependent forms are contextual disclosures before the shared
     # directory, followed by view controls. No app-specific names are used.
     navigation_kinds = {node["id"]:node["nodeKind"] for node in nodes}
-    order_in_rail = {"form":0,"collection":1,"control":2,"state-value":3}
-    groups["navigation"].sort(key=lambda identifier:(
-        order_in_rail.get(navigation_kinds.get(identifier),4),identifier))
+    order_in_rail = {"form":0,"collection":2,"control":3,"state-value":4}
+    def navigation_rank(identifier):
+        node=by_node[identifier]
+        # Explicit application-view selectors lead the navigation rail, then
+        # independent identity/location collections. A collection is not a
+        # navigation destination merely because it supports selection.
+        intent=intents.get(_ref(node.get("intent")),{})
+        if node["nodeKind"]=="control" and intent.get("viewTransition"):
+            return (1,identifier)
+        return (order_in_rail.get(navigation_kinds.get(identifier),5),identifier)
+    groups["navigation"].sort(key=navigation_rank)
     if not any(n.get("nodeKind") in {"collection", "record-notebook", "operation-notebook"} for n in nodes):
         raise ValueError("P1 vertical slice requires an authentic keyed collection")
     # Application purpose controls organization, but cannot create reads, timers, or actions.
@@ -279,10 +287,8 @@ def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
                 # persistent identity collection heading. Each authored semantic
                 # navigation region retains its own generated region, while
                 # scroll ownership still belongs to the shared left rail.
-                rank = {"form":0, "collection":1, "control":2, "state-value":3}
-                kinds = {n["id"]:n["nodeKind"] for n in nodes}
                 def region_priority(r):
-                    return (min((rank.get(kinds.get(m["ref"]),4) for m in r["members"]),default=4),r["id"])
+                    return (min((navigation_rank(m["ref"])[0] for m in r["members"]),default=5),r["id"])
                 for authored in sorted(authored_nav,key=region_priority):
                     member_ids = [ident for ident in groups[recipe]
                                   if navigation_owners[ident]["id"] == authored["id"]]

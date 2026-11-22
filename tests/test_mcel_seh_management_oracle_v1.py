@@ -231,7 +231,11 @@ def test_browser_navigation_notebooks_and_target_specific_authority(target):
                 row.locator('[data-mcel-notebook-action="Accept"]').click()
                 page.wait_for_function("() => window.calls.some(c=>c.body?.target==='remote-seh' && c.body?.operation==='accept')")
             else:
-                assert page.locator('[data-mcel-operation-notebook]:visible').count()==1
+                seh_notebook=page.locator('[data-mcel-operation-notebook][aria-label="SEH Lifecycle"]:visible')
+                assert seh_notebook.count()==1
+                # Software Authenticator now lives within the identity rail,
+                # not as a second operation notebook.
+                assert page.locator('[data-mcel-operation-notebook][aria-label="Software Authenticator"]:visible').count()==0
                 if target=='overview':
                     page.evaluate("async () => await window.__mcelSlh.app.execute('intent:read-seh-deployment')")
                     session_target='local'
@@ -242,11 +246,11 @@ def test_browser_navigation_notebooks_and_target_specific_authority(target):
                     form.locator('[type="submit"]').click()
                     session_target='network'
                 page.wait_for_function("() => window.calls.some(c=>c.url.endsWith('/seh/deployment'))")
-                assert page.locator('[data-mcel-operation-notebook]:visible [data-mcel-operation-tab]').all_text_contents()==["Configuration","Deployment","Connection","Status","Diagnostics"]
-                page.locator('[data-mcel-operation-notebook]:visible [data-mcel-operation-tab="connection"]').click()
+                assert seh_notebook.locator('[data-mcel-operation-tab]').all_text_contents()==["Configuration","Deployment","Connection","Status","Diagnostics"]
+                seh_notebook.locator('[data-mcel-operation-tab="connection"]').click()
                 page.wait_for_function("() => window.calls.some(c=>c.url.endsWith('/seh/lifecycle'))")
-                page.wait_for_function("""() => document.querySelector('[data-mcel-operation-notebook]:not([hidden]) [data-mcel-operation-action="Stop"]:not(:disabled)')""")
-                page.locator('[data-mcel-operation-notebook]:visible [data-mcel-operation-action="Stop"]').click()
+                page.wait_for_function("""() => document.querySelector('[data-mcel-operation-notebook][aria-label="SEH Lifecycle"]:not([hidden]) [data-mcel-operation-action="Stop"]:not(:disabled)')""")
+                seh_notebook.locator('[data-mcel-operation-action="Stop"]').click()
                 page.wait_for_function("() => window.calls.some(c=>c.url.endsWith('/seh/lifecycle') && c.body.operation==='stop')")
                 assert page.evaluate("window.calls.some(c=>c.url.endsWith('/seh/lifecycle') && c.body.target==='"+session_target+"')")
                 assert not page.evaluate("window.calls.some(c=>c.body?.target==='remote-seh')")
@@ -337,14 +341,24 @@ def test_seh_notebook_mount_is_fail_closed_and_reports_refused_lifecycle_action(
             page.wait_for_function('() => !!window.__mcelSlh?.app')
             assert 'SLH semantic mount refused' not in page.locator('body').inner_text()
             assert page.locator('form[data-intent="intent:configure-and-enable-organization"] button[type="reset"]').count()==0
-            assert page.locator('[data-mcel-operation-notebook]:visible').count()==1
-            page.locator('[data-mcel-operation-tab="connection"]:visible').click()
-            action=page.locator('[data-mcel-operation-action="Stop"]:visible')
+            seh_notebook=page.locator('[data-mcel-operation-notebook][aria-label="SEH Lifecycle"]:visible')
+            assert seh_notebook.count()==1
+            assert page.locator('[data-mcel-operation-notebook][aria-label="Software Authenticator"]:visible').count()==0
+            seh_notebook.locator('[data-mcel-operation-tab="connection"]').click()
+            action=seh_notebook.locator('[data-mcel-operation-action="Stop"]:visible')
             # The explicit Connection tab read transparently proves identity.
             assert action.is_enabled()
             page.wait_for_function("() => !!document.querySelector('[data-mcel-operation-action=Stop]:not(:disabled)')")
             action.click()
-            page.wait_for_function("() => document.querySelector('[data-mcel-operation-status]')?.textContent?.includes('Operation refused')")
+            page.wait_for_function("""() => {
+              const receipt=window.__mcelSlh.app.receipts()
+                .filter(x=>x.intentId==='intent:seh-connection-stop').at(-1);
+              const status=document.querySelector(
+                '[data-mcel-operation-notebook][aria-label="SEH Lifecycle"] [data-mcel-operation-status]');
+              return receipt?.disposition==='failed' &&
+                receipt.reason?.includes('OPERATION_REFUSED') &&
+                status?.textContent?.includes('OPERATION_REFUSED');
+            }""")
             assert page.locator('[data-mcel-operation-field="phase"]:visible').inner_text()=='CONNECTED'
             assert errors==[],errors
         finally:

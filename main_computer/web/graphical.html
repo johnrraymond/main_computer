@@ -1405,6 +1405,7 @@
         </div>
       </section>
       <nav class="top-actions" aria-label="Related views">
+        <button id="auth-proof-file-button" type="button" data-auth-login-url="https://mc.test:8875/auth/login?next=%2Fgraphical">Authenticate to Main Computer</button>
         <button id="refresh-button" type="button">Refresh</button>
         <button id="level-1-telemetry-button" type="button">Level 1 Telemetry</button>
         <button id="level-4-diagnostic-button" type="button">Level 4 System Check</button>
@@ -2445,6 +2446,19 @@
         return null;
       }
     }
+
+    // Bootstrap stage: navigation only. No proof bytes or session data
+    // are handled by the old HTTP /graphical page. The HTTPS login endpoint
+    // owns the native file picker, challenge response and persistent session.
+    const authProofButton = byId("auth-proof-file-button");
+    authProofButton.addEventListener("click", () => {
+      const target = new URL(authProofButton.dataset.authLoginUrl);
+      if (location.protocol === "https:" && location.hostname === "mc.test") {
+        // The CLI permits a non-default TLS port for isolated acceptance.
+        target.port = location.port;
+      }
+      window.location.assign(target.href);
+    });
 
     byId("level-1-telemetry-button").addEventListener("click", () => openTelemetryDialog({autoRun: true}));
     byId("level-4-diagnostic-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true, mode: "level4"}));

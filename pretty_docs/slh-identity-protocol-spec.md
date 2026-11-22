@@ -8,7 +8,7 @@
 
 ## 1. Non-negotiable invariants
 
-1. Administrator authorizes a device's **first enrollment**. Two UI paths, **Enroll with key** and **Approve from New Device Authorization Queue**, use **one backend approval method**. Selected administrator aliases grant no authority.
+1. Administrator authorizes a device's **first enrollment**. The requesting device has one UI path: submit a signed access request and observe its status. The SLH administrator approves or rejects through the separate **New Device Authorization Queue**. Legacy key authorization remains a backend-only compatibility path, not a second requester UI path.
 2. Devices generate their own private authentication keys and register public keys. Known Device login proves key possession with one-time, session-bound challenges. Editable names, owners, notes and addresses do not identify a device cryptographically.
 3. Every local actor uses the **same LMS-SLH identity model**. Policy may require a second independently controlled identity to approve an action, but **person and machine are not separate credential types**. Marketplace wallet keys remain distinct financial authority.
 4. Local SLH admin and an equally authorized administrator's separate SLH application use **the same backend admin API**, information model and role checks. Under the new **[TARGET]** ORG-SLH root-key mechanism, root material is normally obtained by authorized LMS-SLH access to the host disk; ORG-SLH root-authorized registration is **not** restricted to host-local network callers. A stolen root could be presented remotely. Hardware recovery is not required in this phase.
@@ -42,7 +42,7 @@ Private signing keys are never present in SLH's device registry and never appear
 
 **[TARGET]** ORG-SLH creates/reuses a persistent `LOCAL-AUTH-KEY` on startup. LMS-SLH, with trusted local disk access, submits that ORG-SLH-owned root through the network-accessible authenticated/encrypted ORG-SLH administration API with a selected **ordinary LMS-SLH identity** and fresh proof of signing-key possession. ORG-SLH grants that identity administrator authorization for first registration **or later explicit recovery**, including for an already established organization. Ordinary sessions continue to use challenge-response; the root is not an everyday login credential. There is no restriction to loopback source addresses for root verification, and a stolen root can be used remotely. **V6-A implements the root and ORG-SLH endpoint, V6-B the LMS-SLH caller, and V6-C conditional login-triggered first-admin enrollment when local ORG-SLH state shows zero active admin identities. Explicit recovery remains separate.** See [ORG-SLH Root Authorization](slh-local-auth-key-root-authorization.md).
 
-### 3.2 Two enrollment approvals; one implementation
+### 3.2 Request-only user interface; shared backend approval engine
 
 ```text
 POST /v1/enrollment/requests      (device_public_key, user_label, device_label, type, requested_roles, admin_alias)
@@ -51,6 +51,15 @@ GET  /v1/admin/enrollment/queue   (requires authenticated admin with enrollment 
 POST /v1/enrollment/approvals     (pending_request_id, authorization={admin_session | single_use_key})
 POST /v1/enrollment/complete      (pending_request_id, proof_of_device_key)
 ```
+
+**UI separation:** The requesting identity selects the SLH and its own identity,
+submits a signed pending request, and sees status only. The user-facing dialog
+must not contain an administrator identity/passkey/OTP field, a `For Admin Use
+Only` expander, a key-redemption action, or an approval button. The SLH
+administrator queue handles authorization in a separate administrator session.
+The `admin_alias` request field and `single_use_key` approval branch are retained
+for backend/legacy compatibility, not as alternative user-interface
+enrollment methods. SLH selects the responsible administrator queue.
 
 **Common transaction:** ensure pending request and key ownership, normalize authorization to an approved admin actor/scope, verify administrator policy and physical-presence requirements, consume key once if supplied, set exact device roles and owner, record `enrolled_by`/method/notes, and activate one Known Device entry. Replays or concurrent approval races cannot mint multiple identities or elevate role scope. Approvals must be auditable without storing the raw enrollment key. A user choosing an administrator alias does not prove the admin consented.
 
@@ -75,7 +84,7 @@ GET  /v1/admin/devices
 PATCH /v1/admin/devices/{device_id}       # friendly name, user assignment, notes, policy-controlled roles
 POST /v1/admin/devices/{device_id}/revoke
 GET  /v1/admin/enrollment/queue
-POST /v1/enrollment/approvals            # same approval API from UI or enrollment-key redemption
+POST /v1/enrollment/approvals            # administrator-side UI; legacy key redemption remains backend-only
 GET  /v1/admin/workers
 GET  /v1/admin/marketplace
 GET  /v1/admin/credits

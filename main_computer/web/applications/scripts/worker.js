@@ -27,6 +27,9 @@
       "3": "Ring 3 - Public untrusted"
     };
     let workerSettingsLoaded = false;
+    // The native MCEL seller form supplies verified values to the accepted
+    // legacy offer/MSK signer. No second marketplace signing engine is created.
+    let workerNativeMarketplaceConfig = null;
     let workerNetworkProfiles = {};
     let workerNetworkSession = {
       selected_network: WORKER_NETWORK_NONE,
@@ -1254,6 +1257,7 @@
         inactiveOnHubAt: String(key.inactiveOnHubAt || key.inactive_on_hub_at || ""),
         walletAddress,
         chainId: String(key.chainId || key.chain_id || ""),
+        clusterId: String(key.clusterId || key.cluster_id || result?.cluster_id || ""),
         hubUrl,
         serverSideKey: Boolean(key.serverSideKey || key.server_side_key || key.server_side_key === undefined),
         keyRedacted: Boolean(key.keyRedacted || key.key_redacted || !id),
@@ -3330,13 +3334,67 @@
         return;
       }
 
+      const keyId = String(activeKey.id || "").trim();
+      if (!/^msk[-_][A-Za-z0-9_-]{1,128}$/.test(keyId)) {
+        if (workerSaveStatus) workerSaveStatus.textContent =
+          "The active key identifier is no longer available in this browser session. Refusing unsigned revocation; recover the original issuing session.";
+        return;
+      }
+      const walletLibrary = window.MainComputerWalletLibrary || window.MainComputerWalletApp || {};
+      if (typeof walletLibrary.revokeMultiSessionKeySignature !== "function") {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Wallet-signed revocation is unavailable; reload Wallet and retry.";
+        return;
+      }
+
+      // The Stable Hub rejects a signed revoke unless cluster_id matches its
+      // logical cluster exactly. Never sign an empty or contradictory identity.
+      // For a pre-patch cached key, the already verified Hub identity may
+      // supply this public metadata; never invent it or switch networks.
+      const hubIdentity = workerNetworkSession.hub_status;
+      const hubIdentityCluster = (
+        workerNetworkSession.connection_status === "connected" &&
+        hubIdentity?.reachable === true &&
+        hubIdentity?.protocol === "stable-hub-identity-v1" &&
+        workerNormalizeHubUrl(workerNetworkSession.connected_hub_url) ===
+          workerNormalizeHubUrl(workerSelectedHubUrl())
+      ) ? String(hubIdentity?.status?.cluster_id || "").trim() : "";
+      const keyCluster = String(activeKey.clusterId || "").trim();
+      const clusterId = hubIdentityCluster || keyCluster;
+      if (keyCluster && hubIdentityCluster && keyCluster !== hubIdentityCluster) {
+        if (workerSaveStatus) workerSaveStatus.textContent =
+          "Cannot revoke: the active key cluster differs from the verified Hub cluster. Refresh the Hub session.";
+        return;
+      }
+      if (!clusterId || !workerMultisessionKeyMatchesSelectedHub(activeKey)) {
+        if (workerSaveStatus) workerSaveStatus.textContent =
+          "Cannot revoke: the active key has no verified cluster ID for the selected Hub. Refresh the Hub session.";
+        return;
+      }
+
       workerMultisessionInFlight = true;
       renderWorkerBridgeReadiness();
+      console.info("[worker-msk] revoke.start");
       try {
+        const signedRequest = await walletLibrary.revokeMultiSessionKeySignature({
+          requestContext: {
+            ...workerBuildMultisessionRequestContext(),
+            cluster_id: clusterId
+          },
+          origin: window.location?.origin || "main-computer-worker",
+          keyId
+        });
+        console.info("[worker-msk] revoke.signature.created");
         const result = await workerPostJson("/api/applications/worker/multisession-key/revoke", {
           wallet_address: workerBridgeState.wallet.address,
-          hub_url: workerSelectedHubUrl()
+          hub_url: workerSelectedHubUrl(),
+          key_id: keyId,
+          signed_request: signedRequest
         });
+        console.info("[worker-msk] revoke.local.response");
+        if (result?.hub_revoke?.ok !== true || result?.revoked !== true) {
+          throw new Error("Hub revocation was not positively verified.");
+        }
+        console.info("[worker-msk] revoke.hub.verified");
         workerMergeLoadedMultisessionKeys(result, workerBridgeState.wallet.address);
         if (!Array.isArray(result?.keys)) {
           activeKey.status = "revoked";
@@ -3351,6 +3409,7 @@
             : "Active multi-session key revoked in the local backend. Hub revoke was unavailable or failed.";
         }
       } catch (error) {
+        console.warn("[worker-msk] revoke.failed");
         if (workerSaveStatus) workerSaveStatus.textContent = `Failed to revoke multi-session key: ${workerErrorText(error)}`;
       } finally {
         workerMultisessionInFlight = false;
@@ -4558,13 +4617,15 @@
       const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
       const hubUrl = profile?.hub_url || workerNetworkSession.connected_hub_url || offerPayload.hub_url;
       const normalizedWallet = workerLowerAddress(walletAddress || workerNetworkWalletAddress());
-      const keyId = String(
-        activeMultisessionKey?.id
-        || activeMultisessionKey?.key_id
-        || activeMultisessionKey?.multisession_key_id
-        || workerNetworkSession.active_multisession_key_id
-        || ""
-      ).trim();
+      // The network-session payload does not own the MSK bearer id. Read the
+      // current wallet's active key, and only send a real, matching Hub key id.
+      // A redacted cache reload has no id; the server resolves it privately.
+      const activeKey = activeMultisessionKey || workerActiveMultisessionKey({walletAddress: normalizedWallet});
+      const keyId = activeKey
+        && activeKey.status === "active"
+        && workerMultisessionKeyMatchesWallet(activeKey, normalizedWallet)
+        && workerMultisessionKeyMatchesSelectedHub(activeKey)
+        ? String(activeKey.id || "").trim() : "";
       const payload = {
         hub_url: hubUrl,
         network: selected,
@@ -4661,15 +4722,17 @@
       }
     }
 
-    async function workerWorkNowForDuration(durationSeconds) {
+    async function workerWorkNowForDuration(durationSeconds, options = {}) {
       const duration = Math.max(60, Math.min(Number(durationSeconds || 0), 7 * 24 * 60 * 60));
       if (!Number.isFinite(duration) || duration <= 0) {
         if (workerSaveStatus) workerSaveStatus.textContent = "Choose a Work-now duration before continuing.";
+        if(options?.throwErrors) throw Error("Invalid Work-now duration");
         return;
       }
       if (!workerNetworkCanWorkNow()) {
         if (workerSaveStatus) workerSaveStatus.textContent = "Select a reachable Hub session and connect the matching wallet or load an active saved worker multi-session key before using Work now.";
         renderWorkerNetworkSurface();
+        if(options?.throwErrors) throw Error("Matching authenticated Worker session and wallet/MSK required");
         return;
       }
       workerCloseWorkNowDialog();
@@ -4722,21 +4785,23 @@
         }
         workerApplyWorkNowResponse(data);
         workerSetSaveStatus(`Work-now override active for ${workerFormatCountdown(duration * 1000)} on the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
+        return data;
       } catch (error) {
         workerSetSaveStatus("", {walletError: error, prefix: "Work now failed: "});
         await Promise.allSettled([
           workerLoadNetworkSessionFromBackend(),
           workerLoadRuntimeStatus()
         ]);
+        if(options?.throwErrors) throw error;
       } finally {
         workerNetworkWorkNowInFlight = false;
         renderWorkerNetworkSurface();
       }
     }
 
-    async function workerFinishWorkNowOverride(event) {
+    async function workerFinishWorkNowOverride(event, options = {}) {
       event?.preventDefault?.();
-      if (workerNormalPolicyAllowsWorkNow()) {
+      if (!options?.confirmed && workerNormalPolicyAllowsWorkNow()) {
         const confirmed = window.confirm("Your normal worker settings currently allow work, so finishing this override may not prevent future work.\n\nFinish anyway?");
         if (!confirmed) return;
       }
@@ -4747,9 +4812,11 @@
         const data = await workerSubmitNetworkWorkNow({action: "finish"});
         workerApplyWorkNowResponse(data);
         workerSetSaveStatus("Work-now override will finish after the current request; normal worker policy now controls future work.");
+        return data;
       } catch (error) {
         workerSetSaveStatus("", {walletError: error, prefix: "Finish Work now failed: "});
         await workerLoadRuntimeStatus();
+        if(options?.throwErrors) throw error;
       } finally {
         workerNetworkWorkNowInFlight = false;
         renderWorkerNetworkSurface();
@@ -4945,7 +5012,7 @@
 
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
-      return {
+      const formSettings = {
         selectedNetwork: workerAutoConnectNetworkFromForm(),
         workerAutoConnectNetwork: workerAutoConnectNetworkFromForm(),
         workerRequestedRing: String(workerNetworkRing?.value || workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
@@ -4987,6 +5054,11 @@
         maxConcurrency: workerPositiveInteger(workerElementValue(workerMaxConcurrency, "1"), 1),
         executionMode: workerElementValue(workerExecutionMode, "worker_pull_v0")
       };
+      if (!window.__mcelWorker || !workerNativeMarketplaceConfig) return formSettings;
+      // Only the bounded, observed seller fields override the old HTML
+      // controls. Wallet, network, MSK, registered IDs and other authorities
+      // remain sourced from the original live Worker session.
+      return {...formSettings, ...workerNativeMarketplaceConfig};
     }
 
     function saveWorkerSettings({changedFields = null, remoteEnabledSerial = 0} = {}) {
@@ -5144,7 +5216,8 @@
 
     function buildWorkerOfferRegistrationPayload() {
       const settings = readWorkerFormSettings();
-      const models = workerOfferModelsArray();
+      const models = String(settings.models||WORKER_DEFAULT_SELLER_MODEL).split(",")
+        .map(value=>value.trim()).filter(Boolean);
       if (!settings.sellerEnabled) {
         throw new Error("Accept paid jobs is off. Enable it before registering a seller offer.");
       }
@@ -5276,7 +5349,7 @@
       }
     }
 
-    async function registerWorkerOffer() {
+    async function registerWorkerOffer(options = {}) {
       let payload;
       try {
         const walletAddress = workerLowerAddress(workerNetworkAuthorizedWalletAddress());
@@ -5286,6 +5359,7 @@
         payload = buildWorkerNetworkRegistrationPayload({walletAddress});
       } catch (error) {
         workerSetRegistrationStatus(error.message || String(error), "error");
+        if (options?.throwErrors) throw error;
         return;
       }
       if (workerRegisterOffer) workerRegisterOffer.disabled = true;
@@ -5316,8 +5390,10 @@
             JSON.stringify({...readWorkerFormSettings(), lastRegistration: data})
           );
         } catch {}
+        return data;
       } catch (error) {
         workerSetRegistrationStatus(`Worker offer registration failed: ${error.message || error}`, "error");
+        if (options?.throwErrors) throw error;
       } finally {
         if (workerRegisterOffer) workerRegisterOffer.disabled = false;
       }
@@ -5428,6 +5504,41 @@
       bind(workerConfirmRecovery,"click",confirmWorkerRecoverySetup);
       bind(workerRequestMultisessionKey,"click",requestWorkerMultisessionKey);
       bind(workerRevokeMultisessionKey,"click",revokeWorkerMultisessionKey);
+      // Typed MCEL operations invoke only the already accepted legacy signer
+      // and its MSK auto-replacement path. Do not start the old Worker app.
+      window.McelWorkerLegacyMarketplace=Object.freeze({
+        setSeller(offer,settings){
+          const sellerEnabled=settings?.sellerEnabled===true;
+          const mode=String(settings?.sellerAvailabilityMode||"totally_idle");
+          workerNativeMarketplaceConfig={...offer,sellerEnabled,
+            // Preserve saved endpoint/node configuration instead of allowing
+            // retired hidden controls to overwrite it during registration.
+            nodeId:String(settings?.nodeId||""),
+            endpoint:String(settings?.endpoint||"http://127.0.0.1:8771"),
+            rentalEnabled:sellerEnabled,sellerAvailabilityMode:mode,
+            sellerOnlyWhenIdle:mode==="totally_idle",
+            rentalOnlyWhenIdle:mode==="totally_idle"};
+        },
+        async refresh(){
+          await Promise.all([workerLoadNetworkSessionFromBackend(),workerLoadRuntimeStatus()]);
+          // Backend state and the native Hub Choice can become aligned after
+          // wallet-only mount. Refresh the wallet's own enabled/disabled state
+          // before the browser harness attempts Connect Wallet. This also
+          // keeps the controls disabled if the Hub session no longer matches.
+          updateWorkerWalletSessionContext();
+          if(!workerWalletOnlyContextVerified())
+            throw Error("Worker session does not match the selected marketplace Hub");
+        },
+        async register(){
+          if(!workerWalletOnlyContextVerified())throw Error("Wallet/Hub session mismatch");
+          return registerWorkerOffer({throwErrors:true});
+        },
+        async workNow(seconds){
+          if(!workerWalletOnlyContextVerified())throw Error("Wallet/Hub session mismatch");
+          return workerWorkNowForDuration(seconds,{throwErrors:true});
+        },
+        async finish(){return workerFinishWorkNowOverride(null,{confirmed:true,throwErrors:true});}
+      });
     }
 
     function workerWalletOnlyContextVerified() {

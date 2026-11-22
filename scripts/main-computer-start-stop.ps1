@@ -2773,6 +2773,7 @@ function New-StartSession(
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
       (Join-Path $RootPath ".main_computer_main_log_service.pid"),
+      (Join-Path $RootPath ".main_computer_auth_bootstrap.pid"),
       (Join-Path $RootPath ".main_computer_nanojev_manager.pid"),
       (Get-DevHubPidPath $RootPath),
       (Join-Path $controlRoot ".main_computer_viewport.pid"),
@@ -2802,6 +2803,12 @@ function New-StartSession(
         health_url = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767"
         follow_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/follow")
         surprise_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/surprise")
+      },
+      [ordered]@{
+        name = "auth"
+        module = "main_computer.auth_bootstrap_service run"
+        pid_file = Join-Path $RootPath ".main_computer_auth_bootstrap.pid"
+        health_url = "https://mc.test:8875/api/auth/bootstrap/session"
       },
       [ordered]@{
         name = "nanojev-manager"
@@ -3287,6 +3294,21 @@ function Assert-MainComputerSLHListenerReleased {
 function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NoSLHHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
 
+  # Provision/validate The proof file durable authority BEFORE stopping the currently
+  # running MC. A bootstrap prerequisite failure must not destroy a working
+  # session or silently start an insecure replacement.
+  $authContext = Resolve-MainComputerLaunchContext $RootPath
+  $authPython = [string]$authContext.python
+  if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
+    Write-Host "Checking the supervised MC HTTPS authentication bootstrap..."
+    & $authPython -m main_computer.auth_bootstrap_service --root $RootPath preflight
+    if ($LASTEXITCODE -ne 0) {
+      throw "MC authentication preflight failed; existing MC services were not stopped."
+    }
+  } else {
+    Write-Warning "MC authentication bootstrap explicitly disabled; legacy HTTP ingress is not authenticated."
+  }
+
   # SLH and Dev-Test Hub have independent startup policies.  A restart stops
   # all verified local SLH launchers; --no-slh-hub prevents the new supervisor
   # from relaunching SLH.  Never start a dormant Windows SLH boot task.
@@ -3328,6 +3350,9 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   }
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
+  # ./start owns the bootstrap process through the resident supervisor.
+  # Direct Python test supervisors remain opt-in and unchanged.
+  Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED" $(if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -eq "0") { "0" } else { "1" })
   # The supervisor starts or skips its SLH child solely according to the SLH
   # opt-out, regardless of whether Dev-Test Hub is started.
   Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoSLHHubRequested) { "0" } else { "1" })
@@ -3518,6 +3543,8 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   Write-Host ("SLH startup:      " + [string]$slhStart.state)
   Write-Host ("Blockchain:       " + (Join-Path $RootPath "runtime\blockchain_service\state.json"))
   Write-Host ("NanoJev API:      " + (Get-MainComputerNanoJevUrl $launchContext))
+  Write-Host "Authentication:   https://mc.test:8875/auth/login (managed by supervisor)"
+  Write-Host ("Auth PID:         " + (Join-Path $RootPath ".main_computer_auth_bootstrap.pid"))
   Write-Host ("stdout:           " + $stdout)
   Write-Host ("stderr:           " + $stderr)
 }
@@ -3612,6 +3639,13 @@ function Show-MainComputerStatus([string]$RootPath) {
   Write-Host ("Status via Python: " + $pythonCommand)
   & $pythonCommand @statusArgs
   $statusExitCode = $LASTEXITCODE
+  if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
+    & $pythonCommand -m main_computer.auth_bootstrap_service --root $RootPath status --wait-seconds 25
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "MC HTTPS authentication readiness failed; the auth status command above reports the failing TCP, TLS, or session-API stage."
+      $statusExitCode = 1
+    }
+  }
   Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "status"
   Show-MainComputerNanoJevStatus $launchContext
   return $statusExitCode
@@ -3693,6 +3727,9 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
     }
     ".main_computer_main_log_service.pid" {
       return [pscustomobject]@{ role = "main-log"; order = 80 }
+    }
+    ".main_computer_auth_bootstrap.pid" {
+      return [pscustomobject]@{ role = "auth"; order = 20 }
     }
     ".main_computer_executor_service.pid" {
       return [pscustomobject]@{ role = "executor"; order = 20 }
@@ -3814,6 +3851,7 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_PORT" "8767"),
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_AUTH_BOOTSTRAP_PORT" "8875"),
       # SLH ports are owned by the supervisor's SLH child or an independent
       # local service, never by the Viewport-wide port sweep.
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
@@ -3862,6 +3900,7 @@ function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$Root
     "main_computer.app_control",
     "main_computer.service_supervisor",
     "main_computer.main_log_service",
+    "main_computer.auth_bootstrap_service",
     "main_computer.executor_service",
     "main_computer.applications_service",
     "main_computer.blockchain_service",
@@ -4438,6 +4477,7 @@ function Remove-ManagedRuntimeFiles([string]$RootPath, [object]$Session, [string
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
       ".main_computer_main_log_service.pid",
+      ".main_computer_auth_bootstrap.pid",
       ".main_computer_nanojev_manager.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
@@ -4724,6 +4764,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
       ".main_computer_main_log_service.pid",
+      ".main_computer_auth_bootstrap.pid",
       ".main_computer_nanojev_manager.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",

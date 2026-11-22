@@ -84,6 +84,14 @@ def _html(app,candidate,repo=ROOT,*,candidate_kinds=None,candidate_mode='isolate
  else:raise ValueError('UNSUPPORTED_APPLICATION')
  if candidate_mode not in ('isolated','integrated'):
   raise ValueError('INVALID_CANDIDATE_MODE')
+ if candidate_mode=='isolated':
+  # Patch 5 defaults on at the real host. Legacy isolated differential tests
+  # must still use an incumbent reference, never a default-certified page.
+  needle='signalSchedulerStartEnabled:'
+  assert html.count(needle)==1,'MOUNT_CONTRACT_CHANGED'
+  import re
+  html,n=re.subn(r'signalSchedulerStartEnabled:(?:true|false)',needle+'false',html)
+  assert n==1,'INCUMBENT_REFERENCE_CONTRACT_CHANGED'
  if candidate_mode=='integrated':
   if candidate_kinds is not None:
    if (not isinstance(candidate_kinds,(tuple,list)) or not candidate_kinds or

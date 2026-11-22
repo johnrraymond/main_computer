@@ -288,3 +288,95 @@ test('native acceptance invokes scoped CDP MSK approval after requesting the rea
   assert.ok(runner.includes('await waitForWorkerMsk({'), 'Hub issuance still required')
   assert.ok(runner.includes("logs.filter(v => v.startsWith('msk.'))"), 'real signing events still required')
 })
+
+const REVOKE_KEY = `msk_${'a'.repeat(64)}_${'b'.repeat(43)}`
+const REVOKE_CLUSTER = 'greatlibrary-testnet'
+function revokeMessage() {
+  return {action:'revoke_multisession_key',key_id:REVOKE_KEY,
+    cluster_id:REVOKE_CLUSTER,request_id:`revoke:${REVOKE_KEY}`}
+}
+test('MSK revocation approves only exact wallet, key, cluster and signed revoke intent',()=>{
+  try {
+    fakeMskDOM({messageOverrides:revokeMessage()})
+    const args={expectedWallet:SIGN_WALLET,trustedWorkerOrigin:true,
+      action:'revoke',expectedKeyId:REVOKE_KEY}
+    const approved=inspectWorkerMskSignatureSurface(args)
+    assert.equal(approved.verified,true)
+    assert.ok(!('message' in approved) && !('key_id' in approved))
+    for (const overrides of [
+      {key_id:'msk_other'}, {action:'request_multi_session_key'},
+      {request_id:'revoke:msk_other'}, {cluster_id:''},
+      {cluster_id:'evil.example\ntransfer'}, {wallet_address:'0x'+'3'.repeat(40)},
+      {chain_id:'0x28757b2'}, {purpose:'transfer_eth'},
+      {expires_at:new Date(Date.now()-60_000).toISOString()},
+    ]) {
+      fakeMskDOM({messageOverrides:{...revokeMessage(),...overrides}})
+      assert.equal(inspectWorkerMskSignatureSurface(args).verified,false,JSON.stringify(overrides))
+    }
+    fakeMskDOM({messageOverrides:revokeMessage()})
+    assert.equal(inspectWorkerMskSignatureSurface({...args,expectedKeyId:'msk_other'}).verified,false)
+    assert.equal(inspectWorkerMskSignatureSurface({...args,action:'issue'}).verified,false)
+    assert.equal(inspectWorkerMskSignatureSurface({...args,trustedWorkerOrigin:false}).verified,false)
+  } finally {delete globalThis.document;delete globalThis.window}
+})
+test('revocation CDP approval is separately scoped to exact key; no unrelated signature can be clicked',async()=>{
+  const state={kind:'msk-signature',verified:true,reason:'validated',button:{label:'Confirm',x:80,y:410}}
+  const fixture=mockContext({state})
+  fixture.workerPage.url=()=>SIGN_ORIGIN+'/applications/mcel-semantic-worker'
+  const originalGate=process.env.MC_WORKER_LIVE_GATE
+  const originalUrl=process.env.MC_WORKER_TEST_URL
+  process.env.MC_WORKER_LIVE_GATE='wallet-msk'
+  process.env.MC_WORKER_TEST_URL=SIGN_ORIGIN+'/applications/mcel-semantic-worker'
+  try {
+    const messages=[]
+    const result=await approveWorkerMskSignature(fixture.context,fixture.workerPage,EXT,SIGN_WALLET,
+      {action:'revoke',expectedKeyId:REVOKE_KEY,onProgress:x=>messages.push(x)})
+    assert.deepEqual(result,{type:'msk-signature',action:'Confirm'})
+    assert.deepEqual(messages,['metamask.msk-revocation-signature'])
+    const evalCommand=fixture.events.filter(e=>e.method==='Target.sendMessageToTarget')
+      .map(e=>JSON.parse(e.params.message)).find(e=>e.method==='Runtime.evaluate')
+    assert.ok(evalCommand.params.expression.includes('"action":"revoke"'))
+    assert.ok(evalCommand.params.expression.includes(REVOKE_KEY))
+    const denied=mockContext({state})
+    denied.workerPage.url=fixture.workerPage.url
+    await assert.rejects(approveWorkerMskSignature(denied.context,denied.workerPage,EXT,SIGN_WALLET,
+      {action:'revoke',expectedKeyId:'dangerous/script',timeoutMs:0}),/untrusted/)
+    assert.deepEqual(clicks(denied.events),[])
+  } finally {
+    if(originalGate===undefined)delete process.env.MC_WORKER_LIVE_GATE
+    else process.env.MC_WORKER_LIVE_GATE=originalGate
+    if(originalUrl===undefined)delete process.env.MC_WORKER_TEST_URL
+    else process.env.MC_WORKER_TEST_URL=originalUrl
+  }
+})
+
+test('MSK signer examines an already-open home.html tab but general approval does not',async()=>{
+  const state={kind:'msk-signature',verified:true,reason:'validated',button:{label:'Confirm',x:75,y:450}}
+  const f=mockContext({file:'home.html',state})
+  f.workerPage.url=()=>SIGN_ORIGIN+'/applications/worker'
+  const progress=[]
+  assert.equal(await advanceSidepanelApproval(f.context,f.workerPage,EXT),null,
+    'general connect approval must not gain home.html authority')
+  assert.deepEqual(clicks(f.events),[])
+  const result=await approveWorkerMskSignature(f.context,f.workerPage,EXT,SIGN_WALLET,
+    {onDiagnostic:event=>progress.push(event)})
+  assert.deepEqual(result,{type:'msk-signature',action:'Confirm'})
+  assert.ok(progress.includes('msk.target.home'))
+  assert.ok(progress.includes('msk.inspect.validated'))
+  assert.deepEqual(clicks(f.events).map(e=>e.params.type),
+    ['mouseMoved','mousePressed','mouseReleased'])
+})
+
+test('MSK signer refuses wrong request displayed inside home.html',async()=>{
+  const state={kind:'msk-signature',verified:false,reason:'message-identity-mismatch',button:null}
+  const f=mockContext({file:'home.html',state})
+  f.workerPage.url=()=>SIGN_ORIGIN+'/applications/worker'
+  const progress=[]
+  let tick=0
+  await assert.rejects(approveWorkerMskSignature(f.context,f.workerPage,EXT,SIGN_WALLET,
+    {timeoutMs:4,now:()=>tick++,sleep:async()=>{},onDiagnostic:event=>progress.push(event)}),
+    /message-identity-mismatch/)
+  assert.deepEqual(clicks(f.events),[])
+  assert.ok(progress.includes('msk.target.home'))
+  assert.ok(progress.includes('msk.inspect.message-identity-mismatch'))
+})

@@ -1241,6 +1241,56 @@ body.mcel-workbench-page:has([data-mcel-document-workbench]) > #mcel-workbench-s
   background:color-mix(in srgb,var(--mcel-color-accent,#559cb4) 18%,transparent);
   border-color:var(--edge,#355062);font-weight:700;
 }
+
+/* Separable identity-style navigation records retain their own compact
+ * bordered entries with a disclosed status, without becoming app routes. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key]:has([data-mcel-inline-details]){
+  border:1px solid var(--edge);border-radius:6px;
+  padding:5px 4px;margin:0 0 4px;background:var(--panel);
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key]:has([data-mcel-inline-details]) button[data-select-key]{
+  min-height:28px;padding:4px 6px;border:1px solid var(--edge);
+  border-radius:4px;font-size:.74rem;font-weight:650;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] > [data-record-key]:has([data-mcel-inline-details])[aria-selected="true"] button[data-select-key]{
+  background:color-mix(in srgb,var(--mcel-color-accent,#559cb4) 22%,var(--panel));
+  border-color:var(--mcel-color-accent,#559cb4);
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="navigation"] [data-node-kind="collection"] > [data-mcel-deselect]{
+  min-height:27px;padding:4px 6px;max-width:100%;width:100%;
+  font-size:.73rem;line-height:1.2;white-space:normal;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-purpose="navigation"] [data-mcel-empty-selection]{
+  font-size:.72rem;margin:4px 0 0;
+}
+/* A compact selection with a record disclosure must keep that disclosure
+ * under its own label, not next to it or outside the navigator. Applies to
+ * keyed semantic navigation collections (including identities), not an app. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-natural-scroller="navigation"] [data-mcel-navigation-list="compact"] > [data-record-key] > [data-mcel-inline-details]{
+  display:block;flex:0 0 auto;align-self:stretch;
+  width:100%;max-width:100%;min-width:0;margin:0;
+  padding:2px 6px 4px;overflow-wrap:anywhere;
+  font-size:.72rem;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] [data-mcel-inline-details] > summary{
+  min-height:0;padding:2px 4px;line-height:1.35;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] [data-mcel-detail-fields]{
+  grid-template-columns:minmax(0,1fr);gap:2px;margin:4px 0 6px;
+  font-size:.7rem;
+}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
+ [data-mcel-navigation-list="compact"] [data-mcel-detail-fields] dt{
+  font-weight:600;
+}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"]
  [data-mcel-form-pattern="boolean-enum-pairs"]{
   display:grid;grid-template-columns:repeat(2,minmax(0,1fr));

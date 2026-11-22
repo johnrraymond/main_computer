@@ -182,6 +182,43 @@ function Wait-MainComputerBrowserReady {
 }
 
 $resolvedRoot = Resolve-FullPath $Root
+
+# The default MC browser must use the Chromium-only mc.test loopback mapping.
+# A normal default browser cannot resolve mc.test without changing system DNS,
+# and launching the legacy HTTP URL would bypass the HTTPS bootstrap UI.
+if ([string]::IsNullOrWhiteSpace($Url)) {
+    $pythonCommand = ""
+    $sessionFile = Join-Path $resolvedRoot "runtime\start_stop\start-session.json"
+    if (Test-Path -LiteralPath $sessionFile -PathType Leaf) {
+        try {
+            $sessionData = Get-Content -LiteralPath $sessionFile -Raw | ConvertFrom-Json
+            $pythonCommand = ConvertTo-NonEmptyString (Get-ObjectPropertyValue (Get-ObjectPropertyValue $sessionData "launcher" $null) "file" "") ""
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($pythonCommand)) {
+        $pythonCommand = ConvertTo-NonEmptyString $env:MAIN_COMPUTER_PYTHON_COMMAND ""
+    }
+    if ([string]::IsNullOrWhiteSpace($pythonCommand) -and -not [string]::IsNullOrWhiteSpace($env:VIRTUAL_ENV)) {
+        $pythonCommand = Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"
+    }
+    if ([string]::IsNullOrWhiteSpace($pythonCommand)) {
+        $pythonCommand = Join-Path $resolvedRoot ".venv\Scripts\python.exe"
+    }
+    if (-not (Test-Path -LiteralPath $pythonCommand -PathType Leaf)) {
+        $pythonCommand = "python.exe"
+    }
+    Write-Host "Waiting for managed HTTPS authentication bootstrap..."
+    & $pythonCommand -m main_computer.auth_bootstrap_service --root $resolvedRoot status --wait-seconds $TimeoutSeconds
+    if ($LASTEXITCODE -ne 0) {
+        throw "Managed MC authentication service is not ready. Refusing insecure browser fallback."
+    }
+    & $pythonCommand -m main_computer.auth_bootstrap_service --root $resolvedRoot open
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not open the MC-managed Chromium/Edge HTTPS browser."
+    }
+    exit 0
+}
+
 $targetUrl = Resolve-MainComputerBrowserUrl -RootPath $resolvedRoot -ExplicitUrl $Url
 
 Write-Host "Waiting for Main Computer browser URL: $targetUrl"
