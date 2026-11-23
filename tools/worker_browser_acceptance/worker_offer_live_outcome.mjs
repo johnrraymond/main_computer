@@ -11,6 +11,8 @@ export function offerFailureCause(message, offer={}) {
   if(text==='OFFER_SYNC_NOT_ACCEPTED')return 'offer-sync-not-accepted'
   if(text==='OFFER_SYNC_HTTP_REJECTED')return 'offer-sync-http-rejected'
   if(text==='OFFER_SYNC_TRANSPORT_FAILED')return 'offer-sync-transport-failed'
+  if(text==='OFFER_SYNC_REQUEST_NOT_OBSERVED')return 'offer-sync-request-not-observed'
+  if(text==='OFFER_SYNC_RESPONSE_NOT_OBSERVED')return 'offer-sync-response-not-observed'
   if(text==='Expected MCEL confirmation absent or duplicate')return 'confirmation-missing-or-duplicate'
   if(text==='Unexpected MCEL confirmation refused')return 'unexpected-confirmation'
   if(text.startsWith('MCEL_WORKER:seller-not-enabled'))return 'seller-not-enabled'
@@ -45,6 +47,24 @@ export function offerApiRejectionCategory(body) {
 // wallet-signed payloads. This is an allowlisted vocabulary, not error echoing.
 export function offerApiRejectionDetail(body) {
   const text=String(body?.error||body?.reason||'').toLowerCase()
+  // Stable Hub's live WebSocket sends a bounded reason_code when it rejects
+  // worker.auth. Preserve ONLY exact known codes, never the associated raw
+  // user_message, wallet, key ID, or socket data.
+  const hubCode=/\breason_code\s*=\s*([a-z0-9_-]{1,80})\b/.exec(text)?.[1]
+  const codes={
+    key_not_active:'hub-key-not-active',key_expired:'hub-key-expired',
+    key_lifetime_invalid:'hub-key-lifetime-invalid',
+    missing_multisession_authorization:'hub-key-authorization-missing',
+    missing_multisession_key_id:'hub-key-id-missing',
+    unsupported_chain_id:'hub-unsupported-chain',
+    record_chain_id_mismatch:'hub-record-chain-mismatch',
+    chain_id_mismatch:'hub-authorization-chain-mismatch',
+    key_wallet_mismatch:'hub-key-wallet-mismatch',
+    stored_key_wallet_invalid:'hub-key-record-invalid',
+    bad_wallet_address:'hub-wallet-invalid',
+  }
+  if(hubCode && Object.hasOwn(codes,hubCode))return codes[hubCode]
+  if(text.includes('hub rejected worker.auth'))return 'hub-auth-rejected-unclassified'
   if(text.includes('active hub-scoped multi-session key is required'))return 'browser-key-id-missing'
   if(text.includes('no active saved multi-session key with that id'))return 'specified-key-not-active'
   if(text.includes('no active saved multi-session key'))return 'private-cache-no-active-key'

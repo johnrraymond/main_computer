@@ -86,3 +86,20 @@ test('an accepted HTTP response is insufficient with wrong or stale Hub proof',(
   assert.equal(assessOfferHubAcceptance(s,{...sync,worker_id:'different'}).verified,false)
   assert.equal(assessOfferHubAcceptance(s,{...sync,status:'pending'}).verified,false)
 })
+
+test('WebSocket hub auth failure reports allowlisted reason without leaking secret',()=>{
+  const invalid='Hub rejected worker.auth: reason_code=key_not_active; user_message=The saved multi-session key is not active on this Hub; wallet=0x1111111111111111111111111111111111111111'
+  assert.equal(offerApiRejectionCategory({error:invalid}),'msk-authorization')
+  assert.equal(offerApiRejectionDetail({error:invalid}),'hub-key-not-active')
+  assert.equal(offerApiRejectionDetail({error:'Hub rejected worker.auth: reason_code=key_expired; wallet=SECRET'}),'hub-key-expired')
+  assert.equal(offerApiRejectionDetail({error:'Hub rejected worker.auth: reason_code=chain_id_mismatch; key=SECRET'}),'hub-authorization-chain-mismatch')
+  assert.equal(offerApiRejectionDetail({error:'Hub rejected worker.auth: reason_code=my-secret-123; key=SECRET'}),'hub-auth-rejected-unclassified')
+  assert.equal(offerApiRejectionDetail({error:'noisy key=SECRET'}),'not-msk-specific')
+})
+
+test('an unanswered fresh HTTP request does not inherit an earlier failed Hub result',()=>{
+  assert.equal(offerFailureCause('OFFER_SYNC_RESPONSE_NOT_OBSERVED',{
+    priorHubStatus:'failed',hubRegistrationStatus:'unknown',
+    requestSeen:true,responseSeen:false,httpStatus:null,
+  }),'offer-sync-response-not-observed')
+})

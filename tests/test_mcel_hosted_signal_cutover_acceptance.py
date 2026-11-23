@@ -173,12 +173,56 @@ def test_temporary_disposable_fixture_never_overwrites_existing_file(tmp_path):
     fixture=d.create_fixture(root,directory)
     assert set(fixture['paths'])=={'incumbent','signals'}
     assert all(path.read_text(encoding='utf8')==d.ORIGINAL for path in fixture['local'].values())
+    assert all(path.read_bytes()==d.ORIGINAL.encode('utf8') for path in fixture['local'].values())
+    assert all(path.stat().st_size==len(d.ORIGINAL.encode('utf8')) for path in fixture['local'].values())
     with pytest.raises(ValueError,match='ALREADY_EXISTS'):
         d.create_fixture(root,directory)
     external=root/'unapproved'
     external.mkdir()
     with pytest.raises(ValueError,match='UNSAFE'):
         d.create_fixture(root,external)
+
+
+
+def test_disposable_fixture_is_newline_independent_and_revalidates_at_checkpoints(tmp_path, monkeypatch, capsys):
+    """Cross-platform exact-byte fixture is immune to CRLF conversion."""
+    import hashlib
+    from tools import mcel_hosted_cutover_disposable as d
+    repo=tmp_path
+    directory=repo/'runtime/reports/mcel-hosted-signal-windows-crlf'
+    directory.mkdir(parents=True)
+    raw=d.ORIGINAL.encode('utf8')
+    assert b'\r' not in raw and b'\n' not in raw
+    assert len(raw)==38
+    assert d.REPLACEMENT.endswith(';') and '\n' not in d.REPLACEMENT
+    original_write_text=Path.write_text
+    def fail_js_text_write(path,data,*args,**kwargs):
+        if path.suffix=='.js':
+            raise AssertionError('fixture should use exclusive binary creation')
+        return original_write_text(path,data,*args,**kwargs)
+    monkeypatch.setattr(Path,'write_text',fail_js_text_write)
+    fixture=d.create_fixture(repo,directory)
+    assert all(p.read_bytes()==raw for p in fixture['local'].values())
+    assert 'NO_NEWLINE_EXACT_BYTES_V2' in capsys.readouterr().out
+    d._assert_original_fixture_bytes(fixture,'regression')
+    assert all(d._disposable_file_evidence(p)['original'] is True
+               for p in fixture['local'].values())
+    target=fixture['paths']['incumbent']
+    request={'repo_dir':'.','project_root':'.','path':target,
+        'replacement_text':d.REPLACEMENT,
+        'expected_before_sha256':hashlib.sha256(raw).hexdigest(),
+        'explicit_save':True,'stale_source_checked':True,
+        'write_policy':'author-owned-source','validation_profile':'none'}
+    base='http://127.0.0.1:8765'
+    route=base+'/api/applications/editor/project/file/save'
+    assert d.write_decision(base,route,'POST',json.dumps(request),target)=='allow-disposable-source-write'
+    request['expected_before_sha256']='0'*64
+    assert d.write_decision(base,route,'POST',json.dumps(request),target)=='deny-disposable-write-payload'
+    fixture['local']['incumbent'].write_bytes(raw+b'\r\n')
+    with pytest.raises(RuntimeError,match='DISPOSABLE_FIXTURE_CHANGED:') as err:
+        d._assert_original_fixture_bytes(fixture,'after-open-incumbent')
+    assert 'after-open-incumbent' in str(err.value)
+    assert 'observedSha256' in str(err.value)
 
 
 def test_live_document_preflight_distinguishes_source_drift_auth_and_redirect():
@@ -493,7 +537,7 @@ def test_disposable_lane_requires_workbench_reveal_before_live_click():
     assert '_reveal_explorer_source(page,target,role)' in source
     assert 'reveal_editor_control(page,control)' in inspect.getsource(d._reveal_explorer_source)
     assert 'reveal_editor_control(page,save)' in source
-    assert 'reveal_editor_control(pages[\'incumbent\'],incumbent_save)' in source
+    assert 'reveal_editor_control(incumbent,incumbent_save)' in source
     assert 'window.MainComputerMonacoAdapter?.inspect?.().mounted===true' in source
     assert 'document.querySelector(\'[data-mcel-document-dirty]\')?.dataset.mcelDocumentDirty' in source
 
@@ -727,3 +771,138 @@ def test_disposable_receipt_barrier_rejects_failure_and_duplicates():
                 d._activate_observed_file_by_keyboard(
                     page,'runtime/reports/test/reference.js','incumbent',0)
         finally:browser.close()
+
+
+def _disposable_save_test_page(page):
+    """A real Chromium receipt ledger with no network side effects."""
+    page.set_content('''
+      <div data-mcel-document-dirty="true"></div>
+      <button type="button" data-mcel-document-save>Save source</button>
+      <script>
+        window.__saveReceipts=[];
+        window.__hostHeld=[];
+        window.__mcelWorkbench={app:{receipts:()=>window.__saveReceipts}};
+        document.querySelector('[data-mcel-document-save]').onclick=()=>{
+          window.__saveReceipts.push({intentId:'intent:save-source',disposition:'completed',sequence:1});
+        };
+      </script>''')
+
+
+def test_disposable_actual_save_barrier_uses_receipts_not_paint(tmp_path):
+    """The old gate timed out using animation frames even when a save had settled."""
+    from playwright.sync_api import sync_playwright
+    from tools.mcel_phase2b_browser import launch_semantic_browser
+    from tools import mcel_hosted_cutover_disposable as d
+    path=tmp_path/'reference.js'
+    path.write_text(d.REPLACEMENT,encoding='utf8')
+    with sync_playwright() as pw:
+        browser,_=launch_semantic_browser(pw)
+        try:
+            page=browser.new_page()
+            _disposable_save_test_page(page)
+            page.evaluate('window.requestAnimationFrame=()=>0')
+            d._click_observed(page,page.locator('[data-mcel-document-save]'),
+                              'save-incumbent-disposable-source','incumbent')
+            witness=d._await_exact_save_receipt(page,'incumbent',0,path,timeout_seconds=1)
+            assert witness['receiptCount']==1
+            assert witness['fileSha256']==d._disposable_file_evidence(path)['sha256']
+        finally:browser.close()
+
+
+def test_disposable_save_rejects_failed_duplicate_and_missing_receipts(tmp_path):
+    from playwright.sync_api import sync_playwright
+    from tools.mcel_phase2b_browser import launch_semantic_browser
+    from tools import mcel_hosted_cutover_disposable as d
+    path=tmp_path/'candidate.js'
+    path.write_text(d.REPLACEMENT,encoding='utf8')
+    with sync_playwright() as pw:
+        browser,_=launch_semantic_browser(pw)
+        try:
+            page=browser.new_page()
+            _disposable_save_test_page(page)
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_NO_RECEIPT'):
+                d._await_exact_save_receipt(page,'incumbent',0,path,timeout_seconds=.12)
+            page.evaluate("window.__saveReceipts.push({intentId:'intent:save-source',disposition:'failed',reason:'save-receipt-invalid'})")
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_RECEIPT_NOT_COMPLETED:incumbent') as error:
+                d._await_exact_save_receipt(page,'incumbent',0,path,timeout_seconds=.2)
+            assert 'save-receipt-invalid' in str(error.value)
+            page.evaluate("window.__saveReceipts=[{intentId:'intent:save-source',disposition:'completed'},{intentId:'intent:save-source',disposition:'completed'}]")
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_NOT_EXACTLY_ONCE'):
+                d._await_exact_save_receipt(page,'incumbent',0,path,timeout_seconds=.2)
+            page.evaluate("window.__saveReceipts=[{intentId:'intent:save-source',disposition:'completed'}]")
+            path.write_text(d.ORIGINAL,encoding='utf8')
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_RECEIPT_WITHOUT_EXACT_FILE'):
+                d._await_exact_save_receipt(page,'incumbent',0,path,timeout_seconds=.2)
+        finally:browser.close()
+
+
+def test_disposable_held_write_requires_actual_bytes_without_early_receipt(tmp_path):
+    from playwright.sync_api import sync_playwright
+    from tools.mcel_phase2b_browser import launch_semantic_browser
+    from tools import mcel_hosted_cutover_disposable as d
+    path=tmp_path/'candidate.js'
+    path.write_text(d.REPLACEMENT,encoding='utf8')
+    with sync_playwright() as pw:
+        browser,_=launch_semantic_browser(pw)
+        try:
+            page=browser.new_page()
+            _disposable_save_test_page(page)
+            page.evaluate('window.__hostHeld=[{}]')
+            d._await_held_write_response(page,0,path,timeout_seconds=.2)
+            page.evaluate('window.__hostHeld=[{},{}]')
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_HELD_RESPONSE_NOT_EXACTLY_ONCE'):
+                d._await_held_write_response(page,0,path,timeout_seconds=.2)
+            page.evaluate('window.__hostHeld=[{}];window.__saveReceipts=[{intentId:"intent:save-source",disposition:"completed"}]')
+            with pytest.raises(RuntimeError,match='DISPOSABLE_SAVE_SETTLED_BEFORE_HELD_RESPONSE_RELEASE'):
+                d._await_held_write_response(page,0,path,timeout_seconds=.2)
+            page.evaluate('window.__saveReceipts=[]')
+            path.write_text(d.ORIGINAL,encoding='utf8')
+            with pytest.raises(RuntimeError,match='HOST_WRITE_NOT_APPLIED_BEFORE_HELD_RECEIPT'):
+                d._await_held_write_response(page,0,path,timeout_seconds=.2)
+        finally:browser.close()
+
+
+def test_live_save_lifecycle_reports_real_dispatch_without_contents():
+    """Witness the real UI click/port/fetch chain without source or auth leakage."""
+    from playwright.sync_api import sync_playwright
+    from tools.mcel_phase2b_browser import launch_semantic_browser
+    from tools.mcel_hosted_signal_cutover_acceptance import HOLD_WRAPPER
+    from tools import mcel_hosted_cutover_disposable as d
+    with sync_playwright() as pw:
+        browser,_=launch_semantic_browser(pw)
+        try:
+            page=browser.new_page()
+            page.set_content('<button type="button" data-mcel-document-save>Save</button>'
+                             '<p data-mcel-document-dirty="true">Unsaved changes</p>')
+            page.evaluate("window.fetch=async()=>({ok:true,status:200})")
+            page.evaluate('('+HOLD_WRAPPER+')()')
+            page.locator('[data-mcel-document-save]').click()
+            page.evaluate('''()=>document.dispatchEvent(new CustomEvent('mcel:parity-transport',
+              {detail:{phase:'request',endpoint:'/api/applications/editor/project/file/save',requestId:4}}))''')
+            page.evaluate("window.fetch('/api/applications/editor/project/file/save')")
+            event=d._save_lifecycle_evidence(page,firewall={
+                'requests':[{'path':'/api/applications/editor/project/file/save'}],
+                'responses':[{'path':'/api/applications/editor/project/file/save','status':200}],
+                'blocked':[]})
+            assert d._save_unsettled_classification(event)=='HTTP_RESPONSE_SEEN_BUT_RECEIPT_UNSETTLED'
+            assert [e['phase'] for e in event['browser']['events']]==[
+                'native-save-click','port-request','fetch-start','fetch-response']
+            assert event['network']['requestCount']==1
+            assert event['network']['responseStatuses']==[200]
+            assert 'source' not in str(event).lower()
+        finally:browser.close()
+
+
+def test_live_save_lifecycle_distinguishes_guard_and_missing_click():
+    from tools import mcel_hosted_cutover_disposable as d
+    assert d._save_unsettled_classification({'browser':{'events':[]}})=='SAVE_CLICK_NOT_OBSERVED'
+    assert d._save_unsettled_classification({'browser':{'events':[{'phase':'native-save-click'}]}})==\
+           'UI_CLICK_PENDING_BEFORE_PORT_REQUEST'
+    assert d._save_unsettled_classification({'browser':{'events':[{'phase':'port-request'}]}})==\
+           'PORT_REQUEST_NOT_DISPATCHED_TO_FETCH'
+    assert d._save_unsettled_classification({'browser':{'events':[{'phase':'fetch-start'}]},
+              'network':{'requestCount':1,'responseStatuses':[]}})==\
+           'BACKEND_OR_HTTP_RESPONSE_PENDING'
+    assert d._save_unsettled_classification({'browser':{'events':[{'phase':'fetch-start'}]},
+              'network':{'blockedReasons':['DENIED_denied-disposable-write-payload']}})==\
+           'GUARDED_REQUEST_REJECTED'

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {captainCommand, captainProof, captainFailureEvidence, captainStdioEvidence, captainPrepareOnlyCommand, probeCaptainPreparation, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection, boundedSmokeOfferTokens, setWorkerOfferTargetTokens} from './worker_work_cycle.mjs'
+import {captainCommand, captainProof, captainFailureEvidence, captainStdioEvidence, captainPrepareOnlyCommand, probeCaptainPreparation, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection, boundedSmokeOfferTokens, boundedSmokeOfferRate, setWorkerOfferTargetTokens, captainFundingPreflightEvidence} from './worker_work_cycle.mjs'
 import {EventEmitter} from 'node:events'
 import {PassThrough} from 'node:stream'
 const workerId = 'worker-browser-123'
@@ -790,4 +790,72 @@ test('Hub market preflight never proceeds when price remains stale after re-regi
  await assert.rejects(waitForLiveWorker({page:{},workerId,expectedPriceWei:'512000000000000000',timeoutMs:5,
   readStatus:async()=>{attempts++;return s},sleep:async()=>new Promise(r=>setTimeout(r,6))}),/advertised Worker price differs/)
  assert.ok(attempts>=1)
+})
+
+
+test('Funding preflight preserves only allowlisted ledger verdict and amounts',()=>{
+ const data={ok:false,fundable:false,reason:'insufficient_credit_under_cumulative_cap',
+  verdict:'insufficient_credit_under_cumulative_cap',requiredCreditWei:'1024000000000000000',
+  availableCreditWei:'900000000000000000',bridgeCompletedCreditWei:'2000000000000000000',
+  possibleTopUpCreditWei:'0',wallet_address:'0x'+'b'.repeat(40)}
+ const result=captainFundingPreflightEvidence({status:2,stdout:JSON.stringify(data),
+  expectedRequiredWei:'1024000000000000000'})
+ assert.equal(result.verified,false)
+ assert.equal(result.reason,'insufficient_credit_under_cumulative_cap')
+ assert.equal(result.availableCreditWei,'900000000000000000')
+ assert.ok(!JSON.stringify(result).includes('wallet_address'))
+ assert.ok(!JSON.stringify(result).includes('0x'))
+})
+test('Funding preflight permits only a matching exact price and successful verified probe',()=>{
+ const data={ok:true,fundable:true,reason:'none',verdict:'bounded_top_up_possible',
+  requiredCreditWei:'1024000000000000000',availableCreditWei:'1000000000000000000',
+  bridgeCompletedCreditWei:'1500000000000000000',possibleTopUpCreditWei:'500000000000000000',
+  bridgeFundingRequired:true}
+ const input={status:0,stdout:JSON.stringify(data),
+  expectedRequiredWei:'1024000000000000000'}
+ const good=captainFundingPreflightEvidence(input)
+ assert.equal(good.verified,true)
+ assert.equal(good.bridgeFundingRequired,true)
+ assert.equal(captainFundingPreflightEvidence({...input,expectedRequiredWei:'1000000000000000000'}).verified,false)
+ assert.equal(captainFundingPreflightEvidence({...input,status:2}).verified,false)
+})
+test('Funding preflight does not disclose raw subprocess failure or untrusted reason',()=>{
+ const result=captainFundingPreflightEvidence({status:1,
+  stdout:JSON.stringify({ok:false,fundable:false,reason:'PRIVATE_KEY=SECRET'}),
+  stderr:'Traceback (most recent call last):\nsecret path'})
+ assert.equal(result.reason,'invalid-probe-contract')
+ assert.equal(result.stderrKind,'python-traceback')
+ assert.ok(!JSON.stringify(result).includes('SECRET'))
+})
+
+
+test('Funding classification distinguishes Captain MSK authentication from ledger failure without leaking details',()=>{
+  for (const reason of ['captain_wallet_signing_not_authorized',
+      'testnet_hub_identity_unavailable','testnet_hub_identity_mismatch',
+      'captain_msk_authorization_unavailable']) {
+    const outcome=captainFundingPreflightEvidence({status:2,
+      stdout:JSON.stringify({ok:false,fundable:false,reason}),
+      expectedRequiredWei:'512000000000000000'})
+    assert.equal(outcome.reason,reason)
+    assert.equal(outcome.verified,false)
+  }
+  const rejected=captainFundingPreflightEvidence({status:2,
+      stdout:JSON.stringify({ok:false,fundable:false,reason:'wallet-secret-123'}),
+      expectedRequiredWei:'512000000000000000'})
+  assert.notEqual(rejected.reason,'wallet-secret-123')
+})
+
+test('work-cycle disposable price cap makes a real 512-token offer fit verified balance',()=>{
+  const result=boundedSmokeOfferRate('0.001')
+  assert.deepEqual(result,{originalRate:'0.001',testRate:'0.00001'})
+  const required=BigInt(512)*BigInt(10_000_000_000_000)
+  assert.equal(required.toString(),'5120000000000000')
+  assert.ok(required<BigInt('25000000000000000'))
+})
+test('work-cycle pricing does not raise already-cheaper offers or accept zero',()=>{
+  assert.deepEqual(boundedSmokeOfferRate('0.00000001'),
+    {originalRate:'0.00000001',testRate:'0.00000001'})
+  assert.throws(()=>boundedSmokeOfferRate('0'))
+  assert.throws(()=>boundedSmokeOfferRate('1e-5'))
+  assert.throws(()=>boundedSmokeOfferRate('0.0000000000000000001'))
 })

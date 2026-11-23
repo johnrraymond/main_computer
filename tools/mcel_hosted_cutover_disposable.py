@@ -9,12 +9,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from tools.mcel_code_editor_functional_parity_frob import reveal as reveal_editor_control
 
-ORIGINAL='export const mcelHostedAcceptance = 1;\n'
-REPLACEMENT='export const mcelHostedAcceptance = 2;\n'
+# A newline-free JavaScript source is valid, and is invariant under Windows
+# text-mode newline translation even if another code path touches the fixture.
+ORIGINAL='export const mcelHostedAcceptance = 1;'
+REPLACEMENT='export const mcelHostedAcceptance = 2;'
+FIXTURE_SCHEME='NO_NEWLINE_EXACT_BYTES_V2'
 
 
 def write_decision(base, url, method, body_text, exact_path):
@@ -61,13 +65,51 @@ def create_fixture(repo:Path,directory:Path):
         not temp.name.startswith('mcel-hosted-signal-') or directory.is_symlink()):
         raise ValueError('UNSAFE_DISPOSABLE_WRITE_ROOT')
     paths={};local={}
-    for role,name in [('incumbent','reference.js'),('signals','candidate.js')]:
+    filenames=[('incumbent','reference.js'),('signals','candidate.js')]
+    # Reject an existing fixture before creating either role. Exclusive creation
+    # also prevents an intervening filesystem race from overwriting a file.
+    for _,name in filenames:
         path=temp/name
-        if path.exists() or path.is_symlink():raise ValueError('DISPOSABLE_TEST_FILE_ALREADY_EXISTS')
-        path.write_text(ORIGINAL,encoding='utf8')
+        if path.exists() or path.is_symlink():
+            raise ValueError('DISPOSABLE_TEST_FILE_ALREADY_EXISTS')
+    raw=ORIGINAL.encode('utf8')
+    if b'\r' in raw or b'\n' in raw or b'\r' in REPLACEMENT.encode('utf8') or b'\n' in REPLACEMENT.encode('utf8'):
+        raise RuntimeError('DISPOSABLE_FIXTURE_LINE_ENDING_INVARIANT_BROKEN')
+    for role,name in filenames:
+        path=temp/name
+        try:
+            with path.open('xb') as out:
+                out.write(raw)
+        except FileExistsError as exc:
+            raise ValueError('DISPOSABLE_TEST_FILE_ALREADY_EXISTS') from exc
+        if path.read_bytes()!=raw:
+            raise RuntimeError('DISPOSABLE_FIXTURE_BYTES_NOT_EXACT')
         paths[role]=path.relative_to(base).as_posix()
         local[role]=path
-    return {'paths':paths,'local':local,'relativeDirectory':temp.relative_to(base).as_posix()}
+    result={'paths':paths,'local':local,'relativeDirectory':temp.relative_to(base).as_posix()}
+    # This line makes it unambiguous whether the patched module is the one
+    # executing on Windows. No file paths or source contents are printed.
+    print('MCEL_HOSTED_DISPOSABLE_FIXTURE',FIXTURE_SCHEME,
+          'expectedBytes='+str(len(raw)),
+          'expectedSha256='+hashlib.sha256(raw).hexdigest(),flush=True)
+    _assert_original_fixture_bytes(result,'after-create')
+    return result
+
+
+def _assert_original_fixture_bytes(fixture, checkpoint):
+    """Check actual disk bytes, not universal-newline-normalized read_text()."""
+    expected=ORIGINAL.encode('utf8')
+    for role,path in fixture['local'].items():
+        observed=path.read_bytes() if path.is_file() else None
+        if observed!=expected:
+            detail={'checkpoint':checkpoint,'role':role,
+                    'expectedBytes':len(expected),
+                    'expectedSha256':hashlib.sha256(expected).hexdigest(),
+                    'observedBytes':len(observed) if observed is not None else None,
+                    'observedSha256':hashlib.sha256(observed).hexdigest() if observed is not None else None}
+            print('MCEL_HOSTED_DISPOSABLE_FIXTURE_MISMATCH',json.dumps(detail,sort_keys=True),flush=True)
+            raise RuntimeError('DISPOSABLE_FIXTURE_CHANGED:'+json.dumps(detail,sort_keys=True))
+        _progress('fixture-bytes-exact-'+checkpoint,role)
 
 
 def _progress(step, role):
@@ -252,7 +294,144 @@ def _activate_observed_file_by_keyboard(page, target, role, before):
         _progress('source-open-receipt-verified',role)
 
 
-def exercise_write(pages,fixture):
+
+def _save_receipt_evidence(page, before):
+    """Inspect the exact save-intent ledger without exposing file or error text."""
+    return page.evaluate('''before => {
+      const app=window.__mcelWorkbench?.app;
+      const receipts=app?.receipts?.().filter(r=>r.intentId==='intent:save-source')||[];
+      const fresh=receipts.slice(before);
+      const safeCode=value=>typeof value==='string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value)
+        ? value : null;
+      const status=document.querySelector('[data-mcel-document-dirty]');
+      const save=document.querySelector('[data-mcel-document-save]');
+      return {before,after:receipts.length,newDispositions:fresh.map(r=>r.disposition),
+        newSequences:fresh.map(r=>r.sequence??null),
+        reasonCodes:fresh.map(r=>safeCode(r.reason)),
+        reasonPresent:fresh.map(r=>!!r.reason),
+        saveButtonPresent:!!save,saveButtonDisabled:save?.disabled??null,
+        draftDirty:status?.dataset.mcelDocumentDirty??null,
+        statusPresent:!!status,
+        holdCount:window.__hostHeld?.length??0};
+    }''', before)
+
+
+def _disposable_file_evidence(path):
+    """Proof from the local fixture bytes, never their contents or filename."""
+    if not path.is_file():
+        return {'exists':False,'sha256':None,'bytes':None,
+                'original':False,'replacement':False}
+    raw=path.read_bytes()
+    return {'exists':True,'sha256':hashlib.sha256(raw).hexdigest(),
+            'bytes':len(raw),
+            'original':raw==ORIGINAL.encode('utf8'),
+            'replacement':raw==REPLACEMENT.encode('utf8')}
+
+
+def _save_lifecycle_evidence(page, *, firewall=None):
+    """Content-free lifecycle trace: UI click -> port -> fetch -> route -> HTTP.
+
+    This is a *diagnostic*, not permission to treat an incomplete save as
+    success. Do not include source paths, browser credentials, or request bodies.
+    """
+    browser=page.evaluate("""()=>({
+      events:(window.__hostSaveTrace||[]).slice(-24),
+      pendingHeldResponses:window.__hostHeld?.length??0,
+      focusedSave:document.activeElement===document.querySelector('[data-mcel-document-save]'),
+      saveButtonDisabled:document.querySelector('[data-mcel-document-save]')?.disabled??null,
+      currentDraftDirty:document.querySelector('[data-mcel-document-dirty]')?.dataset.mcelDocumentDirty??null
+    })""")
+    witness={'browser':browser}
+    if firewall is not None:
+        endpoint='/api/applications/editor/project/file/save'
+        witness['network']={
+          'requestCount':sum(r.get('path')==endpoint for r in firewall.get('requests',[])),
+          'responseStatuses':[r.get('status') for r in firewall.get('responses',[])
+                              if r.get('path')==endpoint],
+          'blockedReasons':[reason for reason in firewall.get('blocked',[])
+                            if 'disposable' in reason.lower() or 'write' in reason.lower()],
+        }
+    return witness
+
+
+def _save_unsettled_classification(lifecycle):
+    phases=[event.get('phase') for event in lifecycle['browser']['events']]
+    network=lifecycle.get('network',{})
+    if network.get('blockedReasons'):
+        return 'GUARDED_REQUEST_REJECTED'
+    if 'fetch-rejected' in phases:
+        return 'FETCH_REJECTED_NO_OPERATION_RECEIPT'
+    if 'fetch-response' in phases:
+        return 'HTTP_RESPONSE_SEEN_BUT_RECEIPT_UNSETTLED'
+    if 'fetch-start' in phases or network.get('requestCount',0):
+        return 'BACKEND_OR_HTTP_RESPONSE_PENDING'
+    if 'port-request' in phases:
+        return 'PORT_REQUEST_NOT_DISPATCHED_TO_FETCH'
+    if 'native-save-click' in phases:
+        return 'UI_CLICK_PENDING_BEFORE_PORT_REQUEST'
+    return 'SAVE_CLICK_NOT_OBSERVED'
+
+
+def _await_exact_save_receipt(page, role, before, disposable_path, *, timeout_seconds=25, firewall=None):
+    """Wait for exactly one *completed* save and the exact live file bytes.
+
+    Playwright's default wait_for_function uses requestAnimationFrame, which
+    has already produced false timeouts for this background incumbent page.
+    Reading the ledger via synchronous browser evaluations avoids relying on
+    paint, and also exposes a genuine backend refusal instead of a timeout.
+    """
+    deadline=time.monotonic()+timeout_seconds
+    while True:
+        receipt=_save_receipt_evidence(page,before)
+        if receipt['after']>before or time.monotonic()>=deadline:
+            break
+        time.sleep(0.12)
+    file=_disposable_file_evidence(disposable_path)
+    evidence={'receipt':receipt,'file':file}
+    if receipt['after']!=before+1 or receipt['newDispositions']!=['completed'] or not file['replacement']:
+        lifecycle=_save_lifecycle_evidence(page,firewall=firewall)
+        evidence['lifecycle']=lifecycle
+        evidence['classification']=_save_unsettled_classification(lifecycle)
+        print('MCEL_HOSTED_DISPOSABLE_SAVE_LIFECYCLE',role,
+              json.dumps({'classification':evidence['classification'],**lifecycle},sort_keys=True),flush=True)
+    diagnostic=json.dumps(evidence,sort_keys=True,separators=(',',':'))
+    if receipt['after']!=before+1 or receipt['newDispositions']!=['completed'] or not file['replacement']:
+        print('MCEL_HOSTED_DISPOSABLE_SAVE_DIAGNOSTIC',role,diagnostic,flush=True)
+    if receipt['after']==before:
+        raise RuntimeError('DISPOSABLE_SAVE_NO_RECEIPT:'+role+':'+diagnostic)
+    if receipt['after']!=before+1:
+        raise RuntimeError('DISPOSABLE_SAVE_NOT_EXACTLY_ONCE:'+role+':'+diagnostic)
+    if receipt['newDispositions']!=['completed']:
+        raise RuntimeError('DISPOSABLE_SAVE_RECEIPT_NOT_COMPLETED:'+role+':'+diagnostic)
+    if not file['replacement']:
+        raise RuntimeError('DISPOSABLE_SAVE_RECEIPT_WITHOUT_EXACT_FILE:'+role+':'+diagnostic)
+    _progress('save-receipt-and-file-verified',role)
+    return {'receiptCount':1,'disposition':'completed','fileSha256':file['sha256']}
+
+
+def _await_held_write_response(page, before, disposable_path, *, timeout_seconds=25):
+    """Prove server wrote the fixture while the JS response remains held."""
+    deadline=time.monotonic()+timeout_seconds
+    while True:
+        count=page.evaluate('''()=>window.__hostHeld?.length??0''')
+        if count!=0 or time.monotonic()>=deadline:
+            break
+        time.sleep(0.12)
+    receipt=_save_receipt_evidence(page,before)
+    file=_disposable_file_evidence(disposable_path)
+    diagnostic=json.dumps({'heldCount':count,'receipt':receipt,'file':file},
+                          sort_keys=True,separators=(',',':'))
+    if count!=1:
+        raise RuntimeError('DISPOSABLE_SAVE_HELD_RESPONSE_NOT_EXACTLY_ONCE:'+diagnostic)
+    if receipt['after']!=before:
+        raise RuntimeError('DISPOSABLE_SAVE_SETTLED_BEFORE_HELD_RESPONSE_RELEASE:'+diagnostic)
+    if not file['replacement']:
+        raise RuntimeError('HOST_WRITE_NOT_APPLIED_BEFORE_HELD_RECEIPT:'+diagnostic)
+    _progress('held-backend-write-verified','signals')
+
+
+def exercise_write(pages,fixture,*,firewalls=None):
+    _assert_original_fixture_bytes(fixture,'before-navigation')
     # Each role must obtain server-backed listing authority before it can open
     # the exact, unique fixture path. No arbitrary file path is accepted.
     for role,page in pages.items():
@@ -272,8 +451,8 @@ def exercise_write(pages,fixture):
         result=page.evaluate('''()=>window.__mcelWorkbench.app.receipts()
             .filter(r=>r.intentId==='intent:open-source').at(-1)?.disposition''')
         if result!='completed':raise RuntimeError('DISPOSABLE_SOURCE_OPEN_FAILED:'+role)
-    if any(path.read_text(encoding='utf8')!=ORIGINAL for path in fixture['local'].values()):
-        raise RuntimeError('DISPOSABLE_INITIAL_FILE_CHANGED')
+        _assert_original_fixture_bytes(fixture,'after-open-'+role)
+    _assert_original_fixture_bytes(fixture,'before-edit')
     # The actual source-save contract has *no operator input arguments*.
     # Its path and text come from the selected document and Monaco draft.
     for role,page in pages.items():
@@ -291,13 +470,23 @@ def exercise_write(pages,fixture):
         page.wait_for_function("()=>document.querySelector('[data-mcel-document-dirty]')?.dataset.mcelDocumentDirty==='true'",timeout=10000)
         if page.locator('[data-mcel-document-save]').is_disabled():
             raise RuntimeError('DISPOSABLE_EDITOR_DRAFT_NOT_WRITABLE:'+role)
-    for page in pages.values():
-        page.on('dialog',lambda dialog:dialog.accept() if dialog.type=='confirm' else dialog.dismiss())
-    incumbent_save=pages['incumbent'].locator('[data-mcel-document-save]').first
-    reveal_editor_control(pages['incumbent'],incumbent_save)
-    _click_observed(pages['incumbent'],incumbent_save,'save-incumbent-disposable-source','incumbent')
-    pages['incumbent'].wait_for_function('''()=>window.__mcelWorkbench.app.receipts()
-        .some(x=>x.intentId==='intent:save-source'&&x.disposition==='completed')''',timeout=25000)
+    for role,page in pages.items():
+        def accept_disposable_dialog(dialog,role=role):
+            # An explicit UI Save confirmation is required. Report only the
+            # dialog type, never its message (which contains the file path).
+            _progress('browser-dialog-'+dialog.type,role)
+            if dialog.type=='confirm':dialog.accept()
+            else:dialog.dismiss()
+        page.on('dialog',accept_disposable_dialog)
+    _assert_original_fixture_bytes(fixture,'before-first-save')
+    incumbent=pages['incumbent']
+    incumbent_before=incumbent.evaluate('''()=>window.__mcelWorkbench.app.receipts()
+        .filter(r=>r.intentId==='intent:save-source').length''')
+    incumbent_save=incumbent.locator('[data-mcel-document-save]').first
+    reveal_editor_control(incumbent,incumbent_save)
+    _click_observed(incumbent,incumbent_save,'save-incumbent-disposable-source','incumbent')
+    _await_exact_save_receipt(incumbent,'incumbent',incumbent_before,fixture['local']['incumbent'],
+                              firewall=(firewalls or {}).get('incumbent'))
     page=pages['signals']
     page.evaluate('window.__hostHoldNext="/api/applications/editor/project/file/save"')
     before=page.evaluate('''()=>window.__mcelWorkbench.app.receipts()
@@ -305,20 +494,12 @@ def exercise_write(pages,fixture):
     signal_save=page.locator('[data-mcel-document-save]').first
     reveal_editor_control(page,signal_save)
     _click_observed(page,signal_save,'save-signal-disposable-source','signals')
-    page.wait_for_function('()=>window.__hostHeld.length===1',timeout=25000)
-    if fixture['local']['signals'].read_text(encoding='utf8')!=REPLACEMENT:
-        raise RuntimeError('HOST_WRITE_NOT_APPLIED_BEFORE_HELD_RECEIPT')
+    _await_held_write_response(page,before,fixture['local']['signals'])
     rolled=page.evaluate('window.__mcelWorkbench.app.setSignalSchedulingMode("incumbent")')
     if rolled.get('status')!='ROLLED_BACK':raise RuntimeError('DISPOSABLE_PENDING_WRITE_ROLLBACK_REFUSED')
     if page.evaluate('window.__hostRelease()')!=1:raise RuntimeError('DISPOSABLE_WRITE_RELEASE_COUNT')
-    page.wait_for_function('''n=>window.__mcelWorkbench.app.receipts()
-        .filter(r=>r.intentId==='intent:save-source').length===n+1''',arg=before,timeout=25000)
-    if page.evaluate('''()=>window.__mcelWorkbench.app.receipts()
-        .filter(r=>r.intentId==='intent:save-source').at(-1)?.disposition''')!='completed':
-        raise RuntimeError('DISPOSABLE_WRITE_RECEIPT_FAILED')
-    after=page.evaluate('''()=>window.__mcelWorkbench.app.receipts()
-         .filter(r=>r.intentId==='intent:save-source').length''')
-    if after!=before+1:raise RuntimeError('DISPOSABLE_WRITE_RECEIPT_NOT_EXACTLY_ONCE')
+    _await_exact_save_receipt(page,'signals',before,fixture['local']['signals'],
+                              firewall=(firewalls or {}).get('signals'))
     if any(path.read_text(encoding='utf8')!=REPLACEMENT for path in fixture['local'].values()):
         raise RuntimeError('DISPOSABLE_SAVE_CONTENT_MISMATCH')
     reenabled=page.evaluate('window.__mcelWorkbench.app.setSignalSchedulingMode("certified")')

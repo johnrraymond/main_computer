@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only Captain credit preflight for the browser Work-cycle test.
+"""Non-spending Captain credit preflight for the browser Work-cycle test.
 
-Uses the same verified Mother officer identity, Testnet Hub profile, and
-Hub ledger contract as Captain itself. Never signs, creates a deposit,
-submits work, refunds, or modifies a Hub account.
+Uses the verified Mother officer identity and Captain's existing Stable Hub
+MSK issuance to authenticate a read-only ledger request. An explicitly
+authorized run may sign and issue/reuse an MSK; it never creates a deposit,
+submits work, refunds, or modifies a Hub credit balance.
 """
 from __future__ import annotations
 
@@ -71,7 +72,8 @@ def assess_funding(balance: dict, *, wallet_address: str,
     }
 
 
-def probe_live(*, required_credit_wei: int, ceiling_credits: int, repo_root: Path) -> dict:
+def probe_live(*, required_credit_wei: int, ceiling_credits: int, repo_root: Path,
+               authorize_captain_wallet_signing: bool = False) -> dict:
     options = build_captain_options_parser().parse_args(['--network', 'testnet'])
     config = MainComputerConfig.from_env()
     _apply_captain_network_defaults(options, base_config=config, cwd=repo_root)
@@ -81,9 +83,36 @@ def probe_live(*, required_credit_wei: int, ceiling_credits: int, repo_root: Pat
     if (runtime.network != 'testnet' or runtime.config.hub_url.rstrip('/') != TESTNET_HUB
             or runtime.chain_id != 42424241):
         raise FundingEvidenceError('testnet_identity_mismatch')
+    # The Stable Hub refuses an anonymous balance read (HTTP 403). Reuse
+    # Captain's signed MSK authorization, but only when the operator's live
+    # work-cycle invocation explicitly authorizes Captain wallet signing.
+    if not authorize_captain_wallet_signing:
+        raise FundingEvidenceError('captain_wallet_signing_not_authorized')
+    from main_computer.hub_cli_live_session import (
+        identify_hub_protocol, issue_cli_multisession_authorization,
+    )
     try:
-        balance = _fetch_hub_credit_balance(runtime.config.hub_url,
-                                            wallet_address=runtime.wallet.address, timeout_s=15)
+        identity = identify_hub_protocol(runtime.config.hub_url, timeout_s=15)
+    except Exception as exc:
+        raise FundingEvidenceError('testnet_hub_identity_unavailable') from exc
+    network = identity.get('network') if isinstance(identity, dict) else None
+    if (not isinstance(identity, dict)
+            or identity.get('service') != 'main_computer.stable_hub'
+            or not isinstance(network, dict)
+            or str(network.get('chain_id') or '') != '42424241'):
+        raise FundingEvidenceError('testnet_hub_identity_mismatch')
+    try:
+        authorization = issue_cli_multisession_authorization(
+            runtime.config.hub_url, wallet=runtime.wallet, timeout_s=15,
+            stable_identity=identity,
+        )
+    except Exception as exc:
+        raise FundingEvidenceError('captain_msk_authorization_unavailable') from exc
+    try:
+        balance = _fetch_hub_credit_balance(
+            runtime.config.hub_url, wallet_address=runtime.wallet.address,
+            timeout_s=15, authorization=authorization,
+        )
     except Exception as exc:
         raise FundingEvidenceError('testnet_ledger_unavailable') from exc
     return assess_funding(balance, wallet_address=runtime.wallet.address,
@@ -92,9 +121,11 @@ def probe_live(*, required_credit_wei: int, ceiling_credits: int, repo_root: Pat
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Read-only Testnet Captain funding gate')
+    parser = argparse.ArgumentParser(description='Non-spending Testnet Captain funding gate (wallet-signed MSK authorization required)')
     parser.add_argument('--required-credit-wei', type=int, default=1024000000000000000)
     parser.add_argument('--ceiling-credits', type=int, choices=(1, 2), default=2)
+    parser.add_argument('--authorize-captain-wallet-signing', action='store_true',
+                        help='Permit Captain to sign and issue/reuse an MSK for authenticated read-only ledger access.')
     args = parser.parse_args()
     if not 0 < args.required_credit_wei <= args.ceiling_credits * UNIT:
         print(json.dumps({'ok': False, 'fundable': False, 'reason': 'invalid_worker_price'}))
@@ -102,7 +133,8 @@ def main() -> int:
     try:
         result = probe_live(required_credit_wei=args.required_credit_wei,
                             ceiling_credits=args.ceiling_credits,
-                            repo_root=Path(__file__).resolve().parents[1])
+                            repo_root=Path(__file__).resolve().parents[1],
+                            authorize_captain_wallet_signing=args.authorize_captain_wallet_signing)
     except FundingEvidenceError as exc:
         result = {'ok': False, 'fundable': False, 'reason': str(exc)}
     except Exception:

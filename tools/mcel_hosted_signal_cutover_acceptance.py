@@ -511,10 +511,33 @@ HOLD_WRAPPER = '''() => {
   const original=window.fetch.bind(window);
   window.__hostHoldNext=null;
   window.__hostHeld=[];
+  // Bounded, content-free live write trace. The browser may be waiting for
+  // confirmation, authorization, the intercepted request, or the server.
+  // Do not infer any one of these from the Save button's disabled state.
+  window.__hostSaveTrace=[];
+  const saveRecord=(phase,extra={})=>{
+    window.__hostSaveTrace.push({phase,...extra});
+    if(window.__hostSaveTrace.length>24)window.__hostSaveTrace.shift();
+  };
+  document.addEventListener('mcel:parity-transport',event=>{
+    const d=event.detail||{};
+    if(d.endpoint==='/api/applications/editor/project/file/save')
+      saveRecord('port-'+d.phase,{requestId:d.requestId||null,
+        httpStatus:d.status||null,outcome:d.outcome||null});
+  });
+  document.addEventListener('click',event=>{
+    const save=event.target?.closest?.('[data-mcel-document-save]');
+    if(save)saveRecord('native-save-click',{disabledAtClick:!!save.disabled});
+  },true);
   window.__hostRelease=()=>{const pending=window.__hostHeld.splice(0);
     pending.forEach(done=>done());return pending.length;};
   window.fetch=async(...args)=>{
-    const response=await original(...args);
+    const isSave=String(args[0])==='/api/applications/editor/project/file/save';
+    if(isSave)saveRecord('fetch-start');
+    let response;
+    try{response=await original(...args);}
+    catch(error){if(isSave)saveRecord('fetch-rejected',{errorClass:String(error?.name||'Error').slice(0,40)});throw error;}
+    if(isSave)saveRecord('fetch-response',{httpStatus:response?.status||null});
     const match=window.__hostHoldNext;
     if(match && String(args[0]).endsWith(match)){
       window.__hostHoldNext=null;
@@ -763,7 +786,7 @@ def _single_app(browser, app, base, repo, storage_state=None,
                 data['sourceOpen']='BLOCKED_BY_DEFAULT_EDITOR_READ_RECORDS_AIDER_CONTEXT'
             data['pendingRollback']=_exercise_pending(pages,app,record)['status']
             if write_fixture is not None:
-                data['disposableWrite']=disposable.exercise_write(pages,write_fixture)
+                data['disposableWrite']=disposable.exercise_write(pages,write_fixture,firewalls=firewalls)
                 if data['disposableWrite']=='PASS_DISPOSABLE_SOURCE_WRITE_ROLLBACK':
                     data['liveWrites']='PASS_DISPOSABLE_ONLY'
                 if data['disposableWrite']!='PASS_DISPOSABLE_SOURCE_WRITE_ROLLBACK':
@@ -805,6 +828,15 @@ def _single_app(browser, app, base, repo, storage_state=None,
             if firewall.get('documentDrift'):
                 data.setdefault('browserDocumentDrift',{})[role]=firewall['documentDrift']
                 data['failures'].append('BROWSER_DOCUMENT_'+firewall['documentDrift']['reason'])
+        if app=='code-editor' and write_fixture is not None:
+            data['saveNetworkWitness']={
+                role:{'requests':sum(r['path']=='/api/applications/editor/project/file/save'
+                                       for r in firewall['requests']),
+                      'responses':[r['status'] for r in firewall['responses']
+                                   if r['path']=='/api/applications/editor/project/file/save'],
+                      'blockedReasons':[r for r in firewall['blocked']
+                                        if 'disposable' in r.lower() or 'write' in r.lower()]}
+                for role,firewall in firewalls.items()}
         data['failures'].append(type(exc).__name__+':'+str(exc).splitlines()[0][:160])
     finally:
         if 'requestGuard' not in data:

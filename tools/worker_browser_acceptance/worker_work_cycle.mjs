@@ -94,6 +94,60 @@ export function priceOfWorkerOffer({targetTokens, creditPerToken}) {
   }
 }
 
+// Classify the non-spending Python credit probe (authenticated with Captain MSK). Never persist its raw
+// stderr/stdout: those streams can include local configuration or signing data.
+// Exact decimal-wei amounts and fixed reason codes are the only allowed fields.
+export function captainFundingPreflightEvidence({status=null,signal=null,error=null,
+  stdout='',stderr='',expectedRequiredWei=null}={}) {
+  const reasons=new Set([
+    'none','invalid_price_ceiling','invalid_worker_price','invalid_hub_credit_evidence',
+    'insufficient_credit_under_cumulative_cap','testnet_identity_mismatch',
+    'testnet_ledger_unavailable','captain_configuration_unavailable',
+    'captain_wallet_signing_not_authorized','testnet_hub_identity_unavailable',
+    'testnet_hub_identity_mismatch','captain_msk_authorization_unavailable',
+  ])
+  const verdicts=new Set(['existing_credits_sufficient','bounded_top_up_possible',
+    'insufficient_credit_under_cumulative_cap'])
+  const amount=value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,39})$/.test(value)
+    ?value:null
+  let payload=null
+  try {
+    const value=JSON.parse(String(stdout||'').trim())
+    if(value&&typeof value==='object'&&!Array.isArray(value))payload=value
+  }catch{}
+  const exitCode=Number.isInteger(status)&&status>=0&&status<=255?status:null
+  const requiredCreditWei=amount(payload?.requiredCreditWei)
+  const correctPrice=typeof expectedRequiredWei==='string'&&
+    requiredCreditWei===expectedRequiredWei
+  const validFlags=typeof payload?.ok==='boolean'&&
+    typeof payload?.fundable==='boolean'&&
+    (payload.fundable!==true || typeof payload.bridgeFundingRequired==='boolean')
+  const verified=!error&&!signal&&exitCode===0&&payload?.ok===true&&
+    payload.fundable===true&&correctPrice&&validFlags
+  let reason='none'
+  if(error)reason=error.code==='ETIMEDOUT'?'subprocess-timeout':'subprocess-error'
+  else if(signal)reason='subprocess-terminated'
+  else if(!payload)reason='invalid-json'
+  else if(reasons.has(payload.reason)&&payload.reason!=='none')reason=payload.reason
+  else if(!validFlags||!correctPrice)reason='invalid-probe-contract'
+  else if(exitCode!==0)reason='nonzero-exit'
+  else if(!verified)reason='not-fundable'
+  const stderrKind=/Traceback \(most recent call last\):/.test(String(stderr))
+    ?'python-traceback': /^\s*usage:/m.test(String(stderr))?'argument-usage':
+    /^\s*ERROR:/mi.test(String(stderr))?'operator-error':
+    String(stderr).trim()?'other-text':'empty'
+  return {
+    version:'captain-funding-preflight-v1',verified,reason,
+    processExit:exitCode,stderrKind,
+    verdict:verdicts.has(payload?.verdict)?payload.verdict:'unknown',
+    requiredCreditWei,availableCreditWei:amount(payload?.availableCreditWei),
+    bridgeCompletedCreditWei:amount(payload?.bridgeCompletedCreditWei),
+    possibleTopUpCreditWei:amount(payload?.possibleTopUpCreditWei),
+    bridgeFundingRequired:typeof payload?.bridgeFundingRequired==='boolean'
+      ?payload.bridgeFundingRequired:null,
+  }
+}
+
 export function captainProof(result) {
   if (!result || typeof result !== 'object' || result.ok !== true) {
     throw new Error('Captain did not report a successful testnet request')
@@ -607,6 +661,21 @@ export async function waitForLiveWorker({page, workerId, expectedPriceWei = null
 // seller offer, not a Hub funding or ledger override; the original offer
 // must be restored after the Work-now session is closed.
 export const WORK_CYCLE_SMOKE_TOKEN_LIMIT = 512
+// Test-only discounted offer: a real Hub price, not a funding or ledger
+// override. The original exact seller price is restored in finally.
+export const WORK_CYCLE_SMOKE_RATE_CAP = '0.00001'
+
+export function boundedSmokeOfferRate(value) {
+  const rate = String(value ?? '').trim()
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,18})?$/.test(rate)) {
+    throw Error('Worker credit-per-token rate unavailable or invalid')
+  }
+  const [whole, fraction=''] = rate.split('.')
+  const wei = BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18,'0') || '0')
+  if (wei <= 0n) throw Error('Worker credit-per-token rate must be positive')
+  const cap = 10n ** 13n // 0.00001 credit per token
+  return Object.freeze({originalRate:rate,testRate:wei>cap ? WORK_CYCLE_SMOKE_RATE_CAP : rate})
+}
 
 export function boundedSmokeOfferTokens(value) {
   const text = String(value ?? '').trim()

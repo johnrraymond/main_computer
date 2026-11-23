@@ -62,9 +62,13 @@ export async function inspectMetaMaskActiveUrl(context,extensionId,expectedAddre
   // Never select an arbitrary open extension tab as an authorization target.
   // Prefer a verified home, then a real unlock route, then a home that still
   // needs its expected wallet identity established.
+  // Chrome can expose the exact unlock URL before the password form finishes
+  // hydrating. Screen readiness is established by the existing bounded unlock
+  // helper; it must not prevent selecting this verified URL in preconnect.
   const selected=candidates.find(c=>c.identityMatched) ||
     candidates.find(c=>c.route==='unlock' && c.screen==='wallet-unlock') ||
-    candidates.find(c=>c.route==='home-root') || null
+    candidates.find(c=>c.route==='home-root') ||
+    candidates.find(c=>c.route==='unlock') || null
   if(activate && selected) {
     await selected.page.bringToFront()
     // Re-read after activation. The visible tab can navigate during React
@@ -113,4 +117,31 @@ export function requireVerifiedMetaMaskUrl(evidence,{requireHome=false,requireFo
     throw new Error('METAMASK_FOREGROUND_UNVERIFIED')
   if (requireHome && (!evidence.walletIdentityMatched || evidence.selectedScreen!=='wallet-home'))
     throw new Error('METAMASK_HOME_IDENTITY_UNVERIFIED')
+}
+
+// The service worker can start before MetaMask's home tab has navigated from
+// about:blank, and the unlock UI can hydrate after the URL becomes valid.
+// Retry discovery only; never authorize an arbitrary extension URL, and never
+// equate this pre-unlock route check with post-unlock wallet identity proof.
+export async function waitForVerifiedMetaMaskPreconnect(context,extensionId,expectedAddress,{
+  timeoutMs=8_000,pollMs=250,
+  inspect=inspectMetaMaskActiveUrl,
+  sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+  onObservation=()=>{},
+}={}) {
+  const deadline=Date.now()+timeoutMs
+  let checks=0
+  while(true){
+    const result=await inspect(context,extensionId,expectedAddress,{activate:true})
+    checks++
+    onObservation(result.evidence,checks)
+    try{
+      requireVerifiedMetaMaskUrl(result.evidence)
+      return {...result,checks}
+    }catch(error){
+      if(error?.message!=='METAMASK_ACTIVE_URL_UNVERIFIED')throw error
+    }
+    if(Date.now()>=deadline)throw Error('METAMASK_ACTIVE_URL_UNVERIFIED')
+    await sleep(Math.min(pollMs,Math.max(0,deadline-Date.now())))
+  }
 }

@@ -92,7 +92,7 @@ def test_black_glass_and_clean_materials_follow_shared_theme_across_eight_palett
             assert report['rails']==2 and report['noExtraChrome'] and report['oldButton'],(theme,report)
             assert 'radial-gradient' in report['mainImage'],(theme,report)
             assert 'linear-gradient' in report['mainImage'],(theme,report)
-            assert '8px 8px' in report['pixelSize'],(theme,report)
+            assert '21px 6px' in report['pixelSize'],(theme,report)
             assert report['mainImage'].count('data:image/svg+xml,') == 1,(theme,report)
             assert report['glass'] in report['palette'].values(),(theme,report)
             assert report['railBG'] and report['purpleBG'] and report['highlightMask']!='none',(theme,report)

@@ -68,3 +68,75 @@ def test_invalid_prices_fail_closed():
         with pytest.raises(FundingEvidenceError):
             assess_funding(ledger(U, U), wallet_address=WALLET,
                            required_credit_wei=required, ceiling_credits=ceiling)
+
+
+
+def _stub_live_captain(monkeypatch):
+    """No private state or network: fake only the already established Captain identity."""
+    from types import SimpleNamespace
+    import tools.worker_captain_funding_preflight as funding
+    runtime = SimpleNamespace(
+        network='testnet', chain_id=42424241,
+        config=SimpleNamespace(hub_url=funding.TESTNET_HUB),
+        wallet=SimpleNamespace(address=WALLET, private_key='not-a-real-key'),
+    )
+    monkeypatch.setattr(funding, 'MainComputerConfig', SimpleNamespace(from_env=lambda: object()))
+    monkeypatch.setattr(funding, '_apply_captain_network_defaults', lambda *a, **k: None)
+    monkeypatch.setattr(funding, 'build_captain_runtime', lambda *a, **k: runtime)
+    return funding, runtime
+
+
+def test_live_ledger_requires_explicit_captain_signing_permission(monkeypatch, tmp_path):
+    funding, runtime = _stub_live_captain(monkeypatch)
+    def reject(*args, **kwargs):
+        raise AssertionError('unauthorized preflight must not access the ledger or issue MSK')
+    monkeypatch.setattr(funding, '_fetch_hub_credit_balance', reject)
+    import main_computer.hub_cli_live_session as session
+    monkeypatch.setattr(session, 'identify_hub_protocol', reject)
+    monkeypatch.setattr(session, 'issue_cli_multisession_authorization', reject)
+    with pytest.raises(FundingEvidenceError, match='captain_wallet_signing_not_authorized'):
+        funding.probe_live(required_credit_wei=512 * U // 1000,
+                           ceiling_credits=1, repo_root=tmp_path)
+
+
+def test_live_ledger_uses_verified_captain_msk_for_balance(monkeypatch, tmp_path):
+    funding, runtime = _stub_live_captain(monkeypatch)
+    import main_computer.hub_cli_live_session as session
+    identity={'service':'main_computer.stable_hub','network':{'chain_id':'42424241'},
+              'cluster_id':'main-computer-testnet-hubs'}
+    seen=[]
+    monkeypatch.setattr(session, 'identify_hub_protocol',
+                        lambda url, **kw: identity)
+    def authorize(url, *, wallet, stable_identity, timeout_s):
+        assert url == funding.TESTNET_HUB
+        assert wallet is runtime.wallet and stable_identity is identity
+        seen.append('authorized')
+        return {'multisession_key_id':'opaque-valid-msk-id'}
+    monkeypatch.setattr(session, 'issue_cli_multisession_authorization', authorize)
+    def read_balance(url, *, wallet_address, timeout_s, authorization):
+        assert url == funding.TESTNET_HUB and wallet_address == WALLET
+        assert authorization == {'multisession_key_id':'opaque-valid-msk-id'}
+        seen.append('balance')
+        return ledger(U, U)
+    monkeypatch.setattr(funding, '_fetch_hub_credit_balance', read_balance)
+    result=funding.probe_live(required_credit_wei=512 * U // 1000,
+                              ceiling_credits=1,repo_root=tmp_path,
+                              authorize_captain_wallet_signing=True)
+    assert seen==['authorized','balance']
+    assert result['fundable'] is True
+    assert result['verdict']=='existing_credits_sufficient'
+    assert result['bridgeFundingRequired'] is False
+
+
+def test_live_ledger_authorization_failure_is_not_misreported_as_ledger_outage(monkeypatch, tmp_path):
+    funding, _ = _stub_live_captain(monkeypatch)
+    import main_computer.hub_cli_live_session as session
+    monkeypatch.setattr(session, 'identify_hub_protocol', lambda *a, **k:
+                        {'service':'main_computer.stable_hub','network':{'chain_id':'42424241'}})
+    def deny(*args, **kwargs):
+        raise RuntimeError('test-only authorization failure')
+    monkeypatch.setattr(session, 'issue_cli_multisession_authorization', deny)
+    with pytest.raises(FundingEvidenceError, match='captain_msk_authorization_unavailable'):
+        funding.probe_live(required_credit_wei=512 * U // 1000,
+                           ceiling_credits=1,repo_root=tmp_path,
+                           authorize_captain_wallet_signing=True)

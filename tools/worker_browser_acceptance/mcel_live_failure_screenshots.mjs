@@ -16,7 +16,7 @@ const PAGE_NAMES = new Map([
 const VERSION = 'failure-screens-v1'
 const MOMENT_VERSION = 'msk-moment-screens-v1'
 const MOMENT_PHASES = new Set(['request-start','approval-target','request-failed','revoke-start','revoke-approval-target','revoke-failed',
-  'offer-confirmed','offer-http-failed','offer-hub-failed'])
+  'offer-confirmed','offer-http-failed','offer-hub-failed','policy-before','policy-failed','offer-price-failed'])
 
 function savedPng(path) {
   try { return existsSync(path) && statSync(path).isFile() && statSync(path).size > 64 }
@@ -268,7 +268,7 @@ export async function captureLiveMskMoment({context,workerPage,reportPath,extens
 // Keep its evidence distinct from signing; no exception or payload text is read.
 export async function captureLiveOfferMoment(args={}) {
   const phase=args.phase
-  if(!['offer-confirmed','offer-http-failed','offer-hub-failed'].includes(phase))
+  if(!['offer-confirmed','offer-http-failed','offer-hub-failed','policy-before','policy-failed','offer-price-failed'].includes(phase))
     return {version:'offer-moment-screens-v1',phase,captures:[{surface:'storage',status:'unavailable'}]}
   const evidence=await captureLiveMskMoment(args)
   return {...evidence,version:'offer-moment-screens-v1'}

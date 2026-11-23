@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {safeMetaMaskRoute,inspectMetaMaskActiveUrl,requireVerifiedMetaMaskUrl} from './metamask_active_url.mjs'
+import {safeMetaMaskRoute,inspectMetaMaskActiveUrl,requireVerifiedMetaMaskUrl,waitForVerifiedMetaMaskPreconnect} from './metamask_active_url.mjs'
 
 const ID='dnamoknnfmliijgdpmkcjmgihhhidcgj'
 const ADDRESS='0x'+'1'.repeat(40)
@@ -99,4 +99,41 @@ test('wrong account never passes unlocked-home verification even if foreground',
   const result=await inspectMetaMaskActiveUrl(context(p),ID,ADDRESS,options)
   assert.equal(result.evidence.visibility,'visible')
   assert.throws(()=>requireVerifiedMetaMaskUrl(result.evidence,{requireHome:true}),/HOME_IDENTITY_UNVERIFIED/)
+})
+
+test('a verified unlock URL is selected before its password form finishes rendering',async()=>{
+  const p=tab(`${BASE}#/onboarding/unlock`,{screen:'unrecognized-extension-screen',shown:'hidden'})
+  const result=await inspectMetaMaskActiveUrl(context(p),ID,ADDRESS,{...options,activate:true})
+  assert.equal(result.evidence.selectedRoute,'unlock')
+  assert.equal(result.evidence.actualUrl,`${BASE}#/onboarding/unlock`)
+  assert.equal(result.evidence.selectedScreen,'unrecognized-extension-screen')
+  requireVerifiedMetaMaskUrl(result.evidence)
+  assert.throws(()=>requireVerifiedMetaMaskUrl(result.evidence,{requireHome:true}),/ACTIVE_URL_UNVERIFIED/)
+})
+test('preconnect retries until the recognized extension URL appears',async()=>{
+  let url='about:blank'
+  const p=tab(url,{screen:'unrecognized-extension-screen'})
+  p.url=()=>url
+  let waits=0
+  const observations=[]
+  const result=await waitForVerifiedMetaMaskPreconnect(context(p),ID,ADDRESS,{
+    ...options,timeoutMs:1000, pollMs:1,
+    inspect:(ctx,id,address,opts)=>inspectMetaMaskActiveUrl(ctx,id,address,{...options,...opts}),
+    sleep:async()=>{waits++;url=`${BASE}#/unlock`},
+    onObservation:(evidence,attempt)=>observations.push({route:evidence.selectedRoute,attempt}),
+  })
+  assert.equal(waits,1)
+  assert.equal(result.checks,2)
+  assert.deepEqual(observations.map(x=>x.route),['none','unlock'])
+  requireVerifiedMetaMaskUrl(result.evidence)
+})
+test('preconnect never accepts another extension or an unrecognized route',async()=>{
+  const p=tab(`chrome-extension://${'a'.repeat(32)}/home.html#/unlock`,{screen:'wallet-unlock'})
+  let observations=[]
+  await assert.rejects(waitForVerifiedMetaMaskPreconnect(context(p),ID,ADDRESS,{
+    ...options,timeoutMs:0,
+    inspect:(ctx,id,address,opts)=>inspectMetaMaskActiveUrl(ctx,id,address,{...options,...opts}),
+    onObservation:ev=>observations.push(ev),
+  }),/METAMASK_ACTIVE_URL_UNVERIFIED/)
+  assert.equal(observations[0].selectedRoute,'none')
 })

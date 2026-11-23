@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from tools import worker_browser_acceptance as legacy
+from tools.worker_live_failure_bundle import build_failure_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = 'http://127.0.0.1:8765/applications/mcel-semantic-worker'
@@ -179,6 +180,82 @@ def provision_fresh_live_wallet(*, node: str, node_dir: Path, extension_dir: Pat
     return wallet_file, profile_dir, marker_file
 
 
+def classify_node_startup_failure(stderr: str) -> str:
+    """Bounded, allowlisted cause; never persist or print raw Node stderr.
+
+    Node may fail while loading ES modules, before the JS evidence writer runs.
+    The raw stack trace can contain application paths or wallet data, so only
+    emit an approved failure category into the acceptance report.
+    """
+    if 'ERR_MODULE_NOT_FOUND' in stderr or 'Cannot find module' in stderr:
+        return 'node-module-not-found'
+    if 'ERR_PACKAGE_PATH_NOT_EXPORTED' in stderr or 'ERR_PACKAGE_IMPORT_NOT_DEFINED' in stderr:
+        return 'node-package-export-failed'
+    if 'does not provide an export named' in stderr:
+        return 'node-module-export-mismatch'
+    if 'SyntaxError:' in stderr:
+        return 'node-syntax-error'
+    if 'ReferenceError:' in stderr:
+        return 'node-reference-error'
+    if 'ERR_UNKNOWN_FILE_EXTENSION' in stderr:
+        return 'node-file-extension-error'
+    if 'EACCES' in stderr or 'EPERM' in stderr:
+        return 'node-permission-denied'
+    return 'node-exited-without-evidence'
+
+
+# Resolve only repository-local ES-module imports. Run this before provisioning
+# a fresh wallet: a missing helper must not create an orphaned test identity.
+_NODE_LOCAL_IMPORT = re.compile(
+    r"(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)[\"'](\.[^\"']+)[\"']"
+)
+
+
+def missing_node_local_import(node_dir: Path, entry: str = 'mcel_live_acceptance.mjs') -> tuple[str, str] | None:
+    """Return only safe filenames (missing file, importing file), never source text.
+
+    Traverse transitive relative imports, since a top-level import can exist
+    while one of its dependencies is absent. Do not execute imported modules.
+    """
+    boundary = node_dir.resolve()
+    pending = [node_dir / entry]
+    visited: set[Path] = set()
+    while pending:
+        file = pending.pop()
+        resolved = file.resolve()
+        if not resolved.is_relative_to(boundary):
+            return 'outside-worker-browser-root', 'import-graph'
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        if not file.is_file():
+            return file.name, entry if file.name == entry else 'transitive-import'
+        try:
+            content = file.read_text(encoding='utf-8')
+        except OSError:
+            return file.name, 'unreadable-import'
+        for spec in _NODE_LOCAL_IMPORT.findall(content):
+            candidate = file.parent / spec
+            if not candidate.is_file():
+                return candidate.name, file.name
+            pending.append(candidate)
+    return None
+
+
+def safe_node_missing_module(stderr: str) -> str:
+    """Extract only a known module basename, never an absolute path or secret."""
+    match = re.search(r"Cannot find (?:module|package) ['\"]([^'\"\r\n]{1,260})['\"]", stderr)
+    if not match:
+        return 'unidentified'
+    spec = match.group(1).replace('\\', '/')
+    if spec in ('@playwright/test', 'ethers', '@synthetixio/synpress'):
+        return spec
+    if '/worker_browser_acceptance/' not in spec and not spec.startswith('./'):
+        return 'unidentified'
+    name = spec.rsplit('/', 1)[-1]
+    return name if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}\.(?:mjs|js|json)', name) else 'unidentified'
+
+
 def invoke_node(gate: str, report_path: Path, timeout: int, url: str,
                 *, authorize_signing: bool, authorize_offer: bool,
                 authorize_spend: bool, authorize_settings: bool,
@@ -189,6 +266,29 @@ def invoke_node(gate: str, report_path: Path, timeout: int, url: str,
     node_dir = ROOT / 'tools/worker_browser_acceptance'
     if not (node_dir / 'node_modules').is_dir():
         return None, 'Official MetaMask acceptance dependencies unavailable (run tools.worker_browser_acceptance install)'
+    missing = missing_node_local_import(node_dir)
+    if missing is not None:
+        name, importer = missing
+        # The source paths are checked locally and only safe basenames reach
+        # the terminal; no browser or wallet state is accessed by this check.
+        print('WORKER_LIVE_NODE_IMPORT_PREFLIGHT', 'status=missing',
+              'module=' + name if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', name) else 'module=unclassified',
+              'imported-by=' + importer if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', importer) else 'imported-by=unclassified',
+              flush=True)
+        return None, 'node-local-module-missing'
+    # A node_modules directory alone does not prove the Playwright package
+    # can be resolved from the actual harness directory.
+    try:
+        playwright = subprocess.run(
+            [executable, '-e', "require.resolve('@playwright/test')"],
+            cwd=node_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, 'node-package-preflight-unavailable'
+    if playwright.returncode != 0:
+        print('WORKER_LIVE_NODE_IMPORT_PREFLIGHT', 'status=missing',
+              'module=@playwright/test', flush=True)
+        return None, 'node-package-module-missing'
     wallet_file, profile_dir, marker_file = legacy.WALLET_FILE, legacy.PROFILE_DIR, legacy.PROFILE_MARKER
     if gate != 'requester-enforcement':
         if not legacy.METAMASK_DIR.is_dir():
@@ -198,12 +298,13 @@ def invoke_node(gate: str, report_path: Path, timeout: int, url: str,
         except legacy.AcceptanceError:
             return None, 'official-metamask-verification-refused'
         if fresh_disposable_wallet:
-            # Always use an isolated newly provisioned account for this gate.
-            # This is the legacy wallet factory and onboarding path, not a
-            # replacement wallet implementation. An older active Hub key stays
-            # untouched, and a failure cannot be misreported as fresh signing.
-            if gate != 'wallet-msk':
-                return None, 'fresh-wallet-only-allowed-for-wallet-msk'
+            # Use the established isolated wallet factory for every live gate
+            # that signs with an MSK. A cached disposable key can be locally
+            # marked active even after its seven-day Hub lifetime expires.
+            # Never retry registration with that stale bearer credential, and
+            # never silently revoke or overwrite another wallet's key.
+            if gate not in ('wallet-msk', 'offer-registration', 'work-cycle'):
+                return None, 'fresh-wallet-unsupported-gate'
             try:
                 wallet_file, profile_dir, marker_file = provision_fresh_live_wallet(
                     node=executable, node_dir=node_dir, extension_dir=extension_dir)
@@ -238,37 +339,100 @@ def invoke_node(gate: str, report_path: Path, timeout: int, url: str,
            'MC_WORKER_LIVE_AUTHORIZE_OFFER': 'yes' if authorize_offer else 'no',
            'MC_WORKER_LIVE_AUTHORIZE_SPEND': 'yes' if authorize_spend else 'no',
            'MC_WORKER_LIVE_AUTHORIZE_SETTINGS': 'yes' if authorize_settings else 'no',
+           # The original policy was observed as totally_idle before a failed
+           # acceptance run leaked ai_idle. This is a test-only restoration
+           # target, never a claim about the current machine's idle state.
+           # Set only when the caller explicitly authorized settings changes.
+           'MC_WORKER_TEST_SELLER_ORIGINAL_MODE': 'totally_idle' if
+               authorize_settings and gate in ('offer-registration','work-cycle') else '',
            'MC_WORKER_TEST_PYTHON': sys.executable,
            'MC_WORKER_TEST_ROOT': str(ROOT),
            'PYTHONDONTWRITEBYTECODE': '1'}
     script = node_dir / 'mcel_live_acceptance.mjs'
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
-    # Do not stream exception logs which may contain browser-controlled text.
-    # The subprocess writes a specifically redacted evidence record.
-    try:
-        child = subprocess.Popen([executable, str(script)], cwd=node_dir, env=env,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 creationflags=flags, start_new_session=os.name != 'nt')
-    except OSError:
-        return None, 'browser-launch-failed'
-    try:
-        exit_code = child.wait(timeout=timeout)
-        return exit_code, 'exited-' + str(exit_code)
-    except subprocess.TimeoutExpired:
-        # Reap browser descendants too. A timed-out work cycle is NOT proof
-        # that its Hub override was safely cleared; operator reconciliation
-        # is required before retrying any spending gate.
+    # Node can fail during ES-module loading before its evidence writer exists.
+    # Keep stderr in an anonymous temporary file, never on-screen or persisted;
+    # the ONLY output from it is a bounded, allowlisted failure class.
+    with tempfile.TemporaryFile(mode='w+b') as node_stderr:
         try:
-            if os.name == 'nt':
-                subprocess.run(['taskkill', '/PID', str(child.pid), '/T', '/F'],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=12, check=False)
-            else:
-                os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=10)
-        except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
-            child.kill()
-        return None, 'live-timeout-cleanup-unverified'
+            child = subprocess.Popen([executable, str(script)], cwd=node_dir, env=env,
+                                     stdout=subprocess.DEVNULL, stderr=node_stderr,
+                                     creationflags=flags, start_new_session=os.name != 'nt')
+        except OSError:
+            return None, 'browser-launch-failed'
+        try:
+            exit_code = child.wait(timeout=timeout)
+            if exit_code != 0 and not report_path.is_file():
+                node_stderr.seek(0, os.SEEK_END)
+                length = node_stderr.tell()
+                node_stderr.seek(max(0, length - 65536))
+                diagnostic = node_stderr.read(65536).decode('utf-8', errors='replace')
+                category = classify_node_startup_failure(diagnostic)
+                if category == 'node-module-not-found':
+                    # Do not print Node's raw stderr: it can include private
+                    # paths, provider content, or browser-controlled text.
+                    print('WORKER_LIVE_NODE_IMPORT_FAILURE',
+                          'module=' + safe_node_missing_module(diagnostic), flush=True)
+                return exit_code, category
+            return exit_code, 'exited-' + str(exit_code)
+        except subprocess.TimeoutExpired:
+            # A timed-out work cycle is NOT proof that its Hub override was
+            # safely cleared; the operator must reconcile before retrying.
+            try:
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(child.pid), '/T', '/F'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=12, check=False)
+                else:
+                    os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
+                child.kill()
+            return None, 'live-timeout-cleanup-unverified'
+
+
+def seed_interrupted_seller_policy_recovery(detail_path: Path) -> bool:
+    """Preserve the previous run's baseline before replacing its evidence.
+
+    This migrates an already-stranded ai_idle edit from older harness versions.
+    New executions write a durable receipt *before* changing policy; a failed
+    run cannot silently redefine its own temporary mode as the next baseline.
+    Only allowlisted policy fields are persisted, never wallet or Hub data.
+    """
+    receipt_path = detail_path.parent / 'live-worker-offer-policy-recovery.json'
+    if receipt_path.exists():
+        return False  # Pending original receipt takes precedence.
+    try:
+        prior = json.loads(detail_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    if (not isinstance(prior, dict) or
+            prior.get('schema') != 'mcel.worker.native-live-evidence.v1' or
+            prior.get('surface') != 'native-mcel' or
+            prior.get('network') != 'testnet' or
+            prior.get('gate') not in ('offer-registration', 'work-cycle')):
+        return False
+    policy = prior.get('offerRegistration')
+    if (not isinstance(policy, dict) or
+            policy.get('settingsChanged') is not True or
+            policy.get('availabilityRestored') is True or
+            policy.get('availabilityModeBefore') not in ('totally_idle', 'ai_idle') or
+            type(policy.get('sellerEnabledBefore')) is not bool):
+        return False
+    receipt = {
+        'schema': 'mcel.worker.offer-policy-recovery.v1',
+        'target': DEFAULT_URL,
+        'network': 'testnet',
+        'sellerEnabled': policy['sellerEnabledBefore'],
+        'sellerAvailabilityMode': policy['availabilityModeBefore'],
+    }
+    try:
+        with receipt_path.open('x', encoding='utf-8') as output:
+            json.dump(receipt, output, sort_keys=True)
+            output.write('\n')
+    except FileExistsError:
+        return False
+    return True
 
 
 def prior_verified_gates(target: Path, current: dict) -> dict:
@@ -309,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--timeout', type=int, default=1200)
     parser.add_argument('--authorize-wallet-signing', action='store_true')
     parser.add_argument('--fresh-disposable-wallet', action='store_true',
-                        help='Compatibility option: wallet-msk already provisions a new isolated wallet by default')
+                        help='Compatibility option: live wallet/MSK gates already use isolated wallets by default')
     parser.add_argument('--authorize-worker-offer', action='store_true')
     parser.add_argument('--authorize-captain-spend', action='store_true')
     parser.add_argument('--authorize-settings-change', action='store_true')
@@ -320,8 +484,9 @@ def main(argv: list[str] | None = None) -> int:
         valid_native_url(args.url)
     except (ValueError, TypeError) as exc:
         parser.error(str(exc))
-    if args.fresh_disposable_wallet and (args.action != 'run' or args.gate != 'wallet-msk'):
-        parser.error('--fresh-disposable-wallet applies only to --action run --gate wallet-msk')
+    if args.fresh_disposable_wallet and (args.action != 'run' or args.gate not in
+                                         ('wallet-msk', 'offer-registration', 'work-cycle')):
+        parser.error('--fresh-disposable-wallet applies only to live wallet/MSK gates')
     if args.timeout < 60 or args.timeout > 1800 or args.max_testnet_credits != MAX_CREDIT_CEILING:
         parser.error('Live profile requires timeout=60..1800 and exact 2-credit ceiling')
     if args.action == 'run' and (os.environ.get('MC_WORKER_TEST_MNEMONIC') or
@@ -361,6 +526,11 @@ def main(argv: list[str] | None = None) -> int:
         print('WORKER_LIVE_REFUSED local-native-route-not-verified', flush=True)
         return 2
     detail_path = target.parent / ('live-' + args.gate + '-evidence.json')
+    # Migrate evidence of a leaked policy from the previous version before
+    # unlinking that evidence. Require explicit settings authorization; the
+    # browser gate verifies and restores this receipt before wallet operations.
+    if args.gate in ('offer-registration', 'work-cycle') and args.authorize_settings_change:
+        seed_interrupted_seller_policy_recovery(detail_path)
     detail_path.unlink(missing_ok=True)  # never reuse a prior PASS
     report['gates'][args.gate] = {'status': 'IN_PROGRESS'}
     save(report, target)
@@ -369,15 +539,20 @@ def main(argv: list[str] | None = None) -> int:
                     authorize_offer=args.authorize_worker_offer,
                     authorize_spend=args.authorize_captain_spend,
                     authorize_settings=args.authorize_settings_change,
-                    fresh_disposable_wallet=(args.gate == 'wallet-msk'))
+                    fresh_disposable_wallet=(args.gate in ('wallet-msk', 'offer-registration', 'work-cycle')))
     try:
         evidence = json.loads(detail_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         evidence = None
     accepted, reason = verify_evidence(evidence, args.gate)
     status = 'PASS' if code == 0 and accepted else 'UNVERIFIED'
-    if evidence is None and explanation not in ('exited-0','exited-1'):
-        reason = explanation if re.fullmatch(r'[A-Za-z0-9_ -]{1,150}', explanation) else 'live-preflight-unverified'
+    if evidence is None:
+        # Never report a browser-state/schema failure when Node did not write
+        # evidence at all. Preserve a non-secret startup/preflight category.
+        reason = explanation if explanation.startswith('node-') or explanation not in ('exited-0','exited-1') \
+            else 'live-evidence-not-written'
+        if not re.fullmatch(r'[A-Za-z0-9_ -]{1,150}', reason):
+            reason = 'live-evidence-not-written'
     report['gates'][args.gate] = {'status': status,
                                  'lastVerifiedStage': safe_stage(evidence),
                                  'reason': reason if not accepted else 'verified-live-postconditions',
@@ -391,6 +566,20 @@ def main(argv: list[str] | None = None) -> int:
     report['cutover']['reason'] = ('all-four-live-gates-verified; manual-promotion-required'
                                    if complete else 'live-gates-incomplete')
     save(report, target)
+    # Archive only evidence belonging to THIS invocation. Node captures the
+    # browser and MetaMask before teardown; Python packages those images and
+    # their structured receipts after the test, without changing its verdict.
+    # A bundle failure never turns an UNVERIFIED operation into PASS.
+    failure_bundle = None
+    bundle_error = False
+    if status != 'PASS':
+        try:
+            failure_bundle = build_failure_bundle(
+                gate=args.gate, evidence_path=detail_path, report_path=target,
+                evidence=evidence, reason=reason, process=explanation)
+        except Exception:
+            # Never echo path-bearing or browser-controlled exception text.
+            bundle_error = True
     print('WORKER_LIVE_GATE', args.gate, status,
           'reason=' + (reason if not accepted else 'verified'),
           'stage=' + safe_stage(evidence),
@@ -398,6 +587,18 @@ def main(argv: list[str] | None = None) -> int:
               if evidence and evidence.get('errorClass') in ('Error','TimeoutError','AssertionError','TypeError','UnknownError')
               else 'NOT_AVAILABLE'),
           'process=' + explanation, flush=True)
+    if failure_bundle:
+        print('WORKER_LIVE_FAILURE_BUNDLE',
+              'status=saved',
+              'path=' + failure_bundle['path'],
+              'files=' + str(failure_bundle['files']),
+              'screenshots=' + str(failure_bundle['screenshots']),
+              'missing=' + str(failure_bundle['missing']), flush=True)
+    elif bundle_error:
+        print('WORKER_LIVE_FAILURE_BUNDLE status=unavailable reason=packaging-error', flush=True)
+    if evidence is None:
+        print('WORKER_LIVE_NODE_EVIDENCE', 'status=not-written',
+              'cause=' + reason, 'file=' + detail_path.name, flush=True)
     # Report the actual failure screenshots before the user has to inspect a
     # JSON receipt. Only fixed, local image names are accepted; never print a
     # path supplied by a browser page or an untrusted error message.
@@ -535,17 +736,23 @@ def main(argv: list[str] | None = None) -> int:
                   'expected=msk-signing-v1', 'actual=absent-or-outdated', flush=True)
         else:
             print('WORKER_LIVE_MSK_DIAGNOSTIC_VERSION', 'version=msk-signing-v1', flush=True)
+    # Shared safe formatter: successful work cycles skip offer failure
+    # diagnostics, but still report the Captain funding preflight below.
+    def yn(value):
+        return 'yes' if value is True else 'no' if value is False else 'unknown'
+
     # Offer and work-cycle registration share the same existing Worker bridge.
     # Report exact stage, seller-policy precondition, local POST and Hub result
     # without printing arbitrary backend/provider text or wallet identifiers.
     if args.gate in ('offer-registration','work-cycle') and status != 'PASS':
         offer = evidence.get('offerRegistration') if isinstance(evidence, dict) else None
-        if not isinstance(offer, dict) or offer.get('version') != 'offer-registration-v2':
+        if not isinstance(offer, dict) or offer.get('version') != 'offer-registration-v3':
             print('WORKER_LIVE_OFFER_DIAGNOSTIC_VERSION_MISMATCH',
-                  'expected=offer-registration-v2', 'actual=absent-or-outdated', flush=True)
+                  'expected=offer-registration-v3',
+                  'actual=' + (offer.get('version') if isinstance(offer, dict) and
+                    offer.get('version') in ('offer-registration-v1','offer-registration-v2')
+                    else 'absent-or-outdated'), flush=True)
         else:
-            def yn(value):
-                return 'yes' if value is True else 'no' if value is False else 'unknown'
             allowed_causes = ('seller-disabled-settings-authorization-required',
                 'register-button-not-ready','hub-registration-failed',
                 'hub-acceptance-unverified','confirmation-missing-or-duplicate',
@@ -554,7 +761,9 @@ def main(argv: list[str] | None = None) -> int:
                 'registration-not-acknowledged','wallet-hub-session-mismatch',
                 'local-worker-post-rejected','offer-deferred-by-local-policy',
                 'offer-sync-not-accepted','offer-sync-http-rejected',
-                'offer-sync-transport-failed','offer-operation-unclassified','none')
+                'offer-sync-transport-failed','offer-sync-request-not-observed',
+                'offer-sync-response-not-observed',
+                'offer-operation-unclassified','none')
             cause = offer.get('failure')
             if cause not in allowed_causes: cause = 'unclassified'
             allowed_statuses = ('not_submitted','submitting','accepted','failed','stale','unknown')
@@ -568,7 +777,13 @@ def main(argv: list[str] | None = None) -> int:
             if rejection not in allowed_rejections: rejection = 'unknown'
             allowed_details = ('not-msk-specific','browser-key-id-missing',
                 'specified-key-not-active','private-cache-no-active-key',
-                'key-chain-mismatch','other-msk-rejection')
+                'key-chain-mismatch','other-msk-rejection',
+                'hub-key-not-active','hub-key-expired','hub-key-lifetime-invalid',
+                'hub-key-authorization-missing','hub-key-id-missing',
+                'hub-unsupported-chain','hub-record-chain-mismatch',
+                'hub-authorization-chain-mismatch','hub-key-wallet-mismatch',
+                'hub-key-record-invalid','hub-wallet-invalid',
+                'hub-auth-rejected-unclassified')
             detail = offer.get('apiRejectionDetail')
             if detail not in allowed_details: detail = 'unknown'
             http = offer.get('httpStatus')
@@ -580,9 +795,19 @@ def main(argv: list[str] | None = None) -> int:
                   'seller-enabled-at-registration=' + yn(offer.get('sellerEnabledAtRegistration')),
                   'settings-authorized=' + yn(offer.get('settingsAuthorized')),
                   'settings-changed=' + yn(offer.get('settingsChanged')),
+                  'availability-before=' + str(offer.get('availabilityModeBefore')) if offer.get('availabilityModeBefore') in ('totally_idle','ai_idle') else 'availability-before=unknown',
+                  'availability-during=' + str(offer.get('availabilityModeAtRegistration')) if offer.get('availabilityModeAtRegistration') in ('totally_idle','ai_idle') else 'availability-during=unknown',
+                  'availability-baseline=' + str(offer.get('availabilityModeBaseline')) if offer.get('availabilityModeBaseline') in ('totally_idle','ai_idle') else 'availability-baseline=unknown',
+                  'availability-restored=' + yn(offer.get('availabilityRestored')),
                   'button-enabled=' + yn(btn.get('enabled')),
                   'confirmation-completed=' + yn(offer.get('confirmationCompleted')),
                   'request-seen=' + yn(offer.get('requestSeen')),
+                  'response-seen=' + yn(offer.get('responseSeen')),
+                  'prior-hub-status=' + (offer.get('priorHubStatus') if offer.get('priorHubStatus') in
+                    ('unknown','not_submitted','submitting','accepted','failed','stale') else 'unknown'),
+                  'ui-outcome=' + (offer.get('uiOutcome') if offer.get('uiOutcome') in
+                    ('unknown','worker-registration-failed','worker-offer-pending',
+                     'worker-offer-registered','not-observed','inspection-unavailable') else 'unknown'),
                   'offer-http=' + http,
                   'transport-failed=' + yn(offer.get('transportFailed')),
                   'hub-registration=' + registration,
@@ -595,19 +820,144 @@ def main(argv: list[str] | None = None) -> int:
                   'assigned-ring-match=' + yn(offer.get('assignedRingMatched')),
                   'worker-id-present=' + yn(offer.get('workerIdPresent')),
                   'api-rejection=' + rejection, 'api-detail=' + detail, flush=True)
+            price = offer.get('priceTransition')
+            if isinstance(price, dict) and price.get('version') == 'offer-price-transition-v1':
+                def safe_rate(v):
+                    return v if isinstance(v, str) and len(v) <= 32 and (
+                        v in ('unknown','invalid','unavailable') or
+                        re.fullmatch(r'\d+(?:\.\d{1,18})?',v)) else 'unknown'
+                err = price.get('errorKind')
+                if err not in ('none','form-value-reset','persistent-form-refresh','stale-confirmation',
+                               'backend-postcondition-timeout','ui-timeout','other-save-error'):
+                    err = 'unknown'
+                observed_http = price.get('responseHttp')
+                observed_http = (str(observed_http) if type(observed_http) is int and
+                                 100 <= observed_http <= 599 else 'none')
+                print('WORKER_LIVE_OFFER_PRICE_TRANSITION',
+                      'expected=' + safe_rate(price.get('expectedRate')),
+                      'input=' + safe_rate(price.get('formRate')),
+                      'confirmation-price-match=' + yn(price.get('confirmationRateMatched')),
+                      'confirmation-tokens-match=' + yn(price.get('confirmationTokensMatched')),
+                      'request-seen=' + yn(price.get('requestSeen')),
+                      'request-rate=' + safe_rate(price.get('requestRate')),
+                      'http=' + observed_http,
+                      'backend-rate=' + safe_rate(price.get('backendRate')),
+                      'result=' + (price.get('operationResult') if price.get('operationResult') in
+                                    ('verified','completed','refused','applying','unknown') else 'unknown'),
+                      'edit-attempts=' + str(price.get('editAttempts')) if type(price.get('editAttempts')) is int and 0 <= price.get('editAttempts') <= 8 else 'edit-attempts=unknown',
+                      'input-resets=' + str(price.get('inputResets')) if type(price.get('inputResets')) is int and 0 <= price.get('inputResets') <= 8 else 'input-resets=unknown',
+                      'stale-confirmations=' + str(price.get('staleConfirmations')) if type(price.get('staleConfirmations')) is int and 0 <= price.get('staleConfirmations') <= 8 else 'stale-confirmations=unknown',
+                      'error=' + err, flush=True)
+                # Report only bounded scalar settings fields; never raw payloads.
+                trace = price.get('writeTrace')
+                if isinstance(trace, list):
+                    for row in trace[:48]:
+                        if not isinstance(row, dict):
+                            continue
+                        fields = row.get('fields')
+                        allowed = {'sellerCreditsPerToken', 'sellerTargetTokens',
+                                   'sellerEnabled', 'rentalEnabled',
+                                   'sellerAvailabilityMode', 'full-replacement'}
+                        fields = ','.join(f for f in fields if f in allowed) if isinstance(fields, list) else 'unknown'
+                        http = row.get('http')
+                        http = str(http) if type(http) is int and 100 <= http <= 599 else 'none'
+                        print('WORKER_LIVE_OFFER_SETTINGS_WRITE',
+                              'id=' + str(row.get('id')) if type(row.get('id')) is int and 0 < row['id'] <= 100 else 'id=unknown',
+                              'ms=' + str(row.get('ms')) if type(row.get('ms')) is int and 0 <= row['ms'] < 1800000 else 'ms=unknown',
+                              'fields=' + fields,
+                              'request-rate=' + safe_rate(row.get('requestRate')),
+                              'response-rate=' + safe_rate(row.get('responseRate')),
+                              'http=' + http,
+                              'response-ok=' + yn(row.get('responseOk')),
+                              flush=True)
+            transition = offer.get('policyTransition')
+            if isinstance(transition, dict) and transition.get('version') == 'offer-policy-transition-v1':
+                action = transition.get('lastAction')
+                if action not in ('inspection','enable-seller','select-ai-idle','apply-policy','verified'):
+                    action = 'unknown'
+                failure = transition.get('errorKind')
+                if failure not in ('none','duplicate-control','save-postcondition-timeout',
+                                   'ui-timeout','ui-not-ready','backend-write-refused','other-policy-error'):
+                    failure = 'unknown'
+                controls = transition.get('controlsAtFailure')
+                controls = controls if isinstance(controls, dict) else transition.get('controls')
+                controls = controls if isinstance(controls, dict) else {}
+                print('WORKER_LIVE_OFFER_POLICY_TRANSITION',
+                      'last-action=' + action, 'error=' + failure,
+                      'mode-control-present=' + yn(controls.get('modeControlPresent')),
+                      'mode-disabled=' + yn(controls.get('modeDisabled')),
+                      'apply-disabled=' + yn(controls.get('applyDisabled')),
+                      'backend-mode=' + (transition.get('backendAfter', {}).get('availabilityMode')
+                          if isinstance(transition.get('backendAfter'), dict) and
+                             transition['backendAfter'].get('availabilityMode') in ('totally_idle','ai_idle')
+                          else 'unknown'), flush=True)
+            restoration = offer.get('restoration') if isinstance(offer.get('restoration'), dict) else {}
+            if restoration:
+                step = restoration.get('failedAt')
+                if step not in ('none','policy','offer'): step = 'unknown'
+                print('WORKER_LIVE_OFFER_RESTORATION',
+                      'policy-attempted=' + yn(restoration.get('policyAttempted')),
+                      'policy-verified=' + yn(restoration.get('policyVerified')),
+                      'offer-attempted=' + yn(restoration.get('offerAttempted')),
+                      'offer-verified=' + yn(restoration.get('offerVerified')),
+                      'failure-step=' + step, flush=True)
+    recovery = evidence.get('offerPolicyRecovery') if isinstance(evidence, dict) else None
+    if args.gate in ('offer-registration', 'work-cycle') and isinstance(recovery, dict):
+        expected_mode = recovery.get('expectedMode')
+        observed_mode = recovery.get('observedMode')
+        print('WORKER_LIVE_OFFER_POLICY_RECOVERY',
+              'expected=' + (expected_mode if expected_mode in ('totally_idle','ai_idle') else 'unknown'),
+              'observed=' + (observed_mode if observed_mode in ('totally_idle','ai_idle') else 'unknown'),
+              'restored=' + ('yes' if recovery.get('restored') is True else 'no'),flush=True)
+    # The Captain preflight emits a validated, redacted receipt even on
+    # failure. Never print subprocess stdout/stderr, wallet identifiers or
+    # unvalidated JSON fields from the browser evidence.
+    if args.gate == 'work-cycle' and isinstance(evidence,dict):
+        funding = evidence.get('captainFundingPreflight')
+        if isinstance(funding,dict) and funding.get('version') == 'captain-funding-preflight-v1':
+            allowed_reasons = ('none','invalid_price_ceiling','invalid_worker_price',
+                'invalid_hub_credit_evidence','insufficient_credit_under_cumulative_cap',
+                'testnet_identity_mismatch','testnet_ledger_unavailable',
+                'captain_wallet_signing_not_authorized','testnet_hub_identity_unavailable',
+                'testnet_hub_identity_mismatch','captain_msk_authorization_unavailable',
+                'captain_configuration_unavailable','subprocess-timeout',
+                'subprocess-error','subprocess-terminated','invalid-json',
+                'invalid-probe-contract','nonzero-exit','not-fundable')
+            allowed_verdicts = ('existing_credits_sufficient','bounded_top_up_possible',
+                'insufficient_credit_under_cumulative_cap','unknown')
+            allowed_stderr = ('empty','operator-error','python-traceback',
+                'argument-usage','other-text')
+            def funding_amount(name):
+                value = funding.get(name)
+                return value if isinstance(value,str) and re.fullmatch(r'(?:0|[1-9][0-9]{0,39})',value) else 'unknown'
+            exit_code = funding.get('processExit')
+            print('WORKER_LIVE_CAPTAIN_FUNDING',
+                  'verified=' + yn(funding.get('verified')),
+                  'reason=' + (funding['reason'] if funding.get('reason') in allowed_reasons else 'unknown'),
+                  'verdict=' + (funding['verdict'] if funding.get('verdict') in allowed_verdicts else 'unknown'),
+                  'process-exit=' + (str(exit_code) if type(exit_code) is int and 0 <= exit_code <= 255 else 'unknown'),
+                  'required-wei=' + funding_amount('requiredCreditWei'),
+                  'available-wei=' + funding_amount('availableCreditWei'),
+                  'completed-bridge-wei=' + funding_amount('bridgeCompletedCreditWei'),
+                  'possible-top-up-wei=' + funding_amount('possibleTopUpCreditWei'),
+                  'bridge-needed=' + yn(funding.get('bridgeFundingRequired')),
+                  'stderr-shape=' + (funding['stderrKind'] if funding.get('stderrKind') in allowed_stderr else 'unknown'),
+                  flush=True)
+        elif safe_stage(evidence)=='CAPTAIN_FUNDING_PREFLIGHT':
+            print('WORKER_LIVE_CAPTAIN_FUNDING status=missing-or-outdated-evidence',flush=True)
     if args.gate in ('offer-registration','work-cycle') and status != 'PASS':
         moments = evidence.get('offerMoments') if isinstance(evidence,dict) else None
         if isinstance(moments,list):
             pattern = re.compile(
                 r'live-(?:offer-registration|work-cycle)-moment-'
-                r'(?:offer-confirmed|offer-http-failed|offer-hub-failed)-[A-Za-z0-9_-]{6,}/'
+                r'(?:offer-confirmed|offer-http-failed|offer-hub-failed|policy-before|policy-failed|offer-price-failed)-[A-Za-z0-9_-]{6,}/'
                 r'(?:desktop|worker|metamask-(?:home|notification|popup|sidepanel)-[1-4]|'
                 r'metamask-cdp-(?:home|notification|popup|sidepanel)-[1-5])\.png')
-            for moment in moments[:3]:
+            for moment in moments[:10]:
                 if not isinstance(moment,dict) or moment.get('version') != 'offer-moment-screens-v1':
                     continue
                 phase=moment.get('phase')
-                if phase not in ('offer-confirmed','offer-http-failed','offer-hub-failed'):
+                if phase not in ('offer-confirmed','offer-http-failed','offer-hub-failed','policy-before','policy-failed','offer-price-failed'):
                     continue
                 captures=moment.get('captures')
                 for shot in (captures[:10] if isinstance(captures,list) else []):

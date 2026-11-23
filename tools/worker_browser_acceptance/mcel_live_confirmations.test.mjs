@@ -85,3 +85,20 @@ test('confirmation warning matches actual native MCEL runtime branches',()=>{
   assert.ok(source.includes('\\n'+actionTail),'native action confirmation changed')
   assert.ok(source.includes('\\n'+formTail),'native form confirmation changed')
 })
+
+
+test('seller confirmation refuses stale price or token values',async()=>{
+  const expected={expectedSellerFields:{sellerCreditsPerToken:'0.00001',sellerTargetTokens:512}}
+  const real=`Confirm Save Seller?\nSeller Target Tokens: 512\nSeller Credits Per Token: 0.00001\n${formTail}`
+  assert.equal(expectedMcelConfirmation('save-seller','confirm',real,expected),true)
+  const stale=real.replace('0.00001','0.001')
+  assert.equal(expectedMcelConfirmation('save-seller','confirm',stale,expected),false)
+  const wrongToken=real.replace('512','1024')
+  assert.equal(expectedMcelConfirmation('save-seller','confirm',wrongToken,expected),false)
+  const good=fake(real)
+  await clickMcelConfirmed(good.page,good.locator,'save-seller',expected)
+  assert.deepEqual(good.events,['accepted'])
+  const bad=fake(stale)
+  await assert.rejects(clickMcelConfirmed(bad.page,bad.locator,'save-seller',expected),/Unexpected/)
+  assert.deepEqual(bad.events,['dismissed'])
+})

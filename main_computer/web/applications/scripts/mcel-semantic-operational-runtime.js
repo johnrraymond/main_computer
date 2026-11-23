@@ -11,6 +11,37 @@
   const ref = (x) => x && typeof x.ref === "string" ? x.ref : "";
   const fmt = (s) => String(s || "").replace(/^(?:surface-node:|interface-region:|intent:|state:)/, "").split(".").pop().replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
   const clone = (x) => x === undefined ? undefined : JSON.parse(JSON.stringify(x));
+  // A completed external read may arrive after a person (or browser test)
+  // starts editing a configuration form. Read receipts own the last committed
+  // value, not an unsaved local draft. Track this per input, not per form:
+  // refreshing one setting must not erase another field's in-progress edit.
+  function formResultValue(input) {
+    return input.type === "checkbox" ? input.checked === true : String(input.value);
+  }
+  function formResultReceiver(input, options) {
+    const receiver={...options,input,dirty:false,hydrating:false,lastAccepted:formResultValue(input)};
+    const markDraft=()=>{
+      if(!receiver.hydrating)receiver.dirty=formResultValue(input)!==receiver.lastAccepted;
+    };
+    input.addEventListener("input",markDraft);
+    input.addEventListener("change",markDraft);
+    return receiver;
+  }
+  function acceptFormResult(receiver, next) {
+    const desired=receiver.input.type==="checkbox" ? next===true : String(next);
+    // A stale refresh cannot overwrite an unsaved draft, including after blur.
+    // A matching authoritative result means the submitted value has caught up.
+    if(receiver.dirty && formResultValue(receiver.input)!==desired)return false;
+    receiver.hydrating=true;
+    try {
+      if(receiver.input.type==="checkbox")receiver.input.checked=desired;
+      else receiver.input.value=desired;
+      receiver.input.dispatchEvent(new Event("input",{bubbles:true}));
+      receiver.lastAccepted=desired;
+      receiver.dirty=false;
+    } finally { receiver.hydrating=false; }
+    return true;
+  }
   function checkSchema(schema, x, path) {
     assert(schema && typeof schema === "object", "missing-schema:" + path);
     switch (schema.kind) {
@@ -1550,12 +1581,9 @@
           for(const receiver of resultReceivers.get(target)||[]){
             if(!receiver.input.isConnected || receiver.whenIntent && receiver.whenIntent!==id)continue;
             const next=receiver.pick?value?.[receiver.pick]:value;
-            // A boolean form is a checkbox: value is the form-control's
-            // submission label, whereas checked is its actual semantic state.
-            // Hydrating value alone can silently submit the opposite policy.
-            if(receiver.input.type==="checkbox")receiver.input.checked=(next===true);
-            else receiver.input.value=String(next);
-            receiver.input.dispatchEvent(new Event("input",{bubbles:true}));
+            // A read completed after local input began must not clobber the
+            // unsaved draft. Only accepted hydration may trigger follow-ons.
+            if(!acceptFormResult(receiver,next))continue;
             if(value && typeof value==="object" && Number.isInteger(value.selectionStart) &&
                Number.isInteger(value.selectionEnd) && typeof receiver.input.setSelectionRange==="function") {
               receiver.input.focus({preventScroll:true});
@@ -2728,7 +2756,8 @@
           }
         }
         for(const item of Object.values(n.acceptResult||{})){
-          const key=ref(item.state),receiver={input:controls[item.field],invoke:ref(item.invoke),pick:item.pick,whenIntent:ref(item.whenIntent)};
+          const key=ref(item.state),receiver=formResultReceiver(controls[item.field],{
+            invoke:ref(item.invoke),pick:item.pick,whenIntent:ref(item.whenIntent)});
           if(!resultReceivers.has(key))resultReceivers.set(key,[]);
           resultReceivers.get(key).push(receiver);
         }

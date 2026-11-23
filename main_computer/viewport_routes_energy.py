@@ -3213,10 +3213,24 @@ class ViewportEnergyRoutesMixin:
                     # is needed rather than claiming this GET opened the session.
                     runtime_state = "RECONNECTING"
 
+            # The Hub heartbeat or local AI observation above can take longer
+            # than an independent seller settings POST. Never replace the whole
+            # worker_settings.json with this pre-heartbeat snapshot: that would
+            # roll back a successful seller price/availability edit without any
+            # second browser request. Runtime reconciliation owns these fields
+            # only; seller policy is owned by explicit configuration operations.
+            runtime_fields = [
+                "workerRuntimeEnabled", "workerRuntimePhase",
+                "workerRuntimeActiveJobs", "workerRuntimeLastReason",
+                "workerRuntimeLastCheckedAt", "workerRuntimeLastHeartbeatStatus",
+                "workerRuntimeError",
+            ]
             if previous_phase != "accepting" and phase == "accepting":
                 cleaned["workerRuntimeLastConnectedAt"] = now
+                runtime_fields.append("workerRuntimeLastConnectedAt")
             if previous_phase != "not_accepting" and phase == "not_accepting":
                 cleaned["workerRuntimeLastDisconnectedAt"] = now
+                runtime_fields.append("workerRuntimeLastDisconnectedAt")
             cleaned["workerRuntimePhase"] = phase
             cleaned["workerRuntimeActiveJobs"] = active
             cleaned["workerRuntimeLastReason"] = reason
@@ -3224,8 +3238,18 @@ class ViewportEnergyRoutesMixin:
             cleaned["workerRuntimeLastHeartbeatStatus"] = hub_status if send_heartbeat and not heartbeat_error and runtime_state in {"CONNECTED", "ACTIVE"} else ""
             if send_heartbeat and not heartbeat_error and runtime_state in {"CONNECTED", "ACTIVE"}:
                 cleaned["workerRuntimeLastHeartbeatAt"] = now
+                runtime_fields.append("workerRuntimeLastHeartbeatAt")
             cleaned["workerRuntimeError"] = heartbeat_error
-            saved = self._save_worker_settings(cleaned)
+            if action in {"activate", "deactivate"}:
+                runtime_fields.extend(("sellerEnabled", "rentalEnabled"))
+            # A service initialized with an in-memory state but no persisted
+            # baseline must still bootstrap that state. Decide at commit time
+            # under the settings lock, so a concurrent first save is respected.
+            with _WORKER_SETTINGS_IO_LOCK:
+                if self._worker_settings_path().exists():
+                    saved = self._save_worker_settings(cleaned, changed_fields=runtime_fields)
+                else:
+                    saved = self._save_worker_settings(cleaned)
 
             status = self._worker_runtime_status_payload(
                 saved,

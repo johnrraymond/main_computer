@@ -393,17 +393,33 @@ def run_cookie(r: Results) -> None:
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action",nargs="?",default="run",choices=["run"])
+    parser.add_argument("--hostname-only",action="store_true",help="Run only the new .local hostname, shared-session, side-by-side and ONLYOFFICE contract")
+    parser.add_argument("--with-host-browser",action="store_true",help="Run a real isolated Chromium DNS/namespace smoke (never system DNS)")
+    parser.add_argument("--with-host-docker-runtime",action="store_true",help="Read-only check of running shared ONLYOFFICE container")
     parser.add_argument("--with-cookie",action="store_true",help="Also run the Windows 32-test certificate/cookie suite")
     parser.add_argument("--docker-onlyoffice",action="store_true",help="Run disposable ONLYOFFICE Docker exploit/correction lab (requires Docker)")
+    parser.add_argument("--docker-real-onlyoffice",action="store_true",help="Run genuine isolated ONLYOFFICE browser edit/save/reopen test with a disposable .local HTTPS gateway (Docker + Playwright)")
     parser.add_argument("--docker-correct-all",action="store_true",help="Autonomously run isolated Docker baseline/candidate security probes for all five remaining vulnerable components AND ONLYOFFICE")
     args=parser.parse_args(argv)
     results=Results()
+    from tools.mcel_security_hostname_smoke import run as hostname_contract
+    results.run("hostname-session-contract", lambda: hostname_contract(results, with_browser=args.with_host_browser, with_docker_runtime=args.with_host_docker_runtime))
+    if args.hostname_only:
+        return results.finish()
     tests=[("viewport-entry",viewport_entry_tests),("viewport-http",viewport_http_tests),("heartbeat",heartbeat_tests),("main-log",main_log_tests),
            ("openclaw",openclaw_tests),("browser",browser_route_tests),("slh-seh",slh_seh_tests),
            ("onlyoffice",onlyoffice_tests),("docker",compose_tests)]
     for name,fn in tests:results.run(name,lambda fn=fn: fn(results))
     additional_independent_services(results)
     if args.with_cookie:results.run("cookie",lambda:run_cookie(results))
+    if args.docker_real_onlyoffice:
+        from tools.mcel_onlyoffice_real_editor_lab import experiment as real_editor_experiment
+        def real_onlyoffice_lab():
+            rc=real_editor_experiment(os.environ.get('MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG','latest'))
+            results.add('onlyoffice-real-editor-save-reopen-docker',
+                        'PASS' if rc==0 else ('FAIL' if rc==1 else 'UNVERIFIED'),
+                        f'lab-exit={rc}; disposable real editor session only, production unchanged; browser fixture TLS trust tested separately')
+        results.run('onlyoffice-real-editor',real_onlyoffice_lab)
     if args.docker_onlyoffice or args.docker_correct_all:
         from tools.mcel_onlyoffice_docker_lab import experiment
         def docker_lab():

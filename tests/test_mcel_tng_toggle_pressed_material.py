@@ -89,108 +89,51 @@ def test_generic_aria_pressed_toggle_looks_depressed_and_hover_does_not_override
             browser.close()
 
 
-def test_workspace_stipple_is_shared_by_default_tng_buttons_in_all_states():
-    """One pixelated, Theme-colored tile is shared by background and controls."""
+def test_tng_aperture_grille_is_quiet_on_buttons_in_all_states():
+    """The E grille's actuator face must stay far quieter than CRT glass."""
     with sync_playwright() as pw:
         browser = _chrome(pw, None)
         try:
             page = _page(browser)
-            baseline = page.evaluate('''() => {
+            data=page.evaluate(r'''() => {
               const root=document.getElementById('mcel-expanded-root');
-              const host=root.querySelector('[data-mcel-region][data-mcel-purpose="input"]');
-              host.insertAdjacentHTML('beforeend',
-                '<button id="stipple-probe" type="button">Stipple</button>');
-              const button=document.getElementById('stipple-probe');
-              const before=getComputedStyle(button);
-              const color={background:before.backgroundColor,foreground:before.color,
-                border:before.borderColor};
+              const region=root.querySelector('[data-mcel-region][data-mcel-purpose="input"]');
+              region.insertAdjacentHTML('beforeend','<button id="grille-probe" type="button">Grille</button>');
+              const button=document.getElementById('grille-probe');
               const ir=JSON.parse(document.getElementById('mcel-expanded-ir').textContent);
-              const result=McelSemanticChromePresentationLaw.apply({root,ir,
+              const applied=McelSemanticChromePresentationLaw.apply({root,ir,
                 bridge:McelSemanticPresentationBridge,styleLaw:McelLabStyleLaw,
                 theme:'theme-machine',profile:'chrome-tng-side-rails'});
-              return {status:result.status,color};
+              const alpha=role=>{
+                const raw=root.style.getPropertyValue('--mcel-tng-aperture-'+role);
+                const m=/data:image\/svg\+xml,([^"\)]+)/.exec(raw);
+                const svg=new DOMParser().parseFromString(decodeURIComponent(m[1]),'image/svg+xml');
+                const bright=[...svg.querySelectorAll('rect')].find(r=>r.getAttribute('x')==='1');
+                return Number(bright.getAttribute('fill-opacity'));
+              };
+              return {applied,alpha:{button:alpha('button'),background:alpha('background'),display:alpha('display')},
+                initialText:button.textContent};
             }''')
-            assert baseline['status'] == 'applied', baseline
-
-            button = page.locator('#stipple-probe')
+            assert data['applied']['status']=='applied',data
+            assert data['alpha']['button'] < data['alpha']['background']/20,data
+            assert data['alpha']['display'] > data['alpha']['background'],data
+            button=page.locator('#grille-probe')
             def paint():
-                return page.evaluate('''() => {
-                  const root=document.getElementById('mcel-expanded-root');
-                  const button=document.getElementById('stipple-probe');
-                  const rootStyle=getComputedStyle(root),style=getComputedStyle(button);
-                  return {workspaceImage:rootStyle.backgroundImage,
-                    workspaceSize:rootStyle.backgroundSize,
-                    image:style.backgroundImage,size:style.backgroundSize,
-                    color:{background:style.backgroundColor,foreground:style.color,
-                      border:style.borderColor}};
-                }''')
-
-            page.mouse.move(0, 0)
-            idle = paint()
-            assert 'url("data:image/svg+xml,' in idle['workspaceImage'], idle
-            assert idle['workspaceImage'].count('data:image/svg+xml,') == 1, idle
-            assert '8px 8px' in idle['workspaceSize'], idle
-            assert idle['workspaceImage'].count('url(') == 1, idle
-            texture = page.evaluate(r'''() => {
-              const value=document.getElementById('mcel-expanded-root')
-                .style.getPropertyValue('--mcel-tng-stipple');
-              const uri=/data:image\/svg\+xml,([^"']+)/.exec(value);
-              if (!uri) return {error:value};
-              const svg=new DOMParser().parseFromString(
-                decodeURIComponent(uri[1]), 'image/svg+xml');
-              return {width:svg.documentElement.getAttribute('width'),
-                height:svg.documentElement.getAttribute('height'),
-                pixels:[...svg.querySelectorAll('rect')].map(node=>({
-                  x:+node.getAttribute('x'),y:+node.getAttribute('y'),
-                  alpha:+node.getAttribute('fill-opacity')}))};
-            }''')
-            assert texture['width'] == texture['height'] == '8', texture
-            assert len(texture['pixels']) > 35, texture
-            hot = [pixel for pixel in texture['pixels'] if pixel['alpha'] == .35]
-            dim = [pixel for pixel in texture['pixels'] if pixel['alpha'] < .35]
-            assert hot == [{'x':0,'y':0,'alpha':.35}], texture
-            assert len(dim) > 34 and len(set(pixel['alpha'] for pixel in dim)) >= 4, texture
-            # Decode the actual SVG tile in Chromium: a CSS URL alone does not
-            # prove that the intermediate pixels paint on the display.
-            raster = page.evaluate(r'''async () => {
-              const raw=document.getElementById('mcel-expanded-root')
-                .style.getPropertyValue('--mcel-tng-stipple');
-              const src=/url\("([^"]+)"\)/.exec(raw)?.[1];
-              const image=new Image(); image.src=src;
-              await image.decode();
-              const canvas=document.createElement('canvas');
-              canvas.width=8; canvas.height=8;
-              const ctx=canvas.getContext('2d');
-              ctx.drawImage(image, 0, 0);
-              const pixels=ctx.getImageData(0,0,8,8).data;
-              return [...Array(64)].map((_,i)=>pixels[i*4+3]);
-            }''')
-            assert len(raster) == 64 and raster[0] > 75, raster
-            assert 35 < sum(0 < pixel < raster[0] for pixel in raster) < 64, raster
-            assert len(set(pixel for pixel in raster if 0 < pixel < raster[0])) >= 4, raster
-            hovered = None
-            for state in ('idle', 'hover', 'pressed'):
-                if state == 'hover':
-                    button.hover()
-                elif state == 'pressed':
-                    page.mouse.down()
-                observed = paint()
-                if state == 'hover':
-                    hovered = button.evaluate('el => getComputedStyle(el).boxShadow')
-                if state == 'pressed':
-                    assert button.evaluate("el => el.matches(':active')")
-                    assert button.evaluate('el => getComputedStyle(el).boxShadow') != hovered
-                    assert '3px 3px 6px' in button.evaluate('el => getComputedStyle(el).boxShadow')
-                assert 'linear-gradient(' in observed['image'], (state, observed)
-                assert 'url("data:image/svg+xml,' in observed['image'], (state, observed)
-                assert observed['image'].count('url(') == 1, (state, observed)
-                assert '8px 8px' in observed['size'], (state, observed)
-                assert observed['color'] == baseline['color'], (state, observed)
+                return button.evaluate('''el=>({image:getComputedStyle(el).backgroundImage,
+                    size:getComputedStyle(el).backgroundSize,shadow:getComputedStyle(el).textShadow,
+                    text:el.textContent,wraps:el.querySelectorAll("[data-mcel-tng-gold-text]").length})''')
+            idle=paint()
+            button.hover()
+            hovered=paint()
+            page.mouse.down()
+            pressed=paint()
+            assert button.evaluate('el=>el.matches(":active")')
             page.mouse.up()
-            removed = page.evaluate('''() => {
-              McelSemanticChromePresentationLaw.clear(document.getElementById('mcel-expanded-root'));
-              return getComputedStyle(document.getElementById('stipple-probe')).backgroundImage;
-            }''')
-            assert removed == 'none', removed
+            for state,item in [('idle',idle),('hover',hovered),('pressed',pressed)]:
+                assert '21px 6px' in item['size'],(state,item)
+                assert item['image'].count('data:image/svg+xml,')==1,(state,item)
+                assert item['shadow']=='none' and item['wraps']==0,(state,item)
+                assert item['text']=='Grille', (state,item)
+            assert idle['image']!=hovered['image']!=pressed['image']
         finally:
             browser.close()
