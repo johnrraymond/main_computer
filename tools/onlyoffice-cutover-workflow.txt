@@ -1,0 +1,37 @@
+MCEL ONLYOFFICE consolidated cutover candidate
+
+This ZIP replaces the prior incremental ONLYOFFICE candidate/acceptance patches.
+It is not an automatic production switch. Extract at the repository root.
+Existing application routes remain in incumbent mode unless independently enabled.
+
+1. Run the new isolated production gateway integration:
+   python -m tools.mcel_onlyoffice_cutover gateway
+   Required: PASS_ISOLATED_GATEWAY
+
+2. Run the isolated live hardened handler and real editor experiment on Windows:
+   python -m tools.mcel_onlyoffice_cutover live
+   Required: PASS_ISOLATED_LIVE
+   Requires Docker Desktop, Edge, Playwright and the complete MC checkout.
+   Real production ViewportHandler and dispatcher are loaded in a restricted
+   disposable HTTP listener. The full supervisor is deliberately not launched.
+   The test uses an ephemeral certificate pin and a disposable auth state;
+   no changes are made to CurrentUser trust or the real browser profile.
+   The lab creates a unique temporary Compose project and removes it afterward.
+   It does not reuse or stop the incumbent Document Server container.
+
+3. Check receipts:
+   python -m tools.mcel_onlyoffice_cutover status
+   The runner compares SHA-256 source fingerprints against the latest receipts.
+   A PASS from either isolated experiment is NOT permission to promote routes.
+
+Reports: runtime/reports/mcel-onlyoffice-cutover/
+
+Remaining before a real production switch:
+  - normal Windows launch integration, including shared per-user auth ownership;
+  - proper hardened Docker startup with persistent private JWT configuration;
+  - real multi-installation startup, Windows CurrentUser TLS and account isolation;
+  - authenticated full MCEL routes, streaming, all side service regressions;
+  - an implemented and tested rollback and promotion mechanism.
+
+Do not set MAIN_COMPUTER_HARDENED_CANDIDATE in the production shell to bypass
+those gates. No automatic production promotion is implemented by this package.

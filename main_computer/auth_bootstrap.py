@@ -18,6 +18,7 @@ import re
 import secrets
 import ssl
 from contextlib import contextmanager
+from functools import lru_cache
 import subprocess
 import threading
 import time
@@ -32,7 +33,7 @@ HARDENED = os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1'
 PRIMARY_OWNER = os.environ.get('MAIN_COMPUTER_PRIMARY_OWNER', 'dev').strip().lower()
 if HARDENED and PRIMARY_OWNER not in {'dev', 'unleashed'}:
     raise RuntimeError('HARDENED_PRIMARY_OWNER_MUST_BE_DEV_OR_UNLEASHED')
-HOST = (PRIMARY_OWNER + '.main-computer.local') if HARDENED else 'mc.test'
+HOST = (PRIMARY_OWNER + '.main-computer.localhost') if HARDENED else 'mc.test'
 
 DEFAULT_PORT = 8875
 COOKIE = '__Host-MC-Session'
@@ -119,6 +120,7 @@ def _discard_superseded_proofs(proof: Path, authority_key: bytes) -> None:
             continue
 
 
+@lru_cache(maxsize=1)
 def _sid() -> str:
     from main_computer.slh.storage import _windows_caller_sid
     return _windows_caller_sid()
@@ -135,6 +137,15 @@ def _protect(path: Path, *, directory: bool) -> None:
         path.chmod(0o700 if directory else 0o600)
         return
     owner = _sid()
+    # Read the actual current DACL every time. Do not cache file ACL decisions:
+    # permissions can change while MC is running. Unknown descriptors fall
+    # through to the existing full repair + independent verification path.
+    from main_computer.auth_windows_acl import already_private
+    try:
+        if already_private(path, owner, directory=directory):
+            return
+    except (OSError, ValueError, AttributeError, ImportError):
+        pass
     # Never inherit a broad parent DACL. Remove *all* extraneous explicit ACEs,
     # including arbitrary individual Windows accounts (not only Everyone/Users).
     ps = ("$ErrorActionPreference='Stop';" 
@@ -290,7 +301,7 @@ def _proof_fingerprint(path: Path, authority_key: bytes) -> str | None:
 
 def _acquire_windows_proof_lock(fd: int, *, lock_module=None,
                                 wait_seconds: float = 60.0,
-                                retry_seconds: float = 0.15) -> None:
+                                retry_seconds: float = 0.01) -> None:
     """Wait for the *real* Windows cross-process lock without CRT's 10-try limit.
 
     The C runtime's LK_LOCK reports EDEADLOCK after ten unsuccessful attempts,
@@ -675,7 +686,7 @@ def generate_tls_certificate(root: Path, hostname: str = HOST) -> tuple[Path, Pa
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     root = _private_folder(root)
-    certfile, keyfile = (root / 'tls-cert-hardened.pem', root / 'tls-key-hardened.pem') if HARDENED else (root / 'tls-cert.pem', root / 'tls-key.pem')
+    certfile, keyfile = (root / 'tls-cert-localhost.pem', root / 'tls-key-localhost.pem') if HARDENED else (root / 'tls-cert.pem', root / 'tls-key.pem')
     if certfile.exists() and keyfile.exists():
         _protect(keyfile, directory=False)
         existing = x509.load_pem_x509_certificate(certfile.read_bytes())
@@ -725,11 +736,13 @@ class BootstrapServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], authority: BootstrapAuthority,
-                 *, backend_port: int | None = None, cert: Path | None = None, key: Path | None = None):
+                 *, backend_port: int | None = None, cert: Path | None = None, key: Path | None = None,
+                 isolated_backend_ports: dict[str, int] | None = None):
         if address[0] != '127.0.0.1':
             raise ValueError('BOOTSTRAP_MUST_BIND_NUMERIC_LOOPBACK_ONLY')
         self.authority = authority
         self.backend_port = backend_port
+        self.isolated_backend_ports = isolated_backend_ports
         self.handoff_lock = threading.RLock()
         self.handoff_tickets = {}
         super().__init__(address, BootstrapHandler)
@@ -759,6 +772,9 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.close_connection = True
         self.send_header('Cache-Control', 'no-store')
+        timing = getattr(self, '_proxy_timing', None)
+        if timing is not None:
+            self.send_header('Server-Timing', timing)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Frame-Options', 'DENY')
@@ -786,6 +802,8 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         return self.headers.get('Host', '') == f'{HOST}:{self.server.server_port}' 
 
     def _origin_ok(self) -> bool:
+        if len(self.headers.get_all('Origin', [])) != 1 or len(self.headers.get_all('Sec-Fetch-Site', [])) > 1:
+            return False
         origin = self.headers.get('Origin', '')
         site = self.headers.get('Sec-Fetch-Site', '')
         return (origin == f"https://{self.headers.get('Host', '')}"
@@ -871,11 +889,17 @@ class BootstrapHandler(BaseHTTPRequestHandler):
 
     def _proxy(self, method: str) -> None:
         """Bootstrap-only same-host dashboard bridge; not a production ingress gate."""
+        started = time.perf_counter()
         if not self._authorized():
             if method == 'GET' and self._page_navigation():
                 self._redirect_to_login(self.path)
             else:
                 self._json(HTTPStatus.UNAUTHORIZED, {'ok': False, 'error': 'AUTH_REQUIRED'})
+            return
+        authorized_at = time.perf_counter()
+        path = self.path
+        if not path.startswith('/') or '://' in path or len(path) > 4096:
+            self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'BAD_PATH'})
             return
         port = self.server.backend_port
         if HARDENED:
@@ -888,17 +912,14 @@ class BootstrapHandler(BaseHTTPRequestHandler):
             # The bootstrap remains one per-user HTTPS authority.  Each
             # hostname dispatches exclusively to its own MCEL installation.
             # Dev and Unleashed intentionally share the exclusive :8765 slot.
-            port = APP_PORTS[mode]
-            if path.startswith('/api/heartbeat/'):
+            routes = self.server.isolated_backend_ports
+            port = APP_PORTS[mode] if routes is None else routes.get(mode)
+            if port and path.startswith('/api/heartbeat/'):
                 # The heartbeat service is its own listener; its candidate
                 # handler now also requires this signed gateway assertion.
-                port = APP_PORTS[mode] + 1
+                port += 1
         if not port:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {'ok': False, 'error': 'MC_BACKEND_NOT_CONFIGURED'})
-            return
-        path = self.path
-        if not path.startswith('/') or '://' in path or len(path) > 4096:
-            self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'BAD_PATH'})
             return
         if HARDENED and method == 'POST' and not self._origin_ok():
             self._json(HTTPStatus.FORBIDDEN, {'ok': False, 'error': 'CROSS_ORIGIN_WRITE_DENIED'})
@@ -911,32 +932,79 @@ class BootstrapHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'INVALID_BODY_LENGTH'})
                 return
             size = int(lengths[0])
-        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60 if HARDENED else 10)
         try:
-            # Do not forward an MC session or privileged claimed identity to
-            # the still-unsecured legacy service. Service-specific authorization
-            # will be introduced in the later ingress cutover stage.
+            # The browser session is represented ONLY by our fresh signed
+            # assertion. Never relay Cookie or client-supplied gateway headers.
             headers = {'Host': f'127.0.0.1:{port}', 'Accept': 'application/json,text/plain,*/*',
                        'Connection': 'close'}
-            if method == 'POST':
+            if method == 'POST' and not HARDENED:
                 headers['Content-Type'] = self.headers.get('Content-Type', 'application/json')
+            if HARDENED:
+                # Preserve the native route contract behind the authenticated
+                # gateway. Only translate an actual same-origin browser Origin;
+                # do not invent one for requests that lack it, or relabel a
+                # foreign origin. POST already passed _origin_ok above.
+                route = urlsplit(path).path
+                names = ['Origin', 'Sec-Fetch-Site', 'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Accept']
+                if method == 'POST':
+                    names.append('Content-Type')
+                if route.startswith('/api/applications/slh/'):
+                    # These are SLH's own credentials, NOT the MC session.
+                    # Preserve presence even for invalid credentials, so the
+                    # native local/network target checks cannot be bypassed.
+                    names += ['Authorization', 'X-MCEL-SLH-Operation']
+                if route.startswith('/api/applications/browser/'):
+                    names.append('X-MCEL-Browser-Operation')
+                for name in names:
+                    values = self.headers.get_all(name, [])
+                    if len(values) > 1:
+                        self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'AMBIGUOUS_REQUEST_HEADER'})
+                        return
+                    if values:
+                        value = values[0]
+                        if name == 'Origin':
+                            if value != f"https://{self.headers.get('Host', '')}":
+                                # A caller could otherwise name the private
+                                # HTTP backend as its Origin and fool the
+                                # native route's local-origin comparison.
+                                self._json(HTTPStatus.FORBIDDEN, {'ok': False, 'error': 'CROSS_ORIGIN_REQUEST_DENIED'})
+                                return
+                            value = 'http://' + headers['Host']
+                        headers[name] = value
             payload = self.rfile.read(size) if size else b''
             if HARDENED:
                 from main_computer.hardened_ingress import HEADER, issue_assertion
                 headers[HEADER] = issue_assertion(self.server.authority.key,
                     session=self._session_cookie(), method=method, path=path,
                     body=payload, host=headers['Host'])
+            upstream_started = time.perf_counter()
             conn.request(method, path, body=payload if method == 'POST' else None, headers=headers)
             response = conn.getresponse()
-            data = response.read(2_000_001)
-            if len(data) > 2_000_000:
+            headers_at = time.perf_counter()
+            kind = response.getheader('Content-Type', 'application/octet-stream')
+            # Legacy MCEL children embed their complete application bundle.
+            # Increase the bounded response budget only for authenticated,
+            # successful application HTML navigation, never API or file data.
+            route = urlsplit(path).path
+            large_html = (HARDENED and method == 'GET' and response.status == 200
+                and (route == '/applications' or route.startswith('/applications/'))
+                and kind.split(';', 1)[0].strip().lower() == 'text/html')
+            limit = 32 * 1024 * 1024 if large_html else 2_000_000
+            data = response.read(limit + 1)
+            if len(data) > limit:
                 self._json(HTTPStatus.BAD_GATEWAY, {'ok': False, 'error': 'BACKEND_RESPONSE_TOO_LARGE'})
                 return
-            kind = response.getheader('Content-Type', 'application/octet-stream')
+            received_at = time.perf_counter()
+            self._proxy_timing = (f'auth;dur={(authorized_at-started)*1000:.2f}, '
+                                  f'upstream;dur={(headers_at-upstream_started)*1000:.2f}, '
+                                  f'body;dur={(received_at-headers_at)*1000:.2f}, '
+                                  f'gateway;dur={(received_at-started)*1000:.2f}')
             self._send(response.status, data, kind=kind)
         except (OSError, TimeoutError, http.client.HTTPException):
             self._json(HTTPStatus.BAD_GATEWAY, {'ok': False, 'error': 'MC_BACKEND_UNAVAILABLE'})
         finally:
+            self._proxy_timing = None
             conn.close()
 
     def do_GET(self) -> None:

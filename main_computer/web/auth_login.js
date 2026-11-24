@@ -94,7 +94,9 @@
     }
   });
 
-  if (location.protocol !== "https:" || location.hostname !== "mc.test") {
+  const loginHosts = new Set(["mc.test", "dev.main-computer.localhost",
+    "unleashed.main-computer.localhost", "debug.main-computer.localhost", "safe.main-computer.localhost"]);
+  if (location.protocol !== "https:" || !loginHosts.has(location.hostname)) {
     pickButton.disabled = true;
     show("MC authentication requires the trusted HTTPS endpoint.", "error");
     return;

@@ -5,6 +5,7 @@ import binascii
 import io
 import hashlib
 import hmac
+import http.client
 import mimetypes
 import posixpath
 import tempfile
@@ -112,17 +113,12 @@ class ViewportOnlyOfficeRoutesMixin:
             callback_base_url = self._onlyoffice_callback_base_url()
             browser_public_url_candidates = self._onlyoffice_browser_public_url_candidates()
             api_url = f"{public_url}/web-apps/apps/api/documents/api.js"
-            api_reachable = None
-            api_error = ""
-            if probe:
-                try:
-                    request = Request(api_url, headers={"User-Agent": "main-computer-onlyoffice-status"})
-                    with urlopen(request, timeout=timeout_s) as response:
-                        response.read(512)
-                        api_reachable = 200 <= int(response.status) < 400
-                except Exception as exc:
-                    api_reachable = False
-                    api_error = str(exc)
+            from main_computer.hardened_ingress import enabled as hardened_candidate
+            probe_url = f"{internal_url}/web-apps/apps/api/documents/api.js" if hardened_candidate() else api_url
+            result = self._onlyoffice_probe_url(probe_url, timeout_s=timeout_s) if probe else {
+                "ok": None, "url": probe_url, "status": None, "elapsed_ms": None, "error": ""}
+            api_reachable = result["ok"]
+            api_error = result["error"]
             files_count = sum(1 for path in self._onlyoffice_root().rglob("*.xlsx") if path.is_file())
             self.server.signal("api-onlyoffice-status", reachable=api_reachable, public_url=public_url)
             self._send_json({
@@ -141,11 +137,9 @@ class ViewportOnlyOfficeRoutesMixin:
                 "public_api_url": api_url,
                 "api_reachable": api_reachable,
                 "api_error": api_error,
-                "server_probe": {
-                    "checked": bool(probe),
-                    "ok": api_reachable,
-                    "error": api_error,
-                },
+                "internal_api_url": f"{internal_url}/web-apps/apps/api/documents/api.js",
+                "server_probe": {**result, "checked": bool(probe)},
+                "browser_probe": {"checked": False, "ok": None, "url": api_url},
                 "jwt_enabled": self._onlyoffice_jwt_enabled(),
                 "jwt_configured": bool(self._onlyoffice_jwt_enabled() and str(getattr(self.server.config, "onlyoffice_jwt_secret", "") or "").strip()),
                 "files_count": files_count,
@@ -226,6 +220,7 @@ class ViewportOnlyOfficeRoutesMixin:
                     "callback_base_url": callback_base,
                     "browser_public_url_candidates": browser_public_url_candidates,
                     "config": config,
+                    "hardened_editor_origin": hardened_candidate(),
                     "server": status,
                     **self._onlyoffice_file_payload(path),
                 }
@@ -475,11 +470,34 @@ class ViewportOnlyOfficeRoutesMixin:
     def _onlyoffice_probe_url(self, url: str, *, timeout_s: float = 0.75) -> dict[str, Any]:
         started = time.perf_counter()
         try:
-            request = Request(url, headers={"User-Agent": "main-computer-onlyoffice-status"})
-            with urlopen(request, timeout=timeout_s) as response:
-                response.read(256)
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                return {"ok": True, "url": url, "status": response.status, "elapsed_ms": elapsed_ms, "error": ""}
+            from main_computer.hardened_ingress import enabled as hardened_candidate
+            if hardened_candidate():
+                # The browser's reserved .localhost origin need not resolve in
+                # Windows Python. Backend probes use only the configured direct
+                # loopback HTTP transport, never proxies or redirects.
+                parsed = urlsplit(url)
+                if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
+                        or not parsed.port or parsed.username or parsed.password
+                        or parsed.path != "/web-apps/apps/api/documents/api.js"
+                        or parsed.query or parsed.fragment):
+                    raise ValueError("INVALID_INTERNAL_DOCUMENTSERVER_PROBE_URL")
+                conn = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=timeout_s)
+                try:
+                    conn.request("GET", parsed.path, headers={"User-Agent": "main-computer-onlyoffice-status"})
+                    response = conn.getresponse()
+                    response.read(256)
+                    status = response.status
+                finally:
+                    conn.close()
+            else:
+                request = Request(url, headers={"User-Agent": "main-computer-onlyoffice-status"})
+                with urlopen(request, timeout=timeout_s) as response:
+                    response.read(256)
+                    status = response.status
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            ok = 200 <= status < 300
+            return {"ok": ok, "url": url, "status": status, "elapsed_ms": elapsed_ms,
+                    "error": "" if ok else f"HTTP {status}"}
         except Exception as exc:
             elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
             return {"ok": False, "url": url, "status": None, "elapsed_ms": elapsed_ms, "error": str(exc)}
@@ -493,12 +511,11 @@ class ViewportOnlyOfficeRoutesMixin:
         browser_public_url_candidates = self._onlyoffice_browser_public_url_candidates()
         public_api_url = f"{public_url}/web-apps/apps/api/documents/api.js"
         internal_api_url = f"{internal_url}/web-apps/apps/api/documents/api.js"
-        server_probe = self._onlyoffice_probe_url(public_api_url) if probe else {"ok": None, "url": public_api_url, "status": None, "elapsed_ms": None, "error": ""}
-        internal_probe = (
-            self._onlyoffice_probe_url(internal_api_url)
-            if probe and internal_url != public_url
-            else server_probe
-        )
+        from main_computer.hardened_ingress import enabled as hardened_candidate
+        probe_url = internal_api_url if hardened_candidate() else public_api_url
+        server_probe = self._onlyoffice_probe_url(probe_url) if probe else {"ok": None, "url": probe_url, "status": None, "elapsed_ms": None, "error": ""}
+        internal_probe = (self._onlyoffice_probe_url(internal_api_url)
+                          if probe and probe_url != internal_api_url else server_probe)
         return {
             "mode": self._onlyoffice_effective_mode(),
             "enabled": bool(getattr(self.server.config, "onlyoffice_enabled", False)),

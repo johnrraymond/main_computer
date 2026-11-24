@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / 'main_computer/web/applications'
 THEMES = ('theme-machine', 'theme-local', 'theme-saas', 'theme-editorial',
           'theme-luxury', 'theme-civic', 'theme-accessible', 'theme-debug')
-SURFACE = '[data-mcel-tng-wear-surface]'
+SURFACE = '[data-mcel-tng-stationary-glass]'
 
 
 def _page(browser):
@@ -51,17 +51,12 @@ SETUP = '''theme => {
     nativeChildren:original[buttons.indexOf(el)].nativeChildren,
     surface:el.querySelector(':scope > [data-mcel-tng-wear-surface="button"]')!==null}));
   const rails=[...unit.querySelectorAll('[data-mcel-chrome-generated="true"]')];
-  const railWear=rails.map(rail=>{
-    const surface=rail.querySelector(':scope > [data-mcel-tng-wear-surface="rail"]');
-    const glint=surface?.querySelector(':scope > [data-mcel-tng-wear-glint]');
-    return {surface:!!surface, glint:!!glint, pointer:surface&&getComputedStyle(surface).pointerEvents,
-      mask:surface&&getComputedStyle(surface).maskImage,
-      texture:surface&&getComputedStyle(surface).backgroundImage,
-      reflection:glint&&getComputedStyle(glint).backgroundImage,
-      lightAngle:glint&&getComputedStyle(glint).maskImage,
-      aria:surface?.getAttribute('aria-hidden'), inert:surface?.hasAttribute('inert')};
-  });
-  return {response,projected:projected.status,before,after,railWear,
+  const glass=document.querySelector('[data-mcel-tng-stationary-glass]');
+  const glassWear={count:document.querySelectorAll('[data-mcel-tng-stationary-glass]').length,
+    pointer:getComputedStyle(glass).pointerEvents,texture:getComputedStyle(glass).backgroundImage,
+    attachment:getComputedStyle(glass).backgroundAttachment,
+    aria:glass.getAttribute('aria-hidden'),inert:glass.hasAttribute('inert')};
+  return {response,projected:projected.status,before,after,glassWear,
     count:root.querySelectorAll('[data-mcel-tng-wear-surface]').length,
     buttons:buttons.length,rails:rails.length};
 }'''
@@ -80,10 +75,10 @@ def test_wear_preserves_semantic_colors_and_layout_across_themes():
                 for before,after in zip(r['before'],r['after']):
                     assert before['rect'][2:]==after['rect'][2:],(theme,before,after)
                     assert (before['bg'],before['color'],before['border'])==(after['bg'],after['color'],after['border']),(theme,before,after)
-                for wear in r['railWear']:
-                    assert wear['surface'] and wear['glint'],(theme,wear)
-                    assert wear['pointer']=='none' and wear['aria']=='true' and wear['inert'],wear
-                    assert 'data:image/webp' in wear['texture'] and 'data:image/webp' in wear['reflection'],wear
+                wear=r['glassWear']
+                assert wear['count']==1 and r['count']==0,(theme,wear)
+                assert wear['pointer']=='none' and wear['aria']=='true' and wear['inert'],wear
+                assert 'data:image/webp' in wear['texture'] and wear['attachment']=='fixed',wear
                 assert not any(x['surface'] for x in r['after']), (theme,r)
         finally:
             browser.close()
@@ -106,7 +101,7 @@ def test_static_wear_allows_calculator_and_forced_colors():
             page.locator('[data-mcel-node$="arithmetic-expression"] button[type="submit"]').click()
             page.wait_for_function("() => document.querySelector('[data-mcel-node$=calculated-value]')?.textContent?.trim()==='5'")
             page.emulate_media(forced_colors='active')
-            assert page.locator(SURFACE).count()>=2
+            assert page.locator(SURFACE).count()==1
             assert page.locator(SURFACE).first.evaluate('el=>getComputedStyle(el).display')=='none'
         finally:
             browser.close()

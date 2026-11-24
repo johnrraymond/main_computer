@@ -1,0 +1,14 @@
+{
+  "previous": {
+    "main_computer/viewport_routes_onlyoffice.py": "04b68780b6caa610daa5c2be4fa30be202c144bd6d72d533ff78acdae5e4c833",
+    "main_computer/web/applications/scripts/onlyoffice-app.js": "3020245f2f3fcb2e1def56894dbd66379e6c45255beb576372ed69c7f5fbdf53",
+    "tools/mcel_onlyoffice_deployment.py": "e58b7829d185cfd05d25d7402a2d89f2c904bbf3c041e3bfbe340307dec7c2f4",
+    "tools/mcel_onlyoffice_cutover.py": "bd3bb114de021da28623ec749a86b99de3021e6f7bef49703a1b324e8b5ab3bc"
+  },
+  "corrected": {
+    "main_computer/viewport_routes_onlyoffice.py": "92ddaea1df71f717426454fa645f20e81b65ced3232459015e07f00b554eb7e6",
+    "main_computer/web/applications/scripts/onlyoffice-app.js": "0b3e8fb7d5fcbf1fd7f02f1758d3550d9dde12e4bdf643e56150ea0809731fd7",
+    "tools/mcel_onlyoffice_deployment.py": "16d08c4a703f8b3eb16095fddbdeba089470f999e87bfb69931eb222cc4114d1",
+    "tools/mcel_onlyoffice_cutover.py": "efc108e79ec1b921128286f69f1684f045d49111a929e7f691058251389e7aa9"
+  }
+}

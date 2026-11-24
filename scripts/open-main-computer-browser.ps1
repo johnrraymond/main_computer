@@ -1,4 +1,4 @@
-# open-main-computer-browser.ps1
+﻿# open-main-computer-browser.ps1
 #
 # Wait for the tree-local Main Computer web UI to answer, then open it in the
 # user's default browser. start_v2.bat calls this only when passed -OpenBrowser.
@@ -183,9 +183,8 @@ function Wait-MainComputerBrowserReady {
 
 $resolvedRoot = Resolve-FullPath $Root
 
-# The default MC browser must use the Chromium-only mc.test loopback mapping.
-# A normal default browser cannot resolve mc.test without changing system DNS,
-# and launching the legacy HTTP URL would bypass the HTTPS bootstrap UI.
+# Hardened MC opens the system default browser at its native .localhost HTTPS origin.
+# The incumbent rollback path retains its legacy managed Chromium mapping.
 if ([string]::IsNullOrWhiteSpace($Url)) {
     $pythonCommand = ""
     $sessionFile = Join-Path $resolvedRoot "runtime\start_stop\start-session.json"
@@ -207,18 +206,37 @@ if ([string]::IsNullOrWhiteSpace($Url)) {
     if (-not (Test-Path -LiteralPath $pythonCommand -PathType Leaf)) {
         $pythonCommand = "python.exe"
     }
+    $policy = Join-Path $env:LOCALAPPDATA "MainComputer\AuthBootstrap\onlyoffice-deployment.json"
+    if (Test-Path -LiteralPath $policy -PathType Leaf) {
+        Push-Location $resolvedRoot
+        try {
+            $raw = & $pythonCommand -m tools.mcel_onlyoffice_deployment environment --root $resolvedRoot
+            if ($LASTEXITCODE -ne 0) { throw "Selected MC deployment refused; no insecure fallback." }
+            $settings = ($raw -join "`n") | ConvertFrom-Json
+            foreach ($item in $settings.PSObject.Properties) { [Environment]::SetEnvironmentVariable($item.Name, [string]$item.Value, "Process") }
+        } finally { Pop-Location }
+    }
     Write-Host "Waiting for managed HTTPS authentication bootstrap..."
     & $pythonCommand -m main_computer.auth_bootstrap_service --root $resolvedRoot status --wait-seconds $TimeoutSeconds
     if ($LASTEXITCODE -ne 0) {
         throw "Managed MC authentication service is not ready. Refusing insecure browser fallback."
     }
-    & $pythonCommand -m main_computer.auth_bootstrap_service --root $resolvedRoot open
+    if ($env:MAIN_COMPUTER_DEPLOYMENT_MANAGED -eq "1") {
+        & $pythonCommand -m main_computer.auth_bootstrap_service_deployment --root $resolvedRoot open
+    } else {
+        & $pythonCommand -m main_computer.auth_bootstrap_service --root $resolvedRoot open
+    }
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not open the MC-managed Chromium/Edge HTTPS browser."
+        throw "Could not open the Main Computer HTTPS browser."
     }
     exit 0
 }
 
+$policy = Join-Path $env:LOCALAPPDATA "MainComputer\AuthBootstrap\onlyoffice-deployment.json"
+if (Test-Path -LiteralPath $policy -PathType Leaf) {
+    $selected = Get-Content -LiteralPath $policy -Raw | ConvertFrom-Json
+    if ($selected.mode -eq "hardened") { throw "Use the normal browser launch without -Url in hardened mode." }
+}
 $targetUrl = Resolve-MainComputerBrowserUrl -RootPath $resolvedRoot -ExplicitUrl $Url
 
 Write-Host "Waiting for Main Computer browser URL: $targetUrl"

@@ -1,0 +1,12 @@
+{
+  "previous": {
+    "main_computer/auth_bootstrap_service_deployment.py": "dc925f21d3dfaeb197fb5678abfda73a9521b1750b8cac48296aa48aacd55c5b",
+    "scripts/main-computer-start-stop.ps1": "91da15d32e123854be899ad0205b4b6747ac3f1faeadc9b14de94673aded9abd",
+    "tools/mcel_onlyoffice_deployment.py": "a70d2091b658226b1dc5f057d5c7265629033fb1ef9b211d073346263ba8a89e"
+  },
+  "corrected": {
+    "main_computer/auth_bootstrap_service_deployment.py": "80f405d676fcbbc84a8815bace7c006e5fe0a5e215f796eab1a33755afc425f3",
+    "scripts/main-computer-start-stop.ps1": "fc8dbb5c3bac112de6907d02c5b835ac170cd145c45729a86d567f3dcfa98112",
+    "tools/mcel_onlyoffice_deployment.py": "cb0894dd1dbe9e895a5e8f08e419918e57ea863194e30db44325aead4698dd6c"
+  }
+}

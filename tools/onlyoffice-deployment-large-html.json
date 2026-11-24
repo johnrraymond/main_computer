@@ -1,0 +1,10 @@
+{
+  "previous": {
+    "main_computer/auth_bootstrap.py": "07978700c2ee439facb9de4ea45662b4326d0cfc5d78705a85eed6701c765371",
+    "tools/mcel_onlyoffice_deployment.py": "5b6a9f191b93ff12069e23c2e941ad1e77630fdb8ce7b0215758d8007f707c03"
+  },
+  "corrected": {
+    "main_computer/auth_bootstrap.py": "36d910036c52b4fda71bad8aec6411011c9bac4ad1f07f30d9128a127019510c",
+    "tools/mcel_onlyoffice_deployment.py": "e58b7829d185cfd05d25d7402a2d89f2c904bbf3c041e3bfbe340307dec7c2f4"
+  }
+}

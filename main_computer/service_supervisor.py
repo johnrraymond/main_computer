@@ -277,7 +277,10 @@ class ChildSpec:
             control_port = str(os.environ.get("MAIN_COMPUTER_CONTROL_PORT") or "").strip()
             if control_port:
                 args = ["--port", control_port, *args]
-        return [python_command, "-m", self.module, "--root", str(root), *args]
+        module = self.module
+        if self.name == "auth" and os.environ.get("MAIN_COMPUTER_DEPLOYMENT_MANAGED") == "1":
+            module = "main_computer.auth_bootstrap_service_deployment"
+        return [python_command, "-m", module, "--root", str(root), *args]
 
 
 @dataclass
@@ -1622,6 +1625,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(load_service_supervisor_state(args.root), indent=2, sort_keys=True))
         return 0
 
+    from main_computer.onlyoffice_deployment import apply_runtime_environment
+    apply_runtime_environment(Path(args.root), include_jwt=False)
     supervisor = _supervisor_from_args(args)
     state = supervisor.supervise(max_loops=getattr(args, "max_loops", None))
     print(json.dumps(state, indent=2, sort_keys=True))

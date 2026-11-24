@@ -299,6 +299,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     command = args.command or "bootstrap"
+    from main_computer.onlyoffice_deployment import apply_runtime_environment
+    apply_runtime_environment(Path(args.root), include_jwt=(command == "run"))
 
     if command == "run":
         return run_app(root=args.root, host=args.host, port=args.port, verbose=bool(args.verbose))

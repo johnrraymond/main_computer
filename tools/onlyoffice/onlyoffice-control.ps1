@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true, Position = 0)]
   [ValidateSet("install", "start", "stop", "status", "doctor")]
   [string]$Action,
@@ -27,6 +27,13 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
+$deploymentPolicy = Join-Path $env:LOCALAPPDATA "MainComputer\AuthBootstrap\onlyoffice-deployment.json"
+if (Test-Path -LiteralPath $deploymentPolicy -PathType Leaf) {
+    $selected = Get-Content -LiteralPath $deploymentPolicy -Raw | ConvertFrom-Json
+    if ($selected.mode -eq "hardened") {
+        throw "Hardened ONLYOFFICE is managed by the normal MC launcher. Use tools.mcel_onlyoffice_deployment; legacy Docker control is disabled."
+    }
+}
 $script:MainComputerOnlyOfficeNeedsFinalStatus = $false
 $script:MainComputerOnlyOfficeLastComposeExitCode = 0
 

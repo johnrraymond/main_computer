@@ -22,16 +22,18 @@ def test_grunge_is_composited_on_panels_not_reintroduced_as_button_scratch_overl
               const paint=kind=>{const e=root.querySelector(`[data-mcel-chrome-material="${kind}"]`);
                 const s=getComputedStyle(e);return{image:s.backgroundImage,size:s.backgroundSize,
                   position:s.position,wear:e.querySelectorAll(':scope > [data-mcel-tng-wear-surface]').length};};
+              const glass=document.querySelector('[data-mcel-tng-stationary-glass]');
               const button=root.querySelector('[data-mcel-chrome-material="raised-control"]');
-              return {status:result.status,panel:paint('housing'),display:paint('instrument-glass'),
+              return {status:result.status,glass:{image:getComputedStyle(glass).backgroundImage,position:getComputedStyle(glass).position},panel:paint('housing'),display:paint('instrument-glass'),
                 button:paint('raised-control'),label:button.textContent,
                 wraps:button.querySelectorAll('[data-mcel-tng-gold-text]').length};
             }''')
             assert report['status']=='applied',report
             for role in ('panel','display'):
                 p=report[role]
-                assert 'data:image/webp;base64,' in p['image'] and '1024px 768px' in p['size'],p
-                if p['position']=='static': assert p['wear']==0,p
+                assert 'data:image/webp;base64,' not in p['image'],p
+                assert p['wear']==0,p
+            assert 'data:image/webp;base64,' in report['glass']['image'] and report['glass']['position']=='fixed',report
             assert '21px 6px' in report['button']['size'],report
             assert report['label'] and report['wraps']==0,report
         finally:

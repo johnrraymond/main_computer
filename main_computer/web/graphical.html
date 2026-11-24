@@ -2453,7 +2453,10 @@
     const authProofButton = byId("auth-proof-file-button");
     authProofButton.addEventListener("click", () => {
       const target = new URL(authProofButton.dataset.authLoginUrl);
-      if (location.protocol === "https:" && location.hostname === "mc.test") {
+      if (location.protocol === "https:" && /^(dev|unleashed|debug|safe)\.main-computer\.local$/.test(location.hostname)) {
+        target.hostname = location.hostname;
+        target.port = location.port;
+      } else if (location.protocol === "https:" && location.hostname === "mc.test") {
         // The CLI permits a non-default TLS port for isolated acceptance.
         target.port = location.port;
       }

@@ -16,7 +16,7 @@ from cryptography import x509
 from main_computer.auth_bootstrap import BootstrapAuthority, BootstrapServer, generate_tls_certificate, provision, HOST
 from main_computer.auth_hostnames import HOSTS
 print('MC_OO_TLS_SSO_STAGE import-complete', flush=True)
-assert HOST == 'dev.main-computer.local', HOST
+assert HOST == 'dev.main-computer.localhost', HOST
 with tempfile.TemporaryDirectory(prefix='mc-candidate-sso-') as dirname:
     state = Path(dirname)
     proof = provision(state)
@@ -76,25 +76,25 @@ with tempfile.TemporaryDirectory(prefix='mc-candidate-sso-') as dirname:
             assert result[0] == 200
             first = result[1]['Set-Cookie'].split(';')[0]
             print('MC_OO_TLS_SSO_STAGE authenticated-primary', flush=True)
-            result = request(HOST, 'GET', '/auth/handoff/start?target=debug.main-computer.local',cookie=first)
+            result = request(HOST, 'GET', '/auth/handoff/start?target=debug.main-computer.localhost',cookie=first)
             assert result[0] == 303
             link = result[1]['Location']
-            assert link.startswith(f'https://debug.main-computer.local:{port}/auth/handoff/redeem?ticket=')
+            assert link.startswith(f'https://debug.main-computer.localhost:{port}/auth/handoff/redeem?ticket=')
             ticket = link.split('ticket=',1)[1]
-            result = request('debug.main-computer.local','GET','/auth/handoff/redeem?ticket='+ticket)
+            result = request('debug.main-computer.localhost','GET','/auth/handoff/redeem?ticket='+ticket)
             assert result[0] == 303
             second = result[1]['Set-Cookie'].split(';')[0]
             print('MC_OO_TLS_SSO_STAGE redeemed-debug', flush=True)
             assert first == second
-            result = request('debug.main-computer.local','GET','/api/auth/bootstrap/session',cookie=second)
+            result = request('debug.main-computer.localhost','GET','/api/auth/bootstrap/session',cookie=second)
             assert result[0] == 200 and json.loads(result[2])['authenticated']
-            assert request('debug.main-computer.local','GET','/auth/handoff/redeem?ticket='+ticket)[0] == 401
-            assert request('onlyoffice.main-computer.local','GET','/api/auth/bootstrap/session')[0] == 403
-            assert request('unleashed.main-computer.local','GET','/api/auth/bootstrap/session')[0] == 403
+            assert request('debug.main-computer.localhost','GET','/auth/handoff/redeem?ticket='+ticket)[0] == 401
+            assert request('onlyoffice.main-computer.localhost','GET','/api/auth/bootstrap/session')[0] == 403
+            assert request('unleashed.main-computer.localhost','GET','/api/auth/bootstrap/session')[0] == 403
             print('MC_OO_TLS_SSO_STAGE replay-and-origin-denied', flush=True)
-            assert request(HOST,'GET','/auth/handoff/start?target=onlyoffice.main-computer.local',cookie=first)[0] == 403
+            assert request(HOST,'GET','/auth/handoff/start?target=onlyoffice.main-computer.localhost',cookie=first)[0] == 403
             server.authority.sessions.revoke(first.split('=',1)[1])
-            result = request('debug.main-computer.local','GET','/api/auth/bootstrap/session',cookie=second)
+            result = request('debug.main-computer.localhost','GET','/api/auth/bootstrap/session',cookie=second)
             assert result[0] == 200 and not json.loads(result[2])['authenticated']
             print('MC_OO_TLS_SSO_STAGE revocation-confirmed', flush=True)
         finally:

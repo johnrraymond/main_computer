@@ -1,0 +1,43 @@
+ONLYOFFICE deployment completion
+
+Prerequisites: The consolidated cutover candidate is installed, and its
+isolated gateway and live evidence is source-matched. This patch does not
+replace the files hashed by those two gates. It does not activate on extraction.
+
+Close and save all editor tabs; stop all Main Computer installations with their
+normal stop.bat (Docker may remain running). From the raw source checkout:
+
+  python -m tools.mcel_onlyoffice_deployment promote --primary dev --authorize-cutover
+  .\start.bat -OpenBrowser
+  python -m tools.mcel_onlyoffice_deployment verify
+  python -m tools.mcel_onlyoffice_deployment status
+
+For an installed Unleashed primary use --primary unleashed instead. To include
+Debug and/or Safe, install the same consolidated candidate and this completion
+patch in those separate installation roots FIRST, then supply --debug-root and/or
+--safe-root with their actual absolute paths to the promote command. Start the
+primary first, then each registered secondary through its own normal launcher.
+The primary alone supervises the auth HTTPS listener and starts shared Docs.
+A primary-only verification is not a multi-installation verification. The
+hardened browser uses a separate persistent profile; authenticate initially with
+the existing AAA proof if requested. No insecure certificate bypass is used.
+
+Rollback: close and save editors, stop every registered installation, and run
+from the primary root:
+
+  python -m tools.mcel_onlyoffice_deployment rollback --authorize-rollback
+  .\start.bat -OpenBrowser
+
+Rollback restores the incumbent unsigned ONLYOFFICE configuration; it is a
+compatibility fallback, NOT an equivalent security configuration. It preserves
+workbooks, the protected proof/session authority, hardened credentials, and
+Docker named volumes. Do not delete journal state. If legacy edits change a
+workbook after rollback, its previously registered hardened revision can require
+explicit journal reconciliation before re-promotion. No silent rebase occurs.
+
+The existing mcel_onlyoffice_cutover status command is historical isolated
+certification; use mcel_onlyoffice_deployment status for the selected deployment.
+Normal Windows startup, Docker/Edge trust, and the registered installation
+routes are only certified by a successful verify run on Windows. If startup or
+verify is blocked, do not assume production success; retain the output and use
+explicit rollback if needed. No previous source-matched evidence is fabricated.

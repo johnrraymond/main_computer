@@ -143,10 +143,10 @@ class DocumentSecurityTests(unittest.TestCase):
 
     def test_canonical_registry_and_browser_resolver(self):
         self.assertEqual(len(set(HOSTS.values())), 5)
-        self.assertEqual(canonical_host('onlyoffice'), 'onlyoffice.main-computer.local')
-        self.assertIn('MAP *.main-computer.local ^NOTFOUND', managed_browser_resolver_rules())
-        self.assertTrue(validate_origin('https://dev.main-computer.local:8875'))
-        self.assertFalse(validate_origin('http://dev.main-computer.local:8875'))
+        self.assertEqual(canonical_host('onlyoffice'), 'onlyoffice.main-computer.localhost')
+        self.assertIn('MAP *.main-computer.localhost ^NOTFOUND', managed_browser_resolver_rules())
+        self.assertTrue(validate_origin('https://dev.main-computer.localhost:8875'))
+        self.assertFalse(validate_origin('http://dev.main-computer.localhost:8875'))
 
     def test_jwt_refuses_missing_secret(self):
         self.config.onlyoffice_jwt_secret = ''

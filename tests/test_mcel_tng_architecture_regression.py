@@ -147,17 +147,19 @@ def test_chrome_does_not_create_positioning_context_for_static_housing():
               const applied=McelSemanticChromePresentationLaw.apply(opts);
               const after=abs.getBoundingClientRect().toJSON();
               const painted=getComputedStyle(region).backgroundImage;
+              const glass=document.querySelector('[data-mcel-tng-stationary-glass]');
+              const stationary=glass && getComputedStyle(glass).backgroundImage.includes('data:image/webp') && getComputedStyle(glass).position==='fixed';
               const overlays=region.querySelectorAll(':scope > [data-mcel-tng-wear-surface]').length;
               const changed=pos();
               const removed=McelSemanticChromePresentationLaw.apply({...opts,profile:'chrome-strict-hierarchy'});
               return {original,changed,delta:[after.x-before.x,after.y-before.y],
-                painted:painted.includes('data:image/webp'),overlays,
+                painted:painted.includes('data:image/webp'),overlays,stationary,glassCleared:!glass.isConnected,
                 cleared:pos(),applied:applied.status,removed:removed.status};
             }''')
             assert result['applied']=='applied' and result['removed']=='unchanged',result
             assert result['original']==result['changed']==result['cleared'],result
             assert result['delta']==[0,0],result
-            assert result['painted'],result
+            assert not result['painted'] and result['stationary'] and result['glassCleared'],result
             if result['original']=='static':
                 assert result['overlays']==0,result
         finally:

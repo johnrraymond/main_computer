@@ -1,8 +1,8 @@
-"""Canonical, browser-only Main Computer origin policy for the hardened candidate.
+"""Canonical, loopback-only Main Computer origin policy for the hardened candidate.
 
 The authenticated host and ONLYOFFICE share one HTTPS listener.  The dev and
 unleashed installation modes are mutually exclusive owners of the 8765 lane.
-No OS-wide DNS or hosts-file changes are made.
+Browsers resolve the reserved .localhost suffix natively; no DNS or hosts-file changes are made.
 """
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 HOSTS = {
-    'dev': 'dev.main-computer.local',
-    'unleashed': 'unleashed.main-computer.local',
-    'debug': 'debug.main-computer.local',
-    'safe': 'safe.main-computer.local',
-    'onlyoffice': 'onlyoffice.main-computer.local',
+    'dev': 'dev.main-computer.localhost',
+    'unleashed': 'unleashed.main-computer.localhost',
+    'debug': 'debug.main-computer.localhost',
+    'safe': 'safe.main-computer.localhost',
+    'onlyoffice': 'onlyoffice.main-computer.localhost',
 }
 APP_PORTS = {'dev': 8765, 'unleashed': 8765, 'debug': 28865, 'safe': 38865}
 TLS_PORT = 8875
@@ -32,8 +32,8 @@ def auth_origin(mode: str, port: int = TLS_PORT) -> str:
 
 def managed_browser_resolver_rules() -> str:
     maps = ', '.join(f'MAP {name} 127.0.0.1' for name in HOSTS.values())
-    # Reject unknown members of the private .local namespace *inside Chromium*.
-    return maps + ', MAP *.main-computer.local ^NOTFOUND, EXCLUDE localhost'
+    # Historical lab helper only. Normal browsers need no custom resolver.
+    return maps + ', MAP *.main-computer.localhost ^NOTFOUND, EXCLUDE localhost'
 
 
 def validate_origin(value: str, *, port: int = TLS_PORT) -> bool:

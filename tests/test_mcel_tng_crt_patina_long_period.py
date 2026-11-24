@@ -29,17 +29,20 @@ def test_patina_has_long_period_without_absolute_overlays_on_static_elements():
               const label={text:el.textContent,shadow:getComputedStyle(el).textShadow,
                 wraps:el.querySelectorAll('[data-mcel-tng-gold-text]').length};
               const ambient=getComputedStyle(root).backgroundImage;
+              const glass=document.querySelector('[data-mcel-tng-stationary-glass]');
+              const patina={image:getComputedStyle(glass).backgroundImage,position:getComputedStyle(glass).position,size:getComputedStyle(glass).backgroundSize};
               const off=McelSemanticChromePresentationLaw.apply({...opts,profile:'chrome-strict-hierarchy'});
-              return {on:on.status,off:off.status,panel,display,button,label,ambient,
+              return {on:on.status,off:off.status,panel,display,button,label,ambient,patina,glassCleared:!glass.isConnected,
                 remaining:root.querySelectorAll('[data-mcel-tng-wear-surface]').length};
             }''')
             assert report['on']=='applied' and report['off']=='unchanged',report
             for role in ('panel','display'):
                 x=report[role]
-                assert 'data:image/webp;base64,' in x['image'] and '1024px 768px' in x['size'],x
-                if x['position']=='static': assert x['wear']==0,x
+                assert 'data:image/webp;base64,' not in x['image'],x
+                assert x['wear']==0,x
             assert '21px 6px' in report['button']['size'],report
-            assert 'data:image/webp;base64,' in report['ambient'],report
+            assert 'data:image/webp;base64,' not in report['ambient'],report
+            assert 'data:image/webp;base64,' in report['patina']['image'] and report['patina']['position']=='fixed' and report['patina']['size']=='1024px 768px' and report['glassCleared'],report
             assert 'data:image/svg+xml,' in report['ambient'],report
             assert report['label']['shadow']=='none' and report['label']['wraps']==0,report
             assert report['label']['text'] and report['remaining']==0,report

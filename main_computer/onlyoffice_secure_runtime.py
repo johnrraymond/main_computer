@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import secrets
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 
 from main_computer.onlyoffice_durable_journal import DurableSaveJournal
 
@@ -177,14 +177,30 @@ def fetch_edited_document(handler, edited_url: str) -> bytes:
     """
     base = urlsplit(handler._onlyoffice_internal_url())
     target = urlsplit(edited_url)
+    def origin(parsed):
+        return (parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == 'https' else 80))
     if (base.scheme not in {'http', 'https'} or base.hostname not in {'127.0.0.1', 'localhost', '::1'}
-            or target.scheme != base.scheme or target.hostname not in {base.hostname, '127.0.0.1', 'localhost'}
-            or target.username or target.password or target.fragment or not target.path.startswith('/cache/')
-            or target.port not in {None, base.port}):
+            or base.username or base.password or base.query or base.fragment or base.path.rstrip('/')):
+        raise OnlyOfficeDenied('INVALID_PINNED_DOCUMENT_SERVER')
+    allowed = {origin(base)}
+    if getattr(handler.server.config, 'onlyoffice_mode', '') == 'docker':
+        allowed.add(('http', 'onlyoffice', 80))
+    # The real Document Server may return its forwarded HTTPS browser origin.
+    # Only the configured canonical origin is admitted, never resolved or fetched.
+    public_url = getattr(handler, '_onlyoffice_browser_document_server_url', None)
+    if callable(public_url):
+        public = urlsplit(public_url())
+        if (public.scheme == 'https' and public.hostname == 'onlyoffice.main-computer.localhost'
+                and not public.username and not public.password and not public.path.rstrip('/')
+                and not public.query and not public.fragment):
+            allowed.add(origin(public))
+    decoded = unquote(target.path)
+    if (origin(target) not in allowed or target.username or target.password or target.fragment
+            or not decoded.startswith('/cache/files/') or '\\' in decoded
+            or any(segment in ('.', '..') for segment in decoded.split('/'))
+            or '%' in decoded or any(ord(c) < 32 for c in decoded)):
         raise OnlyOfficeDenied('CALLBACK_URL_OUTSIDE_PINNED_DOCUMENT_SERVER')
     port = base.port or (443 if base.scheme == 'https' else 80)
-    if target.port is not None and target.port != port:
-        raise OnlyOfficeDenied('CALLBACK_URL_WRONG_PORT')
     connection = (http.client.HTTPSConnection if base.scheme == 'https' else http.client.HTTPConnection)(
         '127.0.0.1', port, timeout=15)
     try:

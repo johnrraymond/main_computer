@@ -44,6 +44,13 @@ def _port(name: str, fallback: int) -> int:
 
 def preflight(*, state: Path) -> tuple[Path, Path, Path]:
     """Idempotent provisioning; never regenerate an existing key or session."""
+    started = time.perf_counter()
+    previous = started
+    def stage(name):
+        nonlocal previous
+        now = time.perf_counter()
+        print(f'MC_AUTH_BOOTSTRAP timing {name}={(now-previous)*1000:.0f}ms total={(now-started)*1000:.0f}ms', flush=True)
+        previous = now
     proof = provision(state)
     # Initial startup uses the same private-authority reissue rule as the live
     # HTTPS service. Revocation precedes recreation under the session lock.
@@ -51,13 +58,17 @@ def preflight(*, state: Path) -> tuple[Path, Path, Path]:
         proof, recovered = recover_deleted_proof_locally(state)
         if recovered:
             print('MC_AUTH_BOOTSTRAP AAA_REISSUED old-sessions-revoked reauthentication-required', flush=True)
+    stage("proof")
     cert, _key, thumb = generate_tls_certificate(state)
+    stage("certificate")
     ensure_windows_user_trust(cert, thumb)
+    stage("trust")
     authority = BootstrapAuthority(state)  # ACL validation and durable session loading
     # Reconcile deletion/replacement even when no browser request is pending.
     # This also prevents startup from silently preserving a cookie after the
     # proof was removed while MC was stopped.
     authority.sessions.proof_current()
+    stage("session")
     return proof, cert, _key
 
 
@@ -88,7 +99,7 @@ def probe_detail(*, state: Path, port: int) -> tuple[bool, str]:
     in this CLI's private auth state. Neither condition should be hidden by a
     generic NOT_READY message. No keys or session tokens are printed.
     """
-    cert = state / ('tls-cert-hardened.pem' if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else 'tls-cert.pem')
+    cert = state / ('tls-cert-localhost.pem' if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else 'tls-cert.pem')
     if not cert.is_file():
         return False, 'TLS_CERT_FILE_MISSING'
     try:
@@ -175,16 +186,18 @@ def open_managed_browser(*, state: Path, port: int) -> None:
               'select it to authenticate again', flush=True)
     elif not available:
         print('MC_AUTH_BOOTSTRAP proof-invalid; repair requires explicit local intervention', flush=True)
-    profile = _private_folder(state / 'browser-profile')
     browser_host = HOST
     if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1':
         from main_computer.auth_hostnames import canonical_host
         browser_host = canonical_host(os.environ.get('MAIN_COMPUTER_INSTALLATION_MODE', 'dev'))
-        if browser_host.endswith('onlyoffice.main-computer.local'):
+        if browser_host == canonical_host('onlyoffice'):
             raise RuntimeError('INVALID_BROWSER_APPLICATION_MODE')
+        os.startfile(f'https://{browser_host}:{port}/auth/login?next=%2Fgraphical')
+        return
+    profile = _private_folder(state / 'browser-profile')
     argv = [
         _chromium(), f'--user-data-dir={profile}',
-        ('--host-resolver-rules=' + __import__('main_computer.auth_hostnames', fromlist=['managed_browser_resolver_rules']).managed_browser_resolver_rules() if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else '--host-resolver-rules=MAP mc.test 127.0.0.1, EXCLUDE localhost'),
+        '--host-resolver-rules=MAP mc.test 127.0.0.1, EXCLUDE localhost',
         '--no-first-run', '--no-default-browser-check', '--new-window',
         # An existing valid session redirects straight back to /graphical.
         # A missing/replaced AAA proof cannot use an old session cookie.

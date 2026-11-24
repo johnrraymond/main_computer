@@ -1,0 +1,47 @@
+{
+  "previous": {
+    "deploy/onlyoffice-editor-host.js": "2bfce307ab0bf60f8730319b4abde4e9900e8329f6d25e53dcf0c5532bc47f98",
+    "deploy/onlyoffice-hardened-nginx.conf": "389de9479076851482d424c78fcd6387c0e76d4ec64fcc30bb41ab9fd2df12bc",
+    "main_computer/auth_bootstrap.py": "5bffb67f4a652172e1106009f5f7b0f1c037c669c97bf9be56de12a736c91e16",
+    "main_computer/auth_bootstrap_service.py": "1994dbac40ea39eed60813654f5c95c72707b5e12d35a60adfb6745b22ffbe4f",
+    "main_computer/auth_bootstrap_service_deployment.py": "80f405d676fcbbc84a8815bace7c006e5fe0a5e215f796eab1a33755afc425f3",
+    "main_computer/auth_hostnames.py": "6e0d4f5a49160407b96141f386a291d6db19d1ef8683b061c32d802aaa2531c8",
+    "main_computer/onlyoffice_secure_runtime.py": "19d2e9cf9223abbffa436291bf75225bf7e4f2bd4ba10bd8e09a758f762cfb98",
+    "main_computer/web/applications/scripts/onlyoffice-app.js": "a50eceb9086d632fde254ec52c91dba9981ff54efad976d22c71aebdac48f582",
+    "main_computer/web/auth_login.js": "09d1296e3f24c0f72b88e51f8f742aa8d7e5414b4f78cfff81f3a09372913457",
+    "scripts/main-computer-start-stop.ps1": "fc8dbb5c3bac112de6907d02c5b835ac170cd145c45729a86d567f3dcfa98112",
+    "scripts/open-main-computer-browser.ps1": "ed665c19490ee4d99ed5566c43c82144990f0909c7d9a3b835ec927190adfec0",
+    "tools/mcel_onlyoffice_cutover.py": "dc14c596e67d3d5b3bfa2e2dbc946a4505229bf11e81645cb99aa88906755ac5",
+    "tools/mcel_onlyoffice_deployment.py": "cb0894dd1dbe9e895a5e8f08e419918e57ea863194e30db44325aead4698dd6c"
+  },
+  "corrected": {
+    "deploy/onlyoffice-editor-host.js": "259399e9ddd26cdf638b099874fd33057d6e3f990cdb4bbc979b1e36b9ad7fe6",
+    "deploy/onlyoffice-hardened-nginx.conf": "484d59485bb057aad7fb08ae954809f527c09af20381f6330bfd8088171d271a",
+    "main_computer/auth_bootstrap.py": "07978700c2ee439facb9de4ea45662b4326d0cfc5d78705a85eed6701c765371",
+    "main_computer/auth_bootstrap_service.py": "210d14f8bd236cf675ddbb49532cb60fb0a3783095e1645f85f838b5b10cc650",
+    "main_computer/auth_bootstrap_service_deployment.py": "67e50d42d7a5e506e467ae73ccefcffdbf6b92de5c2d9d09ce925f1087958514",
+    "main_computer/auth_hostnames.py": "df05670662111938070eb49ad5ca62aceb92153686cd4b5bf2e1a4c8d19f5af5",
+    "main_computer/onlyoffice_secure_runtime.py": "207290ce888f1a9c59b5be8255f2823de2362ada83a29b3bd364c65dcc5eccc4",
+    "main_computer/web/applications/scripts/onlyoffice-app.js": "3020245f2f3fcb2e1def56894dbd66379e6c45255beb576372ed69c7f5fbdf53",
+    "main_computer/web/auth_login.js": "9c9924704d9dba4f610b2d2500baffba1577833d45b98206282b753b41ca0501",
+    "scripts/main-computer-start-stop.ps1": "df72b580b86d4ee9036b1d6de0c0f171d1d012f7057be5c13b782ec29cba4e85",
+    "scripts/open-main-computer-browser.ps1": "560a50f7bcffa10dae4ff6cff640870c859c1f585c5677e8b8500112a70887ce",
+    "tools/mcel_onlyoffice_cutover.py": "bd3bb114de021da28623ec749a86b99de3021e6f7bef49703a1b324e8b5ab3bc",
+    "tools/mcel_onlyoffice_deployment.py": "5b6a9f191b93ff12069e23c2e941ad1e77630fdb8ce7b0215758d8007f707c03"
+  },
+  "intermediate": {
+    "deploy/onlyoffice-editor-host.js": "259399e9ddd26cdf638b099874fd33057d6e3f990cdb4bbc979b1e36b9ad7fe6",
+    "deploy/onlyoffice-hardened-nginx.conf": "484d59485bb057aad7fb08ae954809f527c09af20381f6330bfd8088171d271a",
+    "main_computer/auth_bootstrap.py": "07978700c2ee439facb9de4ea45662b4326d0cfc5d78705a85eed6701c765371",
+    "main_computer/auth_bootstrap_service.py": "210d14f8bd236cf675ddbb49532cb60fb0a3783095e1645f85f838b5b10cc650",
+    "main_computer/auth_bootstrap_service_deployment.py": "67e50d42d7a5e506e467ae73ccefcffdbf6b92de5c2d9d09ce925f1087958514",
+    "main_computer/auth_hostnames.py": "df05670662111938070eb49ad5ca62aceb92153686cd4b5bf2e1a4c8d19f5af5",
+    "main_computer/onlyoffice_secure_runtime.py": "207290ce888f1a9c59b5be8255f2823de2362ada83a29b3bd364c65dcc5eccc4",
+    "main_computer/web/applications/scripts/onlyoffice-app.js": "3020245f2f3fcb2e1def56894dbd66379e6c45255beb576372ed69c7f5fbdf53",
+    "main_computer/web/auth_login.js": "9c9924704d9dba4f610b2d2500baffba1577833d45b98206282b753b41ca0501",
+    "scripts/main-computer-start-stop.ps1": "df72b580b86d4ee9036b1d6de0c0f171d1d012f7057be5c13b782ec29cba4e85",
+    "scripts/open-main-computer-browser.ps1": "560a50f7bcffa10dae4ff6cff640870c859c1f585c5677e8b8500112a70887ce",
+    "tools/mcel_onlyoffice_cutover.py": "bd3bb114de021da28623ec749a86b99de3021e6f7bef49703a1b324e8b5ab3bc",
+    "tools/mcel_onlyoffice_deployment.py": "2d7947d45313af455676f4589e7556ff0cd58e4c240b61537b1c97e55cd058e1"
+  }
+}

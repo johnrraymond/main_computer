@@ -128,6 +128,14 @@
         return;
       }
 
+      if (typeof onlyofficeState.editor.attachComment === "function") {
+        onlyofficeSetAdvancedCodeStatus(`Attaching ${label} add-on to selected cells...`);
+        onlyofficeState.editor.attachComment(onlyofficeCreateAdvancedCodeComment(language, source)).then(message => {
+          onlyofficeSetAdvancedCodeStatus(message);
+          onlyofficeSetStatus(message);
+        }).catch(error => onlyofficeSetAdvancedCodeStatus(`Attach failed: ${error.message || error}`));
+        return;
+      }
       const connector = onlyofficeAdvancedConnector();
       if (!connector || typeof connector.callCommand !== "function") {
         onlyofficeSetAdvancedCodeStatus("Selected-cell attach needs the ONLYOFFICE Automation connector. The code area is ready, but the current editor cannot receive cell comments from this pane.");
@@ -293,7 +301,7 @@
         const publicUrl = status.public_url || status.document_server_url || "http://127.0.0.1:18085";
         const callbackBase = status.callback_base_url || "";
         onlyofficeSetServerStatus(
-          serverOk ? "Document Server online" : "Document Server offline",
+          serverOk ? "Document Server backend reachable" : "Document Server backend unreachable",
           {offline: !serverOk}
         );
         onlyofficeSetServerUrl(`ONLYOFFICE: ${publicUrl}${callbackBase ? ` · callback: ${callbackBase}` : ""}`);
@@ -492,13 +500,73 @@
     window.onlyofficeScheduleEditorViewportFix = onlyofficeScheduleEditorViewportFix;
     window.onlyofficeResetEditorViewportFix = onlyofficeResetEditorViewportFix;
 
+    // In hardened mode DocsAPI is instantiated exclusively on the unprivileged
+    // docs origin. Never insert a Document Server script into the MC DOM.
+    async function mountHardenedOnlyOffice(data) {
+      const url = new URL(data.public_url || data.document_server_url);
+      if (url.protocol !== "https:" || url.hostname !== "onlyoffice.main-computer.localhost" ||
+          url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+        throw new Error("Invalid isolated Document Server origin");
+      }
+      const origin = url.origin;
+      const channel = crypto.randomUUID();
+      const frame = document.createElement("iframe");
+      frame.title = "ONLYOFFICE spreadsheet editor";
+      frame.style.cssText = "width:100%;height:100%;border:0;display:block";
+      frame.referrerPolicy = "no-referrer";
+      const pending = new Map();
+      let initialized = false, timer;
+      let resolveReady, rejectReady;
+      const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+      function destroyEditor() {
+        window.removeEventListener("message", receive);
+        clearTimeout(timer);
+        for (const item of pending.values()) { clearTimeout(item.timer); item.reject(Error("Editor closed")); }
+        pending.clear();
+        frame.remove();
+      }
+      function receive(event) {
+        const msg = event.data;
+        if (event.origin !== origin || event.source !== frame.contentWindow || !msg || msg.channel !== channel) return;
+        if (msg.type === "mc-oo-host-ready" && !initialized) {
+          initialized = true;
+          frame.contentWindow.postMessage({type:"mc-oo-config", channel, config:data.config}, origin);
+        } else if (msg.type === "mc-oo-document-ready") {
+          clearTimeout(timer); resolveReady();
+        } else if (msg.type === "mc-oo-error") {
+          const error = Error(String(msg.message || "Isolated editor error"));
+          rejectReady(error);
+          onlyofficeSetStatus(error.message);
+        } else if (msg.type === "mc-oo-comment-result") {
+          const item = pending.get(msg.requestId);
+          if (item) { pending.delete(msg.requestId); clearTimeout(item.timer); item.resolve(String(msg.message || "Command finished")); }
+        }
+      }
+      function attachComment(text) {
+        return new Promise((resolve, reject) => {
+          const requestId = crypto.randomUUID();
+          const timer = setTimeout(() => { pending.delete(requestId); reject(Error("Automation response timed out")); }, 30000);
+          pending.set(requestId, {resolve, reject, timer});
+          frame.contentWindow.postMessage({type:"mc-oo-comment", channel, requestId, text}, origin);
+        });
+      }
+      window.addEventListener("message", receive);
+      timer = setTimeout(() => rejectReady(Error("Isolated Document Server readiness timed out")), 120000);
+      frame.src = origin + "/mc-editor-host.html#" + new URLSearchParams({parent:location.origin, channel});
+      onlyofficeEditorHost.appendChild(frame);
+      try { await ready; return {destroyEditor, attachComment}; }
+      catch (error) { destroyEditor(); throw error; }
+    }
+
     async function openOnlyOfficeWorkbook(path) {
       const cleanPath = String(path || "").trim();
       if (!cleanPath) return;
       onlyofficeResetEditorViewportFix();
       onlyofficeSetStatus("Preparing ONLYOFFICE editor...");
       const data = await onlyofficeApi("/api/applications/onlyoffice/config", {path: cleanPath});
-      const loadedDocumentServerUrl = await loadOnlyOfficeApi(data.public_url || data.document_server_url);
+      const hardenedApplicationHost = ["dev.main-computer.localhost", "unleashed.main-computer.localhost", "debug.main-computer.localhost", "safe.main-computer.localhost"].includes(location.hostname);
+      if (hardenedApplicationHost && data.hardened_editor_origin !== true) throw Error("Hardened application cannot use a legacy editor origin");
+      const loadedDocumentServerUrl = data.hardened_editor_origin ? null : await loadOnlyOfficeApi(data.public_url || data.document_server_url);
       if (loadedDocumentServerUrl && loadedDocumentServerUrl !== (data.public_url || data.document_server_url)) {
         onlyofficeSetServerUrl(`ONLYOFFICE: ${data.public_url || data.document_server_url} · browser API: ${loadedDocumentServerUrl}`);
       }
@@ -514,11 +582,13 @@
       onlyofficeEditorHost.textContent = "";
       const editorMount = document.createElement("div");
       editorMount.id = "onlyoffice-editor-mount";
-      onlyofficeEditorHost.appendChild(editorMount);
+      if (!data.hardened_editor_origin) onlyofficeEditorHost.appendChild(editorMount);
       onlyofficeState.selectedPath = cleanPath;
       if (onlyofficeCurrentPath) onlyofficeCurrentPath.textContent = data.display_path || cleanPath;
       onlyofficeRenderFiles();
-      onlyofficeState.editor = new DocsAPI.DocEditor("onlyoffice-editor-mount", data.config);
+      onlyofficeState.editor = data.hardened_editor_origin
+        ? await mountHardenedOnlyOffice(data)
+        : new DocsAPI.DocEditor("onlyoffice-editor-mount", data.config);
       onlyofficeSetStatus("ONLYOFFICE editor open");
       onlyofficeScheduleEditorViewportFix();
       await refreshOnlyOfficeStatus();
@@ -541,7 +611,11 @@
     }
 
     async function createOnlyOfficeWorkbook() {
-      const name = window.prompt("New XLSX workbook name", "Book.xlsx");
+      await refreshOnlyOfficeFiles({quiet: true});
+      const existing = new Set(onlyofficeState.files.map(file => String(file.path || "").toLowerCase()));
+      let suggested = "Book.xlsx";
+      for (let n = 2; existing.has(suggested.toLowerCase()); n++) suggested = `Book${n}.xlsx`;
+      const name = window.prompt("New XLSX workbook name", suggested);
       if (!name) return;
       onlyofficeSetStatus("Creating workbook...");
       const data = await onlyofficeApi("/api/applications/onlyoffice/create", {path: name});

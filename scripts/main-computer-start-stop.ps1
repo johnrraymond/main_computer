@@ -399,7 +399,7 @@ function New-LaunchContextFromManifest([string]$RootPath, [object]$Manifest, [st
   }
 }
 
-function Resolve-MainComputerLaunchContext([string]$RootPath) {
+function Resolve-MainComputerLegacyLaunchContext([string]$RootPath) {
   $launcherPath = Get-LauncherConfigPath $RootPath
   if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
     $launcherConfig = Read-JsonFile $launcherPath
@@ -443,6 +443,38 @@ function Resolve-MainComputerLaunchContext([string]$RootPath) {
     environment = $defaultEnvironment
     context_file = $null
   }
+}
+
+# The selected deployment is account-local, not a mutable shell setting or
+# a copy of credentials in the start-session manifest.
+function Resolve-MainComputerLaunchContext([string]$RootPath) {
+  $context = Resolve-MainComputerLegacyLaunchContext $RootPath
+  $policy = Join-Path $env:LOCALAPPDATA "MainComputer\AuthBootstrap\onlyoffice-deployment.json"
+  if (Test-Path -LiteralPath $policy -PathType Leaf) {
+    Push-Location $RootPath
+    try {
+      $deploymentArgs = @("-m", "tools.mcel_onlyoffice_deployment", "environment", "--root", $RootPath)
+      if ($Action -eq "stop") { $deploymentArgs += "--for-stop" }
+      $raw = & ([string]$context.python) @deploymentArgs
+      if ($LASTEXITCODE -ne 0) { throw "Selected MC deployment configuration refused. No legacy fallback." }
+      $settings = ($raw -join "`n") | ConvertFrom-Json
+      foreach ($item in $settings.PSObject.Properties) { $context.environment[$item.Name] = [string]$item.Value }
+      if ($context.environment["MAIN_COMPUTER_DEPLOYMENT_MANAGED"] -eq "1") {
+        # Neither a manifest nor inherited shell can disable the hardened boundary.
+        $context.environment["MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET"] = ""
+        $context.environment["MAIN_COMPUTER_MAIN_LOG_TOKEN"] = ""
+      }
+    } finally { Pop-Location }
+  }
+  return $context
+}
+
+function Test-MainComputerHardenedContext([object]$LaunchContext) {
+  return (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEPLOYMENT_MANAGED" "0") -eq "1"
+}
+
+function Test-MainComputerSecondaryContext([object]$LaunchContext) {
+  return (Test-MainComputerHardenedContext $LaunchContext) -and ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED" "1") -eq "0")
 }
 
 function Set-MainComputerLaunchEnvironment([object]$LaunchContext) {
@@ -2808,7 +2840,7 @@ function New-StartSession(
         name = "auth"
         module = "main_computer.auth_bootstrap_service run"
         pid_file = Join-Path $RootPath ".main_computer_auth_bootstrap.pid"
-        health_url = "https://mc.test:8875/api/auth/bootstrap/session"
+        health_url = $(if (Test-MainComputerHardenedContext $LaunchContext) { "https://" + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_INSTALLATION_MODE") + ".main-computer.localhost:8875/api/auth/bootstrap/session" } else { "https://mc.test:8875/api/auth/bootstrap/session" })
       },
       [ordered]@{
         name = "nanojev-manager"
@@ -2910,6 +2942,15 @@ function Invoke-MainComputerOnlyOfficeControl {
     [Parameter(Mandatory = $true)][object]$LaunchContext,
     [Parameter(Mandatory = $true)][string]$OnlyOfficeAction
   )
+
+  if (Test-MainComputerHardenedContext $LaunchContext) {
+    Push-Location $RootPath
+    try {
+      & ([string]$LaunchContext.python) -m tools.mcel_onlyoffice_deployment docker --root $RootPath --docker-action $OnlyOfficeAction
+      if ($LASTEXITCODE -ne 0) { throw "Hardened shared ONLYOFFICE $OnlyOfficeAction failed; refusing unsigned fallback." }
+    } finally { Pop-Location }
+    return
+  }
 
   $enabled = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ENABLED" "1"
   if ($enabled -eq "0" -or $enabled -eq "false" -or $enabled -eq "disabled") {
@@ -3299,7 +3340,16 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   # session or silently start an insecure replacement.
   $authContext = Resolve-MainComputerLaunchContext $RootPath
   $authPython = [string]$authContext.python
-  if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
+  $hardened = Test-MainComputerHardenedContext $authContext
+  $secondary = Test-MainComputerSecondaryContext $authContext
+  if ($hardened) { Set-MainComputerLaunchEnvironment $authContext }
+  if ($secondary) {
+    # Secondary lanes never own shared auth, SLH, Dev Hub or NanoJev lifecycle.
+    $NoDevHubRequested = $true
+    $NoSLHHubRequested = $true
+    & $authPython -m main_computer.auth_bootstrap_service --root $RootPath status --wait-seconds 120
+    if ($LASTEXITCODE -ne 0) { throw "Start the selected primary MC installation first." }
+  } elseif ($hardened -or $env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
     Write-Host "Checking the supervised MC HTTPS authentication bootstrap..."
     & $authPython -m main_computer.auth_bootstrap_service --root $RootPath preflight
     if ($LASTEXITCODE -ne 0) {
@@ -3316,6 +3366,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   try {
     Stop-MainComputer $RootPath $true $true | Out-Null
   } catch {
+    if ($hardened) { throw }
     Write-Warning ("RESTART cleanup raised an error; proceeding with launch anyway: " + $_.Exception.Message)
   }
   $slhStart = [ordered]@{
@@ -3352,7 +3403,9 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   # ./start owns the bootstrap process through the resident supervisor.
   # Direct Python test supervisors remain opt-in and unchanged.
+  if (-not $hardened) {
   Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED" $(if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -eq "0") { "0" } else { "1" })
+  }
   # The supervisor starts or skips its SLH child solely according to the SLH
   # opt-out, regardless of whether Dev-Test Hub is started.
   Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoSLHHubRequested) { "0" } else { "1" })
@@ -3370,12 +3423,13 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
 
   Ensure-MainComputerDockerDesktopStarted $RootPath $launchContext $pythonCommand
   Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand
+  if ($hardened) { Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "start" }
 
-  if (Test-MainComputerNanoJevManaged $launchContext) {
+  if ((-not $secondary) -and (Test-MainComputerNanoJevManaged $launchContext)) {
     Start-MainComputerNanoJevImageBootstrap $RootPath $launchContext $pythonCommand
   }
 
-  $devChainStart = Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand
+  $devChainStart = $(if ($secondary) { [ordered]@{ ok = $true; state = "shared-primary" } } else { Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand })
   if ($null -eq $devChainStart) {
     throw "Dev chain startup returned no status."
   }
@@ -3384,7 +3438,9 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
     throw ("Dev chain startup failed: {0}" -f $message)
   }
 
-  if (Test-MainComputerNanoJevManaged $launchContext) {
+  if ($secondary) {
+    $nanoJevStart = [ordered]@{ ok = $true; state = "shared-primary" }
+  } elseif (Test-MainComputerNanoJevManaged $launchContext) {
     $nanoJevStart = Start-MainComputerNanoJevManager $RootPath $launchContext $pythonCommand
   } else {
     $nanoJevStart = Start-MainComputerNanoJev $RootPath $launchContext $pythonCommand
@@ -3435,7 +3491,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $argString = Join-CommandLine $launcherArgs
 
   try {
-    $giteaStart = Start-MainComputerGiteaIfMissing $RootPath $launchContext $pythonCommand
+    $giteaStart = $(if ($secondary) { [ordered]@{ ok = $true; state = "shared-primary" } } else { Start-MainComputerGiteaIfMissing $RootPath $launchContext $pythonCommand })
   } catch {
     $giteaStart = [ordered]@{
       ok = $false
@@ -3459,7 +3515,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   }
 
   try {
-    $localPlatformStart = Start-MainComputerLocalPlatform $RootPath $pythonCommand
+    $localPlatformStart = $(if ($secondary) { [ordered]@{ ok = $true; state = "shared-primary" } } else { Start-MainComputerLocalPlatform $RootPath $pythonCommand })
   } catch {
     $localPlatformStart = [ordered]@{
       ok = $false
@@ -3519,7 +3575,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $sessionPath = Get-StartSessionPath $RootPath
   Write-JsonFile $sessionPath $session
 
-  Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "start"
+  if (-not $hardened) { Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "start" }
 
   Write-Host ("Main Computer {0} supervisor launch requested, detached as PID {1}." -f [string]$launchContext.tree_kind, $process.Id)
   Write-Host ("Mode:             " + [string]$launchContext.mode)
@@ -3543,7 +3599,9 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   Write-Host ("SLH startup:      " + [string]$slhStart.state)
   Write-Host ("Blockchain:       " + (Join-Path $RootPath "runtime\blockchain_service\state.json"))
   Write-Host ("NanoJev API:      " + (Get-MainComputerNanoJevUrl $launchContext))
-  Write-Host "Authentication:   https://mc.test:8875/auth/login (managed by supervisor)"
+  if ($hardened) {
+    Write-Host ("Authentication:   https://" + $env:MAIN_COMPUTER_INSTALLATION_MODE + ".main-computer.localhost:8875/auth/login (shared authority)")
+  } else { Write-Host "Authentication:   https://mc.test:8875/auth/login (managed by supervisor)" }
   Write-Host ("Auth PID:         " + (Join-Path $RootPath ".main_computer_auth_bootstrap.pid"))
   Write-Host ("stdout:           " + $stdout)
   Write-Host ("stderr:           " + $stderr)
@@ -3639,8 +3697,10 @@ function Show-MainComputerStatus([string]$RootPath) {
   Write-Host ("Status via Python: " + $pythonCommand)
   & $pythonCommand @statusArgs
   $statusExitCode = $LASTEXITCODE
-  if ($env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
-    & $pythonCommand -m main_computer.auth_bootstrap_service --root $RootPath status --wait-seconds 25
+  if ((Test-MainComputerHardenedContext $launchContext) -or $env:MAIN_COMPUTER_AUTH_BOOTSTRAP_ENABLED -ne "0") {
+    $authWaitSeconds = if (Test-MainComputerHardenedContext $launchContext) { 120 } else { 25 }
+    Write-Host ("Waiting for HTTPS authentication readiness (up to {0}s)..." -f $authWaitSeconds)
+    & $pythonCommand -m main_computer.auth_bootstrap_service --root $RootPath status --wait-seconds $authWaitSeconds
     if ($LASTEXITCODE -ne 0) {
       Write-Warning "MC HTTPS authentication readiness failed; the auth status command above reports the failing TCP, TLS, or session-API stage."
       $statusExitCode = 1
@@ -3842,6 +3902,12 @@ function Add-PidsFromSupervisorState([hashtable]$Candidates, [object]$State) {
 
 function Get-MainComputerManagedPorts([object]$LaunchContext) {
   $ports = New-Object System.Collections.Generic.List[int]
+  if (Test-MainComputerHardenedContext $LaunchContext) {
+    $lanePorts = @("MAIN_COMPUTER_CONTROL_PORT", "MAIN_COMPUTER_HEARTBEAT_PORT", "MAIN_COMPUTER_MAIN_LOG_PORT")
+    if (-not (Test-MainComputerSecondaryContext $LaunchContext)) { $lanePorts += "MAIN_COMPUTER_AUTH_BOOTSTRAP_PORT" }
+    foreach ($name in $lanePorts) { $ports.Add([int](Get-LaunchEnvironmentValue $LaunchContext $name)) }
+    return @($ports)
+  }
 
   # Only inspect ports assigned to the launch context being started/stopped.
   # Debug and Safe installs must not kill an Unleashed/dev server just because
@@ -3880,6 +3946,15 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
   } catch {}
 
   return @($ports)
+}
+
+# A substring is not an installation identity: main_computer_debug can share
+# the prefix of main_computer. Never use that coincidence to stop another lane.
+function Test-MainComputerExactRootMarker([string]$CommandLine, [string]$RootPath) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+  $normalized = $CommandLine.Replace("\", "/")
+  $rootMarker = [regex]::Escape($RootPath.Replace("\", "/").TrimEnd('/'))
+  return ($normalized -match ('(?i)(?:^|[\s"''])' + $rootMarker + '(?:$|[/\s"''])'))
 }
 
 function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$RootPath) {
@@ -4002,6 +4077,7 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
 
   foreach ($process in $processes) {
     $commandLine = [string]$process.CommandLine
+    if ((Test-MainComputerHardenedContext $LaunchContext) -and (-not (Test-MainComputerExactRootMarker $commandLine $RootPath))) { continue }
     # A gateway carrying the exact checkout --root is ours even when the
     # supervisor state is gone.  Do not adopt local_service merely by name:
     # it has no --root marker and requires a separate owner proof.
@@ -4032,6 +4108,7 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
     }
 
     $commandLine = Get-ProcessCommandLine $processId
+    if ((Test-MainComputerHardenedContext $LaunchContext) -and (-not (Test-MainComputerExactRootMarker $commandLine $RootPath))) { continue }
     if (Test-MainComputerSeparatelyOwnedSLH $commandLine) {
       continue
     }
@@ -4740,7 +4817,8 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]
 
   $sessionPath = Get-StartSessionPath $RootPath
   $session = Read-JsonFile $sessionPath
-  $nanoJevManagerStop = Stop-MainComputerNanoJevManagerGracefully $session
+  $secondary = Test-MainComputerSecondaryContext $launchContext
+  $nanoJevManagerStop = $(if ($secondary) { [ordered]@{ ok = $true; state = "shared-primary" } } else { Stop-MainComputerNanoJevManagerGracefully $session })
   if ($null -ne $nanoJevManagerStop -and -not [bool](Get-ObjectPropertyValue $nanoJevManagerStop "ok" $false)) {
     $nanoJevError = ("Main Computer NanoJev manager could not stop cleanly: {0}" -f
       (ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJevManagerStop "message" "NanoJev manager did not stop safely") "NanoJev manager did not stop safely"))
@@ -4790,13 +4868,24 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]
 
   Add-PidsFromSupervisorState $candidates (Read-JsonFile (Join-Path $RootPath "runtime\service_supervisor\state.json"))
   Add-CurrentMainComputerProcessCandidates $candidates $RootPath $launchContext
+  if (Test-MainComputerHardenedContext $launchContext) {
+    foreach ($key in @($candidates.Keys)) {
+      $candidateCommand = Get-ProcessCommandLine ([int]$candidates[$key].pid)
+      if (-not (Test-MainComputerExactRootMarker $candidateCommand $RootPath)) { $candidates.Remove($key) }
+    }
+  }
+  if ($secondary) {
+    foreach ($key in @($candidates.Keys)) {
+      if ([string]$candidates[$key].role -in @("auth", "slh", "slh-supervised-orphan", "slh-boot-child", "slh-local-orphan", "nanojev-manager", "dev-hub")) { $candidates.Remove($key) }
+    }
+  }
 
   $processResults = @()
   # Stop both potential SLH launchers *before* their processes.  In particular,
   # a live supervisor can otherwise respawn a child between kill and port check.
   # A missing/stopped Windows task is a successful no-op.
   try {
-    $slhBootStop = Stop-MainComputerSLHBootLauncher $RootPath
+    $slhBootStop = $(if ($secondary) { [ordered]@{ state = "shared-primary"; owned_listener = $null } } else { Stop-MainComputerSLHBootLauncher $RootPath })
   } catch {
     if (-not $ForceShutdown) { throw }
     Write-Warning ("FORCED STOP: could not verify the SLH boot launcher; continuing process shutdown: " + $_.Exception.Message)
@@ -4840,7 +4929,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]
   }
   # The supervisor is now dead (or was not a verified local launcher).
   try {
-    $slhChildStop = Stop-MainComputerSLHListenerAfterLaunchers $RootPath $slhBootStop.owned_listener
+    $slhChildStop = $(if ($secondary) { [ordered]@{ state = "not-owned"; pid = 0 } } else { Stop-MainComputerSLHListenerAfterLaunchers $RootPath $slhBootStop.owned_listener })
   } catch {
     if (-not $ForceShutdown) { throw }
     $slhChildStop = [ordered]@{ state = "failed"; error = $_.Exception.Message; pid = (Get-MainComputerSLHListenerPid) }
@@ -4854,12 +4943,12 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false, [bool]
   }
   # ORG-SLH may have survived its Local Service. Under shared forced-shutdown
   # policy, a recorded PID is killed even when identity cannot be verified.
-  $orgChildStop = Stop-MainComputerORGService $RootPath $launchContext $ForceShutdown
+  $orgChildStop = $(if ($secondary) { [ordered]@{ state = "not-owned" } } else { Stop-MainComputerORGService $RootPath $launchContext $ForceShutdown })
 
   Start-Sleep -Milliseconds 500
 
   $dockerResults = @()
-  $skipDockerStacks = ($SkipDocker -or [bool]$NoDocker)
+  $skipDockerStacks = ($SkipDocker -or [bool]$NoDocker -or $secondary)
   if ($skipDockerStacks) {
     $dockerResults += [ordered]@{
       state = "skipped"

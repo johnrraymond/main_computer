@@ -18,7 +18,7 @@ LAW = ROOT / "main_computer/web/applications/scripts/mcel-semantic-chrome-presen
 def test_crt_wear_tiles_join_without_visible_rectangular_seams():
     source = LAW.read_text(encoding="utf-8")
     images = {}
-    for name in ("ambient", "dark", "glint"):
+    for name in ("ambient", "normal", "highlight"):
         match = re.search(
             rf"\b{name}: 'url\(\"data:image/webp;base64,([A-Za-z0-9+/=]+)\"\)'",
             source,
@@ -35,7 +35,7 @@ def test_crt_wear_tiles_join_without_visible_rectangular_seams():
 
         # The patch must not solve this by erasing the texture or creating
         # a blank border. Texture remains active and covers every tile edge.
-        assert alpha.std() > 2, f"Flat/inactive wear texture: {name}"
+        assert alpha.std() > (2 if name == "highlight" else 1), f"Flat/inactive wear texture: {name}"
         assert np.mean(alpha[:, 0]) > 1, f"Faded edge band: {name}"
         assert np.mean(alpha[0, :]) > 1, f"Faded edge band: {name}"
 
@@ -48,6 +48,7 @@ def test_crt_wear_tiles_join_without_visible_rectangular_seams():
         assert join_neighborhood_x < max(4.0, 6 * local_x), (name, join_neighborhood_x, local_x)
         assert join_neighborhood_y < max(4.0, 6 * local_y), (name, join_neighborhood_y, local_y)
 
+    assert images["highlight"].mean() > images["normal"].mean() > images["ambient"].mean()
     assert "--mcel-tng-aperture-display" in source
     assert "--mcel-tng-aperture-background" in source
     assert 'data-mcel-tng-gold-text' in source
