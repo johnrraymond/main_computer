@@ -355,7 +355,7 @@
           <label>
             <span>Daily remote spend limit</span>
             <input id="worker-remote-daily-limit" type="number" min="0" step="1" value="100000">
-            <small>Local policy guard; backend enforcement can be wired separately.</small>
+            <small>Maximum daily remote spending in credits (0 disables spending). The backend reserves worst-case request cost before submission.</small>
           </label>
           <label class="worker-checkline worker-wide">
             <input type="checkbox" id="worker-remote-ask-before-spend" checked>

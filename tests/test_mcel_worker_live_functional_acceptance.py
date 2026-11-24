@@ -51,7 +51,9 @@ def test_evidence_requires_actual_gate_postconditions_and_cleanup():
         evidence['proofs'] = {key:True for key in (
             ('realExtension','testnetChain','walletConnected','hubMskVerified','hubOfferAccepted',
              'hubSessionLive','captainCompleted','workerDelivered','hubMskRevoked','requesterPolicyRead',
-             'backendDeniedUnauthorizedSpend','noPaidSubmission','budgetLimitDenied'))}
+             'backendDeniedUnauthorizedSpend','noPaidSubmission','budgetLimitDenied',
+             'localBusyPolicyDenied','restartRetainedReservation','duplicateDenied',
+             'consentReplayDenied','concurrentBudgetDenied'))}
         assert live.verify_evidence(evidence,gate)[0]
         evidence['cleanupOk'] = False
         assert not live.verify_evidence(evidence,gate)[0]

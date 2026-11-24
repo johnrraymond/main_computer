@@ -87,7 +87,10 @@ def emit_main_log_event(
     request = Request(
         f"{target}/v1/log/events",
         data=request_body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(
+            {"Authorization": "Bearer " + os.environ['MAIN_COMPUTER_MAIN_LOG_TOKEN']}
+            if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1'
+            and os.environ.get('MAIN_COMPUTER_MAIN_LOG_TOKEN', '') else {})},
         method="POST",
     )
     try:

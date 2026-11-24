@@ -378,7 +378,9 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
             f"{credit_wei_to_display_text(unheld_spendable_credit_wei)} unheld spendable, "
             f"{credit_wei_to_display_text(required_credit_wei)} required."
         )
-    elif daily_remote_limit_credit_wei and (daily_remote_used_credit_wei + required_credit_wei) > daily_remote_limit_credit_wei:
+    elif "daily_remote_limit_credit_wei" in credit_payload and (
+        daily_remote_limit_credit_wei == 0 or (daily_remote_used_credit_wei + required_credit_wei) > daily_remote_limit_credit_wei
+    ):
         ok = False
         reason_code = "daily_remote_limit_exceeded"
         message = (

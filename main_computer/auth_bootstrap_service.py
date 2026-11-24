@@ -88,7 +88,7 @@ def probe_detail(*, state: Path, port: int) -> tuple[bool, str]:
     in this CLI's private auth state. Neither condition should be hidden by a
     generic NOT_READY message. No keys or session tokens are printed.
     """
-    cert = state / 'tls-cert.pem'
+    cert = state / ('tls-cert-hardened.pem' if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else 'tls-cert.pem')
     if not cert.is_file():
         return False, 'TLS_CERT_FILE_MISSING'
     try:
@@ -176,13 +176,19 @@ def open_managed_browser(*, state: Path, port: int) -> None:
     elif not available:
         print('MC_AUTH_BOOTSTRAP proof-invalid; repair requires explicit local intervention', flush=True)
     profile = _private_folder(state / 'browser-profile')
+    browser_host = HOST
+    if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1':
+        from main_computer.auth_hostnames import canonical_host
+        browser_host = canonical_host(os.environ.get('MAIN_COMPUTER_INSTALLATION_MODE', 'dev'))
+        if browser_host.endswith('onlyoffice.main-computer.local'):
+            raise RuntimeError('INVALID_BROWSER_APPLICATION_MODE')
     argv = [
         _chromium(), f'--user-data-dir={profile}',
-        '--host-resolver-rules=MAP mc.test 127.0.0.1, EXCLUDE localhost',
+        ('--host-resolver-rules=' + __import__('main_computer.auth_hostnames', fromlist=['managed_browser_resolver_rules']).managed_browser_resolver_rules() if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else '--host-resolver-rules=MAP mc.test 127.0.0.1, EXCLUDE localhost'),
         '--no-first-run', '--no-default-browser-check', '--new-window',
         # An existing valid session redirects straight back to /graphical.
         # A missing/replaced AAA proof cannot use an old session cookie.
-        f'https://{HOST}:{port}/auth/login?next=%2Fgraphical',
+        f'https://{browser_host}:{port}/auth/login?next=%2Fgraphical',
     ]
     subprocess.Popen(argv, cwd=str(state), stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
@@ -233,7 +239,7 @@ def serve(*, root: Path, state: Path, port: int, backend_port: int) -> None:
         try:
             print(f'MC_AUTH_BOOTSTRAP READY https://{HOST}:{port}/auth/login?next=%2Fgraphical', flush=True)
             print('MC_AUTH_BOOTSTRAP managed-by=main_computer.service_supervisor', flush=True)
-            print('MC_AUTH_BOOTSTRAP existing-unsecured-HTTP-ingress-unchanged', flush=True)
+            print('MC_AUTH_BOOTSTRAP backend-authenticated-candidate' if os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1' else 'MC_AUTH_BOOTSTRAP existing-unsecured-HTTP-ingress-unchanged', flush=True)
             server.serve_forever(poll_interval=0.2)
         finally:
             stop_proof_monitor.set()

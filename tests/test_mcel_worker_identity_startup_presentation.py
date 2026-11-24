@@ -1,7 +1,4 @@
-"""Worker candidate: reliable read-only identity startup and common T/F/C ownership.
-
-The legacy marketplace Worker remains canonical and receives no registry promotion.
-"""
+"""MCEL Worker: reliable identity startup and common T/F/C ownership."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -20,11 +17,11 @@ from tests.test_mcel_worker_identity_navigation import IDENTITIES_MOCK
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_candidate_uses_exact_system_profiles_without_promoting_legacy_worker():
+def test_worker_uses_exact_system_profiles_after_canonical_promotion():
     registry = read_registry(ROOT)
     entry = next(app for app in registry['apps'] if app['id'] == 'worker')
-    assert entry['mount'] == 'legacy'
-    assert resolve_presentation(registry, 'worker')['eligible'] is False
+    assert entry['mount'] == 'semantic'
+    assert resolve_presentation(registry, 'worker')['eligible'] is True
     selection = resolve_presentation(registry, 'worker', semantic_candidate=True)
     assert selection['eligible'] and selection['rolloutEnabled']
     assert selection['profiles'] == registry['presentation']['system']

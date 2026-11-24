@@ -16,6 +16,7 @@ from main_computer.mcel_project_edit_transaction import (
     inspect_project_manifest,
     prepare_project_edit_transaction,
 )
+from main_computer.mcel_editor_save_stall_probe import observe_save
 from main_computer.viewport_state import *  # noqa: F401,F403
 
 
@@ -262,54 +263,62 @@ class ViewportEditorRoutesMixin:
                 raise ValueError("File save requires a project-relative path.")
             if replacement_text is None:
                 raise ValueError("File save requires replacement text.")
-            client_changes = self._editor_client_changes(
-                [
-                    {
-                        "operation": "modify",
-                        "path": path,
-                        "expected_before_sha256": expected_before,
-                        "replacement_text": replacement_text,
-                    }
-                ]
-            )
-            report, handle, output_dir = self._editor_prepare_project_transaction(
-                repo=repo,
-                project_root=body.get("project_root", body.get("projectRoot", ".")),
-                changes=client_changes,
-                validation_profile=body.get("validation_profile", body.get("validationProfile", "none")),
-                client_validations=body.get("validations"),
-            )
-            receipt = apply_project_edit_transaction(
-                repo_root=repo,
-                transaction=Path(report["report_path"]),
-                reviewed=True,
-                require_project_manifest=self._coerce_bool(
+            with observe_save(self.server.config.workspace, path):
+                client_changes = self._editor_client_changes(
+                    [
+                        {
+                            "operation": "modify",
+                            "path": path,
+                            "expected_before_sha256": expected_before,
+                            "replacement_text": replacement_text,
+                        }
+                    ]
+                )
+                require_full_manifest = self._coerce_bool(
                     body.get("require_project_manifest", body.get("requireProjectManifest")),
                     default=False,
-                ),
-            )
-            self.server.signal(
-                "api-editor-project-file-saved",
-                repo=repo,
-                project_root=receipt["project_root"],
-                transaction_id=receipt["transaction_id"],
-                handle=handle,
-                path=receipt["files"][0]["path"],
-            )
-            self._send_json(
-                {
-                    "ok": True,
-                    "schema": _EDITOR_FILE_SAVE_SCHEMA,
-                    "status": "pass",
-                    "state": "applied",
-                    "handle": handle,
-                    "repo_dir": self._editor_workspace_relative(repo),
-                    "savedPath": receipt["files"][0]["path"],
-                    "transaction": self._editor_public_transaction(report),
-                    "receipt": self._editor_public_receipt(receipt),
-                    "changedFiles": [item["path"] for item in receipt["files"]],
-                }
-            )
+                )
+                validation_profile = body.get("validation_profile", body.get("validationProfile", "none"))
+                # Only the ordinary, explicitly confirmed, one-file Save may
+                # use a target-only manifest. Reviewed project edits remain full.
+                scoped_save = (not require_full_manifest and
+                               str(validation_profile or "none").strip().lower() in {"", "none"})
+                report, handle, output_dir = self._editor_prepare_project_transaction(
+                    repo=repo,
+                    project_root=body.get("project_root", body.get("projectRoot", ".")),
+                    changes=client_changes,
+                    validation_profile=validation_profile,
+                    client_validations=body.get("validations"),
+                    project_manifest_scope=("single-modify-target" if scoped_save else "full-project"),
+                )
+                receipt = apply_project_edit_transaction(
+                    repo_root=repo,
+                    transaction=Path(report["report_path"]),
+                    reviewed=True,
+                    require_project_manifest=require_full_manifest,
+                )
+                self.server.signal(
+                    "api-editor-project-file-saved",
+                    repo=repo,
+                    project_root=receipt["project_root"],
+                    transaction_id=receipt["transaction_id"],
+                    handle=handle,
+                    path=receipt["files"][0]["path"],
+                )
+                self._send_json(
+                    {
+                        "ok": True,
+                        "schema": _EDITOR_FILE_SAVE_SCHEMA,
+                        "status": "pass",
+                        "state": "applied",
+                        "handle": handle,
+                        "repo_dir": self._editor_workspace_relative(repo),
+                        "savedPath": receipt["files"][0]["path"],
+                        "transaction": self._editor_public_transaction(report),
+                        "receipt": self._editor_public_receipt(receipt),
+                        "changedFiles": [item["path"] for item in receipt["files"]],
+                    }
+                )
         except ProjectEditTransactionError as exc:
             self.server.signal("api-editor-project-file-save-error", error=exc, stage=exc.stage)
             self._send_json({"error": str(exc), **exc.as_dict()}, status=HTTPStatus.BAD_REQUEST)
@@ -415,6 +424,7 @@ class ViewportEditorRoutesMixin:
         changes: list[dict[str, Any]],
         validation_profile: object,
         client_validations: object,
+        project_manifest_scope: str = "full-project",
     ) -> tuple[dict[str, Any], str, Path]:
         handle = secrets.token_hex(16)
         output_dir = self._editor_transaction_store(repo) / handle
@@ -427,6 +437,7 @@ class ViewportEditorRoutesMixin:
                 output_dir=output_dir,
                 validations=self._editor_validation_commands(validation_profile, client_validations),
                 artifact_name="mcel-code-editor-project-edit.zip",
+                project_manifest_scope=project_manifest_scope,
             )
             metadata = {
                 "schema": _EDITOR_TRANSACTION_SCHEMA,

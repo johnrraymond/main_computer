@@ -66,6 +66,12 @@ def fingerprint() -> str:
                 'main_computer/web/applications/scripts/wallet.js',
                 'main_computer/web/applications/scripts/worker.js',
                 'main_computer/web/applications/scripts/mcel-semantic-worker-ports.js',
+                'main_computer/requester_spend_guard.py',
+                'main_computer/remote_overflow.py',
+                'main_computer/viewport_routes_chat_console.py',
+                'main_computer/viewport_routes_energy.py',
+                'main_computer/viewport_route_dispatch.py',
+                'main_computer/web/applications/scripts/chat-console.js',
                 'mcel_apps/worker/application.js' ):
         digest.update(rel.encode() + b'\0')
         item = ROOT / rel
@@ -134,6 +140,11 @@ def verify_evidence(row: dict, gate: str) -> tuple[bool, str]:
     # enforcement. Explicitly require both independent denial checks.
     if gate == 'requester-enforcement' and marks.get('budgetLimitDenied') is not True:
         return False, 'requester-budget-not-proven'
+    if gate == 'requester-enforcement':
+        extra = ('localBusyPolicyDenied', 'restartRetainedReservation',
+                 'duplicateDenied', 'consentReplayDenied', 'concurrentBudgetDenied')
+        if any(marks.get(name) is not True for name in extra):
+            return False, 'requester-adversarial-proof-missing'
     return True, 'verified'
 
 
@@ -587,6 +598,26 @@ def main(argv: list[str] | None = None) -> int:
               if evidence and evidence.get('errorClass') in ('Error','TimeoutError','AssertionError','TypeError','UnknownError')
               else 'NOT_AVAILABLE'),
           'process=' + explanation, flush=True)
+    if args.gate == 'requester-enforcement' and isinstance(evidence, dict):
+        for kind, evidence_field, version, allowed_results in (
+            ('POLICY_READ', 'requesterPolicyReadDiagnostic', 'requester-policy-read-v1',
+             ('saved-policy', 'unsaved-defaults', 'partial-defaults',
+              'http-rejected', 'transport-failed', 'backend-refused',
+              'invalid-settings-object', 'invalid-enabled-type', 'invalid-budget-type')),
+            ('GUARD_VERIFY', 'requesterGuardDiagnostic', 'requester-guard-read-v1',
+             ('verified', 'backend-refused', 'proof-incomplete', 'http-rejected', 'transport-failed')),
+        ):
+            diagnostic = evidence.get(evidence_field)
+            if not isinstance(diagnostic, dict) or diagnostic.get('version') != version:
+                continue
+            http_status = diagnostic.get('httpStatus')
+            if isinstance(http_status, bool) or not isinstance(http_status, int) or not 0 <= http_status <= 599:
+                http_status = 0
+            result = diagnostic.get('result')
+            if result not in allowed_results:
+                result = 'unclassified'
+            print('WORKER_LIVE_REQUESTER_' + kind,
+                  'http=' + str(http_status), 'result=' + result, flush=True)
     if failure_bundle:
         print('WORKER_LIVE_FAILURE_BUNDLE',
               'status=saved',

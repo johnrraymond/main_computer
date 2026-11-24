@@ -22,7 +22,6 @@ var McelSemanticChromePresentationLaw = (() => {
   const ownerProperty = "__mcelChromePresentationOwner";
   const wearSurfaceAttr = "data-mcel-tng-wear-surface";
   const wearGlintAttr = "data-mcel-tng-wear-glint";
-  const wearPositionAttr = "data-mcel-tng-wear-position";
   const materialAttr = "data-mcel-chrome-material";
   const materialOwnerAttr = "data-mcel-chrome-material-owner";
   const goldTextAttr = "data-mcel-tng-gold-text";
@@ -101,8 +100,24 @@ var McelSemanticChromePresentationLaw = (() => {
        values or the Theme-defined rail/purple/glass palette. */
     [${rootAttr}="${profileId}"] {
       --mcel-tng-light-angle: 145deg;
-      /* The same 21x6 aperture grille is weighted by physical surface role.
-         Original Python candidate E texture modulation is reduced by 25%. */
+      /* The authoritative TNG palette. Workbench CSS consumes these values
+         without creating another per-workbench gold/green material mix.
+         Theme still owns the pigment; Chrome owns its physical composition. */
+      --mcel-workbench-panel-surface: color-mix(in srgb,
+        var(--mcel-theme-card,#090b08) 90%, var(--mcel-theme-accent,#f6c75b) 10%);
+      --mcel-workbench-panel-edge: color-mix(in srgb,
+        var(--mcel-theme-card,#090b08) 70%, var(--mcel-theme-accent,#f6c75b) 30%);
+      --mcel-workbench-control-surface: color-mix(in srgb,
+        var(--mcel-theme-card,#090b08) 89%, var(--mcel-theme-accent,#f6c75b) 11%);
+      --mcel-workbench-control-hover: color-mix(in srgb,
+        var(--mcel-theme-card,#090b08) 83%, var(--mcel-theme-accent,#f6c75b) 17%);
+      --mcel-workbench-control-edge: var(--mcel-theme-line,rgba(246,199,91,.22));
+      --mcel-workbench-control-ink: var(--mcel-theme-ink,#fff8df);
+      --mcel-document-editor-glass: var(--mcel-tng-glass,var(--mcel-theme-card,#090b08));
+      --panel: var(--mcel-workbench-panel-surface);
+      --edge: var(--mcel-workbench-panel-edge);
+      --mute: var(--mcel-theme-muted,#b9b28d);
+      /* Same 21x6 aperture grille; original candidate E reduced by 25%. */
     }
     /* Cinematic gold lettering, derived from the D+C+E+H Python bakeoff.
        This is glyph paint, NOT a background on a semantic heading or keycap.
@@ -166,6 +181,44 @@ var McelSemanticChromePresentationLaw = (() => {
         #ffdf96 61%, #e0ac59 82%, #af752a 100%) !important;
       -webkit-text-stroke: .13px rgba(120,69,23,.43) !important;
     }
+    /* Content-owner-safe cinematic gold on existing, unpainted heading hosts.
+       No <span> is inserted, and no heading's original text node is moved.
+       Framed headings and independently painted controls are excluded.
+       Larger labels keep the polished reflection; compact text is sharp. */
+    [${rootAttr}="${profileId}"]
+      :is(h1,h2,h3,h4,h5,h6,[role="heading"]):not([style]):not([data-mcel-chrome-material]):not([data-mcel-color-role^="surface."]):not([data-mcel-material-boundary="independent"]) {
+      color: #ebbe67 !important;
+      background-image:
+        linear-gradient(108deg,
+          transparent 0% 13%, rgba(255,249,218,.19) 24%,
+          rgba(255,252,231,.44) 30%, rgba(255,245,202,.08) 36%,
+          transparent 46% 71%, rgba(255,247,213,.24) 79%,
+          transparent 86%),
+        linear-gradient(180deg,
+          #fff4c8 0%, #f9d880 13%, #d79c3e 27%,
+          #b77b2b 39%, #e5ac4e 48%, #fff0af 55%,
+          #f3c977 63%, #b87929 78%, #744019 100%) !important;
+      background-clip: text !important;
+      -webkit-background-clip: text !important;
+      -webkit-text-fill-color: transparent !important;
+      -webkit-text-stroke: .18px rgba(122,69,20,.60) !important;
+      text-shadow: none !important;
+    }
+    /* The largest title tier receives D's rounded specular surface pass.
+       Smaller headings and buttons stay sharply rasterized without blur. */
+    [${rootAttr}="${profileId}"]
+      h1:not([style]):not([data-mcel-chrome-material]):not([data-mcel-color-role^="surface."]) {
+      filter: url(#${goldFilterId}) !important;
+    }
+    @media (forced-colors: active) {
+      [${rootAttr}="${profileId}"]
+        :is(h1,h2,h3,h4,h5,h6,[role="heading"]):not([style]):not([data-mcel-chrome-material]):not([data-mcel-color-role^="surface."]):not([data-mcel-material-boundary="independent"]) {
+        background-image: none !important;
+        -webkit-text-fill-color: CanvasText !important;
+        -webkit-text-stroke: 0 transparent !important;
+        filter: none !important;
+      }
+    }
     /* Native interactive control labels are owned by application/runtime DOM
        updaters, including labelByState, which finds a direct button Text node.
        Chrome must NEVER move those nodes into decorative spans: subsequent
@@ -214,7 +267,7 @@ var McelSemanticChromePresentationLaw = (() => {
       [${rootAttr}="${profileId}"] :is(button,[role="button"],[role="tab"],[role="switch"],
         nav a,[data-mcel-navigation-chrome] a,[data-mcel-mode-tabs] a,
         [data-mcel-purpose="navigation"] a,
-        input:is([type="button"],[type="submit"],[type="reset"])) {
+        input:is([type="button"],[type="submit"],[type="reset"])):not(:disabled):not([aria-disabled="true"]) {
         -webkit-text-fill-color: ButtonText !important;
         -webkit-text-stroke: 0 transparent !important;
       }
@@ -222,8 +275,9 @@ var McelSemanticChromePresentationLaw = (() => {
     /* The primary workspace carries the /graphical LCD grid fused into the
        pre-existing phosphor pixel raster, under its usual glass reflections.
        No new DOM layer, pointer handler, or geometry pass is introduced. */
-    [${rootAttr}="${profileId}"],
-    [${rootAttr}="${profileId}"] > [data-mcel-natural-layout] {
+    [${rootAttr}="${profileId}"] {
+      /* Exactly one ambient glass owner per mounted TNG root. The texture
+         origin cannot restart merely because the layout has a wrapper. */
       background-color: var(--mcel-tng-glass) !important;
       background-image:
         radial-gradient(ellipse 70% 56% at 17% 88%,
@@ -240,6 +294,25 @@ var McelSemanticChromePresentationLaw = (() => {
           color-mix(in srgb, var(--mcel-tng-glass) 94%, black)),
         linear-gradient(var(--mcel-tng-glass), var(--mcel-tng-glass));
       background-size: 100% 100%, 100% 100%, 100% 100%, 1024px 768px, 21px 6px, 100% 100%, 100% 100%;
+    }
+    /* Semantic layout and workbench panes are structural, not separate CRT
+       glass. This is the successful live V3 continuity rule, generalized by
+       presentation topology instead of application identities. Retain real
+       controls, panels, forms and editor glass as separate material owners.
+       The Color Law's named important layer must be used to override its
+       paint without mutating application DOM or moving text nodes. */
+    @layer mcel-semantic-color-canonical {
+      [${rootAttr}="${profileId}"] > :is(
+        [data-mcel-natural-layout], main[data-mcel-region]):not([data-mcel-material-boundary="independent"]),
+      [${rootAttr}="${profileId}"] [data-mcel-document-workbench]:not([data-mcel-material-boundary="independent"]),
+      [${rootAttr}="${profileId}"] [data-mcel-document-workbench] > :is(
+        [data-mcel-document-explorer], [data-mcel-document-companion]):not([data-mcel-material-boundary="independent"]),
+      [${rootAttr}="${profileId}"] [data-mcel-document-workbench] [data-mcel-document-bottom]:not([data-mcel-material-boundary="independent"]),
+      [${rootAttr}="${profileId}"] [data-mcel-document-workbench]
+        [data-mcel-document-primary] > [data-mcel-region][data-mcel-purpose="workspace"]:not([data-mcel-material-boundary="independent"]) {
+        background-color: transparent !important;
+        background-image: none !important;
+      }
     }
     /* A tactile finish for EXISTING canonical controls. Color Law continues
        to own every button's foreground/background/border color and state.
@@ -315,11 +388,8 @@ var McelSemanticChromePresentationLaw = (() => {
         inset 0 -2px 2px color-mix(in srgb, black 30%, transparent),
         0 0 10px color-mix(in srgb, var(--mcel-tng-phosphor) 46%, transparent) !important;
     }
-    /* A positioning context only for buttons whose natural position is static.
-       The marker is reversible, unlike a persistent inline style mutation. */
-    [${rootAttr}="${profileId}"] [${wearPositionAttr}="relative"] {
-      position: relative !important;
-    }
+    /* Wear never creates a containing block on application-owned elements.
+       Static-position surfaces carry paint in their own background layers. */
     /* Micro-grain and scratch glints are real inert overlay elements. They
        overlay (never replace) the Color/Theme paint and the 145-degree
        highlights. The gold segments remain worn; purple insets stay clean. */
@@ -452,6 +522,7 @@ var McelSemanticChromePresentationLaw = (() => {
       /* Subtle reflected phosphor and golden glass age beneath the patina.
          This is light only: Color/Theme still own the panel's base color. */
       background-image:
+        ${wearTextures.dark},
         radial-gradient(ellipse 66% 85% at 17% 90%,
           color-mix(in srgb, var(--mcel-tng-phosphor) 11%, transparent), transparent 92%),
         radial-gradient(ellipse 47% 78% at 96% 8%,
@@ -460,7 +531,7 @@ var McelSemanticChromePresentationLaw = (() => {
           color-mix(in srgb, white 8%, transparent),
           transparent 38%, color-mix(in srgb, black 23%, transparent)),
         var(--mcel-tng-aperture-background) !important;
-      background-size: 100% 100%, 100% 100%, 100% 100%, 21px 6px !important;
+      background-size: 1024px 768px, 100% 100%, 100% 100%, 100% 100%, 21px 6px !important;
       box-shadow:
         inset 1px 1px 0 color-mix(in srgb, var(--mcel-tng-phosphor) 27%, transparent),
         inset -2px -2px 6px color-mix(in srgb, black 38%, transparent),
@@ -470,13 +541,14 @@ var McelSemanticChromePresentationLaw = (() => {
       /* Active CRT glass carries the strongest E grille, underneath the
          original glass lighting and above the Theme's semantic base. */
       background-image:
+        ${wearTextures.dark},
         radial-gradient(ellipse 85% 70% at 24% 8%,
           color-mix(in srgb, var(--mcel-tng-phosphor) 13%, transparent), transparent 85%),
         linear-gradient(var(--mcel-tng-light-angle),
           color-mix(in srgb, white 5%, transparent),
           transparent 40%, color-mix(in srgb, black 32%, transparent)),
         var(--mcel-tng-aperture-display) !important;
-      background-size: 100% 100%, 100% 100%, 21px 6px !important;
+      background-size: 1024px 768px, 100% 100%, 100% 100%, 21px 6px !important;
       box-shadow: inset 2px 2px 5px color-mix(in srgb, black 49%, transparent),
         inset -1px -1px 0 color-mix(in srgb, var(--mcel-tng-phosphor) 22%, transparent) !important;
     }
@@ -1102,7 +1174,26 @@ var McelSemanticChromePresentationLaw = (() => {
   /* Application-neutral: assignments come only from exact canonical runtime
      region and node bindings. Native controls below those bindings inherit
      material through their DOM role, not application name or containment zone. */
-  function resolveMaterialTargets({root, ir, bridge, profile=profileId}) {
+  /* A physical material boundary is not implied by a layout or docking
+     container. The same structural vocabulary is used for all applications;
+     neither app names nor operational node IDs participate in classification.
+     Independent framed children are still resolved normally. */
+  function isAmbientStructuralCarrier(element, root) {
+    if (element.getAttribute('data-mcel-material-boundary')==='independent') return false;
+    if (element.parentElement === root &&
+        (element.matches('main[data-mcel-region]') ||
+         element.hasAttribute('data-mcel-natural-layout'))) return true;
+    const dock=element.closest('[data-mcel-document-workbench]');
+    if (!dock || !root.contains(dock)) return false;
+    return element === dock ||
+      (element.parentElement === dock && element.matches(
+        '[data-mcel-document-explorer],[data-mcel-document-companion]')) ||
+      element.hasAttribute('data-mcel-document-bottom') ||
+      (element.matches('[data-mcel-region][data-mcel-purpose="workspace"]') &&
+       element.parentElement?.hasAttribute('data-mcel-document-primary'));
+  }
+
+  function resolveMaterialTargets({root, ir, bridge, profile=profileId, flatNavigationCache=null}) {
     const observed = bridge?.observeRuntimePresentationTargets?.({root, ir});
     if (observed?.status !== "source-bound") return {
       status: "refused", reason: observed?.reason || "Source-bound operational runtime required",
@@ -1115,15 +1206,38 @@ var McelSemanticChromePresentationLaw = (() => {
       root.contains(t.element));
     const decorative = element => Boolean(element.closest(
       `[${generatedAttr}="true"], [data-mcel-chrome-decorative="true"], [${wearSurfaceAttr}]`));
-    // File explorer tree names, disclosure arrows and directory-name links
-    // are row navigation, not raised command keycaps. The source runtime
-    // already gives these controls transparent faces and row-level selection.
-    // Do not stamp TNG bevel/wear material on them. This is deliberately
-    // restricted to TNG: Vulcan keeps its existing source-bound assignments.
-    const plainExplorerNavigation = element => profile === profileId && element.matches(
-      '[data-mcel-explorer-navigation] [role="treeitem"] :is(' +
-        'button[data-select-key], button[data-mcel-tree-toggle], button[data-mcel-inspect-folder]), ' +
-      '[data-mcel-directory-entry] button[data-mcel-directory-open]');
+    // Flat navigation is already described by Form/Color presentation: its
+    // control has a transparent, borderless, unraised face and lives in a
+    // navigation or collection context, not an operational action control.
+    // Capture that existing appearance before applying Chrome material. Do
+    // not request a marker from any application or modify operational code.
+    // The per-mount cache preserves the decision after Chrome stamps its
+    // own material marker and while hover/selection states change.
+    const flatCache = flatNavigationCache || new WeakMap();
+    const plainNavigationControl = element => {
+      if (profile !== profileId ||
+          !element.matches('button,[role="button"]')) return false;
+      if (flatCache.has(element)) return flatCache.get(element);
+      const command = element.closest('[data-mcel-node][data-node-kind="control"]');
+      const context = element.closest(':is([role="tree"],[role="treeitem"],'+
+        '[role="listbox"],[role="option"],[role="menu"],[role="menuitem"],'+
+        '[data-mcel-purpose="navigation"],'+
+        '[data-mcel-natural-scroller="navigation"],'+
+        '[data-mcel-node][data-node-kind="collection"])');
+      const stateful = element.matches(':is([role="tab"],[role="switch"],'+
+        '[aria-pressed],[aria-checked])');
+      const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+      const transparent = value => value === 'transparent' ||
+        value === 'rgba(0, 0, 0, 0)';
+      const noRim = style && ['Top','Right','Bottom','Left'].every(side =>
+        !parseFloat(style[`border${side}Width`]) ||
+        ['none','hidden'].includes(style[`border${side}Style`]));
+      const flat = Boolean(context && !command && !stateful && style &&
+        transparent(style.backgroundColor) && style.backgroundImage === 'none' &&
+        style.boxShadow === 'none' && noRim);
+      flatCache.set(element, flat);
+      return flat;
+    };
     const offer = (element, material) => {
       if (element !== root && root.contains(element) && !decorative(element))
         assignments.set(element, material);
@@ -1133,8 +1247,9 @@ var McelSemanticChromePresentationLaw = (() => {
     // as query-controls and commands) cannot silently lose Chrome treatment.
     for (const region of regions) {
       const purpose = region.element.getAttribute("data-mcel-purpose") || region.role;
-      const material = purpose === "workspace" ? null :
-        ["results", "output"].includes(purpose) ? "instrument-glass" : "housing";
+      const material = isAmbientStructuralCarrier(region.element,root) || purpose === "workspace"
+        ? null : ["results", "output"].includes(purpose)
+          ? "instrument-glass" : "housing";
       if (material) offer(region.element, material);
     }
     // The source-bound workspace is the *application* boundary, not an
@@ -1149,7 +1264,7 @@ var McelSemanticChromePresentationLaw = (() => {
       const controls = [scope, ...scope.querySelectorAll(controlSelector)];
       for (const element of controls) {
         if (!element.matches(controlSelector) || decorative(element) ||
-            plainExplorerNavigation(element)) continue;
+            plainNavigationControl(element)) continue;
         const tag = element.localName;
         const type = (element.getAttribute("type") || "text").toLowerCase();
         const role = element.getAttribute("role") || "";
@@ -1171,11 +1286,141 @@ var McelSemanticChromePresentationLaw = (() => {
     return {status: "ready", assignments, regions: regions.length, nodes: nodes.length};
   }
 
-  /* The material markers and wear are scoped to this Chrome invocation.
-     Mutation reconciliation also covers mode changes and generated controls.
-     It never writes a position/size/color/style into an application's source. */
+  /* A semantic surface color is not a physical CRT material boundary.
+     Classify only content inside an existing painted region; a border,
+     rounded corner, elevation, outline, filter, or pseudo-frame protects
+     intentionally independent surfaces. Unknown cases keep their paint.
+     No application name or specific runtime ID is involved. */
+  function inheritsEnclosingCRT(element, root, alreadyInherited=false) {
+    if (!element.matches(':is([data-mcel-node],[data-mcel-region])[data-mcel-color-role="surface.panel"]') ||
+        // Collection containers and Form-shaped paint are intentional
+        // sub-surfaces, even when the first layout frame has zero radius.
+        // Hiding their paint would cause Form's next solve to lose corners.
+        element.hasAttribute('data-mcel-form-presentation-corner') ||
+        element.hasAttribute('data-mcel-form-presentation-nested-paint') ||
+        (element.hasAttribute(materialAttr) &&
+          element.getAttribute(materialOwnerAttr)!==profileId) ||
+        element.matches(controlSelector) ||
+        element.closest(`[${wearSurfaceAttr}], [data-mcel-chrome-decorative="true"]`))
+      return false;
+    const explicit=element.getAttribute('data-mcel-material-boundary');
+    if (explicit==='independent') return false;
+    // Only composite content hosts can be inferred to share CRT paint.
+    // A one-line row, state badge or record may use color as its only
+    // distinction even without an outline. Leave such leaf paint alone.
+    // A semantic collection may have exactly one transparent structural
+    // [data-collection] host containing many records. That wrapper is not a
+    // painted material boundary. Evaluate the collection's own computed
+    // border, elevation, corner and selection state just like any other
+    // composite content host; never classify it by app or node identity.
+    const isCollection=element.matches('[data-node-kind="collection"]');
+    const collectionContentHost = isCollection &&
+      element.childElementCount === 1 &&
+      element.firstElementChild?.matches('[data-collection]');
+    // Collections with companion controls, labels or selection feedback
+    // are composite semantic panels. Preserve their material even if a Form
+    // pass has not yet established the final border/corner geometry.
+    if (isCollection && !collectionContentHost && explicit!=='inherit') return false;
+    if (explicit!=='inherit' && ((!collectionContentHost && element.childElementCount < 2) ||
+        [...element.childNodes].some(node=>node.nodeType===3 && /\S/.test(node.nodeValue))))
+      return false;
+    // Semantic state is a paint boundary even when no physical rim exists.
+    // This includes selected navigation rows, active records, and alerts.
+    if (explicit!=='inherit' && (
+      element.matches(':is([aria-selected="true"],[aria-pressed="true"],'+
+        '[aria-current],[aria-checked="true"],[data-selected="true"],'+
+        '[data-active="true"],[data-highlighted="true"],'+
+        '[data-state="selected"],[data-state="active"],'+
+        '[data-mcel-state="selected"],[data-mcel-state="active"],'+
+        '.selected,.active,.highlighted,.is-selected,.is-active)') ||
+      // An authored background is not an incidental Color Law panel fill.
+      ['background','background-color','background-image'].some(name=>
+        element.style.getPropertyValue(name))
+    )) return false;
+    const win=root.ownerDocument.defaultView;
+    if (!win) return false;
+    const style=win.getComputedStyle(element);
+    if (style.display==='none' || style.visibility==='hidden') return false;
+    const painted=style.backgroundImage!=='none' || ![
+      'transparent','rgba(0, 0, 0, 0)'].includes(style.backgroundColor);
+    // A previously inherited element now computes as transparent; its
+    // prior classification remains valid unless the framing changes.
+    if (!painted && !alreadyInherited && explicit!=='inherit') return false;
+    if (explicit==='inherit') return true;
+    // Chrome's own housing shadow is decoration, not evidence of an
+    // application/Form-owned physical boundary. App-owned shadows still
+    // protect their surface; explicit inline paint is protected above.
+    const chromeHousing=element.getAttribute(materialOwnerAttr)===profileId;
+    if ((!chromeHousing && style.boxShadow!=='none') ||
+        style.filter!=='none' || style.backdropFilter!=='none' ||
+        (style.outlineStyle!=='none' && parseFloat(style.outlineWidth)>0))
+      return false;
+    if (['TopLeft','TopRight','BottomLeft','BottomRight'].some(corner=>
+      parseFloat(style[`border${corner}Radius`])>0)) return false;
+    const framed=css=>['Top','Right','Bottom','Left'].some(side=>
+      parseFloat(css[`border${side}Width`])>0 &&
+      !['none','hidden'].includes(css[`border${side}Style`]));
+    if (framed(style)) return false;
+    for (const pseudo of ['::before','::after']) {
+      const ps=win.getComputedStyle(element,pseudo);
+      if (!['none','normal'].includes(ps.content) &&
+          (framed(ps) || ps.boxShadow!=='none' ||
+           ps.backgroundImage!=='none')) return false;
+    }
+    // Locate the nearest *actually painted* ancestor. Nested semantic
+    // regions may already be transparent; in that case the surrounding
+    // structural pane owns the visible surface. Do not assume that the
+    // immediate semantic region is always the physical glass boundary.
+    let nearestPainted=null;
+    for (let parent=element.parentElement; parent && root.contains(parent);
+         parent=parent.parentElement) {
+      const parentStyle=win.getComputedStyle(parent);
+      if (parentStyle.backgroundImage!=='none' || ![
+          'transparent','rgba(0, 0, 0, 0)'].includes(parentStyle.backgroundColor)) {
+        nearestPainted=parent;
+        break;
+      }
+    }
+    if (!nearestPainted) return false;
+    if (element.hasAttribute('data-mcel-region')) {
+      // Root-level semantic regions remain conservative: they can be real
+      // panels even without a rim. An unframed region only shares paint if
+      // an intervening, non-semantic structural pane already owns a surface.
+      // This is a topology/paint rule, never an application or node name.
+      if (nearestPainted.hasAttribute('data-mcel-region') ||
+          nearestPainted===root) {
+        // When the *only* painted ancestor is the single ambient CRT root,
+        // an intervening semantic layout/workbench carrier is still a valid
+        // material boundary context. The previous rule mistakenly treated
+        // that correctly transparent carrier as absent, causing navigation
+        // content to regain a bronze background after ambient unification.
+        let throughCarrier=false;
+        for (let parent=element.parentElement;
+             parent && parent!==nearestPainted && root.contains(parent);
+             parent=parent.parentElement) {
+          if (isAmbientStructuralCarrier(parent,root)) {throughCarrier=true;break;}
+        }
+        if (!throughCarrier) return false;
+      }
+    }
+    return true;
+  }
+
+  /* Material continuity overrides are compiled from the observed DOM into
+     a scoped stylesheet, rather than decorating app-owned nodes with extra
+     attributes. That preserves Form Law's geometry and other app observers. */
+  /* Material markers and non-position-changing wear are scoped to Chrome.
+     Reconciliation follows control, geometry, and Form boundary changes. */
   function mountMaterials({root, ir, bridge, rails}) {
     const originalMarkers = new Map();
+    // Constructed stylesheet: no app DOM attributes, no new head child nodes,
+    // and no extra mutations for Form Law's document observer to process.
+    const continuitySheet = new root.ownerDocument.defaultView.CSSStyleSheet();
+    root.ownerDocument.adoptedStyleSheets = [
+      ...root.ownerDocument.adoptedStyleSheets, continuitySheet];
+    let continuityText = '';
+    let inheritedSurfaces = new Set();
+    const flatNavigationCache = new WeakMap();
     const overlays = new Set();
     let lastReport = {status:"ready", assignments:new Map(), regions:0, nodes:0};
     function attachWear(element, kind, index) {
@@ -1183,10 +1428,10 @@ var McelSemanticChromePresentationLaw = (() => {
       // safely host decorative children that would interfere with UA chrome.
       if (["input", "textarea", "select", "option"].includes(element.localName)) return;
       if (element.querySelector(`:scope > [${wearSurfaceAttr}="${kind}"]`)) return;
-      if ((kind === "button" || kind === "panel" || kind === "display") && root.ownerDocument.defaultView
-          ?.getComputedStyle(element).position === "static") {
-        element.setAttribute(wearPositionAttr, "relative");
-      }
+      // Absolute overlay children require an already established positioning
+      // context. Never manufacture one: that changes application layout.
+      // The static-surface patina is composited into its background instead.
+      if (root.ownerDocument.defaultView.getComputedStyle(element).position === "static") return;
       const surface = root.ownerDocument.createElement("span");
       surface.setAttribute(wearSurfaceAttr, kind);
       surface.setAttribute("data-mcel-chrome-decorative", "true");
@@ -1204,9 +1449,57 @@ var McelSemanticChromePresentationLaw = (() => {
     }
     function reconcile(){return observeMaterialReconcile(root,'semantic-chrome-materials',reconcileCore);}
     function reconcileCore() {
-      const report = resolveMaterialTargets({root, ir, bridge});
+      const report = resolveMaterialTargets({root, ir, bridge, flatNavigationCache});
       if (report.status !== "ready") return;
       lastReport = report;
+      // A unique, pre-existing root id and a unique runtime node id scope
+      // each rule. Ambiguous IDs are deliberately left unchanged. No
+      // application-specific selectors are included in the source law.
+      const nextInherited = new Set();
+      const idCounts = new Map();
+      for (const node of root.querySelectorAll('[data-mcel-node],[data-mcel-region]')) {
+        const key=node.hasAttribute('data-mcel-node')
+          ? 'data-mcel-node' : 'data-mcel-region';
+        const value=node.getAttribute(key);
+        if (value) {
+          const identity=key+':'+value;
+          idCounts.set(identity,(idCounts.get(identity)||0)+1);
+        }
+      }
+      if (root.id && root.ownerDocument.querySelectorAll(
+          `#${root.ownerDocument.defaultView.CSS.escape(root.id)}`).length===1) {
+        for (const element of root.querySelectorAll(
+            ':is([data-mcel-node],[data-mcel-region])[data-mcel-color-role="surface.panel"]')) {
+          const identifier=element.hasAttribute('data-mcel-node')
+            ? 'data-mcel-node' : 'data-mcel-region';
+          const value=element.getAttribute(identifier);
+          if (!value || idCounts.get(identifier+':'+value)!==1) continue;
+          if (inheritsEnclosingCRT(element,root,inheritedSurfaces.has(element)))
+            nextInherited.add(element);
+        }
+      }
+      // Inheriting a parent's CRT means there must be no second Chrome
+      // housing or independently positioned wear on the same content box.
+      for (const element of nextInherited) report.assignments.delete(element);
+      const win=root.ownerDocument.defaultView;
+      const scopedRoot=root.id ? `#${win.CSS.escape(root.id)}` : '';
+      const selector=[...nextInherited].map(element => {
+        const value=name=>`[${name}="${win.CSS.escape(element.getAttribute(name))}"]`;
+        const identity=element.hasAttribute('data-mcel-node')
+          ? 'data-mcel-node' : 'data-mcel-region';
+        return `${scopedRoot}[${rootAttr}="${profileId}"] `+
+          value(identity)+value('data-mcel-color-role')+
+          (element.hasAttribute('data-node-kind') ? value('data-node-kind') : '');
+      });
+      const text=selector.length ?
+        `@layer mcel-semantic-color-canonical { ${selector.join(',\n')} { `+
+        `background-color:transparent !important; `+
+        `background-image:none !important; box-shadow:none !important; } }` : '';
+      if (continuityText!==text) {
+        continuitySheet.replaceSync(text);
+        continuityText=text;
+      }
+      inheritedSurfaces=nextInherited;
       for (const [element, original] of originalMarkers) {
         if (!report.assignments.has(element)) {
           if (root.contains(element)) {
@@ -1215,7 +1508,6 @@ var McelSemanticChromePresentationLaw = (() => {
             if (original.owner === null) element.removeAttribute(materialOwnerAttr);
             else element.setAttribute(materialOwnerAttr, original.owner);
             element.querySelectorAll(`:scope > [${wearSurfaceAttr}]`).forEach(node => node.remove());
-            element.removeAttribute(wearPositionAttr);
           }
           originalMarkers.delete(element);
         }
@@ -1251,14 +1543,27 @@ var McelSemanticChromePresentationLaw = (() => {
     }
     rails.forEach((rail, index) => attachWear(rail, "rail", index));
     reconcile();
-    const observer = new root.ownerDocument.defaultView.MutationObserver(reconcile);
-    observer.observe(root, {childList:true, subtree:true});
+    const observer = new root.ownerDocument.defaultView.MutationObserver(records => {
+      if (records.some(record=>record.type==='childList' ||
+          !['style','class'].includes(record.attributeName) ||
+          record.target.hasAttribute('data-mcel-node') ||
+          record.target.hasAttribute('data-mcel-region'))) reconcile();
+    });
+    observer.observe(root, {childList:true, subtree:true, attributes:true,
+      attributeFilter:['data-mcel-color-role','data-mcel-material-boundary',
+        'data-mcel-form-presentation-corner','data-mcel-form-presentation-nested-paint',
+        'data-mcel-chrome-material','aria-selected','aria-pressed','aria-current',
+        'aria-checked','data-selected','data-active','data-highlighted',
+        'data-state','data-mcel-state','style','class']});
     return {
       report: () => ({regions:lastReport.regions, nodes:lastReport.nodes,
         materials: Object.fromEntries([...lastReport.assignments.values()].reduce((acc, value) =>
           acc.set(value, (acc.get(value) || 0) + 1), new Map()))}),
       clear: () => {
         observer.disconnect();
+        root.ownerDocument.adoptedStyleSheets =
+          root.ownerDocument.adoptedStyleSheets.filter(sheet=>sheet!==continuitySheet);
+        inheritedSurfaces.clear();
         // Also remove cloned overlays created by an application rerender.
         root.querySelectorAll(`[${wearSurfaceAttr}]`).forEach(overlay => overlay.remove());
         overlays.forEach(overlay => overlay.remove());
@@ -1267,98 +1572,31 @@ var McelSemanticChromePresentationLaw = (() => {
           else element.setAttribute(materialAttr, original.material);
           if (original.owner === null) element.removeAttribute(materialOwnerAttr);
           else element.setAttribute(materialOwnerAttr, original.owner);
-          element.removeAttribute(wearPositionAttr);
         }
       }
     };
   }
-  /* Only the real visible text nodes receive cinematic lettering. Wrapping
-     them avoids CSS background-clip:text on <button>, <label>, or <h2>:
-     those elements carry semantic surfaces that must never be replaced.
-     Reconciliation handles dynamic app-rendered labels, and cleanup restores
-     the original text-node identities (important for UI binding owners). */
+  /* A shared SVG filter definition adds rounded normal-based specular light
+     to large, already transparent heading paint. No text nodes or wrappers
+     are moved. The filter definition is Chrome-owned and is removed by clear
+     only when the last TNG root unmounts. */
   function mountGoldTypography(root) {
-    const wrappers = new Set();
-    const doc = root.ownerDocument;
+    const doc=root.ownerDocument;
     if (!doc.getElementById(goldFilterId)) {
-      const svg = doc.createElementNS("http://www.w3.org/2000/svg","svg");
-      svg.setAttribute("aria-hidden","true");
-      svg.setAttribute("data-mcel-tng-bevel-definitions","true");
-      svg.style.cssText="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none";
-      // D's rounded bevel is sampled from the smoothed glyph alpha; E's
-      // specular light is clipped back to the same silhouette. H's reflected
-      // environment remains in the metallic face gradient; C's bronze depth
-      // never becomes a shadow under the small lettering.
-      svg.innerHTML = `<defs><filter id="${goldFilterId}" x="-6%" y="-12%" width="112%" height="125%" color-interpolation-filters="sRGB">` +
-        `<feGaussianBlur in="SourceAlpha" stdDeviation="0.6" result="rounded"/>` +
-        `<feSpecularLighting in="rounded" surfaceScale="2.0" specularConstant="0.65" specularExponent="24" lighting-color="#ffefc1" result="glint">` +
-        `<feDistantLight azimuth="315" elevation="56"/></feSpecularLighting>` +
-        `<feComposite in="glint" in2="SourceAlpha" operator="in" result="spec"/>` +
-        `<feComposite in="spec" in2="SourceGraphic" operator="arithmetic" k1="0" k2="0.38" k3="1" k4="0"/>` +
+      const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('aria-hidden','true');
+      svg.setAttribute('data-mcel-tng-bevel-definitions','true');
+      svg.style.cssText='position:absolute;width:0;height:0;overflow:hidden;pointer-events:none';
+      svg.innerHTML=`<defs><filter id="${goldFilterId}" x="-6%" y="-12%" width="112%" height="125%" color-interpolation-filters="sRGB">`+
+        `<feGaussianBlur in="SourceAlpha" stdDeviation="0.6" result="rounded"/>`+
+        `<feSpecularLighting in="rounded" surfaceScale="2.0" specularConstant="0.65" specularExponent="24" lighting-color="#ffefc1" result="glint">`+
+        `<feDistantLight azimuth="315" elevation="56"/></feSpecularLighting>`+
+        `<feComposite in="glint" in2="SourceAlpha" operator="in" result="spec"/>`+
+        `<feComposite in="spec" in2="SourceGraphic" operator="arithmetic" k1="0" k2="0.38" k3="1" k4="0"/>`+
         `</filter></defs>`;
       doc.body.appendChild(svg);
     }
-    const selector = [
-      "h1,h2,h3,h4,h5,h6,[role=heading]",
-      ":is(h1,h2,h3,h4,h5,h6,[role=heading]) > :is(span,strong,em,small)",
-      "button,[role=button],[role=tab],[role=switch]",
-      "label,legend",
-      "nav a,[data-mcel-navigation-chrome] a,[data-mcel-mode-tabs] a",
-      "[data-mcel-purpose=navigation] a",
-      "nav :is(span,strong,small,p,li)",
-      "label :is(span,strong,small)",
-      "[data-mcel-navigation-chrome] :is(span,strong,small,p,li)",
-      "[data-mcel-mode-tabs] :is(span,strong,small)",
-      "[data-mcel-purpose=navigation] :is(span,strong,small,p,li)"
-    ].join(",");
-    const excluded = `input,textarea,select,option,pre,code,kbd,output,` +
-      `[contenteditable], [contenteditable=true], [role=textbox], [role=combobox],` +
-      `[${generatedAttr}], [data-mcel-chrome-decorative], [aria-hidden=true],` +
-      `[data-mcel-document-surface]`;
-    function reconcileCore() {
-      for (const host of root.querySelectorAll(selector)) {
-        if (host.closest(excluded) || host.matches("summary,:disabled,[aria-disabled=true]")) continue;
-        // App-owned interactive controls must retain their direct Text nodes.
-        // This guard also covers nested label spans inside nav/button widgets.
-        if (host.closest('button,[role="button"],[role="tab"],[role="switch"]')) continue;
-        if (host.closest(`[${goldTextAttr}]`)) continue;
-        // Most nodes are already wrapped. Avoid repeated style resolution on
-        // every unrelated live-activity or incremental-render insertion.
-        const textNodes = [...host.childNodes].filter(node =>
-          node.nodeType === 3 && /\S/.test(node.nodeValue || ""));
-        if (!textNodes.length) continue;
-        const px = parseFloat(root.ownerDocument.defaultView.getComputedStyle(host).fontSize);
-        const scale = px >= 32 ? "title" : px >= 23 ? "medium" : "compact";
-        for (const node of textNodes) {
-          const span = root.ownerDocument.createElement("span");
-          span.setAttribute(goldTextAttr, scale);
-          // Moving the existing text node, rather than copying its value,
-          // preserves references used by incremental renderers.
-          host.insertBefore(span,node);
-          span.appendChild(node);
-          wrappers.add(span);
-        }
-      }
-      for (const span of wrappers) if (!root.contains(span)) wrappers.delete(span);
-    }
-    function reconcile() {
-      return observeMaterialReconcile(root,"tng-gold-glyphs",reconcileCore);
-    }
-    reconcile();
-    const observer = new root.ownerDocument.defaultView.MutationObserver(reconcile);
-    observer.observe(root,{childList:true,subtree:true});
-    return {
-      report:() => ({goldGlyphRuns:wrappers.size}),
-      clear:() => {
-        observer.disconnect();
-        for (const span of wrappers) {
-          if (!span.parentNode || span.getAttribute(goldTextAttr) === null) continue;
-          // Native text is always left in place, with original identity.
-          span.replaceWith(...span.childNodes);
-        }
-        wrappers.clear();
-      }
-    };
+    return {report:()=>({goldGlyphRuns:0}),clear:()=>{}};
   }
 
   function clear(root) {

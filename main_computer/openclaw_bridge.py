@@ -81,6 +81,10 @@ class OpenClawBridgeHandler(BaseHTTPRequestHandler):
     def _authorize(self) -> bool:
         token = self.server.token
         if token is None:
+            from main_computer.hardened_ingress import enabled
+            if enabled():
+                self._send_json({'error': 'BRIDGE_TOKEN_REQUIRED'}, status=HTTPStatus.UNAUTHORIZED)
+                return False
             return True
         header = self.headers.get("Authorization", "").strip()
         if header == f"Bearer {token}":

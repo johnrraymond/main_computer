@@ -60,7 +60,7 @@ def test_worker_semantic_page_uses_live_mcel_runtime_without_legacy_worker_owner
     assert 'route_path == "/api/applications/worker/mcel-observation"' in routes
     registry = json.loads((ROOT / 'tools/fixtures/mcel_semantic_applications_shell/registry.json').read_text())
     worker, = (app for app in registry["apps"] if app["id"] == "worker")
-    assert worker["mount"] == "legacy"  # No silent canonical promotion before parity.
+    assert worker["mount"] == "semantic"  # Explicit, rollback-capable canonical UI promotion.
     lab = (ROOT / 'main_computer/web/applications/scripts/mcel-lab.js').read_text()
     assert 'route: "/applications/mcel-semantic-worker"' in lab
 

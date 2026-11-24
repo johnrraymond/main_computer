@@ -163,8 +163,8 @@ def render_semantic_page(name: str, repo: Path = ROOT, *, promoted: bool = False
  const workspacePlan=document.getElementById("mcel-workbench-plan") ? JSON.parse(document.getElementById("mcel-workbench-plan").textContent) : undefined;
  const app=McelSemanticOperationalRuntime.mount(document.getElementById("mcel-workbench"),ir,{{capabilities:port,presentation:"expert",workspacePlan:workspacePlan||undefined,
     navigationContextLabel:"{context_label}",navigationRoutes:{navigation_routes_payload},
-    signalSchedulerIntegration:{str(name == "task-manager").lower()},
-    signalSchedulerStartEnabled:{str(name == "task-manager" and promoted and start_certified("semantic-task-manager")).lower()}}});
+    signalSchedulerIntegration:{str(name == "task-manager" or (name == "code-editor" and promoted)).lower()},
+    signalSchedulerStartEnabled:{str(promoted and ((name == "task-manager" and start_certified("semantic-task-manager")) or (name == "code-editor" and start_certified("code-editor")))).lower()}}});
  window.__mcelWorkbench=Object.freeze({{app,appId:ir.application.appId}});
  const initialView={initial_view_payload};
  if(initialView && initialView!=="server-processes") app.execute("intent:switch-view",{{choice:initialView}}).catch(e=>{{status.dataset.error="true";status.textContent="Initial view refused: "+String(e?.message||e);}});

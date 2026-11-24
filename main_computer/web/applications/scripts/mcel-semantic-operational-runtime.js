@@ -959,6 +959,7 @@
     const integratedAllowed=!isolatedSignalTest && options.signalSchedulerIntegration===true &&
       (ir.application.appId==="slh"||ir.application.appId==="semantic-task-manager"||
        ir.application.appId==="semantic-file-manager"||
+       ir.application.appId==="code-editor"||
        (ir.application.appId==="semantic-calculator-expanded" &&
         global.__MCEL_CALCULATOR_SIGNAL_ACCEPTANCE__===true));
     let integratedActive=integratedAllowed&&options.signalSchedulerStartEnabled===true;

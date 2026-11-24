@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
+from main_computer.mcel_editor_save_stall_probe import stage as save_stall_stage
+
 
 TRANSACTION_FORMAT = "mcel-project-edit-transaction-v1"
 RECEIPT_FORMAT = "mcel-project-edit-apply-receipt-v1"
@@ -418,6 +420,38 @@ def _project_manifest(project_root: Path) -> tuple[list[dict[str, Any]], str]:
     return files, _canonical_json_sha256(files)
 
 
+# Ordinary one-file Saves do not request repository-wide freshness.  Retain
+# a cryptographic manifest of the exact file being replaced, while leaving
+# project-wide manifests to the generic multi-file/reviewed transaction path.
+SINGLE_MODIFY_SCOPE = "single-modify-target"
+FULL_PROJECT_SCOPE = "full-project"
+
+
+def _single_modify_manifest(project_root: Path, change: NormalizedChange) -> tuple[list[dict[str, Any]], str]:
+    if change.operation != "modify":
+        raise ProjectEditTransactionError("request_validation", "Target-scoped manifest requires a modify operation")
+    relative = change.project_relative_path
+    if _skip_stage_path(relative):
+        raise ProjectEditTransactionError("request_validation", "Target-scoped file is excluded from project inventory")
+    target = _ensure_no_symlink_path(project_root, relative, allow_missing_leaf=False)
+    if not target.is_file():
+        raise ProjectEditTransactionError("source_verification", "Target-scoped file is no longer present")
+    payload = [{"path": relative, "size": target.stat().st_size, "sha256": sha256_file(target)}]
+    return payload, _canonical_json_sha256(payload)
+
+
+def _copy_single_modify_to_stage(project_root: Path, staged_project: Path, change: NormalizedChange) -> None:
+    """Stage only the precisely authorized source. No repository traversal."""
+    source = _ensure_no_symlink_path(project_root, change.project_relative_path, allow_missing_leaf=False)
+    if not source.is_file():
+        raise ProjectEditTransactionError("project_staging", "Target-scoped file disappeared before staging")
+    destination = _safe_path(staged_project, change.project_relative_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    if sha256_file(destination) != change.expected_before_sha256:
+        raise ProjectEditTransactionError("source_verification", "Target-scoped source changed during staging")
+
+
 def inspect_project_manifest(
     *,
     repo_root: Path,
@@ -704,6 +738,7 @@ def prepare_project_edit_transaction(
     output_dir: Path,
     validations: Sequence[Mapping[str, Any]] | None = None,
     artifact_name: str = "mcel-project-edit-overlay.zip",
+    project_manifest_scope: str = FULL_PROJECT_SCOPE,
 ) -> dict[str, Any]:
     """Stage, validate, package, and dry-run a reviewed replacement-file set.
 
@@ -725,18 +760,35 @@ def prepare_project_edit_transaction(
             "request_validation",
             "output_dir must be outside the edited project root",
         )
-    normalized_changes = _normalize_changes(
-        repo_root=repo_root,
-        project_root_relative=project_root_relative,
-        project_root=project_root_path,
-        changes=changes,
-    )
+    with save_stall_stage('prepare.normalize_changes'):
+        normalized_changes = _normalize_changes(
+            repo_root=repo_root,
+            project_root_relative=project_root_relative,
+            project_root=project_root_path,
+            changes=changes,
+        )
     normalized_validations = _normalize_validations(validations)
     artifact_name = _validate_artifact_name(artifact_name)
+    if project_manifest_scope not in {FULL_PROJECT_SCOPE, SINGLE_MODIFY_SCOPE}:
+        raise ProjectEditTransactionError("request_validation", "Unsupported project manifest scope")
+    single_modify = project_manifest_scope == SINGLE_MODIFY_SCOPE
+    if single_modify and (len(normalized_changes) != 1 or
+                          normalized_changes[0].operation != "modify" or normalized_validations):
+        raise ProjectEditTransactionError(
+            "request_validation",
+            "Target-scoped Save requires exactly one modify operation and no validations",
+        )
 
-    source_files, source_manifest_sha256 = _project_manifest(project_root_path)
+    with save_stall_stage('prepare.manifest_hash'):
+        if single_modify:
+            source_files, source_manifest_sha256 = _single_modify_manifest(
+                project_root_path, normalized_changes[0]
+            )
+        else:
+            source_files, source_manifest_sha256 = _project_manifest(project_root_path)
     plan_core = {
         "project_root": project_root_relative,
+        "source_project_manifest_scope": project_manifest_scope,
         "source_project_manifest_sha256": source_manifest_sha256,
         "changes": [
             {
@@ -765,30 +817,40 @@ def prepare_project_edit_transaction(
 
     with tempfile.TemporaryDirectory(prefix="mcel-project-edit-stage-") as temp:
         staged_project = Path(temp) / "project"
-        _copy_project(project_root_path, staged_project)
-        _apply_changes_to_stage(staged_project, normalized_changes)
-        validation_reports = _run_validations(
-            staged_project=staged_project,
-            validations=normalized_validations,
-        )
+        with save_stall_stage('prepare.stage_copy'):
+            if single_modify:
+                staged_project.mkdir(parents=True, exist_ok=True)
+                _copy_single_modify_to_stage(project_root_path, staged_project, normalized_changes[0])
+            else:
+                _copy_project(project_root_path, staged_project)
+        with save_stall_stage('prepare.stage_apply'):
+            _apply_changes_to_stage(staged_project, normalized_changes)
+        with save_stall_stage('prepare.validations'):
+            validation_reports = _run_validations(
+                staged_project=staged_project,
+                validations=normalized_validations,
+            )
 
     try:
-        replacement_files = _package_overlay(
-            repo_root=repo_root,
-            changes=normalized_changes,
-            artifact_path=artifact_path,
-        )
+        with save_stall_stage('prepare.package_overlay'):
+            replacement_files = _package_overlay(
+                repo_root=repo_root,
+                changes=normalized_changes,
+                artifact_path=artifact_path,
+            )
         expected_members = [item["archive_member"] for item in replacement_files]
-        members = _inspect_artifact(
-            artifact_path=artifact_path,
-            archive_root=repo_root.name,
-            expected_members=expected_members,
-        )
-        dry_run = _run_new_patch_dry_run(
-            repo_root=repo_root,
-            changes=normalized_changes,
-            artifact_path=artifact_path,
-        )
+        with save_stall_stage('prepare.artifact_inspect'):
+            members = _inspect_artifact(
+                artifact_path=artifact_path,
+                archive_root=repo_root.name,
+                expected_members=expected_members,
+            )
+        with save_stall_stage('prepare.new_patch_dry_run'):
+            dry_run = _run_new_patch_dry_run(
+                repo_root=repo_root,
+                changes=normalized_changes,
+                artifact_path=artifact_path,
+            )
     except Exception:
         artifact_path.unlink(missing_ok=True)
         raise
@@ -800,6 +862,7 @@ def prepare_project_edit_transaction(
         "transaction_id": transaction_id,
         "repo_root_name": repo_root.name,
         "project_root": project_root_relative,
+        "source_project_manifest_scope": project_manifest_scope,
         "source_project_manifest_sha256": source_manifest_sha256,
         "source_project_files": source_files,
         "changes": plan_core["changes"],
@@ -821,7 +884,8 @@ def prepare_project_edit_transaction(
             "crash_atomicity": False,
         },
     }
-    _write_json_atomic(report_path, report)
+    with save_stall_stage('prepare.report_write'):
+        _write_json_atomic(report_path, report)
     report["report_path"] = str(report_path)
     return report
 
@@ -1021,12 +1085,42 @@ def apply_project_edit_transaction(
 
     touched_paths = {item["project_relative_path"] for item in parsed}
     source_files = report.get("source_project_files")
-    current_files, current_manifest_sha = _current_project_manifest(project_root)
-    drift = _compare_manifest(
-        source_files if isinstance(source_files, list) else [],
-        current_files,
-        touched_paths,
-    )
+    manifest_scope = report.get("source_project_manifest_scope", FULL_PROJECT_SCOPE)
+    if manifest_scope not in {FULL_PROJECT_SCOPE, SINGLE_MODIFY_SCOPE}:
+        raise ProjectEditTransactionError("apply_preflight", "Unknown project manifest scope")
+    single_modify = manifest_scope == SINGLE_MODIFY_SCOPE
+    if single_modify:
+        if (require_project_manifest or len(parsed) != 1 or
+                parsed[0]["operation"] != "modify" or report.get("validations")):
+            raise ProjectEditTransactionError(
+                "apply_preflight", "Target-scoped Save cannot enforce a full manifest or apply multiple/validated changes"
+            )
+        # Reject a report that claims an unrelated or incomplete source inventory.
+        if (not isinstance(source_files, list) or len(source_files) != 1 or
+                source_files[0].get("path") != parsed[0]["project_relative_path"] or
+                source_files[0].get("sha256") != parsed[0]["expected_before_sha256"] or
+                _canonical_json_sha256(source_files) != report.get("source_project_manifest_sha256")):
+            raise ProjectEditTransactionError("apply_preflight", "Target-scoped source manifest mismatch")
+    with save_stall_stage('apply.manifest_hash'):
+        if single_modify:
+            item = parsed[0]
+            # No project-wide enumeration is needed when unrelated files are
+            # explicitly outside the Save's requested freshness authority.
+            source = _ensure_no_symlink_path(project_root, item["project_relative_path"], allow_missing_leaf=False)
+            if not source.is_file():
+                raise ProjectEditTransactionError("apply_preflight", "Target-scoped source disappeared")
+            current_files = [{"path": item["project_relative_path"],
+                              "size": source.stat().st_size,
+                              "sha256": sha256_file(source)}]
+            current_manifest_sha = _canonical_json_sha256(current_files)
+        else:
+            current_files, current_manifest_sha = _current_project_manifest(project_root)
+    with save_stall_stage('apply.compare_manifest'):
+        drift = _compare_manifest(
+            source_files if isinstance(source_files, list) else [],
+            current_files,
+            touched_paths,
+        )
     if require_project_manifest and drift:
         raise ProjectEditTransactionError(
             "apply_preflight",
@@ -1071,7 +1165,8 @@ def apply_project_edit_transaction(
     try:
         for item in parsed:
             relative = item["project_relative_path"]
-            _atomic_write_bytes(targets[relative], replacement_payloads[relative])
+            with save_stall_stage('apply.atomic_replacement'):
+                _atomic_write_bytes(targets[relative], replacement_payloads[relative])
             if sha256_file(targets[relative]) != item["replacement_sha256"]:
                 raise OSError(f"post-write hash mismatch for {relative}")
             written.append(relative)
@@ -1114,7 +1209,9 @@ def apply_project_edit_transaction(
         "project_root": project_root_relative,
         "artifact_sha256": actual_artifact_sha,
         "source_project_manifest_sha256": report.get("source_project_manifest_sha256"),
+        "source_project_manifest_scope": manifest_scope,
         "pre_apply_project_manifest_sha256": current_manifest_sha,
+        "unrelated_project_files_inspected": not single_modify,
         "unrelated_project_drift": drift,
         "strict_project_manifest_required": require_project_manifest,
         "files": files,
@@ -1127,6 +1224,7 @@ def apply_project_edit_transaction(
         receipt_path = base / "project_edit_apply_receipt.json"
     receipt_path = Path(receipt_path).resolve()
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(receipt_path, receipt)
+    with save_stall_stage('apply.receipt_write'):
+        _write_json_atomic(receipt_path, receipt)
     receipt["receipt_path"] = str(receipt_path)
     return receipt

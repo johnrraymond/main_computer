@@ -56,14 +56,8 @@ TRANSPORT_CONTROL=r'''<script>
 
 def _html(repo:Path,enabled:bool,*,kinds=None)->str:
     html=parity.candidate_html(repo)
-    assert html.count('signalSchedulerIntegration:false')==1,'EDITOR_HOST_DEFAULT_CHANGED'
-    assert html.count('signalSchedulerStartEnabled:false')==1,'EDITOR_START_DEFAULT_CHANGED'
-    matches=list(GATE_RE.finditer(html))
-    if len(matches)!=1:raise RuntimeError('SHARED_RUNTIME_GATE_NOT_RECOGNIZED')
-    match=matches[0];code=match.group()
-    # No disk change, and no authorization for another application.
-    replacement=code[:-2]+'||(ir.application.appId==="code-editor" && global.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__===true));'
-    html=html[:match.start()]+replacement+html[match.end():]
+    assert html.count('signalSchedulerIntegration:false')==1,'EDITOR_ISOLATED_REFERENCE_CONTRACT_CHANGED'
+    assert html.count('signalSchedulerStartEnabled:false')==1,'EDITOR_ISOLATED_REFERENCE_START_CHANGED'
     if kinds is not None and (not kinds or len(kinds)!=len(set(kinds)) or any(x not in KINDS for x in kinds)):
         raise ValueError('UNAUTHORIZED_CONSUMER_CLASS')
     if enabled:
@@ -73,11 +67,7 @@ def _html(repo:Path,enabled:bool,*,kinds=None)->str:
             html=html.replace('signalSchedulerStartEnabled:true',
                  'signalSchedulerCertifiedKinds:'+json.dumps(list(kinds))+',signalSchedulerStartEnabled:true',1)
     assert html.count(parity.FIXTURE_JS)==1,'EDITOR_FIXTURE_CHANGED'
-    html=html.replace(parity.FIXTURE_JS, parity.FIXTURE_JS+TRANSPORT_CONTROL,1)
-    # Set marker only in the candidate page; the real code-editor app can't
-    # acquire this capability via any production mount option.
-    if enabled:html=html.replace('<head>','<head><script>window.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__=true;</script>',1)
-    return html
+    return html.replace(parity.FIXTURE_JS, parity.FIXTURE_JS+TRANSPORT_CONTROL,1)
 
 
 def _state(page)->dict:
@@ -371,7 +361,7 @@ def accept(repo=ROOT,*,profile='full',skip_parity=False):
         'consumerClasses':classes,'fingerprints':{
           'runtimeSha256':fp('main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js'),
           'applicationSha256':fp('mcel_apps/code-editor/application.js')},
-        'boundaries':{'productionSignalDefault':'DISABLED', 'productionPromotionAuthorized':False,
+        'boundaries':{'productionSignalDefault':'CERTIFIED_WHEN_PROMOTED', 'productionPromotionAuthorized':False,
           'canonicalRoute':'/applications/code-editor',
           'realWindowsSourceWrites':'NOT_TESTED','nativeMonaco':'NOT_TESTED','realAider':'NOT_TESTED',
           'actualHostedRoute':'NOT_TESTED','referenceScheduler':'INCUMBENT',

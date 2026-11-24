@@ -365,7 +365,15 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib hook
+        from main_computer.hardened_ingress import enabled
         parsed = urlparse(self.path)
+        if enabled():
+            if parsed.path == '/health':
+                # Do not disclose paths or private state to unauthenticated readers.
+                _json_response(self, 200, {'ok': True, 'state': 'ready', 'service': SERVICE_NAME})
+                return
+            if not self._candidate_authorized():
+                return
         if parsed.path == "/health":
             _json_response(
                 self,
@@ -605,7 +613,19 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             return
 
+    def _candidate_authorized(self) -> bool:
+        import hmac
+        secret = os.environ.get('MAIN_COMPUTER_MAIN_LOG_TOKEN', '')
+        supplied = self.headers.get('Authorization', '')
+        if len(secret) < 32 or not hmac.compare_digest(supplied, 'Bearer '+secret):
+            _json_response(self, 401, {'ok': False, 'state': 'AUTH_REQUIRED'})
+            return False
+        return True
+
     def do_POST(self) -> None:  # noqa: N802 - stdlib hook
+        from main_computer.hardened_ingress import enabled
+        if enabled() and not self._candidate_authorized():
+            return
         parsed = urlparse(self.path)
         if parsed.path != "/v1/log/events":
             _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})

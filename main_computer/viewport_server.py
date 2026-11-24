@@ -87,6 +87,16 @@ class ViewportServer(ThreadingHTTPServer):
         self.scramjet_docker = ScramjetDockerManager(self.debug_root)
         self.chat_ai_processes = ChatAISubprocessManager()
         self.config = config
+        # Deliberately opt-in until pre-cutover certification.  The legacy
+        # Viewport is NOT treated as authenticated because it binds loopback.
+        from main_computer.hardened_ingress import enabled, AssertionVerifier
+        self.mc_gateway_verifier = None
+        if enabled():
+            from main_computer.onlyoffice_secure_runtime import installation_mode, shared_secret
+            installation_mode()   # explicit mode prevents cross-installation grants
+            shared_secret(self.config)  # no disabled/empty JWT candidate
+            from main_computer.auth_bootstrap import BootstrapAuthority, state_directory
+            self.mc_gateway_verifier = AssertionVerifier(BootstrapAuthority(state_directory()))
         self.mounted_windows_path_resolver = build_mounted_windows_path_resolver(config)
         self.computer = MainComputer.build(config)
         self.fallback = bool(config.fallback)
@@ -199,10 +209,14 @@ class ViewportHandler(
     server: ViewportServer
 
     def do_GET(self) -> None:
-        dispatch_get(self)
+        from main_computer.hardened_ingress import admit
+        if admit(self, 'GET'):
+            dispatch_get(self)
 
     def do_POST(self) -> None:
-        dispatch_post(self)
+        from main_computer.hardened_ingress import admit
+        if admit(self, 'POST'):
+            dispatch_post(self)
 
 def _provider_name(self: ViewportServer) -> str:
     return self.computer.provider.name

@@ -91,19 +91,26 @@
     });
   }
 
-  function workerPath(label) {
-    if (label === "json") return "language/json/json.worker.js";
-    if (label === "css" || label === "scss" || label === "less") return "language/css/css.worker.js";
-    if (label === "html" || label === "handlebars" || label === "razor") return "language/html/html.worker.js";
-    if (label === "typescript" || label === "javascript") return "language/typescript/ts.worker.js";
-    return "editor/editor.worker.js";
+  // The loader below uses Monaco's AMD distribution, not ESM worker bundles.
+  // AMD workers all start at vs/base/worker/workerMain.js; the worker bootstrap
+  // selects a language service from the moduleId supplied by Monaco itself.
+  // Language-specific *.worker.js URLs here silently fail in AMD deployments.
+  function amdWorkerUrl(vsBase) {
+    const bootstrap = `${vsBase}/base/worker/workerMain.js`;
+    if (vsBase === LOCAL_VS_BASE) return bootstrap;
+    // Web Workers cannot be constructed directly from a cross-origin CDN URL.
+    // The AMD-supported data URL bootstrap imports the pinned CDN script, with
+    // its base URL configured for subsequent AMD dependency loading.
+    const source = `self.MonacoEnvironment={baseUrl:${JSON.stringify(vsBase.replace(/\/vs$/, "/"))}};` +
+      `importScripts(${JSON.stringify(bootstrap)});`;
+    return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
   }
 
   function configureWorkers(vsBase) {
     if (!window.MonacoEnvironment) window.MonacoEnvironment = {};
-    if (typeof window.MonacoEnvironment.getWorkerUrl !== "function") {
-      window.MonacoEnvironment.getWorkerUrl = (_moduleId, label) => `${vsBase}/${workerPath(label)}`;
-    }
+    // Respect an embedding host that supplies its own explicit worker factory.
+    if (typeof window.MonacoEnvironment.getWorker === "function") return;
+    window.MonacoEnvironment.getWorkerUrl = (_moduleId, _label) => amdWorkerUrl(vsBase);
   }
 
   function loadViaAmd(vsBase) {

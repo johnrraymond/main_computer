@@ -28,6 +28,7 @@ import {sellerPolicyReceipt,readSellerPolicyReceipt,writeSellerPolicyReceipt,cle
 import {priceOfWorkerOffer, waitForLiveWorker, waitForDeliveredWork,
   readWorkerLiveStatus, executeCaptainWithPriceRetry, captainFundingPreflightEvidence,
   boundedSmokeOfferRate} from './worker_work_cycle.mjs'
+import {classifyRequesterPolicyRead} from './requester_policy_read.mjs'
 
 const gate = process.env.MC_WORKER_LIVE_GATE
 const allowed = new Set(['wallet-msk','offer-registration','work-cycle','requester-enforcement'])
@@ -149,68 +150,45 @@ async function recoverInterruptedSellerPolicy(page){
 }
 
 async function testRequester(page) {
-  // No wallet and no Hub submission. Both checks run against the real local
-  // requester policy/decision engine. Backend-owned state must override a
-  // client claiming permission to spend.
+  // Exercise the actual backend SQLite policy/reservation path under isolated
+  // test values. Never change live requester settings or send any paid work.
   await navigate(page,'requester')
-  const saved=(await getJSON(page,'/api/applications/worker/settings')).settings
-  if (!saved || typeof saved.remoteEnabled !== 'boolean') throw Error('Requester policy unavailable')
+  // Read the actual server response, including the legitimate "not yet saved"
+  // case. The backend's missing-policy semantics are deny-by-default, never
+  // the editable form's displayed default daily limit.
+  const read=await page.evaluate(async()=>{
+    try {
+      const response=await fetch('/api/applications/worker/settings',{
+        credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}})
+      return {http:response.status,body:await response.json().catch(()=>null)}
+    }catch{return {http:0,body:null}}
+  })
+  const classified=classifyRequesterPolicyRead(read)
+  proof.requesterPolicyReadDiagnostic=classified.diagnostic
+  if(!classified.ok)throw Error('Requester policy unavailable')
   mark('requesterPolicyRead')
-  let changed=false
-  async function configure(enabled,limit) {
-    await page.locator('input[name="remoteDailyLimit"]').fill(String(limit))
-    const checkbox=page.locator('input[name="remoteEnabled"]')
-    if(enabled)await checkbox.check();else await checkbox.uncheck()
-    await saveForm(page,'Save Requester Limits',async()=>{
-      const s=(await getJSON(page,'/api/applications/worker/settings')).settings
-      return s.remoteEnabled===enabled && s.remoteDailyLimit===limit
-    })
-  }
-  const assess=async() => {
-    const result=await page.evaluate(async()=>{
-      const res=await fetch('/api/applications/chat-console/ai/remote-overflow/assess',{
-        method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({remote_overflow_enabled:true,authorization_granted_by_user:true,
-          remote_hub_current_request:true,local_only:false,max_output_tokens:128,
-          prompt:'Live functional policy refusal check (no execution requested)'})})
+  proof.stage='requesterGuardVerify'
+  const result=await page.evaluate(async()=>{
+    try {
+      const res=await fetch('/api/applications/chat-console/ai/remote-overflow/requester-verify',{
+        method:'POST',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':'application/json'},body:'{}'})
       return {http:res.status,data:await res.json().catch(()=>null)}
-    })
-    if(result.http!==200 || result.data?.ok!==true)throw Error('Requester assessment unavailable')
-    return result.data.remote_overflow||{}
-  }
-  try {
-    changed=true
-    await configure(false,0)
-    const denied=await assess()
-    const explicitDenial=Array.isArray(denied.cards) && denied.cards.some(card=>
-      card?.key==='remote_overflow_policy' && card?.status==='blocked' &&
-      card?.details?.reason_code==='remote_overflow_disabled')
-    if (!explicitDenial || ['remote-hub','remote_hub','remote','submit'].includes(denied.action))
-      throw Error('Backend did not explicitly refuse disabled requester spending')
-    mark('backendDeniedUnauthorizedSpend')
-    // A daily-budget check while remoteEnabled=true could briefly allow
-    // concurrent clients to spend. The current backend does not expose a
-    // transactionally isolated zero-budget verifier. Do not fabricate that
-    // proof or enable paid work just to manufacture a PASS.
-    mark('noPaidSubmission')
-  } finally {
-    if(changed){
-      const fields=['remoteEnabled','remoteMode','remoteCreditsPerToken','remoteMaxOutputTokens',
-        'remoteDailyLimit','remoteAskBeforeSpend','remoteOnlyWhenBusy']
-      for(const name of ['remoteDailyLimit','remoteCreditsPerToken','remoteMaxOutputTokens'])
-        await page.locator(`input[name="${name}"]`).fill(String(saved[name]))
-      for(const name of ['remoteEnabled','remoteAskBeforeSpend','remoteOnlyWhenBusy']){
-        const input=page.locator(`input[name="${name}"]`)
-        if(saved[name])await input.check();else await input.uncheck()
-      }
-      const mode=page.locator('[name="remoteMode"]')
-      if(await mode.count())await mode.selectOption(String(saved.remoteMode))
-      await saveForm(page,'Save Requester Limits',async()=>{
-        const actual=(await getJSON(page,'/api/applications/worker/settings')).settings
-        return fields.every(key=>String(actual[key])===String(saved[key]))
-      })
-    }
-  }
+    }catch{return {http:0,data:null}}
+  })
+  const checks=['backendDeniedUnauthorizedSpend','budgetLimitDenied',
+    'localBusyPolicyDenied','restartRetainedReservation','duplicateDenied',
+    'consentReplayDenied','concurrentBudgetDenied','noPaidSubmission']
+  const guardVerified=result.http===200 && result.data?.ok===true &&
+    result.data?.isolated===true && result.data?.no_paid_submission===true &&
+    checks.every(k=>result.data?.proofs?.[k]===true)
+  proof.requesterGuardDiagnostic={version:'requester-guard-read-v1',
+    httpStatus:Number.isInteger(result.http)&&result.http>=0&&result.http<=599?result.http:0,
+    result:guardVerified?'verified':result.http===200?
+      (result.data?.ok===true?'proof-incomplete':'backend-refused'):
+      result.http===0?'transport-failed':'http-rejected'}
+  if(!guardVerified)throw Error('Backend requester guard verification failed')
+  for(const check of checks) mark(check)
 }
 async function testMarketplace(page,context,extensionId){
   proof.stage='HUB_CHOICE'

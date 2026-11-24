@@ -465,6 +465,11 @@ class HeartbeatServer(ThreadingHTTPServer):
         require_local_viewport_bind(server_address[0], service="Heartbeat")
         super().__init__(server_address, HeartbeatHandler)
         self.config = config
+        from main_computer.hardened_ingress import enabled, AssertionVerifier
+        self.mc_gateway_verifier = None
+        if enabled():
+            from main_computer.auth_bootstrap import BootstrapAuthority, state_directory
+            self.mc_gateway_verifier = AssertionVerifier(BootstrapAuthority(state_directory()))
         self.verbose = verbose
         self.allow_reuse_address = True
 
@@ -552,6 +557,10 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         self.server.signal("http", client=self.client_address[0], message=format % args)
 
     def do_OPTIONS(self) -> None:
+        from main_computer.hardened_ingress import enabled
+        if enabled():
+            self._send_json({'ok': False, 'error': 'NO_ANONYMOUS_HEARTBEAT_CORS'}, status=HTTPStatus.FORBIDDEN)
+            return
         if not heartbeat_local_caller(self):
             self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
             return
@@ -560,6 +569,17 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        from main_computer.hardened_ingress import enabled, admit
+        if enabled():
+            if self.path == '/healthz':
+                self._send_json({'ok': True, 'state': 'ready'})
+                return
+            # Do not mint control authority to an anonymous loopback caller.
+            if self.path == '/api/heartbeat/authority/session':
+                self._send_json({'ok': False, 'error': 'GATEWAY_AUTH_REQUIRED'}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            if not admit(self, 'GET'):
+                return
         if self.path == "/api/heartbeat/authority/session":
             if not heartbeat_local_caller(self):
                 self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
@@ -588,10 +608,13 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        from main_computer.hardened_ingress import enabled, admit
+        if enabled() and not admit(self, 'POST'):
+            return
         if self.path not in {"/api/heartbeat/control", "/api/heartbeat/status"}:
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
-        if not heartbeat_valid_mutation(self):
+        if not enabled() and not heartbeat_valid_mutation(self):
             self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
             return
         length = int(self.headers["Content-Length"])

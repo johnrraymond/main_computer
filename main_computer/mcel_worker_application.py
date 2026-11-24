@@ -1,9 +1,8 @@
-"""Native MCEL Worker migration candidate with legacy wallet compatibility.
+"""Native MCEL Worker with existing marketplace wallet compatibility.
 
-The canonical /applications/worker remains authoritative until the full
-marketplace registration and Worker execution contracts have
-been ported and accepted. The wallet/MSK compatibility bridge reuses existing
-handlers and is not a native semantic wallet implementation. No user-facing claim of full cutover is made here.
+The canonical Worker UI now selects this semantic view by default. Marketplace
+signing, wallet/MSK management, and runtime APIs retain the established backend.
+The original Worker SPA remains available through the explicit local rollback.
 """
 from __future__ import annotations
 
@@ -79,7 +78,7 @@ def _script(repo: Path, relative: str) -> str:
     return "<script>\n" + source + "\n</script>"
 
 
-def render_worker_page(repo: Path = ROOT) -> str:
+def render_worker_page(repo: Path = ROOT, *, canonical: bool = False) -> str:
     ir, composition = compile_worker_application(repo)
     payload = json.dumps({"ir": ir, "composition": composition},
                          separators=(",", ":"), ensure_ascii=False).replace("<", "\\u003c")
@@ -408,5 +407,10 @@ try{{
 }}
 }})();</script>
 </body></html>'''
+    if canonical:
+        page = page.replace('<title>Worker · MCEL candidate</title>',
+                            '<title>Worker · MCEL</title>', 1)
+        page = page.replace('data-mcel-worker-phase="candidate"',
+                            'data-mcel-worker-phase="promoted"', 1)
     return attach_inert_presentation(page, repo, 'worker', 'mcel-workbench',
-                                     promoted=True, semantic_candidate=True)
+                                     promoted=True, semantic_candidate=not canonical)

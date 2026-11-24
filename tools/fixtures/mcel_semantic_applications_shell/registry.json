@@ -151,7 +151,7 @@
       "title": "Worker",
       "description": "Remote compute and rentals",
       "route": "/applications/worker",
-      "mount": "legacy"
+      "mount": "semantic"
     },
     {
       "id": "wallet",

@@ -1,6 +1,6 @@
 """Patch 5: bounded default-certified MCEL signal scheduling policy.
 
-Only SLH and semantic Task Manager may start in certified mode. The shared
+Only SLH, semantic Task Manager, and the promoted Code Editor may start in certified mode. The shared
 runtime retains full incumbent rendering for unsupported/uncertain consumers,
 per-page immediate rollback, and fault-triggered fallback. Other apps cannot
 opt into default signals via this module.
@@ -10,6 +10,7 @@ Emergency rollback (restart/reload the application page after changing it):
 Per-application rollback:
     MCEL_SIGNAL_SCHEDULER_SLH=incumbent
     MCEL_SIGNAL_SCHEDULER_TASK_MANAGER=incumbent
+    MCEL_SIGNAL_SCHEDULER_CODE_EDITOR=incumbent
 The precise 'certified' override re-enables a previously disabled app unless
 the emergency kill switch is active. Unknown policy values fail closed.
 """
@@ -21,6 +22,7 @@ from collections.abc import Mapping
 APP_ENV = {
     "slh": "MCEL_SIGNAL_SCHEDULER_SLH",
     "semantic-task-manager": "MCEL_SIGNAL_SCHEDULER_TASK_MANAGER",
+    "code-editor": "MCEL_SIGNAL_SCHEDULER_CODE_EDITOR",
 }
 KILL_SWITCH = "MCEL_SIGNAL_SCHEDULER_DISABLE"
 

@@ -2437,6 +2437,19 @@
       renderChatConsoleNotebook();
       const body = chatConsoleBuildRemoteHubSubmitPayload({pendingRequest: request, cell, payload, mode: intentMode});
       try {
+        // A client boolean is not spend authority. Request a short-lived,
+        // single-use server grant for this exact manually chosen request.
+        if (intentMode === "remote_once") {
+          const approvalResponse = await fetch("/api/applications/chat-console/ai/remote-overflow/requester-authorize", {
+            method: "POST", headers: {"Content-Type": "application/json"}, cache: "no-store",
+            body: JSON.stringify(body)
+          });
+          const approval = await approvalResponse.json().catch(() => ({}));
+          if (!approvalResponse.ok || !approval.ok || !approval.spend_authorization_token) {
+            throw new Error(approval.reason_code || "Backend spend authorization was refused.");
+          }
+          body.spend_authorization_token = approval.spend_authorization_token;
+        }
         const response = await fetch("/api/applications/chat-console/ai/remote-overflow/hub-submit", {
           method: "POST",
           headers: {"Content-Type": "application/json"},

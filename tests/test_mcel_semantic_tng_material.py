@@ -56,7 +56,7 @@ TEST = r'''({theme, remove=false}) => {
    phosphor:root.style.getPropertyValue('--mcel-tng-phosphor'),
    palette:styleLaw.themePaletteFor(theme),
    rootImage:s.backgroundImage,mainImage:m.backgroundImage,
-   pixelSize:m.backgroundSize,railBG:r?.backgroundImage,
+   pixelSize:s.backgroundSize,railBG:r?.backgroundImage,
    purpleBG:after?.backgroundImage,highlightMask:before?.maskImage,
    purpleRadius:after?.borderRadius,railShadow:r?.filter,
    width:rail?.getBoundingClientRect().width,
@@ -90,10 +90,13 @@ def test_black_glass_and_clean_materials_follow_shared_theme_across_eight_palett
             assert report['glass']==report['palette']['--mcel-theme-chrome-glass'],(theme,report)
             assert report['phosphor']==report['palette']['--mcel-theme-chrome-phosphor'],(theme,report)
             assert report['rails']==2 and report['noExtraChrome'] and report['oldButton'],(theme,report)
-            assert 'radial-gradient' in report['mainImage'],(theme,report)
-            assert 'linear-gradient' in report['mainImage'],(theme,report)
+            # The root owns the Calculator CRT. Its immediate layout must not
+            # repaint the same material with a different texture origin.
+            assert 'radial-gradient' in report['rootImage'],(theme,report)
+            assert 'linear-gradient' in report['rootImage'],(theme,report)
+            assert report['mainImage']=='none',(theme,report)
             assert '21px 6px' in report['pixelSize'],(theme,report)
-            assert report['mainImage'].count('data:image/svg+xml,') == 1,(theme,report)
+            assert report['rootImage'].count('data:image/svg+xml,') == 1,(theme,report)
             assert report['glass'] in report['palette'].values(),(theme,report)
             assert report['railBG'] and report['purpleBG'] and report['highlightMask']!='none',(theme,report)
             assert report['purpleRadius']=='0px' and 'drop-shadow' in report['railShadow'],(theme,report)
@@ -116,7 +119,7 @@ def test_material_fully_clears_and_does_not_modify_application_controls():
             assert report['restored']['glass']==report['restored']['phosphor']=='',(width,report)
             # The Lab's semantic theme projection remains after removing Chrome.
             # Only Chrome-owned paint must disappear.
-            assert report['restored']['rootImage']==report['before']['rootImage'],(width,report)
+            assert report['restored']['rootImage']=='none',(width,report)
             assert 'data:image/svg+xml,' not in report['restored']['mainImage'],(width,report)
             if width==390:
                 assert report['width']==0,(width,report)

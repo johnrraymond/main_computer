@@ -1911,6 +1911,11 @@ def _semantic_canonical_route(path: str) -> tuple[str, str | None] | None:
     parts = [part for part in urlsplit(path).path.rstrip("/").split("/") if part]
     if len(parts) < 2 or parts[0] not in {"applications", "apps", "app"}:
         return None
+    if parts[1] == "worker":
+        from main_computer.mcel_worker_route_promotion import canonical_worker_mode
+        # This only replaces the canonical child; the original SPA is retained
+        # for immediate rollback, and the preview URL remains independent.
+        return ("worker", None) if len(parts) == 2 and canonical_worker_mode() == "promoted" else None
     semantic = _SEMANTIC_CANONICAL_APPLICATIONS.get(parts[1])
     if semantic is None:
         return None
@@ -2113,6 +2118,9 @@ def dispatch_get(self) -> None:
         elif name == "chat-console":
             from main_computer.mcel_chat_console_host import render_chat_console_page
             page = render_chat_console_page(promoted=True)
+        elif name == "worker":
+            from main_computer.mcel_worker_application import render_worker_page
+            page = render_worker_page(canonical=True)
         else:
             from main_computer.mcel_semantic_other_apps_host import render_semantic_page
             page = render_semantic_page(name, promoted=True, initial_view=initial_view)
@@ -2726,6 +2734,12 @@ def dispatch_post(self) -> None:
         return
     if route_path == "/api/applications/chat-console/ai/remote-overflow/hub-readiness":
         self._handle_chat_console_remote_overflow_hub_readiness()
+        return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/requester-authorize":
+        self._handle_chat_console_requester_authorize()
+        return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/requester-verify":
+        self._handle_chat_console_requester_guard_verify()
         return
     if route_path == "/api/applications/chat-console/ai/remote-overflow/hub-submit":
         self._handle_chat_console_remote_overflow_hub_submit()

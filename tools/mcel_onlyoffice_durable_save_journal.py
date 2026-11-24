@@ -71,14 +71,18 @@ class DurableSaveJournal:
         except (OSError, ValueError) as exc:
             raise JournalConflict('unreadable journal; deny writes until recovered') from exc
         if (not isinstance(state, dict) or set(state) !=
-            {'v','relative','mode','document_key','sha','next','accepted','pending'} or
-            state['v'] != 1 or state['relative'] != relative or
+            {'v','relative','mode','document_key','sha','next','accepted','pending','close'} or
+            state['v'] != 2 or state['relative'] != relative or
             not isinstance(state['mode'], str) or not state['mode'] or
             not isinstance(state['document_key'], str) or not state['document_key'] or
             not isinstance(state['sha'], str) or not re.fullmatch('[0-9a-f]{64}',state['sha']) or
             type(state['next']) is not int or state['next'] < 0 or
             type(state['accepted']) is not int or not 0 <= state['accepted'] <= state['next'] or
-            not isinstance(state['pending'], dict)):
+            not isinstance(state['pending'], dict) or
+            not isinstance(state['close'],dict) or
+            set(state['close'])!={'expires','committed'} or
+            type(state['close']['expires']) is not int or state['close']['expires']<=0 or
+            type(state['close']['committed']) is not bool):
             raise JournalConflict('invalid journal schema; fail closed')
         return state
 
@@ -105,8 +109,12 @@ class DurableSaveJournal:
         if state is None:
             if not initialize:
                 raise JournalConflict('journal missing: refused to reconstruct from callback')
-            state={'v':1,'relative':relative,'mode':mode,'document_key':key,
-                   'sha':current,'next':0,'accepted':0,'pending':{}}
+            state={'v':2,'relative':relative,'mode':mode,'document_key':key,
+                   'sha':current,'next':0,'accepted':0,'pending':{},
+                   # Registered ONLY on an authorized editor launch. A signed
+                   # final-close callback has no CommandService `userdata`.
+                   # Its one-use grant lives with this document/key generation.
+                   'close':{'expires':int(self.clock())+3600,'committed':False}}
             # Create a persistent marker *before* writing initial state.
             # A crash between these operations then fails closed instead of
             # silently issuing a new sequence from zero.
@@ -170,6 +178,8 @@ class DurableSaveJournal:
         relative=self.fence._relative(path)
         with self.fence._document_lock(relative):
             relative,state=self._checked(path,mode,key,initialize=False)
+            if state['close']['committed']:
+                raise JournalConflict('editor already closed: deny further save commands')
             seq=state['next']+1
             fields={'v':1,'mode':mode,'relative':relative,'key':key,
                     'seq':seq,'nonce':secrets.token_hex(16),
@@ -201,6 +211,8 @@ class DurableSaveJournal:
             if self.fence._relative(path)!=relative:
                 raise RevisionInvalid('document path changed during commit')
             relative,state=self._checked(path,mode,key,initialize=False)
+            if state['close']['committed']:
+                raise JournalConflict('editor already closed: deny late force-save')
             seq=fields['seq']
             pending=state['pending'].get(str(seq))
             if (seq<=state['accepted'] or seq>state['next'] or
@@ -228,6 +240,56 @@ class DurableSaveJournal:
             self._write(relative,state)
             return incoming
 
+    def commit_final_close(self, path, *, mode, key, data, after_replace=None):
+        """Commit an authenticated Document Server `status=2` closing save.
+
+        The caller MUST have already verified the Document Server JWT, the
+        signed callback body, document key, installation audience, callback
+        capability and pinned source URL. This method does not authenticate
+        HTTP requests. A registered editor session grants exactly one final
+        close under the same cross-process lock as all force-saves.
+
+        A `status=2` callback carries no force-save userdata. Do not generate
+        a substitute token from untrusted callback fields. This candidate
+        refuses close while a force-save command is still outstanding, rather
+        than guessing which bytes are newer. Production must separately test
+        retries and the long-lived grant renewal policy before cutover.
+        """
+        self.fence._validate_workbook(data,self.fence.max_bytes)
+        relative=self.fence._relative(path)
+        with self.fence._document_lock(relative):
+            if self.fence._relative(path)!=relative:
+                raise RevisionInvalid('document path changed during final close')
+            relative,state=self._checked(path,mode,key,initialize=False)
+            close=state['close']
+            if close['committed']:
+                raise JournalConflict('replayed final-close callback')
+            now=int(self.clock())
+            if now>close['expires']:
+                raise JournalConflict('editor close grant expired; fail closed')
+            if any(type(p) is not dict or p.get('exp',0)>=now
+                   for p in state['pending'].values()):
+                raise JournalConflict('outstanding force-save: ambiguous final ordering')
+            incoming=sha256_bytes(data)
+            if incoming!=state['sha']:
+                tmp=None
+                try:
+                    with tempfile.NamedTemporaryFile('wb',delete=False,dir=Path(path).parent,
+                        prefix='.'+Path(path).name+'.',suffix='.tmp') as out:
+                        tmp=out.name;out.write(data);out.flush();os.fsync(out.fileno())
+                    os.replace(tmp,path)
+                    tmp=None
+                finally:
+                    if tmp is not None:
+                        try:os.unlink(tmp)
+                        except FileNotFoundError:pass
+            if after_replace is not None:after_replace()
+            state['sha']=incoming
+            state['close']['committed']=True
+            state['pending']={}
+            self._write(relative,state)
+            return incoming
+
     def current(self, path, *, mode):
         """Read the current verified journal without accepting an untrusted key.
 
@@ -241,7 +303,8 @@ class DurableSaveJournal:
                 return None
             _, checked = self._checked(path, mode, state['document_key'], initialize=False)
             return {'key': checked['document_key'], 'accepted': checked['accepted'],
-                    'next': checked['next'], 'sha': checked['sha']}
+                    'next': checked['next'], 'sha': checked['sha'],
+                    'final_closed':checked['close']['committed']}
 
     def rotate_key(self, path, *, mode, old_key, new_key):
         """Bind a new editor session after an authenticated document relaunch.
@@ -258,6 +321,9 @@ class DurableSaveJournal:
                 raise JournalConflict('editor key was not rotated')
             state['document_key'] = new_key
             state['pending'] = {}
+            # Only a separately authorized editor relaunch can create another
+            # final-close grant. Old document keys remain rejected.
+            state['close']={'expires':int(self.clock())+3600,'committed':False}
             self._write(relative, state)
             return {'old_key': old_key, 'new_key': new_key, 'accepted': state['accepted']}
 
@@ -266,4 +332,5 @@ class DurableSaveJournal:
         with self.fence._document_lock(relative):
             _,state=self._checked(path,mode,key,initialize=False)
             return {'accepted':state['accepted'],'next':state['next'],
-                    'sha':state['sha'],'pending':len(state['pending'])}
+                    'sha':state['sha'],'pending':len(state['pending']),
+                    'final_closed':state['close']['committed']}

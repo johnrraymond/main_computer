@@ -12,13 +12,18 @@ from tools.mcel_signal_differential_acceptance import _html
 def test_policy_default_and_emergency_kill_are_fail_closed():
     assert start_certified('slh', {})
     assert start_certified('semantic-task-manager', {})
-    for app in ('file-manager','semantic-file-manager','code-editor','mcel-lab','unknown'):
+    assert start_certified('code-editor', {})
+    for app in ('file-manager','semantic-file-manager','mcel-lab','unknown'):
         assert start_certified(app, {}) is False
     assert start_certified('slh', {'MCEL_SIGNAL_SCHEDULER_SLH':'incumbent'}) is False
     assert start_certified('semantic-task-manager', {'MCEL_SIGNAL_SCHEDULER_TASK_MANAGER':'incumbent'}) is False
     assert start_certified('slh', {'MCEL_SIGNAL_SCHEDULER_SLH':'CERTIFIED'}) is False
     assert start_certified('slh', {'MCEL_SIGNAL_SCHEDULER_SLH':'nope'}) is False
     assert start_certified('slh', {'MCEL_SIGNAL_SCHEDULER_SLH':'certified'})
+    assert not start_certified('code-editor', {'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR':'incumbent'})
+    assert not start_certified('code-editor', {'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR':'INVALID'})
+    assert start_certified('code-editor', {'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR':'certified'})
+    assert not start_certified('code-editor', {'MCEL_SIGNAL_SCHEDULER_DISABLE':'1'})
     assert not start_certified('slh', {'MCEL_SIGNAL_SCHEDULER_SLH':'certified',
                                       'MCEL_SIGNAL_SCHEDULER_DISABLE':'1'})
     assert not start_certified('semantic-task-manager', {'MCEL_SIGNAL_SCHEDULER_DISABLE':'INVALID'})
@@ -27,21 +32,25 @@ def test_policy_default_and_emergency_kill_are_fail_closed():
 
 def test_production_html_has_default_certified_and_explicit_kill_switch(monkeypatch):
     for key in ('MCEL_SIGNAL_SCHEDULER_SLH','MCEL_SIGNAL_SCHEDULER_TASK_MANAGER',
-                'MCEL_SIGNAL_SCHEDULER_DISABLE'):
+                'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR', 'MCEL_SIGNAL_SCHEDULER_DISABLE'):
         monkeypatch.delenv(key,raising=False)
     assert 'signalSchedulerStartEnabled:true' in render_slh_page()
     assert 'signalSchedulerStartEnabled:true' in render_semantic_page('task-manager',promoted=True)
     assert 'signalSchedulerStartEnabled:false' in render_semantic_page('task-manager',promoted=False)
     assert 'signalSchedulerIntegration:false' in render_semantic_page('file-manager',promoted=True)
     assert 'signalSchedulerStartEnabled:false' in render_semantic_page('file-manager',promoted=True)
+    assert 'signalSchedulerIntegration:true' in render_semantic_page('code-editor',promoted=True)
+    assert 'signalSchedulerStartEnabled:true' in render_semantic_page('code-editor',promoted=True)
+    assert 'signalSchedulerStartEnabled:false' in render_semantic_page('code-editor',promoted=False)
     monkeypatch.setenv('MCEL_SIGNAL_SCHEDULER_DISABLE','1')
     assert 'signalSchedulerStartEnabled:false' in render_slh_page()
     assert 'signalSchedulerStartEnabled:false' in render_semantic_page('task-manager',promoted=True)
+    assert 'signalSchedulerStartEnabled:false' in render_semantic_page('code-editor',promoted=True)
 
 
 def test_pre_cutover_isolated_differential_reference_remains_incumbent(monkeypatch):
     for key in ('MCEL_SIGNAL_SCHEDULER_SLH','MCEL_SIGNAL_SCHEDULER_TASK_MANAGER',
-                'MCEL_SIGNAL_SCHEDULER_DISABLE'):
+                'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR', 'MCEL_SIGNAL_SCHEDULER_DISABLE'):
         monkeypatch.delenv(key,raising=False)
     for app in ('slh','task-manager'):
         html=_html(app,False,candidate_mode='isolated')
@@ -59,7 +68,7 @@ def test_unmodified_mounted_host_starts_certified_and_manual_rollback(app,monkey
     from tests.test_mcel_slh_lifecycle_disable_enablement_oracle import MOCK as SLH_MOCK
     from tools.mcel_task_manager_functional_parity_frob import FIXTURE_JS as TASK_MOCK
     for key in ('MCEL_SIGNAL_SCHEDULER_SLH','MCEL_SIGNAL_SCHEDULER_TASK_MANAGER',
-                'MCEL_SIGNAL_SCHEDULER_DISABLE'):
+                'MCEL_SIGNAL_SCHEDULER_CODE_EDITOR', 'MCEL_SIGNAL_SCHEDULER_DISABLE'):
         monkeypatch.delenv(key,raising=False)
     html=render_slh_page() if app=='slh' else render_semantic_page('task-manager',promoted=True)
     obj='__mcelSlh' if app=='slh' else '__mcelWorkbench'

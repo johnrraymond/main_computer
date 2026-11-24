@@ -210,7 +210,7 @@ def available_port():
         return sock.getsockname()[1]
 
 
-def manifest(work,port,auth_secret,jwt_secret,tag,shadow_revision=False,continuous_saves=False,durable_restart=False,final_close_probe=False):
+def manifest(work,port,auth_secret,jwt_secret,tag,shadow_revision=False,continuous_saves=False,durable_restart=False,final_close_probe=False,coeditor_probe=False):
     bind=lambda source,target,ro=True:{'type':'bind','source':str(source.resolve()),'target':target,'read_only':ro}
     # Credentials are disposable and never taken from MC's production state.
     onlyoffice={'image':'onlyoffice/documentserver:'+tag, 'restart':'no',
@@ -224,7 +224,8 @@ def manifest(work,port,auth_secret,jwt_secret,tag,shadow_revision=False,continuo
                        'LAB_SHADOW_REVISION_FENCE':'1' if shadow_revision else '0',
                         'LAB_SHADOW_CONTINUOUS_SAVE':'1' if continuous_saves else '0',
                         'LAB_DURABLE_SAVE_JOURNAL':'1' if durable_restart else '0',
-                        'LAB_FINAL_CLOSE_PROBE':'1' if final_close_probe else '0'},
+                        'LAB_FINAL_CLOSE_PROBE':'1' if final_close_probe else '0',
+                        'LAB_COEDITOR_PROBE':'1' if coeditor_probe else '0'},
         'volumes':[bind(ROOT/'main_computer'/'auth_bootstrap.py','/lab/main_computer/auth_bootstrap.py'),
                    bind(ROOT/'main_computer'/'viewport_routes_onlyoffice.py','/lab/viewport_routes_onlyoffice.py'),
                    bind(ROOT/'tools'/'mcel_onlyoffice_real_editor_fixture.py','/lab/fixture.py'),
@@ -376,7 +377,7 @@ def audit_document_request_cookies(entries,initial_count):
 def browser_round_trip(port,proof_file,workbook,new_marker,cert_file,compose,
                        baseline_audit_count,exe=None,timeout=180,on_persisted=None,
                        require_shadow=False,continuous_saves=False,durable_restart=False,
-                       final_close_probe=False):
+                       final_close_probe=False,coeditor_probe=False):
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
     except ImportError as e:
@@ -477,6 +478,33 @@ def browser_round_trip(port,proof_file,workbook,new_marker,cert_file,compose,
                 except (OSError,ValueError,KeyError,zipfile.BadZipFile):observed=None
                 if observed==new_marker:found=True;break
                 time.sleep(2)
+            if not found:
+                # A successful CommandService response only acknowledges the
+                # command. It does not certify that a callback was admitted or
+                # that the requested workbook edit reached the saved bytes.
+                # Emit only aggregate, disposable-lab metrics; NEVER emit JWTs,
+                # cookies, signed callback URLs, or command userdata.
+                try:
+                    metrics=page.evaluate('''async()=>{const r=await fetch('/api/onlyoffice/metrics',
+                      {credentials:'same-origin'});if(!r.ok)throw Error('metrics HTTP '+r.status);
+                      return r.json()}''')
+                    statuses={}
+                    for item in metrics.get('callbacks',[]):
+                        status=str(item.get('status'))
+                        statuses[status]=statuses.get(status,0)+1
+                    print('MC_ONLYOFFICE_REAL SAVE_CALLBACK_DIAGNOSTIC '+json.dumps({
+                        'force_saves':metrics.get('force_saves'),
+                        'admitted_callbacks_by_status':statuses,
+                        'bad_callbacks':metrics.get('bad_callbacks'),
+                        'saved_callbacks':metrics.get('saved'),
+                        'shadow_commits':metrics.get('shadow_commits'),
+                        'continuous_denials':metrics.get('continuous_denials'),
+                        'editor_events':docs_frame.evaluate('window.MC_EDITOR_EVENTS'),
+                        'observed_cell':observed,
+                    },sort_keys=True),flush=True)
+                except Exception as diag_exc:
+                    print('MC_ONLYOFFICE_REAL SAVE_CALLBACK_DIAGNOSTIC_UNAVAILABLE '
+                          +type(diag_exc).__name__,flush=True)
             check('genuine-editor-callback-saved-changed-cell',found,
                   'A1='+repr(observed)[:90])
             first_userdata=None
@@ -578,6 +606,147 @@ def browser_round_trip(port,proof_file,workbook,new_marker,cert_file,compose,
                 if durable_restart:
                     check('durable-second-save-journal-persisted-after-restart',
                           sequence.get('accepted')==2 and sequence.get('key')==original_key)
+            if coeditor_probe:
+                # This is a DIFFERENT, simultaneous authenticated browser tab
+                # under the SAME disposable Alice session; it is not a test
+                # involving a second Windows SID. A second editor must join
+                # the already-open Document Server session, even after the
+                # first editor has force-saved newer workbook bytes. Launching
+                # a new revision and silently invalidating the first live
+                # editor is not acceptable.
+                check('coeditor-first-editor-remains-open-after-two-saves',
+                      docs_frame.evaluate('window.MC_DOC_READY') is True and
+                      docs_frame.evaluate('window.MC_DOCUMENT_KEY')==original_key)
+                second_page=context.new_page()
+                try:
+                    second_page.set_default_timeout(30000)
+                    second_page.goto(base+'/graphical',wait_until='domcontentloaded',timeout=30000)
+                    # DOMContentLoaded belongs to the *parent* page. It does not
+                    # guarantee that the cross-origin child iframe has navigated,
+                    # so an immediate second_page.frames snapshot is a race.
+                    # Wait for the real iframe document, never manufacture one.
+                    second_page.locator('iframe#mc-docs').wait_for(state='attached',timeout=45000)
+                    second_page.frame_locator('#mc-docs').locator('body').wait_for(timeout=45000)
+                    frame_deadline=time.monotonic()+45
+                    second_frame=None
+                    while time.monotonic()<frame_deadline:
+                        second_frame=next((f for f in second_page.frames
+                            if '/mc-editor' in f.url and f.url.startswith(f'https://{HOST_DOCS}:')),None)
+                        if second_frame is not None:break
+                        time.sleep(.25)
+                    check('coeditor-second-browser-tab-has-docs-origin',second_frame is not None,
+                          'parent_path='+second_page.url.partition('?')[0].rsplit('/',1)[-1]
+                          +' child_origins='+str(sorted({f.url.split('/',3)[2]
+                              for f in second_page.frames if f.url.startswith('https://')})))
+                    second_frame.wait_for_function('window.MC_DOC_READY === true',timeout=120000)
+                    second_key=second_frame.evaluate('window.MC_DOCUMENT_KEY')
+                    print('MC_ONLYOFFICE_REAL COEDITOR_OBSERVATION '+json.dumps({
+                        'first_key':original_key,'second_key':second_key,
+                        'first_still_ready':docs_frame.evaluate('window.MC_DOC_READY') is True,
+                        'second_ready':second_frame.evaluate('window.MC_DOC_READY') is True
+                    },sort_keys=True),flush=True)
+                    check('coeditor-second-editor-joins-original-live-document-key',
+                          second_key==original_key,
+                          'a second authorized editor must NOT rotate the key of an active session')
+                    check('coeditor-two-live-editors-ready-simultaneously',
+                          docs_frame.evaluate('window.MC_DOC_READY') is True and
+                          second_frame.evaluate('window.MC_DOC_READY') is True)
+                    # Both tabs must be usable, not merely show a ready flag.
+                    second_editor_frames=[f for f in second_page.frames
+                        if 'spreadsheeteditor' in f.url and f!=second_page.main_frame]
+                    check('coeditor-second-real-spreadsheet-iframe',bool(second_editor_frames))
+                    second_sdk=second_editor_frames[-1]
+                    second_canvas=None
+                    for selector in ('#editor_sdk','.sdk-canvas','canvas'):
+                        loc=second_sdk.locator(selector)
+                        try:
+                            if loc.count() and loc.first.is_visible(timeout=2000):
+                                second_canvas=loc.first;break
+                        except Exception:pass
+                    check('coeditor-second-real-canvas-present',second_canvas is not None)
+                    second_box=second_canvas.bounding_box()
+                    check('coeditor-second-canvas-geometry',
+                          second_box is not None and second_box['width']>60 and second_box['height']>60)
+                    second_canvas.click(position={'x':min(140,max(10,second_box['width']//3)),
+                                                  'y':min(120,max(10,second_box['height']//3))},timeout=15000)
+                    second_page.keyboard.press('Control+Home')
+                    second_page.keyboard.press('F2')
+                    second_page.keyboard.press('Control+A')
+                    coeditor_marker=new_marker+'_SECOND_TAB'
+                    second_page.keyboard.type(coeditor_marker,delay=25)
+                    second_page.keyboard.press('Enter')
+                    time.sleep(4)
+                    response=second_page.evaluate('''async(key)=>{const r=await fetch('/api/onlyoffice/forcesave',{
+                      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({action:'forcesave',key})});
+                      return {status:r.status,body:await r.json()}}''',original_key)
+                    check('coeditor-second-tab-genuine-forcesave-accepted',
+                          response['status']==200 and response['body'].get('error')==0)
+                    deadline=time.monotonic()+timeout
+                    observed=None
+                    while time.monotonic()<deadline:
+                        try:observed=get_cell(workbook,'A1')
+                        except (OSError,ValueError,KeyError,zipfile.BadZipFile):observed=None
+                        if observed==coeditor_marker:break
+                        time.sleep(2)
+                    check('coeditor-second-tab-genuine-edit-persisted',
+                          observed==coeditor_marker,'A1='+repr(observed)[:90])
+                finally:
+                    second_page.close()
+                # Closing only the second tab must not end the still-open
+                # first editor or exhaust its document's save authorization.
+                check('coeditor-first-editor-survives-second-tab-closure',
+                      docs_frame.evaluate('window.MC_DOC_READY') is True and
+                      docs_frame.evaluate('window.MC_DOCUMENT_KEY')==original_key)
+                time.sleep(3)
+                canvas.click(position={'x':min(140,max(10,bounds['width']//3)),
+                                       'y':min(120,max(10,bounds['height']//3))},timeout=15000)
+                page.keyboard.press('Control+Home')
+                page.keyboard.press('F2')
+                page.keyboard.press('Control+A')
+                primary_marker=new_marker+'_FIRST_TAB_AGAIN'
+                page.keyboard.type(primary_marker,delay=25)
+                page.keyboard.press('Enter')
+                time.sleep(3)
+                response=page.evaluate('''async(key)=>{const r=await fetch('/api/onlyoffice/forcesave',{
+                  method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({action:'forcesave',key})});
+                  return {status:r.status,body:await r.json()}}''',original_key)
+                check('coeditor-original-tab-save-still-authorized',
+                      response['status']==200 and response['body'].get('error')==0)
+                deadline=time.monotonic()+timeout
+                observed=None
+                while time.monotonic()<deadline:
+                    try:observed=get_cell(workbook,'A1')
+                    except (OSError,ValueError,KeyError,zipfile.BadZipFile):observed=None
+                    if observed==primary_marker:break
+                    time.sleep(2)
+                check('coeditor-original-tab-next-edit-persisted',
+                      observed==primary_marker,'A1='+repr(observed)[:90])
+                new_marker=primary_marker
+                # The second tab has closed; now close the last live editor.
+                # Do not synthesize a close or rotate the editor key while it is
+                # active. Require the actual signed Document Server status=2
+                # callback to finish the session before reopening a new key.
+                page.goto(base+'/auth/login',wait_until='domcontentloaded',timeout=30000)
+                close_deadline=time.monotonic()+90
+                close_metrics=None
+                while time.monotonic()<close_deadline:
+                    close_metrics=page.evaluate('''async()=>{const r=await fetch('/api/onlyoffice/metrics',
+                        {credentials:'same-origin'});if(!r.ok)throw Error('metrics unavailable');
+                        return await r.json()}''')
+                    if (close_metrics.get('final_close_committed',0)>0 or
+                        close_metrics.get('final_close_rejected',0)>0):break
+                    time.sleep(2)
+                check('coeditor-last-editor-real-final-close-committed',
+                      close_metrics is not None and
+                      close_metrics.get('final_close_signed_status2',0)>0 and
+                      close_metrics.get('final_close_committed',0)>0 and
+                      close_metrics.get('final_close_rejected',0)==0,
+                      'signed='+str((close_metrics or {}).get('final_close_signed_status2',0))+
+                      ' committed='+str((close_metrics or {}).get('final_close_committed',0))+
+                      ' rejected='+str((close_metrics or {}).get('final_close_rejected',0)))
+                page.goto(base+'/graphical',wait_until='domcontentloaded',timeout=30000)
             if final_close_probe:
                 # The two force-saves above are already committed. Now edit a
                 # third distinct value WITHOUT another force-save and close
@@ -766,13 +935,15 @@ def show_network_failure_context(compose):
                   ' error='+type(exc).__name__,flush=True)
 
 
-def experiment(tag='latest',browser_executable=None,external_bob_window=0,shadow_revision=False,continuous_saves=False,durable_restart=False,final_close_probe=False):
+def experiment(tag='latest',browser_executable=None,external_bob_window=0,shadow_revision=False,continuous_saves=False,durable_restart=False,final_close_probe=False,coeditor_probe=False):
     if continuous_saves and not shadow_revision:
         raise ValueError('continuous-saves test requires --shadow-revision')
     if durable_restart and not continuous_saves:
         raise ValueError('durable-restart test requires --continuous-saves')
     if final_close_probe and not durable_restart:
         raise ValueError('final-close-probe requires --durable-restart')
+    if coeditor_probe and (not durable_restart or final_close_probe):
+        raise ValueError('coeditor-probe requires --durable-restart and excludes --final-close-probe')
     if not shutil.which('docker'):
         print('MC_ONLYOFFICE_REAL UNVERIFIED docker unavailable; no experiment run',flush=True);return 2
     if not re.fullmatch(r'[A-Za-z0-9][\w.\-]{0,95}',tag):
@@ -805,7 +976,7 @@ def experiment(tag='latest',browser_executable=None,external_bob_window=0,shadow
         if os.name!='nt':os.chmod(proof,0o600)
         jwt_secret=secrets.token_urlsafe(36)
         port=available_port()
-        (work/'docker-compose.json').write_text(json.dumps(manifest(work,port,auth_b64,jwt_secret,tag,shadow_revision,continuous_saves,durable_restart,final_close_probe),indent=2),encoding='utf8')
+        (work/'docker-compose.json').write_text(json.dumps(manifest(work,port,auth_b64,jwt_secret,tag,shadow_revision,continuous_saves,durable_restart,final_close_probe,coeditor_probe),indent=2),encoding='utf8')
         compose=['docker','compose','-p',project,'-f',str(work/'docker-compose.json')]
         try:
             run_command(['docker','version','--format','{{.Server.Version}}'],timeout=15)
@@ -825,7 +996,8 @@ def experiment(tag='latest',browser_executable=None,external_bob_window=0,shadow
                                audit_baseline,browser_executable,on_persisted=mark_real_editor_saved,
                                require_shadow=shadow_revision,continuous_saves=continuous_saves,
                                durable_restart=durable_restart,
-                               final_close_probe=final_close_probe)
+                               final_close_probe=final_close_probe,
+                               coeditor_probe=coeditor_probe)
             real_editor_saved=True
             bob=subprocess.run([*compose,'run','--rm','--no-deps','bob'],check=False,timeout=100)
             check('credentialless-bob-container-attacks-blocked',bob.returncode==0,
@@ -844,6 +1016,7 @@ def experiment(tag='latest',browser_executable=None,external_bob_window=0,shadow
                 'continuous_saves_in_one_editor':continuous_saves,
                 'durable_backend_restart_between_saves':durable_restart,
                 'final_close_status2_persisted':final_close_probe,
+                'two_authenticated_live_editor_tabs':coeditor_probe,
                 'browser_tls_trust':'EPHEMERAL_SPKI_PIN_NOT_WINDOWS_CERT_STORE',
                 'production_modified':False,'second_windows_account_tested':False,
                 'legacy_production_onlyoffice_routes_changed':False,
@@ -894,12 +1067,14 @@ def main(argv=None):
                    help='Use durable save journal and restart only fixture between two real saves')
     p.add_argument('--final-close-probe',action='store_true',
                    help='Require a real signed status=2 callback to persist an edit made after both force-saves')
+    p.add_argument('--coeditor-probe',action='store_true',
+                   help='Two simultaneously open real editor tabs must share the live key and both persist edits')
     p.add_argument('--external-bob-window',type=int,default=0,
                    help='Hold disposable Docker HTTPS open for an actual second Windows user')
     args=p.parse_args(argv)
     if not 0<=args.external_bob_window<=1800:p.error('external Bob window must be 0..1800 seconds')
     return experiment(args.onlyoffice_tag,args.browser_executable,args.external_bob_window,
                       args.shadow_revision,args.continuous_saves,args.durable_restart,
-                      args.final_close_probe)
+                      args.final_close_probe,args.coeditor_probe)
 
 if __name__=='__main__':raise SystemExit(main())

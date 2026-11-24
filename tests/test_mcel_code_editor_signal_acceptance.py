@@ -10,21 +10,23 @@ from tools.mcel_phase2b_browser import launch_semantic_browser
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def test_code_editor_canonical_host_keeps_incumbent_scheduler():
-    production=render_semantic_page('code-editor',ROOT)
-    assert 'signalSchedulerIntegration:false' in production
-    assert 'signalSchedulerStartEnabled:false' in production
+def test_code_editor_production_defaults_signals_and_isolated_fixture_preserves_incumbent(monkeypatch):
+    monkeypatch.delenv('MCEL_SIGNAL_SCHEDULER_CODE_EDITOR',raising=False)
+    monkeypatch.delenv('MCEL_SIGNAL_SCHEDULER_DISABLE',raising=False)
+    production=render_semantic_page('code-editor',ROOT,promoted=True)
+    assert 'signalSchedulerIntegration:true' in production
+    assert 'signalSchedulerStartEnabled:true' in production
     assert 'window.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__=true' not in production
+    # Legacy isolated/differential harness still tests a genuine incumbent.
+    assert 'signalSchedulerIntegration:false' in accept._html(ROOT,False)
+    assert 'signalSchedulerStartEnabled:false' in accept._html(ROOT,False)
     candidate=accept._html(ROOT,True)
-    assert 'window.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__=true' in candidate
     assert candidate.count('signalSchedulerIntegration:true')==1
     assert candidate.count('signalSchedulerStartEnabled:true')==1
-    assert accept._html(ROOT,False).count('signalSchedulerStartEnabled:false')==1
-    # Source JS must remain pristine (no test fixture capability persisted).
     assert '__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__' not in (ROOT/'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js').read_text('utf8')
 
 
-def test_code_editor_signal_capability_is_absent_from_normal_mount():
+def test_code_editor_isolated_reference_remains_incumbent():
     with sync_playwright() as pw:
         browser,_=launch_semantic_browser(pw)
         try:
@@ -65,7 +67,7 @@ def test_code_editor_missing_parity_blocks_overall_certification(monkeypatch):
     assert result['status']=='BLOCKED'
     assert result['failures']==['CODE_EDITOR_FUNCTIONAL_PARITY_INCOMPLETE']
     assert not result['boundaries']['productionPromotionAuthorized']
-    assert result['boundaries']['productionSignalDefault']=='DISABLED'
+    assert result['boundaries']['productionSignalDefault']=='CERTIFIED_WHEN_PROMOTED'
 
 
 def test_code_editor_skipped_parity_blocks_overall_certification(monkeypatch):

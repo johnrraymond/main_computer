@@ -52,6 +52,9 @@ def test_tng_leaves_explorer_rows_flat_but_real_commands_raised():
                 page = _mount_file_manager(browser, width)
                 before = {name:_appearance(page, selector) for name,selector in (
                     ('tree',TREE),('directory',DIRECTORY))}
+                # The stock runtime never emits a Chrome hint; this is
+                # recognized from existing flat Form/Color presentation.
+                assert page.locator('[data-mcel-control-surface]').count() == 0
                 applied = _apply(page)
                 assert applied['status']=='applied', applied
                 for name,selector in (('tree',TREE),('directory',DIRECTORY)):
@@ -63,7 +66,7 @@ def test_tng_leaves_explorer_rows_flat_but_real_commands_raised():
                 for name in ('Load Roots', 'Browse', 'Preview Entry'):
                     button = page.get_by_role('button',name=name,exact=True)
                     assert button.get_attribute('data-mcel-chrome-material') == 'raised-control', name
-                    assert button.locator(':scope > [data-mcel-tng-wear-surface="button"]').count()==1, name
+                    assert '21px 6px' in button.evaluate('el=>getComputedStyle(el).backgroundSize'),name
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.close()
         finally:

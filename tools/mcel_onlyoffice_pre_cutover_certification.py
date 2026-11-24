@@ -65,7 +65,9 @@ REQUIRED_PROOFS={
   'disposable-service-outage-recovery': 'Real Document Server and MC fixture stop/restart preserves bytes, sessions and denies Bob',
   'durable-journal-process-restart': 'Independent source-backed fixture processes preserve ordered save state and reject a replay',
   'durable-real-editor-backend-restart': 'Genuine open Document Server editor survives backend restart between two ordered force-saves',
+  'durable-final-close-journal-candidate': 'Source-backed status=2 admission uses one-use durable final-close grant with replay/crash protection',
   'final-close-unsaved-edits': 'Genuine signed Document Server status=2 callback must persist the final edit on last-editor closure',
+  'two-live-authenticated-editor-tabs': 'After force-saves two concurrent real editor tabs keep one document key and both can persist authorized edits',
   'lifecycle-persistence': 'Browser, MC, Docker, and Windows restarts maintain valid or revoked state correctly',
   'backend-and-streaming-bypass-denials': 'Host bypass, SSE, WebSocket and cross-service credential forgery denied',
   'source-unchanged-through-experiments': 'Read-only verification did not mutate original production source files',
@@ -200,6 +202,21 @@ def run(profile: str, fuzz_count: int, tag: str, run_root: Path) -> int:
         final_close_contract=stage('offline-final-close-contract',
             [py,'-m','tools.test_mcel_onlyoffice_final_close_contract'],
             'MC_OO_FINAL_CLOSE_CONTRACT SUMMARY ',timeout=120,always=True)
+        coeditor_contract=stage('offline-two-editor-contract',
+            [py,'-m','tools.test_mcel_onlyoffice_two_editor_contract'],
+            'MC_OO_TWO_EDITOR_CONTRACT SUMMARY ',timeout=120,always=True)
+        final_close_journal=stage('offline-final-close-journal',
+            [py,'-m','tools.test_mcel_onlyoffice_final_close_journal'],
+            'MC_OO_FINAL_CLOSE_JOURNAL SUMMARY ',timeout=180,always=True)
+        if final_close_journal is not None:
+            s=final_close_journal.get('summary') or {}
+            valid=(final_close_journal['status']=='PASS' and
+                   s.get('tests')==16 and s.get('errors')==0 and
+                   s.get('failures')==0 and s.get('production_modified') is False)
+            proofs['durable-final-close-journal-candidate']=proof_result(
+                'durable-final-close-journal-candidate','PASS' if valid else 'FAIL',
+                'offline-final-close-journal',
+                'Source-backed synthetic signed status=2 admission and cross-process journal replay controls; not real Document Server evidence')
         existing=stage('offline-existing-security-regressions',
             [py,'-m','tools.mcel_onlyoffice_pre_cutover_existing_tests'],
             'MC_OO_EXISTING_REGRESSIONS SUMMARY ',timeout=180,always=True)
@@ -415,6 +432,8 @@ def run(profile: str, fuzz_count: int, tag: str, run_root: Path) -> int:
                       'credentialless-bob-container-attacks-blocked PASS')
             valid=(final_close_contract is not None and
                    final_close_contract['status']=='PASS' and
+                   final_close_journal is not None and
+                   final_close_journal['status']=='PASS' and
                    final_close['status']=='PASS' and
                    data.get('final_close_status2_persisted') is True and
                    data.get('durable_backend_restart_between_saves') is True and
@@ -424,6 +443,35 @@ def run(profile: str, fuzz_count: int, tag: str, run_root: Path) -> int:
                 'final-close-unsaved-edits','PASS' if valid else 'FAIL',
                 'docker-final-close-callback',
                 'Must persist a third, unsaved edit via an authentic status=2 callback; two earlier force-saves do not count')
+        coedit=stage('docker-two-live-editor-tabs',
+            [py,'-m','tools.mcel_onlyoffice_real_editor_lab','run',
+             '--onlyoffice-tag',tag,'--shadow-revision','--continuous-saves',
+             '--durable-restart','--coeditor-probe'],
+            'MC_ONLYOFFICE_REAL SUMMARY ',timeout=1500)
+        if coedit is not None:
+            data=coedit.get('summary') or {}
+            observed=(run_root/'docker-two-live-editor-tabs.log').read_text(
+                encoding='utf8',errors='replace')
+            mandatory=('coeditor-first-editor-remains-open-after-two-saves PASS',
+                'coeditor-second-editor-joins-original-live-document-key PASS',
+                'coeditor-two-live-editors-ready-simultaneously PASS',
+                'coeditor-second-real-spreadsheet-iframe PASS',
+                'coeditor-second-tab-genuine-edit-persisted PASS',
+                'coeditor-first-editor-survives-second-tab-closure PASS',
+                'coeditor-original-tab-next-edit-persisted PASS',
+                'reopened-workbook-cell-persisted PASS',
+                'credentialless-bob-container-attacks-blocked PASS')
+            valid=(coeditor_contract is not None and
+                   coeditor_contract['status']=='PASS' and
+                   coedit['status']=='PASS' and
+                   data.get('two_authenticated_live_editor_tabs') is True and
+                   data.get('production_modified') is False and
+                   all(item in observed for item in mandatory))
+            proofs['two-live-authenticated-editor-tabs']=proof_result(
+                'two-live-authenticated-editor-tabs','PASS' if valid else 'FAIL',
+                'docker-two-live-editor-tabs',
+                'Two simultaneous editors share a stable key and persist independently. '
+                'Uses one Windows SID; does not prove cross-account editing.')
         faults=stage('docker-real-service-faults',
             [py,'-m','tools.mcel_onlyoffice_pre_cutover_docker_faults','run','--onlyoffice-tag',tag],
             'MC_OO_DOCKER_FAULTS SUMMARY ',timeout=1200)

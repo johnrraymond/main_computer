@@ -50,6 +50,9 @@ SHADOW_REVISION_FENCE = os.environ.get('LAB_SHADOW_REVISION_FENCE') == '1'
 CONTINUOUS_SAVE = os.environ.get('LAB_SHADOW_CONTINUOUS_SAVE') == '1'
 DURABLE_SAVE = os.environ.get('LAB_DURABLE_SAVE_JOURNAL') == '1'
 FINAL_CLOSE_PROBE = os.environ.get('LAB_FINAL_CLOSE_PROBE') == '1'
+COEDITOR_PROBE = os.environ.get('LAB_COEDITOR_PROBE') == '1'
+if COEDITOR_PROBE and (not DURABLE_SAVE or FINAL_CLOSE_PROBE):
+    raise RuntimeError('coeditor probe requires durable journal and excludes final-close probe')
 if FINAL_CLOSE_PROBE and not DURABLE_SAVE:
     raise RuntimeError('final-close probe requires durable journal')
 SERVER_BOOT_ID = secrets.token_hex(16)
@@ -177,6 +180,33 @@ def parse_save_userdata(userdata, key):
         return data
     except (ValueError, TypeError, KeyError, UnicodeError):
         return None
+
+
+def callback_signed_fields_bound(body, signed_body, operation):
+    """Verify signed ONLYOFFICE fields, including optional command userdata.
+
+    ONLYOFFICE omits ``userdata`` in a status=6 callback if the forcesave
+    command did not supply it. When present, it MUST be JWT-bound; it must
+    never be accepted merely because the surrounding JWT is valid. The
+    command-correlated and durable save branches apply additional mandatory
+    userdata, replay, and sequence checks later in the request handler.
+    """
+    if not isinstance(body, dict) or not isinstance(signed_body, dict):
+        return False
+    if operation not in (None, 'callback'):
+        return False
+    required = ['status', 'key']
+    if body.get('status') in (2, 6) or 'url' in body:
+        required.append('url')
+    if 'userdata' in body:
+        required.append('userdata')
+    if any(field not in signed_body or signed_body[field] != body.get(field)
+           for field in required):
+        return False
+    # A signed claim cannot disagree with a body field either, even where
+    # that claim is optional for the particular callback status.
+    return not any(field in signed_body and signed_body[field] != body.get(field)
+                   for field in ('status', 'key', 'url', 'userdata'))
 
 
 def active_document_key(key):
@@ -469,10 +499,15 @@ class Handler(BaseHTTPRequestHandler):
                 with REPORT_LOCK:REPORT['bad_callbacks']+=1
                 return self.send(403,{'error':'callback-jwt-required'})
             body=self.json_body()
+            if not isinstance(body,dict) or type(body.get('status')) is not int:
+                with REPORT_LOCK:REPORT['bad_callbacks']+=1
+                return self.send(403,{'error':'callback-status-not-integer'})
             signed_body=jwt.get('payload') if isinstance(jwt.get('payload'),dict) else jwt
-            if (isinstance(signed_body,dict) and isinstance(body,dict) and
-                    any(field in signed_body and signed_body[field]!=body.get(field)
-                        for field in ('status','key','url','userdata'))):
+            # A valid JWT is NOT sufficient if its signature does not bind the
+            # operation being performed. Require the signed callback fields;
+            # do not accept a valid token for an unrelated request or permit
+            # unsigned JSON to select the status/key/cache URL/command token.
+            if not callback_signed_fields_bound(body, signed_body, jwt.get('operation')):
                 with REPORT_LOCK:REPORT['bad_callbacks']+=1
                 return self.send(403,{'error':'callback-jwt-body-mismatch'})
             if not body or not active_document_key(body.get('key')):
@@ -482,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
             # its scoped URL token, Document Server JWT, and issued editor key.
             # Never record a signed token, callback URL, workbook bytes or user
             # identity in these aggregate counters.
-            if FINAL_CLOSE_PROBE and body.get('status') == 2:
+            if (FINAL_CLOSE_PROBE or COEDITOR_PROBE) and body.get('status') == 2:
                 with REPORT_LOCK:
                     REPORT['final_close_signed_status2'] += 1
                     if body.get('userdata') is not None:
@@ -495,30 +530,40 @@ class Handler(BaseHTTPRequestHandler):
             obj._onlyoffice_safe_path=lambda name,**kw: TARGET if name==DOC else (_ for _ in ()).throw(ValueError('wrong file'))
             obj._read_json=lambda:body
             if DURABLE_SAVE and body.get('status') in (2,6):
-                # The SAME real MC callback method executes, but its final
-                # write is mediated by the file-backed, cross-process journal.
-                # This protects the second callback even after fixture restart.
-                if body.get('status')!=6 or not isinstance(body.get('userdata'),str):
+                # Source-backed MC callback still executes. `status=6` uses a
+                # signed per-command identifier. A real `status=2` has NO
+                # `userdata`: its one-use authority was registered at editor
+                # launch and is durably bound to the active document key.
+                status=body['status']
+                if status==6 and not isinstance(body.get('userdata'),str):
+                    with REPORT_LOCK:REPORT['continuous_denials']+=1
+                    return self.send(403,{'error':'durable-command-required'})
+                if status==2 and body.get('userdata') is not None:
                     with REPORT_LOCK:
                         REPORT['continuous_denials']+=1
-                        if FINAL_CLOSE_PROBE and body.get('status')==2:
-                            REPORT['final_close_rejected']+=1
-                    return self.send(403,{'error':'durable-command-required'})
-                userdata=body['userdata']
+                        if FINAL_CLOSE_PROBE or COEDITOR_PROBE:REPORT['final_close_rejected']+=1
+                    return self.send(403,{'error':'final-close-must-not-have-command-userdata'})
+                userdata=body.get('userdata')
                 def guarded_write(path,data):
-                    digest=JOURNAL.commit(path,mode=MODE,key=body['key'],
-                                          userdata=userdata,data=data)
-                    meta=JOURNAL._parse(userdata)
-                    with REPORT_LOCK:
-                        REPORT['shadow_commits']+=1
-                        REPORT['continuous_commits']+=1
-                        REPORT['continuous_seqs'].append(meta['seq'])
+                    if status==2:
+                        JOURNAL.commit_final_close(path,mode=MODE,key=body['key'],data=data)
+                        with REPORT_LOCK:REPORT['shadow_commits']+=1
+                    else:
+                        JOURNAL.commit(path,mode=MODE,key=body['key'],
+                                       userdata=userdata,data=data)
+                        meta=JOURNAL._parse(userdata)
+                        with REPORT_LOCK:
+                            REPORT['shadow_commits']+=1
+                            REPORT['continuous_commits']+=1
+                            REPORT['continuous_seqs'].append(meta['seq'])
                 obj._onlyoffice_atomic_write=guarded_write
                 sent={}
                 obj._send_json=lambda payload,status=HTTPStatus.OK: sent.update(payload=payload,status=int(status))
                 try:obj._handle_onlyoffice_callback()
                 except Exception as exc:
-                    with REPORT_LOCK:REPORT['continuous_denials']+=1
+                    with REPORT_LOCK:
+                        REPORT['continuous_denials']+=1
+                        if FINAL_CLOSE_PROBE and status==2:REPORT['final_close_rejected']+=1
                     return self.send(409,{'error':type(exc).__name__})
             elif CONTINUOUS_SAVE and body.get('status') in (2,6):
                 # Deliberately require command-service correlation for force
@@ -573,10 +618,13 @@ class Handler(BaseHTTPRequestHandler):
                     REPORT['callbacks'].append({'status':body.get('status'),'saved':bool(body.get('status') in (2,6)),
                                                 'key':body.get('key')})
                     if body.get('status') in (2,6):REPORT['saved']+=1
-                    if FINAL_CLOSE_PROBE and body.get('status')==2:
+                    if (FINAL_CLOSE_PROBE or COEDITOR_PROBE) and body.get('status')==2:
                         REPORT['final_close_committed']+=1
             else:
-                with REPORT_LOCK: REPORT['bad_callbacks']+=1
+                with REPORT_LOCK:
+                    REPORT['bad_callbacks']+=1
+                    if (FINAL_CLOSE_PROBE or COEDITOR_PROBE) and body.get('status')==2:
+                        REPORT['final_close_rejected']+=1
             return self.send(sent.get('status',500),result)
         return self.send(404,{'error':'not-found'})
 
@@ -590,15 +638,20 @@ def document_key():
 def make_config():
     key=document_key()
     if DURABLE_SAVE:
-        # Explicitly authenticated launch handler calls make_config. When a
-        # *new* editor is opened after committed bytes changed, rotate the
-        # issued editor key without resetting the monotonic sequence journal.
+        # A force-save changes persisted workbook bytes without ending the
+        # original Document Server editing session. In coeditor acceptance,
+        # retain the registered live key for the second authorized editor.
+        # Only a real, committed final-close permits the next launch to rotate
+        # to a new revision key. This state is on disk, not process-local.
         current=JOURNAL.current(TARGET,mode=MODE)
         if current is None:
             JOURNAL.register(TARGET,mode=MODE,key=key)
         elif current['key']!=key:
-            JOURNAL.rotate_key(TARGET,mode=MODE,
-                               old_key=current['key'],new_key=key)
+            if COEDITOR_PROBE and not current['final_closed']:
+                key=current['key']
+            else:
+                JOURNAL.rotate_key(TARGET,mode=MODE,
+                                   old_key=current['key'],new_key=key)
     ACTIVE_KEYS[key] = hashlib.sha256(TARGET.read_bytes()).hexdigest()
     expiry=int(time.time())+1800
     download=scoped_token('download',MODE,DOC,expiry)

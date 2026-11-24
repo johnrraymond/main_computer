@@ -13,20 +13,30 @@ from tools import mcel_hosted_signal_cutover_acceptance as acceptance
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def test_browser_instrumentation_is_ephemeral_and_exact():
+def test_browser_instrumentation_preserves_incumbent_reference_and_candidate():
     for app in acceptance.APPS:
         source=acceptance.expected_html(app,ROOT)
-        instrumented=acceptance.instrument_candidate(app,source)
-        assert instrumented!=source
-        assert 'signalSchedulerIntegration:true' in instrumented
-        assert 'signalSchedulerStartEnabled:true' in instrumented
-        if app!='calculator':assert 'signalSchedulerIntegration:true' not in source
+        candidate=acceptance.instrument_candidate(app,source)
+        reference=acceptance.instrument_reference(app,source)
+        assert 'signalSchedulerIntegration:true' in candidate
+        assert 'signalSchedulerStartEnabled:true' in candidate
+        if app=='code-editor':
+            assert 'signalSchedulerIntegration:true' in source
+            assert 'signalSchedulerStartEnabled:true' in source
+            assert 'signalSchedulerIntegration:false' in reference
+            assert 'signalSchedulerStartEnabled:false' in reference
+            assert 'window.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__' not in candidate
+        else:
+            assert candidate!=source
+            assert reference==source
     assert 'window.__MCEL_CALCULATOR_SIGNAL_ACCEPTANCE__=true' in acceptance.instrument_candidate(
         'calculator',acceptance.expected_html('calculator',ROOT))
     with pytest.raises(ValueError,match='HOST_DEFAULT_NOT_INCUMBENT'):
         acceptance.instrument_candidate('file-manager','<head></head>')
-    with pytest.raises(ValueError,match='EDITOR_RUNTIME_GATE_DRIFT'):
+    with pytest.raises(ValueError,match='EDITOR_PRODUCTION_SIGNAL_MOUNT_DRIFT'):
         acceptance.instrument_candidate('code-editor','<head>signalSchedulerIntegration:false signalSchedulerStartEnabled:false</head>')
+    with pytest.raises(ValueError,match='EDITOR_RUNTIME_GATE_DRIFT'):
+        acceptance.instrument_candidate('code-editor','<head>signalSchedulerIntegration:true signalSchedulerStartEnabled:true</head>')
 
 
 def test_network_guard_denies_writes_remote_and_arbitrary_mathics():
@@ -316,7 +326,7 @@ def test_document_firewall_only_instruments_exact_native_child_and_rejects_paren
         ctx.handler(exact,req)
         assert not exact.aborted and exact.fulfilled is not None
         assert exact.fulfilled['body']==(acceptance.instrument_candidate(app,canonical)
-                                        if role=='signals' else canonical)
+                                        if role=='signals' else acceptance.instrument_reference(app,canonical))
         assert firewall['servedHashes']==[acceptance._sha(canonical)]
 
         wrong=Route(shell)
@@ -906,3 +916,84 @@ def test_live_save_lifecycle_distinguishes_guard_and_missing_click():
     assert d._save_unsettled_classification({'browser':{'events':[{'phase':'fetch-start'}]},
               'network':{'blockedReasons':['DENIED_denied-disposable-write-payload']}})==\
            'GUARDED_REQUEST_REJECTED'
+
+
+def test_hosted_pageerror_evidence_preserves_js_error_and_safe_location():
+    class SyntheticPageError(Exception):
+        @property
+        def stack(self):
+            return ('TypeError: Cannot read properties of null (reading \"map\")\n'
+                    '    at updateDraft (http://127.0.0.1:8765/applications/scripts/mcel-semantic-operational-runtime.js:442:17)\n'
+                    '    at run (file:///C:/Users/private_user/source/app.js:77:8)')
+    witness=acceptance._browser_pageerror_evidence(
+        SyntheticPageError('TypeError: Cannot read properties of null (reading "map")'),
+        'signals','post-disposable-live-save')
+    assert witness['role']=='signals'
+    assert witness['stage']=='post-disposable-live-save'
+    assert 'Cannot read properties of null' in witness['message']
+    assert witness['frames'][0]=={'file':'mcel-semantic-operational-runtime.js',
+        'line':442,'column':17,'function':'updateDraft'}
+    assert witness['frames'][1]['file']=='app.js'
+    assert 'private_user' not in json.dumps(witness)
+    assert '127.0.0.1' not in json.dumps(witness)
+    assert len(witness['fingerprint'])==16
+    assert '[URL]' in acceptance._safe_browser_error_text(
+        'Error: at http://127.0.0.1:8765/secret?access_token=ABC')
+    assert '[LOCAL_PATH]' in acceptance._safe_browser_error_text(
+        'Error: at C:\\Users\\private_user\\token.txt')
+    assert 'ABC' not in acceptance._safe_browser_error_text(
+        'Error: at http://127.0.0.1:8765/secret?access_token=ABC')
+
+
+def test_hosted_pageerror_evidence_real_browser_event():
+    from playwright.sync_api import sync_playwright
+    from tools.mcel_phase2b_browser import launch_semantic_browser
+    with sync_playwright() as pw:
+        browser,_=launch_semantic_browser(pw)
+        try:
+            page=browser.new_page()
+            events=[]
+            page.on('pageerror',lambda exc:events.append(
+                acceptance._browser_pageerror_evidence(exc,'incumbent','after-save')))
+            page.set_content('<!doctype html><script>setTimeout(()=>{' 
+                             'throw new TypeError("MCEL_BROWSER_PAGEERROR_PROBE");},0);</script>')
+            page.wait_for_timeout(150)
+            assert len(events)==1,events
+            assert 'MCEL_BROWSER_PAGEERROR_PROBE' in events[0]['message']
+            assert events[0]['role']=='incumbent'
+            assert events[0]['stage']=='after-save'
+            assert events[0]['errorClass']
+        finally:
+            browser.close()
+
+
+def test_hosted_pageerror_remains_a_failure_and_records_details():
+    # Ensure the new instrumentation cannot be mistaken for an exception waiver.
+    from inspect import getsource
+    code=getsource(acceptance._single_app)
+    assert "data['failures'].append('BROWSER_PAGEERROR')" in code
+    assert "data['browserPageErrors']" in code
+    assert "data['status']='BLOCKED'" in code
+    assert "observed_pageerror(exc,r)" in code
+
+
+def test_hosted_monaco_style_difference_keeps_exact_gate_and_emits_privacy_safe_fingerprint():
+    from tools import mcel_hosted_signal_cutover_acceptance as a
+    assert a._exact_snapshot_resamples('code-editor','hosted-source-open')==4
+    assert a._exact_snapshot_resamples('code-editor','live-read-response-held')==0
+    assert a._exact_snapshot_resamples('file-manager','hosted-source-open')==0
+    assert a._exact_snapshot_resamples('calculator','real-host-arithmetic')==3
+    left={'rows':[{'path':'0/15/4','tag':'DIV','attrs':{
+        'class':'view-line', 'style':'left: 10px; width: 12px'}}]}
+    right={'rows':[{'path':'0/15/4','tag':'DIV','attrs':{
+        'class':'view-line', 'style':'left: 11px; width: 12px'}}]}
+    n,differences=a._diff(left,right)
+    assert n==1
+    assert differences[0]['path']=='rows[0].attrs.style'
+    diagnostic=a._snapshot_difference_diagnostics(left,right,differences)
+    assert len(diagnostic)==1
+    assert diagnostic[0]['incumbent']['nodePath']=='0/15/4'
+    assert diagnostic[0]['signals']['nodePath']=='0/15/4'
+    assert diagnostic[0]['incumbent']['styleSha256']!=diagnostic[0]['signals']['styleSha256']
+    assert diagnostic[0]['incumbent']['styleProperties']==['left','width']
+    assert '10px' not in str(diagnostic) and '11px' not in str(diagnostic)

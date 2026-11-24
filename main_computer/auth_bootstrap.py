@@ -27,7 +27,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-HOST = 'mc.test'
+# The incumbent mc.test origin remains unchanged until candidate activation.
+HARDENED = os.environ.get('MAIN_COMPUTER_HARDENED_CANDIDATE') == '1'
+PRIMARY_OWNER = os.environ.get('MAIN_COMPUTER_PRIMARY_OWNER', 'dev').strip().lower()
+if HARDENED and PRIMARY_OWNER not in {'dev', 'unleashed'}:
+    raise RuntimeError('HARDENED_PRIMARY_OWNER_MUST_BE_DEV_OR_UNLEASHED')
+HOST = (PRIMARY_OWNER + '.main-computer.local') if HARDENED else 'mc.test'
+
 DEFAULT_PORT = 8875
 COOKIE = '__Host-MC-Session'
 SESSION_AGE = 180 * 24 * 60 * 60
@@ -669,10 +675,16 @@ def generate_tls_certificate(root: Path, hostname: str = HOST) -> tuple[Path, Pa
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     root = _private_folder(root)
-    certfile, keyfile = root / 'tls-cert.pem', root / 'tls-key.pem'
+    certfile, keyfile = (root / 'tls-cert-hardened.pem', root / 'tls-key-hardened.pem') if HARDENED else (root / 'tls-cert.pem', root / 'tls-key.pem')
     if certfile.exists() and keyfile.exists():
         _protect(keyfile, directory=False)
-        der = x509.load_pem_x509_certificate(certfile.read_bytes()).public_bytes(serialization.Encoding.DER)
+        existing = x509.load_pem_x509_certificate(certfile.read_bytes())
+        if HARDENED:
+            from main_computer.auth_hostnames import HOSTS
+            observed = set(existing.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName))
+            if observed != set(HOSTS.values()):
+                raise RuntimeError('HARDENED_TLS_SAN_MISMATCH_REFUSE_STALE_CERT')
+        der = existing.public_bytes(serialization.Encoding.DER)
         return certfile, keyfile, hashlib.sha1(der).hexdigest().upper()
     if certfile.exists() or keyfile.exists():
         raise RuntimeError('INCOMPLETE_TLS_CERT_PAIR')
@@ -682,7 +694,8 @@ def generate_tls_certificate(root: Path, hostname: str = HOST) -> tuple[Path, Pa
         .public_key(private.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=5))
         .not_valid_after(datetime.now(timezone.utc) + timedelta(days=730))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(h) for h in (
+            __import__('main_computer.auth_hostnames', fromlist=['HOSTS']).HOSTS.values() if HARDENED else [hostname])]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .sign(private, hashes.SHA256()))
@@ -717,6 +730,8 @@ class BootstrapServer(ThreadingHTTPServer):
             raise ValueError('BOOTSTRAP_MUST_BIND_NUMERIC_LOOPBACK_ONLY')
         self.authority = authority
         self.backend_port = backend_port
+        self.handoff_lock = threading.RLock()
+        self.handoff_tickets = {}
         super().__init__(address, BootstrapHandler)
         if cert is not None and key is not None:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -764,12 +779,16 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, separators=(',', ':')).encode(), cookie=cookie)
 
     def _host_ok(self) -> bool:
-        return self.headers.get('Host', '') == f'{HOST}:{self.server.server_port}'
+        if HARDENED:
+            from main_computer.auth_hostnames import HOSTS
+            from main_computer.auth_hostnames import active_auth_hosts
+            return self.headers.get('Host', '') in {f'{host}:{self.server.server_port}' for host in active_auth_hosts(PRIMARY_OWNER)}
+        return self.headers.get('Host', '') == f'{HOST}:{self.server.server_port}' 
 
     def _origin_ok(self) -> bool:
         origin = self.headers.get('Origin', '')
         site = self.headers.get('Sec-Fetch-Site', '')
-        return (origin == f'https://{HOST}:{self.server.server_port}'
+        return (origin == f"https://{self.headers.get('Host', '')}"
                 and site in ('', 'same-origin', 'none'))
 
     def _session_cookie(self) -> str:
@@ -825,6 +844,17 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         self.end_headers()
 
+    def _redirect_with_cookie(self, location: str, cookie: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header('Location', location)
+        self.send_header('Set-Cookie', cookie)
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Length', '0')
+        self.send_header('Connection', 'close')
+        self.close_connection = True
+        self.end_headers()
+
     def _redirect_to_login(self, requested: str) -> None:
         # Redirect only top-level pages, not API requests or internal service
         # protocols. Those receive 401 and must handle authentication explicitly.
@@ -848,6 +878,21 @@ class BootstrapHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.UNAUTHORIZED, {'ok': False, 'error': 'AUTH_REQUIRED'})
             return
         port = self.server.backend_port
+        if HARDENED:
+            from main_computer.auth_hostnames import HOSTS, APP_PORTS
+            presented = self.headers.get('Host', '').split(':')[0]
+            mode = next((name for name, host in HOSTS.items() if host == presented), None)
+            if mode not in APP_PORTS:
+                self._json(HTTPStatus.FORBIDDEN, {'ok': False, 'error': 'INVALID_APPLICATION_ORIGIN'})
+                return
+            # The bootstrap remains one per-user HTTPS authority.  Each
+            # hostname dispatches exclusively to its own MCEL installation.
+            # Dev and Unleashed intentionally share the exclusive :8765 slot.
+            port = APP_PORTS[mode]
+            if path.startswith('/api/heartbeat/'):
+                # The heartbeat service is its own listener; its candidate
+                # handler now also requires this signed gateway assertion.
+                port = APP_PORTS[mode] + 1
         if not port:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {'ok': False, 'error': 'MC_BACKEND_NOT_CONFIGURED'})
             return
@@ -855,10 +900,14 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         if not path.startswith('/') or '://' in path or len(path) > 4096:
             self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'BAD_PATH'})
             return
+        if HARDENED and method == 'POST' and not self._origin_ok():
+            self._json(HTTPStatus.FORBIDDEN, {'ok': False, 'error': 'CROSS_ORIGIN_WRITE_DENIED'})
+            return
         size = 0
         if method == 'POST':
             lengths = self.headers.get_all('Content-Length', [])
-            if len(lengths) != 1 or not lengths[0].isdigit() or int(lengths[0]) > 2_000_000:
+            if len(lengths) != 1 or not lengths[0].isdigit() or int(lengths[0]) > (
+                    __import__('main_computer.hardened_ingress', fromlist=['MAX_BODY']).MAX_BODY if HARDENED else 2_000_000):
                 self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'INVALID_BODY_LENGTH'})
                 return
             size = int(lengths[0])
@@ -871,7 +920,13 @@ class BootstrapHandler(BaseHTTPRequestHandler):
                        'Connection': 'close'}
             if method == 'POST':
                 headers['Content-Type'] = self.headers.get('Content-Type', 'application/json')
-            conn.request(method, path, body=self.rfile.read(size) if size else None, headers=headers)
+            payload = self.rfile.read(size) if size else b''
+            if HARDENED:
+                from main_computer.hardened_ingress import HEADER, issue_assertion
+                headers[HEADER] = issue_assertion(self.server.authority.key,
+                    session=self._session_cookie(), method=method, path=path,
+                    body=payload, host=headers['Host'])
+            conn.request(method, path, body=payload if method == 'POST' else None, headers=headers)
             response = conn.getresponse()
             data = response.read(2_000_001)
             if len(data) > 2_000_000:
@@ -909,8 +964,35 @@ class BootstrapHandler(BaseHTTPRequestHandler):
             html = (Path(__file__).resolve().parent / 'web' / 'graphical.html').read_bytes()
             # Preserve non-default isolated test ports in the button target.
             html = html.replace(b'https://mc.test:8875/auth/login?next=%2Fgraphical',
-                f'https://{HOST}:{self.server.server_port}/auth/login?next=%2Fgraphical'.encode())
+                f"https://{self.headers.get('Host', f'{HOST}:{self.server.server_port}')}/auth/login?next=%2Fgraphical".encode())
             self._send(HTTPStatus.OK, html, kind='text/html; charset=utf-8')
+        elif HARDENED and path == '/auth/handoff/start':
+            from main_computer.auth_hostnames import HOSTS
+            target = parse_qs(urlsplit(self.path).query).get('target', [''])[0]
+            source = self.headers.get('Host', '').split(':')[0]
+            if not self._authorized() or target not in __import__('main_computer.auth_hostnames', fromlist=['active_auth_hosts']).active_auth_hosts(PRIMARY_OWNER) or target == source:
+                self._json(HTTPStatus.FORBIDDEN, {'ok': False, 'error': 'HANDOFF_UNAUTHORIZED'})
+                return
+            # A capability is not reusable after redeem and is never an
+            # alternate means of creating a session or extending its lifetime.
+            ticket = secrets.token_urlsafe(32)
+            with self.server.handoff_lock:
+                self.server.handoff_tickets = {k:v for k,v in self.server.handoff_tickets.items() if v[2] > time.time()}
+                self.server.handoff_tickets[hashlib.sha256(ticket.encode()).hexdigest()] = (
+                    target, self._session_cookie(), time.time() + 30)
+            self._redirect(f'https://{target}:{self.server.server_port}/auth/handoff/redeem?ticket={quote(ticket, safe="")}')
+        elif HARDENED and path == '/auth/handoff/redeem':
+            token = parse_qs(urlsplit(self.path).query).get('ticket', [''])[0]
+            if not isinstance(token, str) or len(token) > 128:
+                self._json(HTTPStatus.BAD_REQUEST, {'ok': False, 'error': 'BAD_HANDOFF_TICKET'})
+                return
+            with self.server.handoff_lock:
+                grant = self.server.handoff_tickets.pop(hashlib.sha256(token.encode()).hexdigest(), None)
+            if not grant or grant[0] != self.headers.get('Host', '').split(':')[0] or grant[2] < time.time() or not self.server.authority.sessions.valid(grant[1]):
+                self._json(HTTPStatus.UNAUTHORIZED, {'ok': False, 'error': 'HANDOFF_EXPIRED_OR_REPLAYED'})
+                return
+            self._redirect_with_cookie('/graphical',
+                f'{COOKIE}={grant[1]}; Max-Age={SESSION_AGE}; Path=/; Secure; HttpOnly; SameSite=Strict')
         elif path == '/api/auth/bootstrap/challenge':
             try:
                 self._json(HTTPStatus.OK, self.server.authority.challenge())

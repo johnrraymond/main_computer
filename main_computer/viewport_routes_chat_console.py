@@ -13,9 +13,13 @@ from main_computer.chat_ai_subprocess import (
     config_to_payload,
 )
 from main_computer.models import ChatResponse
-from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, credit_wei_to_display_text, positive_credit_wei
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, credit_wei_to_display_text, positive_credit_wei, require_credit_wei
 from main_computer.remote_overflow import RemoteOverflowDecisionEngine, RemoteHubExecutionGateway, estimate_remote_request
 from main_computer.hub_interface import resolve_hub_destination, require_legacy_overflow, HubInterfaceError
+from main_computer.requester_spend_guard import (
+    RequesterSpendDenied, RequesterSpendLedger, requester_policy, request_digest,
+    verify_isolated_backend_guard,
+)
 
 
 def _should_inline_test_provider(provider: Any) -> bool:
@@ -386,6 +390,60 @@ class ViewportChatConsoleRoutesMixin:
         records.sort(key=lambda item: (item.get("created_at", ""), item.get("updated_at", ""), item.get("id", "")), reverse=True)
         return records[0] if records else None
 
+    def _chat_console_requester_ledger(self) -> RequesterSpendLedger:
+        return RequesterSpendLedger(self.server.debug_root / "runtime" / "requester_spend.sqlite3")
+
+    def _chat_console_requester_busy(self, body: dict[str, Any]) -> bool:
+        # Never trust browser-provided local_capacity_snapshot or active_run_count
+        # as authorization for an otherwise local-only payment.
+        processes = getattr(self.server, "chat_ai_processes", None)
+        if processes is None:
+            return False
+        status = processes.local_ai_capacity_snapshot(
+            thread_id=str(body.get("thread_id") or body.get("chat_thread_id") or ""),
+            max_local_concurrency=1,
+        )
+        return bool(status.get("ok") and status.get("available_now") is False)
+
+    def _chat_console_requester_guard_context(self, body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], int]:
+        context = self._chat_console_backend_paid_overflow_context(body)
+        policy = requester_policy(context["settings"])
+        amount = positive_credit_wei(context.get("estimated_max_credit_wei"), default=0)
+        return context, policy, amount
+
+    def _handle_chat_console_requester_authorize(self) -> None:
+        try:
+            body = self._read_json()
+            if not isinstance(body, dict) or not body.get("remote_hub_current_request"):
+                raise RequesterSpendDenied("request_context_required")
+            context, policy, amount = self._chat_console_requester_guard_context(body)
+            if not context.get("estimate_ok"):
+                raise RequesterSpendDenied("cost_estimate_unavailable")
+            self._chat_console_requester_ledger()._check(
+                policy, amount, local_busy=self._chat_console_requester_busy(body),
+                local_only=bool(body.get("local_only")),
+            )
+            if (policy["ask_before_spend"] or policy["mode"] == "ask-when-busy") and str(body.get("remote_worker_intent_mode") or "") != "remote_once":
+                raise RequesterSpendDenied("explicit_request_approval_required")
+            token = self._chat_console_requester_ledger().approve(digest=request_digest(body, context))
+            self._send_json({"ok": True, "spend_authorization_token": token, "expires_in_seconds": 120})
+        except RequesterSpendDenied as exc:
+            self._send_json({"ok": False, "reason_code": exc.reason_code, "error": exc.reason_code}, status=HTTPStatus.CONFLICT)
+        except Exception as exc:
+            self.server.signal("requester-authorize-error", error=exc)
+            self._send_json({"ok": False, "reason_code": "requester_authorization_unavailable"}, status=HTTPStatus.CONFLICT)
+
+    def _handle_chat_console_requester_guard_verify(self) -> None:
+        # Isolated verification: no configuration mutation, wallet calls, or
+        # paid requests; uses the same reserve and policy path as submission.
+        try:
+            proofs = verify_isolated_backend_guard()
+            self._send_json({"ok": all(proofs.values()), "isolated": True,
+                             "no_paid_submission": True, "proofs": proofs})
+        except Exception as exc:
+            self.server.signal("requester-guard-verify-error", error=exc)
+            self._send_json({"ok": False, "reason_code": "backend_guard_unverified"}, status=HTTPStatus.CONFLICT)
+
     def _chat_console_backend_paid_overflow_context(self, body: dict[str, Any]) -> dict[str, Any]:
         settings = self._chat_console_load_worker_settings()
         destination = resolve_hub_destination(settings)
@@ -428,6 +486,7 @@ class ViewportChatConsoleRoutesMixin:
         chain_id = str((active_key or {}).get("chain_id") or "0x28757b2").strip() or "0x28757b2"
         return {
             "settings": settings,
+            "requester_policy": requester_policy(settings),
             "hub_destination": destination,
             "hub_url": hub_url,
             "remote_enabled": remote_enabled,
@@ -480,9 +539,15 @@ class ViewportChatConsoleRoutesMixin:
         enriched["credits_per_token_wei"] = str(context.get("credits_per_token_wei") or "")
         enriched["estimated_max_credit_wei"] = str(context.get("estimated_max_credit_wei") or "0")
         enriched["payment_authorization"] = authorization
+        policy = context["requester_policy"]
+        remaining, used = self._chat_console_requester_ledger().remaining(limit_wei=policy["daily_limit_wei"])
+        enriched["daily_remote_limit_credit_wei"] = str(policy["daily_limit_wei"])
+        enriched["daily_remote_used_credit_wei"] = str(used)
+        enriched["requester_budget_remaining_credit_wei"] = str(remaining)
         enriched.setdefault("local_only", False)
         enriched["credit"] = {
-            **(enriched.get("credit") if isinstance(enriched.get("credit"), dict) else {}),
+            # Do not let submitted client balances or paid-state flags survive
+            # a backend assessment refresh.
             "known": False,
             "wallet_address": str(context.get("wallet_address") or ""),
             "credit_ready": False,
@@ -492,6 +557,8 @@ class ViewportChatConsoleRoutesMixin:
             "approximation_only": True,
             "direct_spend": True,
             "no_credit_spent": True,
+            "daily_remote_limit_credit_wei": str(policy["daily_limit_wei"]),
+            "daily_remote_used_credit_wei": str(used),
         }
         return enriched, context
 
@@ -581,7 +648,18 @@ class ViewportChatConsoleRoutesMixin:
                 ),
             )
         )
-        budget_ok = bool(context.get("estimate_ok")) and funds_ok
+        policy = context["requester_policy"]
+        budget_remaining, _ = self._chat_console_requester_ledger().remaining(limit_wei=policy["daily_limit_wei"])
+        budget_ok = bool(context.get("estimate_ok")) and funds_ok and required_credit_wei > 0 and required_credit_wei <= budget_remaining
+        local_capacity_ok = not policy["only_when_busy"] and policy["mode"] not in {"ask-when-busy", "auto-when-busy"}
+        if not local_capacity_ok:
+            local_capacity_ok = self._chat_console_requester_busy(body)
+        checks.append(
+            self._chat_console_readiness_check(
+                "requester-local-capacity", "Local-first requester policy", local_capacity_ok,
+                "Local AI is busy or unavailable." if local_capacity_ok else "Backend did not verify local AI is unavailable.",
+            )
+        )
         checks.append(
             self._chat_console_readiness_check(
                 "authorization-budget",
@@ -602,6 +680,8 @@ class ViewportChatConsoleRoutesMixin:
             and key_id
             and hub_valid
             and funds_ok
+            and budget_ok
+            and local_capacity_ok
             and context.get("estimate_ok")
         )
         reason_code = "paid_overflow_ready" if ready else "paid_overflow_not_ready"
@@ -637,8 +717,10 @@ class ViewportChatConsoleRoutesMixin:
             "available_credits_display": credit_wei_to_decimal_text(available_credit_wei),
             "required_credit_wei": str(required_credit_wei),
             "required_credits_display": credit_wei_to_decimal_text(required_credit_wei),
-            "credit_ready": funds_ok,
+            "credit_ready": funds_ok and budget_ok,
             "funds_ok": funds_ok,
+            "requester_budget_ready": budget_ok,
+            "requester_budget_remaining_credit_wei": str(budget_remaining),
             "max_output_tokens": int(context.get("max_output_tokens") or 1024),
             "credits_per_token": str(context.get("credits_per_token") or "0.001"),
             "credits_per_token_wei": str(context.get("credits_per_token_wei") or ""),
@@ -730,9 +812,7 @@ class ViewportChatConsoleRoutesMixin:
         submit_body["pending_hold_credit_wei"] = str(account.get("held_credit_wei", "0") or "0")
         submit_body["willing_worker_count"] = 1 if credit_ready else 0
 
-        credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
         submit_body["credit"] = {
-            **credit_payload,
             "known": bool(readiness.get("hub_reachable")),
             "wallet_address": str(readiness.get("wallet_address") or context.get("wallet_address") or ""),
             "account_id": str(readiness.get("account_id") or ""),
@@ -740,6 +820,8 @@ class ViewportChatConsoleRoutesMixin:
             "bridged_credit_wei": str(submit_body.get("bridged_credit_wei") or "0"),
             "spendable_credit_wei": str(submit_body.get("spendable_credit_wei") or "0"),
             "pending_hold_credit_wei": str(submit_body.get("pending_hold_credit_wei") or "0"),
+            "daily_remote_limit_credit_wei": str(context["requester_policy"]["daily_limit_wei"]),
+            "daily_remote_used_credit_wei": str(self._chat_console_requester_ledger().remaining(limit_wei=context["requester_policy"]["daily_limit_wei"])[1]),
             "estimated_max_credit_wei": str(readiness.get("estimated_max_credit_wei") or context.get("estimated_max_credit_wei") or "0"),
             "estimated_max_credits_display": str(readiness.get("estimated_max_credits_display") or context.get("estimated_max_credits_display") or context.get("estimated_max_credits_approx") or ""),
             "estimated_max_credits_approx": str(readiness.get("estimated_max_credits_approx") or context.get("estimated_max_credits_approx") or ""),
@@ -831,8 +913,36 @@ class ViewportChatConsoleRoutesMixin:
                               "reason_code": "unsupported_selected_hub_protocol",
                               "error": str(exc), "remote_overflow": assessment.as_dict()}
             else:
+                if not body.get("remote_hub_current_request"):
+                    raise RequesterSpendDenied("request_context_required")
+                if not assessment.authorization_required or not assessment.offer_remote:
+                    raise RequesterSpendDenied("remote_assessment_not_authorization_ready")
+                context, policy, required_wei = self._chat_console_requester_guard_context(body)
+                if not context.get("estimate_ok"):
+                    raise RequesterSpendDenied("cost_estimate_unavailable")
+                # This atomic transaction is the last boundary before any paid
+                # execution. Requester policy and credit accounting are not sourced
+                # from the browser, including its boolean authorization flag.
+                request_id = str(body.get("pending_request_id") or "").strip()
+                ledger = self._chat_console_requester_ledger()
+                ledger.reserve(
+                    request_id=request_id, digest=request_digest(body, context),
+                    policy=policy, required_wei=required_wei,
+                    local_busy=self._chat_console_requester_busy(body),
+                    local_only=bool(body.get("local_only")),
+                    consent_token=str(body.get("spend_authorization_token") or ""),
+                )
                 result = RemoteHubExecutionGateway(config=getattr(self.server, "config", None),
                                                    destination=destination).run(submit_body, assessment)
+                remote_result_for_settlement = result.get("remote_overflow_result") if isinstance(result.get("remote_overflow_result"), dict) else {}
+                # This is a dev/test-only simulation endpoint. Do not release a
+                # hold on an ambiguous failure or a claimed/unknown payment.
+                payment = remote_result_for_settlement.get("payment")
+                if result.get("ok") and result.get("simulated") is True and remote_result_for_settlement.get("simulated") is True and not payment:
+                    ledger.settle(request_id, definitively_unpaid=True)
+                elif result.get("ok") and isinstance(payment, dict) and payment.get("charge_id") and payment.get("charged_credit_wei") is not None:
+                    ledger.settle(request_id, charged_wei=require_credit_wei(payment["charged_credit_wei"],
+                                                                              field_name="charged_credit_wei", allow_zero=True))
             remote_result = result.get("remote_overflow_result") if isinstance(result.get("remote_overflow_result"), dict) else {}
             remote_overflow_request_id = str(remote_result.get("remote_overflow_request_id") or "")
             result["routing"] = destination.diagnostics()
@@ -875,6 +985,10 @@ class ViewportChatConsoleRoutesMixin:
 
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT
             self._send_json(result, status=status)
+        except RequesterSpendDenied as exc:
+            self.server.signal("api-chat-console-requester-spend-denied", reason_code=exc.reason_code)
+            self._send_json({"ok": False, "status": "blocked", "reason_code": exc.reason_code,
+                             "error": exc.reason_code}, status=HTTPStatus.CONFLICT)
         except Exception as exc:
             self.server.signal("api-chat-console-remote-overflow-hub-submit-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

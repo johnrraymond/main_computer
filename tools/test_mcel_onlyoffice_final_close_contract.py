@@ -68,12 +68,15 @@ class FinalCloseContract(unittest.TestCase):
                         callback.index("REPORT['final_close_signed_status2'] += 1"))
         self.assertIn("REPORT['final_close_rejected']+=1",callback)
         self.assertIn("REPORT['final_close_committed']+=1",callback)
-        self.assertIn("body.get('status')!=6",callback)  # candidate remains unimplemented
+        self.assertIn('JOURNAL.commit_final_close(',callback)
+        self.assertIn("status==2 and body.get('userdata') is not None",callback)
 
     def test_full_cert_requires_signed_status2_and_actual_persisted_edit(self):
         self.assertIn('final-close-unsaved-edits',certification.REQUIRED_PROOFS)
+        self.assertIn('durable-final-close-journal-candidate',certification.REQUIRED_PROOFS)
         runner=inspect.getsource(certification.run)
         self.assertIn("'docker-final-close-callback'",runner)
+        self.assertIn("'offline-final-close-journal'",runner)
         self.assertIn("'--final-close-probe'",runner)
         self.assertIn('final-close-genuine-jwt-authenticated-status2-observed PASS',runner)
         self.assertIn('final-close-last-unsaved-edit-saved-through-source-callback PASS',runner)
