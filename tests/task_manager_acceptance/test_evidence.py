@@ -17,7 +17,7 @@ from tools.mcel_task_manager_acceptance.lab import isolated_schedule_store
 from tools.mcel_task_manager_acceptance.__main__ import run,ROOT
 
 def test_loopback_only_explicit_port_and_zero_credentials():
-    assert validate_host_url('http://127.0.0.1:8765')=='http://127.0.0.1:8765'
+    assert validate_host_url('http://127.0.0.1:8765')=='https://dev.main-computer.localhost:8875'
     for value in ('http://other.example:8765','https://localhost:8765','http://localhost',
                   'http://user:password@localhost:8765','http://127.0.0.1:8765/foo',
                   'http://localhost:8765?x=1','file:///tmp/a'):
@@ -88,7 +88,7 @@ import tools.mcel_task_manager_acceptance.hosted as hp
 
 from tools.mcel_task_manager_acceptance.evidence import init_report, safe_json, evidence_manifest, set_gate
 
-HOST = 'http://127.0.0.1:8765'
+HOST = 'https://dev.main-computer.localhost:8875'
 
 SHA = 'a'*64
 

@@ -29,11 +29,13 @@ import {priceOfWorkerOffer, waitForLiveWorker, waitForDeliveredWork,
   readWorkerLiveStatus, executeCaptainWithPriceRetry, captainFundingPreflightEvidence,
   boundedSmokeOfferRate} from './worker_work_cycle.mjs'
 import {classifyRequesterPolicyRead} from './requester_policy_read.mjs'
+import {ORIGIN,authenticateContext,revokeContext} from './secure_functional_auth.mjs'
+import {mountCanonicalWorkerSurface} from './canonical_worker_surface.mjs'
 
 const gate = process.env.MC_WORKER_LIVE_GATE
 const allowed = new Set(['wallet-msk','offer-registration','work-cycle','requester-enforcement'])
 const url = process.env.MC_WORKER_TEST_URL
-const expectedUrl = 'http://127.0.0.1:8765/applications/mcel-semantic-worker'
+const expectedUrl = ORIGIN + '/applications/worker'
 const reportPath = process.env.MC_WORKER_LIVE_EVIDENCE
 const walletPath = process.env.MC_WORKER_TEST_WALLET_FILE
 const profile = process.env.MC_WORKER_TEST_PROFILE_DIR
@@ -1051,14 +1053,20 @@ async function captureConnectDiagnostics(page) {
   } catch {return safeWalletConnectState()}
 }
 async function main(){
-  let context=null, workerPage=null
+  let context=null, workerPage=null, authStarted=false
   try{
     proof.stage='BROWSER_LAUNCH'
     context=await chromium.launchPersistentContext(profile||'',{
       channel:'chromium',headless:false,
       args:walletGate?[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]:[],
-      viewport:{width:1440,height:920}})
-    const page=await context.newPage()
+      viewport:{width:1440,height:920},ignoreHTTPSErrors:false,serviceWorkers:'block'})
+    proof.stage='GATEWAY_AUTHENTICATION'
+    // Never revoke a pre-existing session: fresh disposable profiles only.
+    if((await context.cookies(ORIGIN)).some(c=>c.name==='__Host-MC-Session'))throw Error('context-not-disposable')
+    authStarted=true
+    await authenticateContext(context)
+    proof.gatewayAuthenticated=true
+    let page=await context.newPage()
     workerPage=page
     // Collect only fixed fault classes and endpoint categories. Raw browser
     // exception strings, console messages, request URLs and bodies are secret-
@@ -1072,7 +1080,7 @@ async function main(){
     const requestKind=request=>{
       try{
         const link=new URL(request.url())
-        if(link.origin!=='http://127.0.0.1:8765')return null
+        if(link.origin!==ORIGIN)return null
         if(link.pathname.startsWith('/api/applications/worker/'))return 'worker-api'
         if(link.pathname.startsWith('/applications/'))return 'worker-app'
         return null
@@ -1102,9 +1110,10 @@ async function main(){
       })
     })
     await page.goto(url,{waitUntil:'domcontentloaded'})
-    await page.waitForFunction(()=>window.__mcelWorker?.app?.readState('state:destinations')?.length===6,null,{timeout:45000})
-    if(page.url()!==expectedUrl || !(await page.locator('[data-mcel-radio-choices]').count()))
-      throw Error('Native MCEL Worker did not mount')
+    const mounted=await mountCanonicalWorkerSurface(page,expectedUrl)
+    page=mounted.page
+    workerPage=page
+    proof.canonicalRoute=mounted.proof
     proof.stage='NATIVE_MCEL_MOUNTED'
     // Repair a previously interrupted policy edit BEFORE wallet signing or offer submission.
     if(gate==='offer-registration'||gate==='work-cycle')await recoverInterruptedSellerPolicy(page)
@@ -1313,7 +1322,10 @@ async function main(){
     if(Array.isArray(proof.offerMomentTasks))await Promise.allSettled(proof.offerMomentTasks)
     delete proof.mskMomentTasks
     delete proof.offerMomentTasks
-    try {await context?.close();proof.cleanupOk=true} catch {proof.cleanupOk=false}
+    let revoked=false
+    try {if(authStarted)revoked=await revokeContext(context)} catch {}
+    try {await context?.close();proof.cleanupOk=revoked} catch {proof.cleanupOk=false}
+    proof.gatewaySessionRevoked=revoked
     mkdirSync(dirname(reportPath),{recursive:true})
     writeFileSync(reportPath,JSON.stringify(proof,null,2)+'\n',{mode:0o600})
   }

@@ -253,7 +253,7 @@ def _capture_with_fake_browser(monkeypatch, tmp_path, *, fail_phase=None, root_v
         def stop(self): pass
     monkeypatch.setattr(playwright.sync_api, 'sync_playwright', lambda: Driver())
     monkeypatch.setattr(mod, 'launch_semantic_browser', lambda p: (Browser(), 'chromium'))
-    result = mod._production_worker_probe('http://127.0.0.1:8765', 'code-editor', 320,
+    result = mod._production_worker_probe('http://127.0.0.1:39123', 'code-editor', 320,
                                            tmp_path, tmp_path / 'stages.json')
     return result, calls
 

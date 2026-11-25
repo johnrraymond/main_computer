@@ -1897,6 +1897,8 @@ _SEMANTIC_CANONICAL_APPLICATIONS = {
     "task-manager": "task-manager",
     "code-editor": "code-editor",
     "chat-console": "chat-console",
+    "wallet": "wallet",
+    "document": "document",
 }
 _SEMANTIC_TASK_TABS = {
     "server-processes": "server-processes",
@@ -2032,6 +2034,19 @@ def dispatch_get(self) -> None:
                     return
         self._send_json(observe_slh(query["view"][0], admin_token=token))
         return
+    if route_path == "/applications/mcel-semantic-wallet":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Wallet application is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_wallet_application import render_wallet_page
+        try:
+            page = render_wallet_page()
+        except (OSError, ValueError) as exc:
+            self.server.signal("mcel-wallet-render-failed", error=str(exc))
+            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Wallet semantic application unavailable")
+            return
+        self._send_text(page, "text/html; charset=utf-8")
+        return
     if route_path == "/applications/mcel-semantic-worker":
         if not _hard_halt_client_is_local(self):
             self._send_json({"ok": False, "error": "Worker semantic preview is local-only."}, HTTPStatus.FORBIDDEN)
@@ -2118,6 +2133,12 @@ def dispatch_get(self) -> None:
         elif name == "chat-console":
             from main_computer.mcel_chat_console_host import render_chat_console_page
             page = render_chat_console_page(promoted=True)
+        elif name == "wallet":
+            from main_computer.mcel_wallet_application import render_wallet_page
+            page = render_wallet_page()
+        elif name == "document":
+            from main_computer.mcel_document_candidate_host import render_document_candidate
+            page = render_document_candidate()
         elif name == "worker":
             from main_computer.mcel_worker_application import render_worker_page
             page = render_worker_page(canonical=True)
@@ -2139,6 +2160,13 @@ def dispatch_get(self) -> None:
         from main_computer.mcel_semantic_other_apps_host import render_semantic_page
         name = route_path.removeprefix("/applications/mcel-semantic-")
         self._send_text(render_semantic_page(name), "text/html; charset=utf-8")
+        return
+    if route_path == "/applications/mcel-semantic-document":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic Document Editor is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_document_candidate_host import render_document_candidate
+        self._send_text(render_document_candidate(), "text/html; charset=utf-8")
         return
     if route_path == "/applications/mcel-semantic-chat-console":
         if not _hard_halt_client_is_local(self):
@@ -2503,6 +2531,14 @@ def dispatch_post(self) -> None:
     if urlsplit(self.path).path == "/api/applications/slh/software-authenticator":
         from main_computer.mcel_slh_software_authenticator_route import handle_software_authenticator
         handle_software_authenticator(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/wallet/portfolio":
+        from main_computer.mcel_wallet_route import handle_wallet_portfolio
+        handle_wallet_portfolio(self)
+        return
+    if urlsplit(self.path).path == "/api/applications/wallet/org":
+        from main_computer.mcel_wallet_route import handle_wallet_org
+        handle_wallet_org(self)
         return
     if urlsplit(self.path).path == "/api/applications/slh/identity-notebook":
         from main_computer.mcel_slh_identity_notebook_route import handle_identity_notebook
@@ -2982,6 +3018,13 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/docs/read":
         self._handle_docs_read()
+        return
+    if route_path in ("/api/applications/docs/candidate-draft/read", "/api/applications/docs/candidate-draft/write"):
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Document drafts are local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_document_candidate_drafts import handle_candidate_draft
+        handle_candidate_draft(self, write=route_path.endswith("/write"))
         return
     if self.path == "/api/applications/docs/draft/read":
         self._handle_docs_draft_read()

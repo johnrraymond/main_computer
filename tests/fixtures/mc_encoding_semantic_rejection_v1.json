@@ -1,0 +1,353 @@
+{
+  "control-01": {
+    "status": "EVIDENCE_PASS",
+    "answer": {
+      "finding_id": "be0acb1d40d98d4375c5",
+      "searched_scope": {
+        "paths": [
+          "docs/contract.md",
+          "src/mathops.py",
+          "src/orphan.py"
+        ],
+        "searches": [
+          "add",
+          "multiply",
+          "divide",
+          "def add",
+          "def multiply",
+          "def divide",
+          ".py",
+          ".js",
+          ".ts",
+          ".go",
+          ".rs",
+          ".java",
+          ".c",
+          ".cpp"
+        ],
+        "limitations": [
+          "Only 3 readable files in repository",
+          "No test files exist",
+          "No other implementation files found"
+        ]
+      },
+      "items": [
+        {
+          "requirement_or_responsibility": "The function add shall return a + b.",
+          "requirement_kind": "normative",
+          "documentation_location": {
+            "path": "docs/contract.md",
+            "line": 3,
+            "end_line": 3,
+            "quote": "The function add shall return a + b."
+          },
+          "implementation_locations": [
+            {
+              "path": "src/mathops.py",
+              "line": 1,
+              "end_line": 2,
+              "quote": "def add(a, b):\n    return a + b"
+            }
+          ],
+          "verdict": "AGREEMENT",
+          "encoding_status": "MISSING_LINK",
+          "evidence": [
+            {
+              "path": "docs/contract.md",
+              "line": 3,
+              "end_line": 3,
+              "quote": "The function add shall return a + b.",
+              "observation": "Normative requirement states add shall return a + b"
+            },
+            {
+              "path": "src/mathops.py",
+              "line": 1,
+              "end_line": 2,
+              "quote": "def add(a, b):\n    return a + b",
+              "observation": "Implementation returns a + b, matching the contract"
+            }
+          ],
+          "proposed_links": [
+            {
+              "source": {
+                "path": "src/mathops.py",
+                "line": 1,
+                "end_line": 2,
+                "quote": "def add(a, b):\n    return a + b"
+              },
+              "documentation": {
+                "path": "docs/contract.md",
+                "line": 3,
+                "end_line": 3,
+                "quote": "The function add shall return a + b."
+              },
+              "source_id": "mathops.add",
+              "document_id": "contract.add",
+              "source_relation": "implements",
+              "document_relation": "implemented-by"
+            }
+          ],
+          "required_verification": []
+        },
+        {
+          "requirement_or_responsibility": "The function multiply shall return a * b.",
+          "requirement_kind": "normative",
+          "documentation_location": {
+            "path": "docs/contract.md",
+            "line": 4,
+            "end_line": 4,
+            "quote": "The function multiply shall return a * b."
+          },
+          "implementation_locations": [
+            {
+              "path": "src/mathops.py",
+              "line": 4,
+              "end_line": 5,
+              "quote": "def multiply(a, b):\n    return a - b"
+            }
+          ],
+          "verdict": "DISAGREEMENT",
+          "encoding_status": "MISSING_LINK",
+          "evidence": [
+            {
+              "path": "docs/contract.md",
+              "line": 4,
+              "end_line": 4,
+              "quote": "The function multiply shall return a * b.",
+              "observation": "Normative requirement states multiply shall return a * b"
+            },
+            {
+              "path": "src/mathops.py",
+              "line": 4,
+              "end_line": 5,
+              "quote": "def multiply(a, b):\n    return a - b",
+              "observation": "Implementation returns a - b (subtraction), not a * b (multiplication) as required"
+            }
+          ],
+          "proposed_links": [
+            {
+              "source": {
+                "path": "src/mathops.py",
+                "line": 4,
+                "end_line": 5,
+                "quote": "def multiply(a, b):\n    return a - b"
+              },
+              "documentation": {
+                "path": "docs/contract.md",
+                "line": 4,
+                "end_line": 4,
+                "quote": "The function multiply shall return a * b."
+              },
+              "source_id": "mathops.multiply",
+              "document_id": "contract.multiply",
+              "source_relation": "implements",
+              "document_relation": "implemented-by"
+            }
+          ],
+          "required_verification": []
+        },
+        {
+          "requirement_or_responsibility": "The function divide shall return a / b.",
+          "requirement_kind": "normative",
+          "documentation_location": {
+            "path": "docs/contract.md",
+            "line": 5,
+            "end_line": 5,
+            "quote": "The function divide shall return a / b."
+          },
+          "implementation_locations": [],
+          "verdict": "MISSING_IMPLEMENTATION",
+          "encoding_status": "MISSING_LINK",
+          "evidence": [
+            {
+              "path": "docs/contract.md",
+              "line": 5,
+              "end_line": 5,
+              "quote": "The function divide shall return a / b.",
+              "observation": "Normative requirement states divide shall return a / b"
+            },
+            {
+              "path": "src/mathops.py",
+              "line": 1,
+              "end_line": 5,
+              "quote": "def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a - b",
+              "observation": "No divide function exists in mathops.py; search for 'divide' and 'def divide' across all implementation files returned zero hits"
+            }
+          ],
+          "proposed_links": [],
+          "required_verification": [
+            "Confirm no divide implementation exists in any unindexed or external module"
+          ]
+        },
+        {
+          "requirement_or_responsibility": "Function unique_orphan returns 42 (no corresponding contract requirement)",
+          "requirement_kind": "unknown",
+          "documentation_location": null,
+          "implementation_locations": [
+            {
+              "path": "src/orphan.py",
+              "line": 1,
+              "end_line": 2,
+              "quote": "def unique_orphan():\n    return 42"
+            }
+          ],
+          "verdict": "UNVERIFIED",
+          "encoding_status": "NOT_APPLICABLE",
+          "evidence": [
+            {
+              "path": "src/orphan.py",
+              "line": 1,
+              "end_line": 2,
+              "quote": "def unique_orphan():\n    return 42",
+              "observation": "Function exists in implementation but has no corresponding normative requirement in docs/contract.md; cannot determine if it is an orphan artifact or intended undocumented behavior"
+            }
+          ],
+          "proposed_links": [],
+          "required_verification": [
+            "Determine if unique_orphan is intended to be part of the contract or is an orphan artifact"
+          ]
+        }
+      ]
+    },
+    "evaluation": {
+      "status": "PASS",
+      "items": [
+        {
+          "index": 1,
+          "status": "PASS",
+          "reason": "The evidence in docs/contract.md (line 3) establishes a normative requirement for 'add' to return 'a + b'. The implementation in src/mathops.py (lines 1-2) correctly implements this behavior. The verdict of AGREEMENT is semantically supported by the direct match between the contract and the code."
+        },
+        {
+          "index": 2,
+          "status": "PASS",
+          "reason": "The evidence in docs/contract.md (line 4) establishes a normative requirement for 'multiply' to return 'a * b'. The implementation in src/mathops.py (lines 4-5) returns 'a - b'. The verdict of DISAGREEMENT is correct because the implementation performs subtraction instead of multiplication, failing to satisfy the normative requirement."
+        },
+        {
+          "index": 3,
+          "status": "PASS",
+          "reason": "The evidence in docs/contract.md (line 5) establishes a normative requirement for 'divide'. Searches for 'divide' and 'def divide' across the repository returned zero hits, and the full read of src/mathops.py confirms no such function exists. The verdict of MISSING_IMPLEMENTATION is supported by the absence of the required function in the available implementation files."
+        },
+        {
+          "index": 4,
+          "status": "PASS",
+          "reason": "The function 'unique_orphan' exists in src/orphan.py but has no corresponding requirement in docs/contract.md. The verdict of UNVERIFIED is appropriate because the evidence does not establish whether this is an orphan artifact or intended undocumented behavior, and the scope limitations acknowledge the inability to determine intent without further context."
+        }
+      ],
+      "omissions": []
+    },
+    "oracle": {
+      "status": "PASS",
+      "checks": {
+        "add": {
+          "expected": "AGREEMENT",
+          "observed": [
+            "AGREEMENT"
+          ],
+          "pass": true
+        },
+        "multiply": {
+          "expected": "DISAGREEMENT",
+          "observed": [
+            "DISAGREEMENT"
+          ],
+          "pass": true
+        },
+        "divide": {
+          "expected": "MISSING_IMPLEMENTATION",
+          "observed": [
+            "MISSING_IMPLEMENTATION"
+          ],
+          "pass": true
+        }
+      }
+    },
+    "errors": []
+  },
+  "control-02": {
+    "status": "EVIDENCE_PASS",
+    "answer": {
+      "finding_id": "569a523b1540ee468458",
+      "searched_scope": {
+        "paths": [
+          "src/orphan.py",
+          "docs/contract.md",
+          "src/mathops.py"
+        ],
+        "searches": [
+          "orphan",
+          "unique_orphan",
+          ".md",
+          ".rst",
+          ".txt",
+          ".py"
+        ],
+        "limitations": [
+          "Only the scanned repository inventory and configured documentation roots are available; excluded and external material is not searchable."
+        ]
+      },
+      "items": [
+        {
+          "requirement_or_responsibility": "unique_orphan function behavior",
+          "requirement_kind": "unknown",
+          "documentation_location": null,
+          "implementation_locations": [
+            {
+              "path": "src/orphan.py",
+              "line": 1,
+              "end_line": 1,
+              "quote": "def unique_orphan():"
+            }
+          ],
+          "verdict": "MISSING_DOCUMENTATION",
+          "encoding_status": "MISSING_LINK",
+          "evidence": [
+            {
+              "path": "src/orphan.py",
+              "line": 1,
+              "end_line": 1,
+              "observation": "def unique_orphan():",
+              "quote": "def unique_orphan():"
+            },
+            {
+              "path": "docs/contract.md",
+              "line": 3,
+              "end_line": 3,
+              "observation": "The function add shall return a + b.",
+              "quote": "The function add shall return a + b."
+            }
+          ],
+          "proposed_links": [],
+          "required_verification": [
+            "Confirm whether unique_orphan is intended to be a public API function requiring documentation, or an internal/orphaned function that should be removed."
+          ]
+        }
+      ]
+    },
+    "evaluation": {
+      "items": [
+        {
+          "index": 1,
+          "reason": "FAIL: The evidence provided does not support the verdict 'MISSING_DOCUMENTATION' for the function `unique_orphan`. The search results for 'orphan' and 'unique_orphan' in documentation roles returned 0 hits, confirming no documentation exists. However, the item's `evidence` array incorrectly cites `docs/contract.md` line 3 ('The function add shall return a + b.') as evidence for the requirement of `unique_orphan`. This quote is unrelated to `unique_orphan` and pertains to the `add` function in `src/mathops.py`. Furthermore, the `requirement_or_responsibility` is listed as 'unique_orphan function behavior', but no normative text (e.g., 'shall', 'must') in the provided documentation defines the behavior of `unique_orphan`. The contract only defines `add`, `multiply`, and `divide`. Therefore, there is no documented requirement for `unique_orphan` to be missing; rather, there is no requirement at all. The verdict 'MISSING_DOCUMENTATION' implies a requirement exists but is undocumented, which is not supported by the evidence. The correct status would likely be 'UNVERIFIED' or 'NO_REQUIREMENT' depending on the schema, but certainly not supported by the cited evidence. The interpretation of the evidence is flawed because it links an unrelated contract clause to the orphan function.",
+          "status": "FAIL"
+        }
+      ],
+      "omissions": [
+        "The investigation fails to identify that `src/mathops.py` contains a bug where `multiply` returns `a - b` instead of `a * b` as required by `docs/contract.md`. While this is outside the specific item for `unique_orphan`, the investigation's scope included `src/mathops.py` and `docs/contract.md`, and the contract explicitly states 'The function multiply shall return a * b.' The implementation `return a - b` is a clear violation. However, the prompt asks to review the specific investigation item for `unique_orphan`. The omission relevant to the *item* is the failure to correctly associate the requirement with the implementation. A more material omission in the context of the *entire* provided evidence is the lack of a finding for the `multiply` bug, but since the task is to review the specific `finding_id` item, the primary failure is the incorrect evidence linkage. I will list the `multiply` bug as a material omission in the broader context if the investigation was meant to cover all contracts, but strictly for this item, the omission is the lack of a valid requirement for `unique_orphan` being documented. Actually, the instructions say 'omits material obligations visible in the evidence'. The obligation for `multiply` is visible and violated. But the item is specifically about `unique_orphan`. I will focus on the item's failure. The item claims `unique_orphan` has a requirement 'unique_orphan function behavior' which is 'unknown' kind. There is no evidence of such a requirement. The omission is that the investigation did not correctly identify that no requirement exists for `unique_orphan` in the provided docs, leading to a false positive for missing documentation."
+      ],
+      "status": "FAIL"
+    },
+    "oracle": {
+      "status": "PASS",
+      "checks": {
+        "unique_orphan": {
+          "expected": "MISSING_DOCUMENTATION",
+          "observed": [
+            "MISSING_DOCUMENTATION"
+          ],
+          "pass": true
+        }
+      }
+    },
+    "errors": []
+  }
+}

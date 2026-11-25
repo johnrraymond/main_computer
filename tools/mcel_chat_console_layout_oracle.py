@@ -7,9 +7,11 @@ checked-in legacy stylesheet and representative populated notebook structures.
 Live observation is opt-in and reports INCOMPLETE when content is missing.
 
 Run: python -u -m tools.mcel_chat_console_layout_oracle --mode baseline
-     python -u -m tools.mcel_chat_console_layout_oracle --mode hosted --host-url http://127.0.0.1:8765
+     python -u -m tools.mcel_chat_console_layout_oracle --mode hosted --host-url https://dev.main-computer.localhost:8875
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context, is_secure, authenticated_request
+
 
 import argparse
 import hashlib
@@ -322,7 +324,9 @@ def observe_hosted(browser, url: str, context: str, *, screenshot: Path | None =
     # Hosted observation only switches to the Help view; no cells, threads, or effects are created.
     from playwright.sync_api import TimeoutError as BrowserTimeout
 
-    page=browser.new_page(viewport={'width':1272,'height':900},device_scale_factor=1)
+    url=secure_target(url)
+    ctx=new_context(browser,url,viewport={'width':1272,'height':900},device_scale_factor=1)
+    page=ctx.new_page()
     errors=[]
     page.on('pageerror',lambda error:errors.append(str(error)[:300]))
     try:
@@ -395,7 +399,7 @@ def observe_hosted(browser, url: str, context: str, *, screenshot: Path | None =
             page.screenshot(path=str(screenshot),full_page=True)
             result['screenshot']=str(screenshot)
         return result
-    finally:page.close()
+    finally:ctx.close()
 
 
 # P1: causal layout authority, independent of containment and semantic markers.
@@ -695,7 +699,7 @@ def causal_authority(browser, *, repo: Path = ROOT) -> dict:
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode',choices=('baseline','candidate','hosted','causal'),default='baseline')
-    parser.add_argument('--host-url',default='http://127.0.0.1:8765')
+    parser.add_argument('--host-url',default=ORIGIN)
     parser.add_argument('--report',type=Path,default=DEFAULT_REPORT)
     parser.add_argument('--screenshots',action='store_true')
     parser.add_argument('--structure-only',action='store_true',
@@ -704,9 +708,9 @@ def main(argv=None) -> int:
                         help='Post-migration gate: reject a raw legacy Chat Console render')
     args=parser.parse_args(argv)
     if args.mode=='hosted':
-        parsed=urlparse(args.host_url)
-        if parsed.scheme!='http' or parsed.hostname not in {'127.0.0.1','localhost','::1'} or parsed.username or parsed.password:
-            parser.error('--host-url must refer to a loopback HTTP host')
+        from tools.mcel_v1_four_app_hosted_acceptance import validate_loopback_base
+        try: args.host_url=validate_loopback_base(secure_target(args.host_url))
+        except ValueError as exc: parser.error(str(exc))
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:

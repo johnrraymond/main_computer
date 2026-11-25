@@ -1,10 +1,12 @@
 "use strict";
 /* Bounded, typed Worker capabilities. No ambient wallet provider, private key,
- * Hub offer registration, SLH enrollment, or generic settings mutation.
+ * Hub offer registration, or generic settings mutation. Enrollment is a separate signed request.
  * The transport accepts only exact MCEL IR operation identities.
  */
 (function(global){
   const requests=Object.freeze({
+    "intent:request-enrollment":["worker-enrollment","request","requestWorkerEnrollment","consequential",["deviceId","transport","endpoint"]],
+    "intent:observe-enrollment":["worker-enrollment","status","observeWorkerEnrollment","consequential",["deviceId","transport","endpoint"]],
     "intent:refresh-destinations":["worker-observer","destinations","observeWorkerDestinations","external-read",[]],
     "intent:refresh-destination":["worker-observer","destination","observeWorkerDestination","external-read",[]],
     "intent:refresh-runtime":["worker-observer","runtime","observeWorkerRuntime","external-read",[]],
@@ -96,7 +98,10 @@
        req.capabilityId!=="capability:"+spec[0]||req.operation!==spec[1]||
        req.runtimeMethod!==spec[2]||req.risk!==spec[3]||!keysEqual(req.arguments,spec[4]))return null;
     const args=req.arguments;
-    if(req.intentId==="intent:commit-hub-choice"){
+    if(["intent:request-enrollment","intent:observe-enrollment"].includes(req.intentId)){
+      if(!short(args.deviceId,64)||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(args.deviceId)||
+        !["local","slh","seh"].includes(args.transport)||!short(args.endpoint,512))return null;
+    }else if(req.intentId==="intent:commit-hub-choice"){
       if(!networks.has(args.network))return null;
     }else if(req.intentId==="intent:select-destination"){
       if(!networks.has(args.network)||!Number.isSafeInteger(args.requestedRing)||
@@ -256,13 +261,32 @@
     }
     return Object.freeze({
       authorize:req=>Boolean(specification(req)) && (
-        req.risk==="external-read"||
-        (lastObservation!==null && (!["intent:select-destination","intent:commit-hub-choice"].includes(req.intentId)||
-          lastObservation.destinations.some(row=>row.network===req.arguments.network)))
+        ["intent:request-enrollment","intent:observe-enrollment"].includes(req.intentId)
+          ? identitySnapshot?.state==="AVAILABLE" && identitySnapshot.identities.some(r=>r.deviceId===req.arguments.deviceId)
+          : (req.risk==="external-read"||
+            (lastObservation!==null && (!["intent:select-destination","intent:commit-hub-choice"].includes(req.intentId)||
+              lastObservation.destinations.some(row=>row.network===req.arguments.network))))
       ),
       invoke:async req=>{
         const spec=specification(req);
         if(!spec)throw Error("MCEL_WORKER:operation-not-admitted");
+        if(["intent:request-enrollment","intent:observe-enrollment"].includes(req.intentId)){
+          const args=req.arguments;
+          if(identitySnapshot?.state!=="AVAILABLE"||!identitySnapshot.identities.some(r=>r.deviceId===args.deviceId))
+            throw Error("MCEL_WORKER:identity-not-observed");
+          return runExclusive(async()=>{
+            const data=await json("/api/applications/worker/enrollment","POST",{action:spec[1],arguments:args});
+            const row=data.enrollment;
+            if(!plain(row)||!keysEqual(row,["deviceId","transport","endpoint","status","requestId","role"])||
+              row.deviceId!==args.deviceId||row.transport!==args.transport||row.endpoint!==args.endpoint||
+              !["AUTHENTICATED","AUTHORIZED_OTHER_ROLE","PENDING_ADMIN","ACCESS_DENIED","DENIED","ACCESS_NOT_VERIFIED"].includes(row.status)||
+              !short(row.requestId,32)||!short(row.role,16)||
+              (row.status==="AUTHENTICATED"&&row.role!=="worker")||
+              (row.status==="PENDING_ADMIN"&&!/^[a-f0-9]{32}$/.test(row.requestId)))
+              throw Error("MCEL_WORKER:enrollment-receipt-invalid");
+            return row;
+          });
+        }
         if(req.intentId==="intent:refresh-identities" || req.intentId==="intent:refresh-identity-status"){
           const result=await observeIdentities();
           if(req.intentId==="intent:refresh-identities"){

@@ -51,9 +51,12 @@ MONACO_CDN_LOADER_PATH = MONACO_CDN_PATH + "loader.js"
 APP_IDS = {
     "file-manager": "semantic-file-manager",
     "task-manager": "semantic-task-manager",
-    "code-editor": "semantic-code-editor",
+    "code-editor": "code-editor",
     "calculator": "semantic-calculator-expanded",
 }
+
+
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 
 class AcceptanceInputError(ValueError):
@@ -62,6 +65,8 @@ class AcceptanceInputError(ValueError):
 
 def validate_loopback_base(url: str) -> str:
     """Never silently target a production/remote host or follow a URL path."""
+    if url.rstrip("/") == ORIGIN and url in (ORIGIN, ORIGIN + "/"):
+        return ORIGIN
     parsed = urlparse(url)
     if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
             or parsed.username or parsed.password or not parsed.port
@@ -313,7 +318,7 @@ def _production_worker_probe(base: str, app: str, width: int, report_dir: Path,
     """Child-process read-only capture; every potentially blocking phase is traced."""
     from playwright.sync_api import sync_playwright
 
-    base = validate_loopback_base(base)
+    base = validate_loopback_base(secure_target(base))
     if app not in APPLICATIONS or width not in WIDTHS:
         raise AcceptanceInputError("Invalid production capture target")
     if screenshot_mode not in ("viewport", "full"):
@@ -330,7 +335,7 @@ def _production_worker_probe(base: str, app: str, width: int, report_dir: Path,
             driver = sync_playwright().start()
             browser, browser_source = launch_semantic_browser(driver)
         with trace.phase("browser_context"):
-            context = browser.new_context(
+            context = new_context(browser, base,
                 viewport={"width": width, "height": 900}, device_scale_factor=1,
                 accept_downloads=False, service_workers="block",
             )
@@ -468,7 +473,7 @@ def _bounded_production_probe(base: str, app: str, width: int, report_dir: Path,
                               repo: Path = ROOT, deadline_seconds: int = 40,
                               screenshot_mode: str = "viewport") -> dict:
     """Hard outer deadline with durable phase evidence on success and timeout."""
-    base = validate_loopback_base(base)
+    base = validate_loopback_base(secure_target(base))
     if app not in APPLICATIONS or width not in WIDTHS:
         raise AcceptanceInputError("Invalid production capture target")
     if screenshot_mode not in ("viewport", "full"):
@@ -549,7 +554,7 @@ def observe(mode: str, base_url: str | None = None, report_dir: Path = DEFAULT_R
         raise AcceptanceInputError("Unsupported production screenshot mode")
     if mode not in ("preview", "hosted"):
         raise AcceptanceInputError("Mode must be 'preview' or 'hosted'")
-    base = validate_loopback_base(base_url) if mode == "hosted" and base_url else None
+    base = validate_loopback_base(secure_target(base_url)) if mode == "hosted" and base_url else None
     if mode == "hosted" and not base:
         raise AcceptanceInputError("Hosted mode requires --host-url http://127.0.0.1:<port>")
     if mode == "preview" and base_url:
@@ -625,7 +630,7 @@ def observe(mode: str, base_url: str | None = None, report_dir: Path = DEFAULT_R
                     ordinal = result["observations_completed"] + 1
                     print(f"MCEL acceptance [{ordinal}/{result['observations_expected']}]: "
                           f"{app} width={width} starting", flush=True)
-                    browser_context = browser.new_context(viewport={"width": width, "height": 900}, device_scale_factor=1,
+                    browser_context = new_context(browser, base, viewport={"width": width, "height": 900}, device_scale_factor=1,
                                                           accept_downloads=False, service_workers="block")
                     blocked = []
                     errors = []

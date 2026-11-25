@@ -111,6 +111,11 @@ ENDPOINTS = (
     Endpoint('GET','/v1/marketplace','stub','admin','unimplemented'),
     Endpoint('POST','/v1/marketplace/workers','stub','admin','unimplemented'),
     Endpoint('GET','/v1/wallets','org_wallets','admin'),
+    Endpoint('POST','/v1/wallets/transfer','org_transfer','admin'),
+    Endpoint('POST','/v1/wallets/portfolio','org_portfolio','admin'),
+    Endpoint('POST','/v1/wallets/managed-transfer','org_managed_transfer','admin'),
+    Endpoint('POST','/v1/wallets/transfer-status','org_transfer_status','admin'),
+    Endpoint('POST','/v1/wallets/managed-transfer-status','org_managed_transfer_status','admin'),
     Endpoint('GET','/v1/credits','org_credits','admin'),
     Endpoint('GET','/v1/accounting/obligations','pinky_obligations','admin'),
     Endpoint('GET','/v1/accounting/sweeps','pinky_sweep_status','admin'),
@@ -151,7 +156,7 @@ class SLHAPI:
         paths={}
         for e in ENDPOINTS:
             state = ('unimplemented' if self.wallet_service is None and
-                     e.handler in ('org_wallets','org_credits','org_reconcile') else
+                     e.handler in ('org_wallets','org_credits','org_reconcile','org_transfer','org_portfolio','org_managed_transfer','org_transfer_status','org_managed_transfer_status') else
                      'unimplemented' if self.pinky_sweeper is None and
                      e.handler in ('pinky_sweep_status','pinky_sweep_now') else
                      'unimplemented' if self.private_requests is None and
@@ -225,7 +230,7 @@ class SLHAPI:
                 except SEHManagementRefused as exc:
                     raise SLHError(exc.code, exc.status) from None
             if e.state=='unimplemented' or (self.wallet_service is None and
-                    e.handler in ('org_wallets','org_credits','org_reconcile')) or (
+                    e.handler in ('org_wallets','org_credits','org_reconcile','org_transfer','org_portfolio','org_managed_transfer','org_transfer_status','org_managed_transfer_status')) or (
                     self.pinky_sweeper is None and e.handler in ('pinky_sweep_status','pinky_sweep_now')) or (
                     self.private_requests is None and e.handler in (
                         'private_submit','private_status','pinky_obligations',
@@ -378,9 +383,19 @@ class SLHAPI:
             return a.policy(b.get('physical_inspection_required'),actor,
                             remove_trash_after_30_days=b.get('remove_trash_after_30_days'))
         if op=='audit':return {'events':a.audit()}
-        if op in ('org_wallets', 'org_credits', 'org_reconcile'):
+        if op in ('org_wallets', 'org_credits', 'org_reconcile', 'org_transfer', 'org_portfolio', 'org_managed_transfer', 'org_transfer_status', 'org_managed_transfer_status'):
             if self.wallet_service is None:
                 raise SLHError('ORG_WALLET_SERVICE_UNAVAILABLE', 503)
+            if op == 'org_portfolio':
+                return self.wallet_service.portfolio(b)
+            if op == 'org_transfer_status':
+                return self.wallet_service.transfer(b,status_only=True)
+            if op == 'org_managed_transfer_status':
+                return self.wallet_service.managed_transfer(b,status_only=True)
+            if op == 'org_managed_transfer':
+                return self.wallet_service.managed_transfer(b)
+            if op == 'org_transfer':
+                return self.wallet_service.transfer(b)
             if op == 'org_reconcile':
                 if b:
                     raise SLHError('INVALID_WALLET_REQUEST')

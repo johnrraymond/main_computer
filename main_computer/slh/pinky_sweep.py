@@ -1,14 +1,13 @@
 """P4 periodic aggregate Pinky Promise sweep, backed by the existing Hub ledger.
 
 No per-request payment: one pending batch is retried until authoritative
-confirmation. The organizational signing key is read only from an explicit
-machine-local administrator-provisioned path; Worker/MSK credentials never
+confirmation. The organizational signing key is loaded from protected ORG state (or the
+legacy lab signer); Worker/MSK credentials never
 sign spending instructions. Missing setup means no transfer, not no debt.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
 import sqlite3
 import threading
@@ -16,23 +15,34 @@ import time
 import uuid
 
 from main_computer.credit_units import credit_wei_to_decimal_text
-from main_computer.hub_credit_models import normalize_address
-from main_computer.multisession_key_signing import private_key_to_address, sign_personal_message
+from main_computer.multisession_key_signing import sign_personal_message
 from main_computer.pinky_reserve_transfer import SWEEP_SCHEMA, canonical_sweep_intent
 from .authority import SLHError
 from .organization_wallet import HubCreditReader
 from .pinky_promise import ASSESSMENT_WEI
 
+from .organization_signer import SIGNER_ENV, load_legacy_signer, resolve_organization_signer
+
 RESERVE_ENV = 'MAIN_COMPUTER_RESERVE_WALLET_ADDRESS'
-SIGNER_ENV = 'SLH_PINKY_SWEEP_SIGNER_FILE'
 INTERVAL_SECONDS = 300
 
 
+def load_organization_signer(wallet=None, *, provision=False):
+    """Compatibility entry point; resident callers use protected ORG state."""
+    if wallet is not None:
+        return resolve_organization_signer(wallet, provision=provision)
+    signer = load_legacy_signer()
+    if signer is None:
+        raise SLHError('PINKY_SWEEP_CONFIGURATION_REQUIRED', 409)
+    return signer
+
+
 class PinkySweep:
-    def __init__(self, private, wallet, *, reader_factory=HubCreditReader, interval=INTERVAL_SECONDS):
+    def __init__(self, private, wallet, *, reader_factory=HubCreditReader, interval=INTERVAL_SECONDS, signer_loader=load_organization_signer):
         self.private=private
         self.wallet=wallet
         self.reader_factory=reader_factory
+        self.signer_loader=signer_loader
         self.interval=interval
         self._lock=threading.RLock()
         self._stop=threading.Event()
@@ -90,22 +100,9 @@ class PinkySweep:
 
     def _authority(self):
         reserve=os.environ.get(RESERVE_ENV,'').strip().lower()
-        signer_path=os.environ.get(SIGNER_ENV,'').strip()
-        if (not re.fullmatch(r'0x[0-9a-f]{40}',reserve) or
-                reserve=='0x'+'0'*40 or not signer_path):
+        if not re.fullmatch(r'0x[0-9a-f]{40}',reserve) or reserve=='0x'+'0'*40:
             raise SLHError('PINKY_SWEEP_CONFIGURATION_REQUIRED',409)
-        path=Path(signer_path)
-        if path.is_symlink() or not path.is_file():
-            raise SLHError('PINKY_SWEEP_SIGNER_UNAVAILABLE',503)
-        if os.name=='posix' and path.stat().st_mode & 0o077:
-            raise SLHError('PINKY_SWEEP_SIGNER_PERMISSIONS',503)
-        secret=path.read_text(encoding='ascii').strip()
-        if len(secret) not in (64,66):
-            raise SLHError('PINKY_SWEEP_SIGNER_INVALID',503)
-        try:
-            signer=normalize_address(private_key_to_address(secret))
-        except (ValueError,TypeError) as exc:
-            raise SLHError('PINKY_SWEEP_SIGNER_INVALID',503) from exc
+        signer,secret=self.signer_loader()
         if signer==reserve:
             raise SLHError('PINKY_SWEEP_RECIPIENT_CONFLICT',409)
         return reserve, signer,secret

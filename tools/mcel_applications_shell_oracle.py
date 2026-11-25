@@ -6,6 +6,8 @@ including persistence of the launcher through app navigation and reload.
 Differences are reported, not corrected.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context, is_secure, authenticated_request
+
 
 import argparse
 import hashlib
@@ -344,9 +346,12 @@ def _observed_canonical_mount(page, expected_route: str) -> list[str]:
     )
 
 
-def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screenshot: bool = False,
+def run(*, mode: str = "causal", host_url: str = ORIGIN, screenshot: bool = False,
         output: Path | None = None) -> dict:
     from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+    if mode == "hosted":
+        from tools.mcel_v1_four_app_hosted_acceptance import validate_loopback_base
+        host_url=validate_loopback_base(secure_target(host_url))
     output = output or ROOT / OUTPUT
     output.mkdir(parents=True, exist_ok=True)
     ref = legacy_desktop_reference()
@@ -359,7 +364,7 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
         browser = browser_api.chromium.launch(headless=True, executable_path=shutil.which("chromium") or None)
         try:
             for width in SIZES:
-                context = browser.new_context(viewport={"width":width,"height":840}, reduced_motion="reduce")
+                context = new_context(browser, host_url if mode == "hosted" else None, viewport={"width":width,"height":840}, reduced_motion="reduce")
                 reference_page = context.new_page()
                 launcher_page = context.new_page()
                 candidate_page = context.new_page()
@@ -635,7 +640,7 @@ def run(*, mode: str = "causal", host_url: str = "http://127.0.0.1:8765", screen
 def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode',choices=['causal','hosted'],default='causal')
-    parser.add_argument('--host-url',default='http://127.0.0.1:8765')
+    parser.add_argument('--host-url',default=ORIGIN)
     parser.add_argument('--screenshots',action='store_true')
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()

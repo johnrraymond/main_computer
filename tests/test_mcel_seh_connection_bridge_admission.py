@@ -123,3 +123,62 @@ def test_connection_bridge_requires_valid_admin_session_before_transport(
     assert exc.value.code == 'ADMIN_SESSION_REQUIRED'
     assert exc.value.status == 401
     assert seen == []
+
+
+# R01 must exercise the real admission list, not a mocked client.request.
+POLICY_PATH = '/v1/org/admin/marketplace/requester-policy'
+
+
+def test_r01_requester_policy_read_reaches_pinned_org(bridge_transport):
+    from tools.slh_seh_lab.resident_restart import POLICY_PATH as PROBE_PATH
+    client, seen = bridge_transport
+    assert PROBE_PATH == POLICY_PATH
+    client.request('GET', PROBE_PATH, TOKEN)
+    assert seen == [('GET', POLICY_PATH, None, {
+        'Accept': 'application/json', 'Connection': 'close',
+        'Authorization': 'Bearer ' + TOKEN,
+    })]
+
+
+@pytest.mark.parametrize('method,path,body', [
+    ('PATCH', POLICY_PATH, {'enabled': True, 'expected_revision': 0,
+                           'max_request_credit_wei': '1', 'budget_credit_wei': '1'}),
+    ('POST', POLICY_PATH, None),
+    ('PUT', POLICY_PATH, None),
+    ('DELETE', POLICY_PATH, None),
+    ('GET', POLICY_PATH, {}),
+    ('GET', POLICY_PATH + '?anything=1', None),
+    ('GET', POLICY_PATH + '/extra', None),
+])
+def test_r01_policy_bridge_only_admits_exact_bodyless_read(bridge_transport, method, path, body):
+    client, seen = bridge_transport
+    with pytest.raises(WorkerBridgeError) as exc:
+        client.request(method, path, TOKEN, body)
+    assert exc.value.code == 'OPERATION_NOT_ADMITTED'
+    assert exc.value.status == 403
+    assert seen == []
+
+
+def test_r01_policy_read_requires_session(bridge_transport):
+    client, seen = bridge_transport
+    with pytest.raises(WorkerBridgeError) as exc:
+        client.request('GET', POLICY_PATH, '')
+    assert exc.value.code == 'ADMIN_SESSION_REQUIRED'
+    assert exc.value.status == 401
+    assert seen == []
+
+
+@pytest.mark.parametrize('status,code', [(401,'SESSION_REQUIRED'), (403,'ADMIN_REQUIRED')])
+def test_r01_policy_read_preserves_server_refusal(bridge_transport, monkeypatch, status, code):
+    from main_computer import mcel_slh_worker_bridge as bridge
+    client, seen = bridge_transport
+    class Refusal:
+        def read(self, size):
+            return json.dumps({'error': {'code': code}}).encode('utf-8')
+    Refusal.status = status
+    monkeypatch.setattr(bridge.http.client.HTTPSConnection, 'getresponse', lambda self: Refusal())
+    with pytest.raises(WorkerBridgeError) as exc:
+        client.request('GET', POLICY_PATH, TOKEN)
+    assert exc.value.code == code
+    assert exc.value.status == status
+    assert len(seen) == 1

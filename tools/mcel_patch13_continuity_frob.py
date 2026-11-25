@@ -5,9 +5,10 @@ Hosted verification is separately required and is never inferred from offline
 success. No Task Manager actions or host writes are issued by this Frob.
 
   python -m tools.mcel_patch13_continuity_frob
-  python -m tools.mcel_patch13_continuity_frob --host-url "http://127.0.0.1:8765/applications/task-manager/server-processes?mcel_task_notebook=lab"
+  python -m tools.mcel_patch13_continuity_frob --host-url "https://dev.main-computer.localhost:8875/applications/task-manager/server-processes?mcel_task_notebook=lab"
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import secure_target, new_context
 
 import argparse
 from copy import deepcopy
@@ -115,6 +116,7 @@ def offline(chromium_path=None):
 
 def hosted(host_url,chromium_path=None):
     from playwright.sync_api import sync_playwright
+    host_url=secure_target(host_url)
     parsed=urlsplit(host_url)
     if parsed.scheme not in ('http','https') or not parsed.netloc:
         raise ValueError('Invalid hosted Task Manager page URL')
@@ -147,7 +149,7 @@ def hosted(host_url,chromium_path=None):
         with sync_playwright() as pw:
             browser=_chrome(pw,chromium_path)
             try:
-                page=browser.new_page(viewport={'width':1100,'height':800});errors=[]
+                ctx=new_context(browser,base,viewport={'width':1100,'height':800});page=ctx.new_page();errors=[]
                 page.on('pageerror',lambda err:errors.append(str(err)))
                 page.goto(url,wait_until='domcontentloaded',timeout=25000)
                 page.wait_for_function('''() => McelTaskManagerSemanticShadow?.status()?.mounted===true''',timeout=24000)
@@ -176,7 +178,9 @@ def hosted(host_url,chromium_path=None):
                     record.get('legacyReceiptOk') and record.get('controls')==5 and not errors)
                 evidence['browser']={**record,'errors':errors}
             finally:
-                browser.close()
+                try:
+                    if 'ctx' in locals(): ctx.close()
+                finally: browser.close()
     except Exception as exc:
         checks['hosted-browser-retains-same-generation-dom-focus-inspector']=False
         checks['hosted-legacy-lifecycle-and-controls-unchanged']=False

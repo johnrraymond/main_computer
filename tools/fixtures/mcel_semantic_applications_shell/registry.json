@@ -74,7 +74,7 @@
       "title": "Document Editor",
       "description": "Writing workspace",
       "route": "/applications/document",
-      "mount": "legacy"
+      "mount": "semantic"
     },
     {
       "id": "spreadsheet",
@@ -156,9 +156,9 @@
     {
       "id": "wallet",
       "title": "Wallet",
-      "description": "Wallet workbench",
+      "description": "User and ORG-SLH wallet treasury across all networks",
       "route": "/applications/wallet",
-      "mount": "legacy"
+      "mount": "semantic"
     },
     {
       "id": "slh",

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+import re
 import sys
 import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -17,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from main_computer.hub_credit_indexer import wallet_account_id
+from main_computer.contract_config import contract_address_map, load_contract_config, canonical_contract_key
 from main_computer.hub_networks import HubNetworkConfigError, HubNetworkProfile, load_hub_network_registry, profile_with_deployment_manifest_defaults
 
 
@@ -233,6 +236,120 @@ def verify_hub(profile: HubNetworkProfile, *, hub_url: str, timeout: float) -> d
     return {"health": health, "status": status, "network": network}
 
 
+
+PUBLIC_NETWORKS = {"mainnet", "testnet"}
+PUBLIC_CONTRACTS = {"hub_credit_bridge_escrow", "xlag-bridge-reserve"}
+
+
+def verify_stable_hub(profile: HubNetworkProfile, *, hub_url: str, timeout: float) -> dict[str, Any]:
+    service = "main_computer.stable_hub"
+    health = http_json("GET", join_url(hub_url, "/health"), timeout=timeout)
+    identity = http_json("GET", join_url(hub_url, "/api/hub/v1/hub-identity"), timeout=timeout)
+    discovery = http_json("GET", join_url(hub_url, "/api/hub/v1/topology"), timeout=timeout)
+    for name, row in (("health", health), ("identity", identity), ("topology", discovery)):
+        require(row.get("_http_status") == 200 and row.get("ok") is True and row.get("service") == service,
+                f"Stable Hub {name} response not verified")
+    network = identity.get("network") or {}
+    require(network.get("network_key") == profile.network_key, "Stable Hub network mismatch")
+    require(network.get("network_kind") == profile.kind, "Stable Hub network kind mismatch")
+    require(int(network.get("chain_id", -1)) == profile.chain_id, "Stable Hub chain ID mismatch")
+    topology = discovery.get("topology") or {}
+    require(topology.get("kind") == "main_computer.stable_hub_topology.v1", "Stable Hub topology kind mismatch")
+    cluster = identity.get("cluster_id")
+    require(isinstance(cluster, str) and bool(cluster) and cluster == health.get("cluster_id") == topology.get("cluster_id"),
+            "Stable Hub cluster identity mismatch")
+    members = topology.get("hubs") or []
+    require(isinstance(members, list) and all(isinstance(row, dict) for row in members), "Invalid Hub topology members")
+    ids = [row.get("hub_id") for row in members]
+    require(bool(ids) and all(isinstance(i, str) and i for i in ids) and len(set(ids)) == len(ids), "Invalid Hub topology IDs")
+    require(all(row.get("hub_id") in ids for row in (health, identity, discovery)), "Responder is not a topology member")
+    require(profile.hub_url.rstrip("/") in [str(url).rstrip("/") for url in topology.get("entry_urls", [])], "Canonical entry URL absent from topology")
+    require(any(str(row.get("hub_url", "")).rstrip("/") == str(identity.get("hub_url", "")).rstrip("/") and row.get("hub_id") == identity.get("hub_id") for row in members), "Hub identity URL disagrees with topology")
+    for contract in (identity.get("contract") or {}, discovery.get("contract") or {}):
+        require(contract.get("auth") == "multisession-wallet" and contract.get("worker_live_session_transport") == "websocket" and contract.get("routing") == "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url", "Stable Hub live-session/routing contract mismatch")
+    return {"cluster_id": cluster, "network": network, "health_hub_id": health["hub_id"],
+            "identity_hub_id": identity["hub_id"], "topology_hub_id": discovery["hub_id"],
+            "advertised_hub_ids": ids, "temporal": health.get("temporal"),
+            "routing_scope": "ADVERTISED_CONTRACT_ONLY_NOT_WORK_EXECUTION"}
+
+
+def public_contract_records(profile: HubNetworkProfile) -> dict[str, dict[str, str]]:
+    loaded = load_contract_config(profile.network_key, path=profile.source_path.with_name(f"{profile.network_key}_contracts.json"), required=True)
+    addresses = {canonical_contract_key(k): v for k, v in contract_address_map(loaded[1]).items()}
+    require(PUBLIC_CONTRACTS <= addresses.keys(), "Canonical public contract registry missing escrow or Reserve")
+    return {k: {"address": v} for k, v in addresses.items()}
+
+
+def inspect_manifest(profile: HubNetworkProfile, manifest: dict[str, Any], records: dict[str, dict[str, str]]) -> dict[str, Any]:
+    require(manifest.get("schema") == "main-computer.deployment.v1", "Unexpected deployment manifest schema")
+    require(manifest.get("environment") == profile.network_key, "Deployment manifest environment mismatch")
+    chain = manifest.get("chain") or {}
+    require(int(chain.get("chain_id", -1)) == profile.chain_id, "Deployment manifest chain ID mismatch")
+    old_rpc = str(chain.get("rpc_url") or chain.get("host_rpc_url") or "")
+    old_addresses = {canonical_contract_key(k): v for k, v in contract_address_map(manifest).items()}
+    differences = {k: {"manifest": old_addresses.get(k), "canonical": v["address"]} for k, v in records.items()
+                   if str(old_addresses.get(k) or "").lower() != v["address"].lower()}
+    return {"rpc_matches": old_rpc == profile.chain_rpc_url,
+            "manifest_rpc_url": old_rpc, "canonical_rpc_url": profile.chain_rpc_url,
+            "contract_address_differences": differences,
+            "historical_only_contracts": sorted(set(old_addresses) - set(records)),
+            "matches": old_rpc == profile.chain_rpc_url and not differences}
+
+
+def verify_public_contracts(profile: HubNetworkProfile, records: dict[str, dict[str, str]], *, timeout: float) -> dict[str, Any]:
+    result = {}
+    for name, record in records.items():
+        address = record["address"]
+        require(bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", address)), f"Invalid contract address: {name}")
+        code = rpc_json(profile.chain_rpc_url, "eth_getCode", [address, "latest"], timeout=timeout)
+        require(isinstance(code, str) and bool(re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", code)), f"Missing or malformed runtime code: {name} at {address}")
+        raw = bytes.fromhex(code[2:])
+        result[name] = {"address": address, "code_bytes": len(raw), "code_sha256": hashlib.sha256(raw).hexdigest()}
+    return result
+
+
+def run_public_preflight(profile: HubNetworkProfile, *, hub_url: str, deployment_manifest: str | None, repo_root: Path, timeout: float) -> dict[str, Any]:
+    """Independent read-only probes. Never query the historical manifest's RPC or load wallet keys."""
+    report = {"ok": False, "phase": "hub-network-client-smoke-v2", "network": profile.network_key,
+              "hub_url": hub_url, "scope": "canonical-public-network-read-only", "checks": {}, "errors": {},
+              "limitations": ["no paid work, FDB durability, live routing or financial settlement proof", "contract runtime presence and hash, not verified artifact equivalence", "no smoke wallet private key or funding prerequisite"]}
+    def probe(name, action):
+        try:
+            value = action()
+            report["checks"][name] = True
+            report[name] = value
+            return value
+        except (SmokeFailure, ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+            report["checks"][name] = False
+            report["errors"][name] = str(exc)
+            return None
+    def canonical():
+        profile.validate_runnable()
+        require(all(urlparse(url).scheme == "https" and urlparse(url).hostname for url in (profile.chain_rpc_url, hub_url, profile.hub_url)), "Public network requires canonical HTTPS endpoints")
+        return True
+    if not probe("canonical_endpoints", canonical):
+        return report
+    probe("hub", lambda: verify_stable_hub(profile, hub_url=hub_url, timeout=timeout))
+    chain = probe("chain", lambda: verify_chain(profile, timeout=timeout))
+    records = probe("contract_registry", lambda: public_contract_records(profile))
+    if chain is not None and records is not None:
+        probe("contracts", lambda: verify_public_contracts(profile, records, timeout=timeout))
+    else:
+        report["checks"]["contracts"] = False
+        report["errors"]["contracts"] = "NOT_RUN_CHAIN_OR_REGISTRY_UNVERIFIED"
+    def manifest_check():
+        path, manifest = load_deployment_manifest(profile.network_key, deployment_manifest, repo_root=repo_root)
+        report["deployment_manifest"] = str(path)
+        require(records is not None, "Canonical contract registry unavailable")
+        evidence = inspect_manifest(profile, manifest, records)
+        report["manifest_evidence"] = evidence
+        require(evidence["matches"], "Deployment manifest differs from canonical public registry; reconciliation required")
+        return evidence
+    probe("manifest", manifest_check)
+    report["canonical_live_ok"] = all(report["checks"].get(key) is True for key in ("canonical_endpoints", "hub", "chain", "contract_registry", "contracts"))
+    report["ok"] = report["canonical_live_ok"] and report["checks"].get("manifest") is True
+    return report
+
 def register_worker(hub_url: str, *, worker_node_id: str, model: str, price: int, timeout: float) -> dict[str, Any]:
     return http_json(
         "POST",
@@ -293,6 +410,8 @@ def run_smoke(
     profile = registry.get(network)
     hub_url = (hub_url_override or profile.hub_url).rstrip("/")
     scope_value = clean_scope(scope)
+    if profile.network_key in PUBLIC_NETWORKS:
+        return run_public_preflight(profile, hub_url=hub_url, deployment_manifest=deployment_manifest, repo_root=repo_root, timeout=timeout)
 
     manifest_path, manifest = load_deployment_manifest(profile.network_key, deployment_manifest, repo_root=repo_root)
     profile = profile_with_deployment_manifest_defaults(profile, manifest, manifest_path=manifest_path)
@@ -373,6 +492,14 @@ def main(argv: list[str] | None = None) -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+    if result.get("scope") == "canonical-public-network-read-only":
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            for name, passed in result["checks"].items():
+                print(f"HUB_NETWORK {result['network']} {name} {'PASS' if passed else 'FAIL'} {result['errors'].get(name, '')}")
+            print(f"HUB_NETWORK {result['network']} {'PASS_READ_ONLY' if result['ok'] else 'BLOCKED'} canonical_live={result.get('canonical_live_ok', False)} report={report_path}")
+        return 0 if result["ok"] else 1
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:

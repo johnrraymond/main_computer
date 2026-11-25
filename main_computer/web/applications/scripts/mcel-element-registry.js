@@ -3,6 +3,7 @@
 
       const REGISTRY_VERSION = "0.1.0";
       const registry = new Map();
+      const renderers = new Map();
 
       function clone(value) {
         return JSON.parse(JSON.stringify(value || null));
@@ -128,6 +129,15 @@
         };
       }
 
+      function registerRenderer(id, mount) {
+        if (!get(id) || typeof mount !== "function" || renderers.has(id)) throw new Error(`Invalid MCEL element renderer: ${id}`);
+        renderers.set(id, mount);
+      }
+      function mountElement(id, host, props = {}) {
+        const mount = renderers.get(id);
+        if (!mount) throw new Error(`No mountable MCEL element renderer: ${id}`);
+        return mount(host, props);
+      }
       function evidencePacket() {
         const definitions = all();
         const families = {};
@@ -156,6 +166,9 @@
         byFamily,
         byKind,
         serializeElement,
+        registerRenderer,
+        hasRenderer: id => renderers.has(id),
+        mountElement,
         evidencePacket
       };
     })(window);

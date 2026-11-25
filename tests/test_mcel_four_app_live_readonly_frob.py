@@ -219,3 +219,22 @@ def test_failed_monitor_receipt_is_not_converted_into_success():
                      'reason':'hardware-missing:private-host-detail-must-not-be-copied'}]
     result = _settled_receipt(FailedPage(), {'intent':'intent:refresh-hardware','before':0})
     assert result == {'disposition':'failed','reason_class':'hardware-missing'}
+
+
+def test_required_responses_wait_for_delayed_listing_and_require_post():
+    from tools.mcel_four_app_live_readonly_frob import _await_required_responses
+    root = '/api/applications/file-explorer/roots'
+    listing = '/api/applications/file-explorer/list'
+    entries = [{'method':'POST','path':root,'status':200},
+               {'method':'GET','path':listing,'status':200}]
+    class Page:
+        def wait_for_timeout(self, delay):
+            entries.append({'method':'POST','path':listing,'status':200})
+    assert _await_required_responses(Page(), entries, (root,listing), timeout_ms=500) == {root:True,listing:True}
+    entries.pop()
+    assert _await_required_responses(Page(), entries, (root,listing), timeout_ms=0) == {root:True,listing:False}
+
+
+def test_canonical_editor_id_is_not_legacy_candidate_id():
+    from tools.mcel_v1_four_app_hosted_acceptance import APP_IDS, candidate_ir
+    assert APP_IDS['code-editor'] == candidate_ir('code-editor')['application']['appId'] == 'code-editor'

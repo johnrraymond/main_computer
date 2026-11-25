@@ -125,7 +125,7 @@ def test_runner_automatically_packages_failed_attempt(tmp_path,monkeypatch,capsy
         status=200
         def __enter__(self): return self
         def __exit__(self,*args): return False
-        def read(self,*args): return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*args): return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fail_gate(gate, evidence_path, timeout, url, **kwargs):
         evidence_path.write_text(json.dumps({
             'schema':'mcel.worker.native-live-evidence.v1','gate':gate,
@@ -147,7 +147,7 @@ def test_runner_automatically_packages_failed_attempt(tmp_path,monkeypatch,capsy
     printed=capsys.readouterr().out
     assert 'WORKER_LIVE_GATE work-cycle UNVERIFIED' in printed
     assert 'WORKER_LIVE_FAILURE_BUNDLE status=saved' in printed
-    assert 'WORKER_LIVE_OFFER_POLICY_TRANSITION action=apply-policy' in printed
+    assert 'WORKER_LIVE_OFFER_POLICY_TRANSITION last-action=apply-policy' in printed
     assert list((tmp_path/'failure-bundles').glob('*.zip'))
     assert json.loads(target.read_text())['cutover']['status']=='BLOCKED'
 

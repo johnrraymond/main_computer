@@ -89,6 +89,8 @@ def issue_cli_multisession_authorization(
     wallet: Any,
     timeout_s: float = 15.0,
     stable_identity: dict[str, Any] | None = None,
+    post_json: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    origin: str = "main-computer-cli",
 ) -> dict[str, Any]:
     """Ask the Hub for its existing wallet's active key, without storing secrets.
 
@@ -114,7 +116,7 @@ def issue_cli_multisession_authorization(
         "request_id": "msk_req_" + uuid.uuid4().hex,
         "wallet_address": wallet_address,
         "chain_id": chain_id,
-        "origin": "main-computer-cli",
+        "origin": origin,
         "issued_at": now.isoformat().replace("+00:00", "Z"),
         "expires_at": (now + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         "version": "main-computer-multisession-key-request-v1",
@@ -127,10 +129,10 @@ def issue_cli_multisession_authorization(
         message=message, private_key=wallet.private_key,
         wallet_address=wallet_address, chain_id=chain_id,
     )
-    result = _hub_post(
-        hub_url, "/api/hub/v1/credits/multisession-keys/request",
-        {"signed_request": signed_request}, timeout_s=timeout_s,
-    )
+    path = "/api/hub/v1/credits/multisession-keys/request"
+    body = {"signed_request": signed_request}
+    result = (post_json(path, body) if post_json is not None else
+              _hub_post(hub_url, path, body, timeout_s=timeout_s))
     key = result.get("key") if isinstance(result.get("key"), dict) else {}
     key_id = str(key.get("id") or "").strip()
     if not key_id or str(key.get("status") or "") != "active":

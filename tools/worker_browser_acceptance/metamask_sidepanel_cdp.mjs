@@ -1,3 +1,4 @@
+import {ORIGIN} from './secure_functional_auth.mjs'
 // Chrome's extension side panel may be a CDP target but not a Playwright Page.
 // Inspect ONLY boolean approval anchors and the location of one enabled button.
 // Never return panel text, HTML, secret values, target identifiers or URLs.
@@ -7,7 +8,7 @@ const MESSAGE_TIMEOUT_MS = 2_500
 
 // This function is serialized into the real extension's inspected renderer.
 // It receives no secrets and returns only safe classifications / button bounds.
-export function inspectApprovalSurface({trustedWorkerOrigin = false} = {}) {
+export function inspectApprovalSurface({trustedWorkerOrigin = false, secureGateway = false} = {}) {
   const isShown = element => {
     const rect = element.getBoundingClientRect()
     const style = window.getComputedStyle(element)
@@ -19,7 +20,7 @@ export function inspectApprovalSurface({trustedWorkerOrigin = false} = {}) {
   const headings = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
     .filter(isShown).map(node => (node.innerText || node.textContent || '').trim())
   const matchesHeading = pattern => headings.some(label => pattern.test(label))
-  const origin = /\b(?:127\.0\.0\.1|localhost):8765\b(?![.\w-])/i.test(content)
+  const origin = secureGateway ? /(?<![\w.-])dev\.main-computer\.localhost:8875(?![\w.-])/i.test(content) : /\b(?:127\.0\.0\.1|localhost):8765\b(?![.\w-])/i.test(content)
   const rpc = /\btestnet-rpc\.greatlibrary\.io\b(?![.\w-])/i.test(content)
   const chain = /\bMain Computer Testnet\b/i.test(content)
   const add = matchesHeading(/^Add Main Computer Testnet$/i) || matchesHeading(/^Add (?:a |this |the )?network$/i)
@@ -32,8 +33,10 @@ export function inspectApprovalSurface({trustedWorkerOrigin = false} = {}) {
   // A bare host is sufficient ONLY when the caller separately proves the
   // active test page has the exact expected local origin and Worker path.
   const modernConnect = trustedWorkerOrigin &&
-    (matchesHeading(/^(?:127\.0\.0\.1|localhost)$/i) ||
-      /(?:^|\n)\s*(?:127\.0\.0\.1|localhost)\s*(?:\n|$)/im.test(content)) &&
+    (secureGateway ? (matchesHeading(/^dev\.main-computer\.localhost$/i) ||
+      /(?:^|\n)\s*dev\.main-computer\.localhost\s*(?:\n|$)/im.test(content)) :
+      (matchesHeading(/^(?:127\.0\.0\.1|localhost)$/i) ||
+      /(?:^|\n)\s*(?:127\.0\.0\.1|localhost)\s*(?:\n|$)/im.test(content))) &&
     /Connect this website with MetaMask/i.test(content) &&
     /See addresses, balances, and activity/i.test(content)
   // Unrelated requests never qualify, even if their body mentions an RPC or chain.
@@ -125,7 +128,7 @@ class NestedTargetSession {
   }
 }
 
-async function inspectAttachedTarget(root, target, trustedWorkerOrigin) {
+async function inspectAttachedTarget(root, target, trustedWorkerOrigin, secureGateway=false) {
   let sessionId
   try {
     const result = await root.send('Target.attachToTarget', {targetId: target.targetId, flatten: false})
@@ -133,7 +136,7 @@ async function inspectAttachedTarget(root, target, trustedWorkerOrigin) {
     const nested = new NestedTargetSession(root, sessionId)
     await nested.send('Runtime.enable')
     const inspected = await nested.send('Runtime.evaluate', {
-      expression: `(${inspectApprovalSurface.toString()})({trustedWorkerOrigin:${trustedWorkerOrigin ? 'true' : 'false'}})`, returnByValue: true,
+      expression: `(${inspectApprovalSurface.toString()})({trustedWorkerOrigin:${trustedWorkerOrigin ? 'true' : 'false'},secureGateway:${secureGateway?'true':'false'}})`, returnByValue: true,
       awaitPromise: false, silent: true,
     })
     const state = inspected?.result?.value
@@ -180,12 +183,17 @@ export async function advanceSidepanelApproval(context, workerPage, extensionId,
         url.pathname === '/applications/mcel-semantic-worker'
       ))
   } catch { /* Older, fully qualified extension-origin prompts still work. */ }
-  const root = await context.newCDPSession(workerPage)
+  const secureGateway=process.env.MC_WORKER_LIVE_GATE && process.env.MC_WORKER_TEST_URL===ORIGIN+'/applications/worker'
+  if(secureGateway){
+    trustedWorkerOrigin=isTrustedWorkerPage(workerPage)
+    if(!trustedWorkerOrigin)return null
+  }
+  const root = await context.newCDPSession(workerPage.hostPage || workerPage)
   try {
     const targets = qualifiedTargets((await root.send('Target.getTargets')).targetInfos, extensionId)
     for (const target of targets) {
       let outcome
-      try { outcome = await inspectAttachedTarget(root, target, trustedWorkerOrigin) }
+      try { outcome = await inspectAttachedTarget(root, target, trustedWorkerOrigin, secureGateway) }
       catch { onStatus('sidepanel-cdp-unavailable'); continue }
       if (outcome.status !== 'unrecognized-panel') onStatus(outcome.status)
       if (outcome.result) return outcome.result
@@ -199,7 +207,7 @@ export async function advanceSidepanelApproval(context, workerPage, extensionId,
 // click. The wallet signs a JSON message, not a transaction. Validate the
 // rendered request against the disposable wallet before issuing mouse input.
 // NEVER return or log the rendered message or any signature to the harness.
-export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWorkerOrigin = false, action = 'issue', expectedKeyId = ''} = {}) {
+export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWorkerOrigin = false, action = 'issue', expectedKeyId = '', secureGateway=false} = {}) {
   const invalid = reason => ({kind:'msk-signature', verified:false, reason, button:null})
   if (!trustedWorkerOrigin || !/^0x[0-9a-f]{40}$/i.test(expectedWallet)) return invalid('worker-or-wallet-untrusted')
   if (!['issue','revoke'].includes(action) ||
@@ -219,7 +227,7 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
   if (!/\bNetwork\b[\s\S]{0,100}\bMain Computer Testnet\b/i.test(body)) return invalid('network-mismatch')
   // Inspect the displayed request origin, independently of the JSON message.
   const from = /\bRequest from\b([\s\S]{0,120})/i.exec(body)?.[1] || ''
-  if (!/(?:^|[^a-z0-9.])(?:127\.0\.0\.1|localhost):8765\b/i.test(from)) return invalid('origin-mismatch')
+  if (!(secureGateway?/(?<![\w.-])dev\.main-computer\.localhost:8875(?![\w.-])/i:/(?:^|[^a-z0-9.])(?:127\.0\.0\.1|localhost):8765\b/i).test(from)) return invalid('origin-mismatch')
   // The text must contain precisely one displayed JSON request of our kind.
   // Parse locally inside the extension renderer; expose only an approval bit.
   const matches = [...body.matchAll(/\{\s*"purpose"\s*:\s*"request_multi_session_key"/g)]
@@ -256,7 +264,7 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
       typeof message.wallet_address !== 'string' ||
       message.wallet_address.toLowerCase() !== expectedWallet.toLowerCase() ||
       message.chain_id !== '0x28757b1' ||
-      message.origin !== 'http://127.0.0.1:8765' ||
+      message.origin !== (secureGateway?'https://dev.main-computer.localhost:8875':'http://127.0.0.1:8765') ||
       typeof message.request_id !== 'string' ||
       (action === 'issue' && !/^msk_req_[a-z0-9-]{12,80}$/i.test(message.request_id))) {
     return invalid('message-identity-mismatch')
@@ -283,6 +291,8 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
 function isTrustedWorkerPage(page) {
   try {
     const url = new URL(page.url())
+    if(process.env.MC_WORKER_LIVE_GATE && process.env.MC_WORKER_TEST_URL===ORIGIN+'/applications/worker')
+      return url.origin===ORIGIN && url.pathname==='/applications/worker' && !url.hash && (!url.search || url.search==='?mcel-shell-child=1')
     return url.protocol === 'http:' && url.hostname === '127.0.0.1' &&
       url.port === '8765' && (url.pathname === '/applications/worker' || (
         process.env.MC_WORKER_LIVE_GATE &&
@@ -311,7 +321,7 @@ export async function approveWorkerMskSignature(context, workerPage, extensionId
   while (now() - start < timeoutMs) {
     let root
     try {
-      root = await context.newCDPSession(workerPage)
+      root = await context.newCDPSession(workerPage.hostPage || workerPage)
       const targets = qualifiedMskTargets((await root.send('Target.getTargets')).targetInfos,extensionId)
       if (!targets.length) {
         lastReason = 'approval-target-not-found'
@@ -326,7 +336,7 @@ export async function approveWorkerMskSignature(context, workerPage, extensionId
           sessionId = (await root.send('Target.attachToTarget',{targetId:target.targetId, flatten:false})).sessionId
           const nested = new NestedTargetSession(root,sessionId)
           await nested.send('Runtime.enable')
-          const expression = `(${inspectWorkerMskSignatureSurface.toString()})(${JSON.stringify({expectedWallet, trustedWorkerOrigin:true, action, expectedKeyId})})`
+          const expression = `(${inspectWorkerMskSignatureSurface.toString()})(${JSON.stringify({expectedWallet, trustedWorkerOrigin:true, action, expectedKeyId, secureGateway:process.env.MC_WORKER_TEST_URL===ORIGIN+'/applications/worker'})})`
           const data = await nested.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:false,silent:true})
           const state = data?.result?.value
           if (!state || state.kind !== 'msk-signature') continue

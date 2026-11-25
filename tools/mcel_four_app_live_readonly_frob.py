@@ -7,14 +7,16 @@ are blocked. The report contains status, not filesystem contents or process
 command lines. This diagnostic is NOT full operational parity or promotion.
 
 Example:
-  python -u -m tools.mcel_four_app_live_readonly_frob --host-url http://127.0.0.1:8765
+  python -u -m tools.mcel_four_app_live_readonly_frob --host-url https://dev.main-computer.localhost:8875
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 import argparse
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -149,6 +151,8 @@ def _summary(page, app: str, expected_hash: str) -> dict:
         'served_ir_sha256': json_fingerprint(parsed),
         'source_fingerprint_matches': json_fingerprint(parsed) == expected_hash,
         'app_id_matches': parsed.get('application', {}).get('appId') == APP_IDS[app],
+        'observed_app_id': parsed.get('application', {}).get('appId'),
+        'expected_app_id': APP_IDS[app],
         'mounted': mounted,
         'no_horizontal_overflow': page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2'),
     }
@@ -233,10 +237,25 @@ def _exercise(page, app: str) -> dict:
     raise ValueError(app)
 
 
+def _await_required_responses(page, entries, paths, *, timeout_ms=25000):
+    """Pump Playwright response events until the required POSTs actually finish.
+
+    A selected root can precede its directory response. A late response must
+    not change a report after its acceptance predicate has been calculated.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        checks = {path: any(x['path'] == path and x['method'] == 'POST'
+                            and x['status'] == 200 for x in entries) for path in paths}
+        if all(checks.values()) or time.monotonic() >= deadline:
+            return checks
+        page.wait_for_timeout(100)
+
+
 def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = APPS) -> dict:
     from playwright.sync_api import sync_playwright
 
-    base = validate_loopback_base(host_url)
+    base = validate_loopback_base(secure_target(host_url))
     if not apps or any(app not in APPS for app in apps) or len(set(apps)) != len(apps):
         raise ValueError('Invalid application selection')
     result = {'schema': 'mcel.four-app-live-readonly.v1',
@@ -253,7 +272,7 @@ def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = AP
                 failures: list[dict] = []
                 blocked: list[dict] = []
                 errors: list[str] = []
-                context = browser.new_context(viewport={'width': 1272, 'height': 900},
+                context = new_context(browser, base, viewport={'width': 1272, 'height': 900},
                                               accept_downloads=False, service_workers='block')
                 try:
                     def on_route(route, request):
@@ -305,10 +324,19 @@ def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = AP
                         'task-manager': ('/api/applications/task/overview',),
                         'code-editor': ('/api/applications/editor/files',),
                     }[app]
-                    evidence['required_live_requests'] = {
-                        path: any(x['path'] == path and x['status'] == 200 for x in entries)
-                        for path in expected_post
-                    }
+                    evidence['required_live_requests'] = _await_required_responses(
+                        page, entries, expected_post)
+                    if app == 'file-manager' and all(evidence['required_live_requests'].values()):
+                        # Wait for the actual listing intent to settle, not just a selected root.
+                        try:
+                            page.wait_for_function("""() => {
+                              const r = window.__mcelWorkbench?.app?.receipts?.() || [];
+                              return r.some(x => x.intentId === 'intent:browse' && x.disposition === 'completed');
+                            }""", timeout=25000)
+                        except Exception as exc:
+                            if 'Timeout' not in type(exc).__name__:
+                                raise
+                            evidence['checks']['startup_root_and_listing'] = 'NOT_SETTLED_WITHIN_BOUND'
                     # A service 200 is a transport observation, not a guarantee of
                     # meaningful returned content; explicit UI gates remain required.
                     if app == 'task-manager':
@@ -345,7 +373,7 @@ def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = AP
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host-url', required=True, help='Explicit loopback URL, e.g. http://127.0.0.1:8765')
+    parser.add_argument('--host-url', default=ORIGIN, help='Explicit loopback URL, e.g. http://127.0.0.1:8765')
     parser.add_argument('--app', choices=APPS, action='append', help='Optional subset; repeatable')
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args()

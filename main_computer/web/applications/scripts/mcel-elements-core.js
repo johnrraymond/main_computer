@@ -1223,6 +1223,10 @@ def("element.resource.file-boundary", "Read-only File Boundary", "resource", "re
         }),
 
         def("element.authoring.document-surface", "Document Surface", "authoring", "document", "Rich document editor surface with save/export policy.", {
+          renderer: {htmlTag: "section", cssObject: "mcel-document-surface-element", mountable: true},
+          stateModel: {ownership: "instance", fields: ["html", "revision", "layout"]},
+          interactionModel: {operations: ["replace-document", "append", "replace-selection", "undo", "redo", "format", "insertMath"], revisionChecked: true},
+          scrollPolicy: "document-canvas-owns-scroll",
           riskPolicy: analysis,
           actionPolicy: {edit: "inspect-only", save: "no-submit", export: "no-submit"},
           decoderHints: ["document", "page", "editor", "paragraph", "export"]

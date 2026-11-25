@@ -1471,6 +1471,73 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(receipt)
 
+    @_atomic_stable_store_mutation
+    def transfer_org_credits(self, *, intent: dict[str, Any], signature: str) -> dict[str, Any]:
+        """Debit and credit the same authoritative ledger in one transaction.
+
+        A signed intent is distinct from the Pinky obligation settlement rail.
+        An exact retry returns its original receipt, including after expiry.
+        """
+        from main_computer.org_credit_transfer import verify_transfer_signature
+        message = verify_transfer_signature(intent, signature)
+        if (intent['cluster_id'] != self.cluster_id or
+                intent['chain_id'] != str(self.topology.network.get('chain_id') or '')):
+            raise StableHubWorkerSessionError('credit_transfer_scope_mismatch')
+        sender_wallet = intent['wallet_address']
+        recipient_wallet = intent['recipient_wallet_address']
+        sender_id, recipient_id = map(wallet_account_id, (sender_wallet, recipient_wallet))
+        amount = int(intent['credit_wei'])
+        key = sender_id + ':' + intent['transfer_id']
+        digest = hashlib.sha256(message.encode('ascii')).hexdigest()
+        with self._lock:
+            data = self.store.load()
+            transfers = data.setdefault('org_credit_transfers', {})
+            existing = transfers.get(key)
+            if existing is not None:
+                if existing['intent_digest'] != digest:
+                    raise StableHubWorkerSessionError('credit_transfer_idempotency_conflict')
+                if existing.get('status') == 'expired_not_found':
+                    raise StableHubWorkerSessionError('credit_transfer_expired_not_committed')
+                return dict(existing)
+            now = int(time.time())
+            if not now < intent['expires_at'] <= now + 600:
+                raise StableHubWorkerSessionError('credit_transfer_expired_or_future')
+            accounts = data.setdefault('payout_accounts', {})
+            sender = accounts.get(sender_id)
+            if not isinstance(sender, dict) or sender.get('wallet_address') != sender_wallet:
+                raise StableHubWorkerSessionError('credit_transfer_source_not_funded')
+            # Existing held credits are never available to this transfer.
+            sender = self._ensure_account(data, account_id=sender_id, wallet_address=sender_wallet)
+            if int(sender['available_credit_wei']) < amount:
+                raise StableHubWorkerSessionError('credit_transfer_insufficient_available')
+            recipient = self._ensure_account(data, account_id=recipient_id,
+                                             wallet_address=recipient_wallet, default_credits=Decimal('0'))
+            if recipient.get('wallet_address') != recipient_wallet:
+                raise StableHubWorkerSessionError('credit_transfer_recipient_mismatch')
+            for account, account_id, wallet, delta in ((sender, sender_id, sender_wallet, -amount),
+                                                       (recipient, recipient_id, recipient_wallet, amount)):
+                accounts[account_id] = self._account_payload(
+                    account_id=account_id, wallet_address=wallet,
+                    available_credit_wei=int(account['available_credit_wei']) + delta,
+                    held_credit_wei=account.get('held_credit_wei', 0),
+                    spent_credit_wei=account.get('spent_credit_wei', 0),
+                    earned_credit_wei=account.get('earned_credit_wei', 0),
+                    bridge_completed_credit_wei=account.get('bridge_completed_credit_wei', 0),
+                    created_at=account.get('created_at', ''), metadata=dict(account.get('metadata') or {}))
+            receipt_id = _stable_digest_id('orgtransfer', self.cluster_id, key)
+            meta = {'transfer_id': intent['transfer_id'], 'receipt_id': receipt_id,
+                    'sender_account_id': sender_id, 'recipient_account_id': recipient_id}
+            for account_id, direction in ((sender_id, 'out'), (recipient_id, 'in')):
+                self._transaction(data, transaction_type='org_credit_transfer_' + direction,
+                                  account_id=account_id, credit_wei=amount,
+                                  transaction_id=receipt_id + ':' + direction, metadata=meta)
+            receipt = {'ok': True, 'status': 'confirmed', 'receipt_id': receipt_id,
+                       'intent_digest': digest, **intent, 'confirmed_at': utc_now(),
+                       'settlement_rail': 'hub_internal_credit_transfer'}
+            transfers[key] = receipt
+            self.store.save(data)
+            return dict(receipt)
+
     def get_account(self, account_id: str) -> dict[str, Any] | None:
         clean_account = str(account_id or "").strip()
         if not clean_account:

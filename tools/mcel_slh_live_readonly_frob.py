@@ -1,6 +1,6 @@
 """Strictly allowlisted, actual-host MCEL SLH functional observation.
 
-Without --protected-reads this lane never authenticates. With an explicit opt-in,
+Without --protected-reads this lane never authenticates to SLH. With an explicit opt-in,
 creating an ephemeral authentication session is permitted exclusively to READ
 Pending/Enrolled/Trash/Retention. The backend is always the authority; this
 harness NEVER approves, rejects, deploys, undeploys or writes an identity.
@@ -9,6 +9,7 @@ Reports contain counts, status and request classes, never identity records,
 request bodies, tokens, keys or backend response text.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 import json
 import re
@@ -34,13 +35,45 @@ _ANONYMOUS_INIT_SCRIPT = (
 
 
 def validate_admin_id(admin_id: str | None, *, protected_reads: bool) -> str | None:
-    """No implicit admin selection; reject unsafe input before opening a browser."""
+    """Validate an optional identity override; authority is verified by SLH."""
     if admin_id is not None and not protected_reads:
         raise ValueError('--admin-id requires --protected-reads')
     if admin_id is not None and (not isinstance(admin_id, str) or
                                  _ADMIN_ID.fullmatch(admin_id) is None):
         raise ValueError('--admin-id must be a nonempty local identity ID (max 64 characters)')
     return admin_id
+
+
+
+def _default_identity_id(summary: dict, directory: list) -> str | None:
+    """Use the LMS-designated default as a signer candidate, not as role evidence."""
+    if not isinstance(summary, dict) or summary.get('state') != 'AVAILABLE':
+        return None
+    candidate = summary.get('defaultDeviceId')
+    if not isinstance(candidate, str) or _ADMIN_ID.fullmatch(candidate) is None:
+        return None
+    if not isinstance(directory, list) or not 1 <= len(directory) <= 128:
+        return None
+    if any(not isinstance(row, dict) for row in directory):
+        return None
+    matches = [row for row in directory if row.get('deviceId') == candidate]
+    defaults = [row for row in directory if row.get('defaultStatus') == 'DEFAULT']
+    if len(matches) != 1 or len(defaults) != 1 or matches[0] != defaults[0]:
+        return None
+    return candidate
+
+
+def _discover_default_identity(page) -> str | None:
+    # Read only the application state already validated against LMS. Never
+    # load keys, read private files, or use labels to infer administrator role.
+    observed = page.evaluate('''() => {
+      const app=window.__mcelSlh?.app;
+      const summary=app?.readState('state:local-identity-status');
+      const rows=app?.readState('state:local-identities');
+      return {summary:summary ? {state:summary.state, defaultDeviceId:summary.defaultDeviceId}:null,
+        directory:Array.isArray(rows)?rows.map(row=>({deviceId:row.deviceId,defaultStatus:row.defaultStatus})):null};
+    }''')
+    return _default_identity_id(observed.get('summary'), observed.get('directory'))
 
 
 def _failed_authentication_request(requests: list[dict]) -> dict | None:
@@ -185,7 +218,7 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
     """Read an actual loopback-hosted SLH, never fulfill/mock browser requests."""
     from playwright.sync_api import sync_playwright
 
-    base = validate_loopback_base(host_url)
+    base = validate_loopback_base(secure_target(host_url))
     admin_id = validate_admin_id(admin_id, protected_reads=protected_reads)
     result = {'schema': 'mcel.slh.live-functional.v1',
               'status': 'INCOMPLETE', 'scope': 'actual-loopback-read-only',
@@ -198,14 +231,12 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
         browser, source = launch_semantic_browser(p)
         result['browser'] = source
         try:
-            context = browser.new_context(viewport={'width': 1272, 'height': 900},
+            context = new_context(browser, base, viewport={'width': 1272, 'height': 900},
                                           accept_downloads=False, service_workers='block')
             try:
-                if protected_reads:
-                    # Deterministic anonymous prerequisite: the application
-                    # must not restore a preferred identity before the harness
-                    # explicitly selects the validated administrator.
-                    context.add_init_script(_ANONYMOUS_INIT_SCRIPT)
+                # Start both lanes without an implicit organizational identity.
+                # The protected lane selects a signer only after the anonymous check.
+                context.add_init_script(_ANONYMOUS_INIT_SCRIPT)
                 def on_route(route, request):
                     decision = request_decision(base, request.url, request.method, request.post_data,
                                                 protected_reads=protected_reads)
@@ -266,12 +297,24 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
                   const app=window.__mcelSlh.app;
                   const button=document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-action="Undeploy"]');
                   const field=document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-field="deploymentStatus"]');
-                  const receipt=await app.execute('intent:read-seh-deployment');
-                  return {completed:receipt.disposition==='completed',
-                    sameButton:button===document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-action="Undeploy"]'),
-                    sameField:field===document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-field="deploymentStatus"]')};
+                  const same=()=>({sameButton:!!button && button.isConnected && button===document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-action="Undeploy"]'),
+                    sameField:!!field && field.isConnected && field===document.querySelector('[data-mcel-operation-notebook="surface-node:slh.local-seh-lifecycle"] [data-mcel-operation-field="deploymentStatus"]')});
+                  let receipt, attempts=0;
+                  // A polling read may supersede our read. Retry that specific
+                  // disposition only, never a refusal or a replaced DOM node.
+                  do {
+                    attempts++;
+                    receipt=await app.execute('intent:read-seh-deployment');
+                    const c=same();
+                    if(!c.sameButton || !c.sameField || receipt.disposition!=='superseded')break;
+                    await new Promise(resolve=>setTimeout(resolve,100));
+                  } while(attempts<3);
+                  return {completed:receipt.disposition==='completed', ...same(),
+                    disposition:receipt.disposition, attempts};
                 }''')
-                result['checks']['read_reconciles_without_remount'] = all(continuity.values())
+                result['reconciliation_evidence'] = continuity
+                result['checks']['read_reconciles_without_remount'] = all(
+                    continuity[k] is True for k in ('completed', 'sameButton', 'sameField'))
                 result['checks']['semantic_mounted'] = snapshot['mounted']
                 # The same value must drive both status field and button state.
                 result['checks']['deployment_observed_and_rendered'] = (
@@ -282,12 +325,6 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
                 result['checks']['bounded_receipts'] = (
                     isinstance(snapshot['receiptCount'], int) and snapshot['receiptCount'] <= 256)
                 if protected_reads:
-                    # Never use the LMS default or a restored browser identity
-                    # as a substitute for an explicitly requested test identity.
-                    if admin_id is None:
-                        result['failure_stage'] = 'protected-prerequisites'
-                        result['failure_code'] = 'ADMIN_ID_REQUIRED'
-                        raise RuntimeError('Protected live test requires --admin-id')
                     # The SLH application, not MCEL nor this harness, owns
                     # readiness and the actual protected-read activation.
                     deadline = time.monotonic() + 12
@@ -308,11 +345,23 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
                                 else 'ORGANIZATION_NOT_RUNNING')
                             raise RuntimeError('SLH protected read prerequisites not ready: '+result['failure_code'])
                         page.wait_for_timeout(125)
+                    if admin_id is None:
+                        admin_id = _discover_default_identity(page)
+                        if admin_id is None:
+                            result['failure_stage'] = 'protected-prerequisites'
+                            result['failure_code'] = 'LMS_DEFAULT_IDENTITY_UNVERIFIED'
+                            raise RuntimeError('No verified LMS default identity available for protected reads')
+                        result['admin_identity_source'] = 'LMS_DEFAULT'
+                    else:
+                        result['admin_identity_source'] = 'EXPLICIT_OVERRIDE'
+                    # Selection is not administrator authorization. The actual
+                    # signed login and protected read below must still succeed.
+                    prerequisites = _state(page, admin_id)
                     result['checks']['admin_identity_discovered'] = prerequisites['adminInDirectory']
                     if not prerequisites['adminInDirectory']:
                         result['failure_stage'] = 'protected-prerequisites'
                         result['failure_code'] = 'ADMIN_ID_NOT_IN_VERIFIED_DIRECTORY'
-                        raise RuntimeError('Specified administrator identity not present in LMS-SLH directory')
+                        raise RuntimeError('Selected identity not present in LMS-SLH directory')
                     result['checks']['anonymous_identity_unselected'] = not prerequisites['selectedIdentityPresent']
                     if not result['checks']['anonymous_identity_unselected']:
                         result['failure_stage'] = 'protected-anonymous-context'
@@ -441,10 +490,10 @@ def run(host_url: str, report: Path, *, protected_reads: bool = False,
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host-url', required=True)
+    parser.add_argument('--host-url', default=ORIGIN)
     parser.add_argument('--protected-reads', action='store_true',
                         help='Explicitly allow ephemeral admin authentication and protected READ operations')
-    parser.add_argument('--admin-id', help='Explicit LMS-SLH identity for protected read verification; no implicit selection')
+    parser.add_argument('--admin-id', help='Optional LMS-SLH identity override; defaults to the LMS-designated local identity')
     parser.add_argument('--report', type=Path,
                         default=Path('runtime/reports/mcel-slh-live-functional/report.json'))
     args = parser.parse_args()

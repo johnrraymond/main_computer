@@ -140,11 +140,15 @@ def _await_paid_terminal(store, session_id: str, trace: PaidCycleDiagnostics,
 def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLedgerDirectory,
                       worker_account_id: str, lab_mode: str,
                       trace_file: Path | None = None,
-                      market_isolation_capability: str | None = None) -> dict:
+                      market_isolation_capability: str | None = None,
+                      expected_content=None) -> dict:
     """Complete a real paid request and create an authorized pending payout batch.
 
     Caller must already have verified all Hub identities/topology and started the
     managed gateway, worker sockets, and SLH public marketplace sessions.
+    expected_content optionally verifies a deterministic non-echo computation
+    against the fresh marker before requesting a payout claim. Legacy callers
+    retain the original marker equality check.
     """
     trace = PaidCycleDiagnostics(trace_file, hub_url)
     if market_isolation_capability is not None:
@@ -256,6 +260,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
        'worker_earning_recorded':earning_amount>0 and len(earnings)==1,
        'no_unsettled_hold':str(payout.get('hold_status'))=='charged',
     }
+    gates['worker_result_matches_private_marker']=((terminal.get('worker_result') or {}).get('result',{})
+        .get('response',{}).get('content')==(expected_content(marker) if expected_content is not None else marker))
     claim={}
     settlement={}
     if all(gates.values()):
@@ -270,8 +276,6 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
                            {'multisession_authorization':auth,
                             'claim_ids':[claim['claim']['claim_id']],
                             'idempotency_key':'smoke-batch-'+request_id},timeout=10)
-    gates['worker_result_matches_private_marker']=((terminal.get('worker_result') or {}).get('result',{})
-        .get('response',{}).get('content')==marker)
     gates['wallet_authorized_claim']=claim.get('ok') is True and earning.get('earning_id') in (claim.get('claim') or {}).get('earning_ids',[])
     settlement_record=settlement.get('settlement') or {}
     gates['wallet_authorized_pending_batch']=(settlement.get('ok') is True

@@ -3,15 +3,17 @@ import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import pytest
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 from tools import mcel_worker_full_functional_acceptance as runner
 from tools import mcel_worker_live_functional_acceptance as live
 
 
-def test_live_is_exact_local_native_candidate_only():
+def test_live_is_exact_local_canonical_worker_only():
     assert live.valid_native_url(live.DEFAULT_URL) == live.DEFAULT_URL
     for url in ('http://localhost:8765/applications/mcel-semantic-worker',
-                'http://127.0.0.1:8765/applications/worker',
+                'http://127.0.0.1:8765/applications/mcel-semantic-worker',
                 'http://127.0.0.1:8766/applications/mcel-semantic-worker',
                 'http://127.0.0.1:8765/applications/mcel-semantic-worker?x=1',
                 'https://127.0.0.1:8765/applications/mcel-semantic-worker',
@@ -126,14 +128,14 @@ def test_wallet_msk_defaults_to_fresh_disposable_wallet_without_an_extra_flag(tm
         def __exit__(self, *_):
             return False
         def read(self, *_):
-            return b'<html data-mcel-worker-phase="candidate"></html>'
+            return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, report_path, timeout, url, **kwargs):
         observed.update(gate=gate, **kwargs)
         # Do not synthesize a successful Hub operation or a PASS receipt.
         return 1, 'test-controlled-stop'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     argv = ['--action', 'run', '--gate', 'wallet-msk',
             '--authorize-wallet-signing', '--report', str(output)]
@@ -165,13 +167,13 @@ def test_offer_gates_provision_fresh_isolated_wallet_instead_of_expired_cached_k
         def __exit__(self, *_):
             return False
         def read(self, *_):
-            return b'<html data-mcel-worker-phase="candidate"></html>'
+            return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(selected, report_path, timeout, url, **kwargs):
         observed.update(gate=selected, **kwargs)
         return 1, 'test-controlled-stop'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     argv = ['--action', 'run', '--gate', gate, '--authorize-wallet-signing',
             *extra, '--report', str(output)]
@@ -242,7 +244,7 @@ def test_live_diagnostics_are_bounded_and_do_not_print_raw_errors():
     assert 'evidence.get(\'walletConnectFailure\')' in script
     assert "re.fullmatch(r'[A-Z_]{3,72}', failure)" in script
     assert 'error.message' not in diagnosis
-    assert 'print(\'WORKER_LIVE_CUTOVER\'' in diagnosis
+    assert 'print(\'WORKER_LIVE_FUNCTIONAL\'' in diagnosis
 
 
 def test_failed_connect_reports_actual_control_transitions_and_extension_targets(tmp_path, monkeypatch, capsys):
@@ -256,7 +258,7 @@ def test_failed_connect_reports_actual_control_transitions_and_extension_targets
         def __exit__(self, *_):
             return False
         def read(self, *_):
-            return b'<html data-mcel-worker-phase="candidate"></html>'
+            return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, report_path, timeout, url, **kwargs):
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -287,7 +289,7 @@ def test_failed_connect_reports_actual_control_transitions_and_extension_targets
         }),encoding='utf-8')
         return 1, 'exited-1'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     assert live.main(['--mode','live','--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)]) == 1
@@ -300,7 +302,7 @@ def test_failed_connect_reports_actual_control_transitions_and_extension_targets
     assert 'WORKER_LIVE_METAMASK_TARGET index=0 kind=sidepanel type=page' in printed
     assert 'WORKER_LIVE_BROWSER_FAULT class=TypeError' in printed
     assert 'WORKER_LIVE_BROWSER_REQUEST_FAILURE kind=worker-api:5xx' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED canonical-route-unchanged' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE target=canonical-worker' in printed
 
 
 def test_lifecycle_event_capture_starts_before_worker_page_load_and_watches_changes():
@@ -324,7 +326,7 @@ def test_diagnostic_build_marker_refuses_silent_old_javascript_harness(tmp_path,
         status=200
         def __enter__(self):return self
         def __exit__(self,*_):return False
-        def read(self,*_):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*_):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         report_path.parent.mkdir(parents=True,exist_ok=True)
@@ -337,7 +339,7 @@ def test_diagnostic_build_marker_refuses_silent_old_javascript_harness(tmp_path,
         }),encoding='utf-8')
         return 1,'exited-1'
 
-    monkeypatch.setattr(live,'urlopen',lambda *a,**k:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--mode','live','--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)])==1
@@ -362,7 +364,7 @@ def test_locked_metamask_preconnect_reports_actual_url_and_unlock_progress(tmp_p
         status=200
         def __enter__(self):return self
         def __exit__(self,*_):return False
-        def read(self,*_):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*_):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         report_path.parent.mkdir(parents=True,exist_ok=True)
         extension='dnamoknnfmliijgdpmkcjmgihhhidcgj'
@@ -379,7 +381,7 @@ def test_locked_metamask_preconnect_reports_actual_url_and_unlock_progress(tmp_p
             'metaMaskUnlockLastState':'unlock-submitted-awaiting-verified-home'
         }),encoding='utf-8')
         return 1,'exited-1'
-    monkeypatch.setattr(live,'urlopen',lambda *a,**k:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--mode','live','--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)])==1
@@ -389,7 +391,7 @@ def test_locked_metamask_preconnect_reports_actual_url_and_unlock_progress(tmp_p
     assert 'reason=METAMASK_UNLOCK_INCOMPLETE' in printed
     assert 'WORKER_LIVE_METAMASK_UNLOCK_PROGRESS phase=unlock-submitted' in printed
     assert 'WORKER_LIVE_METAMASK_UNLOCK_STATE state=unlock-submitted-awaiting-verified-home' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE' in printed
 
 
 def test_msk_signing_failure_reports_click_approval_and_api_separately(tmp_path,monkeypatch,capsys):
@@ -398,7 +400,7 @@ def test_msk_signing_failure_reports_click_approval_and_api_separately(tmp_path,
         status=200
         def __enter__(self):return self
         def __exit__(self,*_):return False
-        def read(self,*_):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*_):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         report_path.parent.mkdir(parents=True,exist_ok=True)
         report_path.write_text(json.dumps({
@@ -415,7 +417,7 @@ def test_msk_signing_failure_reports_click_approval_and_api_separately(tmp_path,
             'mskUiState':{'status':'awaiting-signature','buttonPresent':True,'buttonDisabled':True}
         }),encoding='utf-8')
         return 1,'exited-1'
-    monkeypatch.setattr(live,'urlopen',lambda *a,**k:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--mode','live','--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)])==1
@@ -426,7 +428,7 @@ def test_msk_signing_failure_reports_click_approval_and_api_separately(tmp_path,
     assert 'WORKER_LIVE_MSK_EVENT type=request.start' in printed
     assert 'WORKER_LIVE_MSK_APPROVAL phase=msk.target.home' in printed
     assert 'WORKER_LIVE_MSK_APPROVAL phase=msk.inspect.not-signature-request' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED canonical-route-unchanged' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE target=canonical-worker' in printed
 
 
 def test_live_failure_prints_verified_screenshot_paths_and_rejects_path_injection(tmp_path, monkeypatch, capsys):
@@ -437,7 +439,7 @@ def test_live_failure_prints_verified_screenshot_paths_and_rejects_path_injectio
         status = 200
         def __enter__(self): return self
         def __exit__(self, *_): return False
-        def read(self, *_): return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self, *_): return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, report_path, timeout, url, **kwargs):
         folder = report_path.parent / 'live-wallet-msk-failure-ABCDEF'
@@ -460,7 +462,7 @@ def test_live_failure_prints_verified_screenshot_paths_and_rejects_path_injectio
         }), encoding='utf-8')
         return 1, 'exited-1'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     assert live.main(['--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)]) == 1
@@ -470,7 +472,7 @@ def test_live_failure_prints_verified_screenshot_paths_and_rejects_path_injectio
     assert 'WORKER_LIVE_FAILURE_SCREENSHOT surface=metamask-home status=unavailable' in printed
     assert '../untrusted' not in printed
     assert 'WORKER_LIVE_GATE wallet-msk UNVERIFIED' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE' in printed
 
 
 def test_msk_live_moment_paths_are_printed_and_reject_traversal(tmp_path, monkeypatch, capsys):
@@ -479,7 +481,7 @@ def test_msk_live_moment_paths_are_printed_and_reject_traversal(tmp_path, monkey
         status=200
         def __enter__(self):return self
         def __exit__(self,*_):return False
-        def read(self,*_):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*_):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate, report_path, timeout, url, **kwargs):
         folder=report_path.parent / 'live-wallet-msk-moment-request-start-ABCDEF'
         folder.mkdir()
@@ -498,7 +500,7 @@ def test_msk_live_moment_paths_are_printed_and_reject_traversal(tmp_path, monkey
             ]}],
         }),encoding='utf8')
         return 1,'exited-1'
-    monkeypatch.setattr(live,'urlopen',lambda *args,**kwargs:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)])==1
@@ -516,7 +518,7 @@ def test_live_revocation_failure_reports_distinct_http_and_ui_evidence(tmp_path,
         status = 200
         def __enter__(self): return self
         def __exit__(self, *_): return False
-        def read(self, *_): return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self, *_): return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, report_path, timeout, url, **kwargs):
         report_path.write_text(json.dumps({
@@ -534,7 +536,7 @@ def test_live_revocation_failure_reports_distinct_http_and_ui_evidence(tmp_path,
         }),encoding='utf-8')
         return 1,'exited-1'
 
-    monkeypatch.setattr(live,'urlopen',lambda *a,**k:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--action','run','--gate','wallet-msk','--authorize-wallet-signing',
                       '--report',str(output)])==1
@@ -543,7 +545,7 @@ def test_live_revocation_failure_reports_distinct_http_and_ui_evidence(tmp_path,
     assert 'api-rejection=hub-cluster-mismatch' in printed
     assert 'WORKER_LIVE_MSK_REVOCATION_UI key-active=yes key-inactive=no worker-outcome=worker-revoke-failed' in printed
     assert 'WORKER_LIVE_MSK_REVOCATION_EVENT type=revoke.signature.created' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED canonical-route-unchanged' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE target=canonical-worker' in printed
 
 
 def test_live_revocation_output_does_not_echo_untrusted_error_text(tmp_path,monkeypatch,capsys):
@@ -552,7 +554,7 @@ def test_live_revocation_output_does_not_echo_untrusted_error_text(tmp_path,monk
         status=200
         def __enter__(self):return self
         def __exit__(self,*_):return False
-        def read(self,*_):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*_):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         report_path.write_text(json.dumps({
             'schema':'mcel.worker.native-live-evidence.v1','gate':'wallet-msk',
@@ -563,7 +565,7 @@ def test_live_revocation_output_does_not_echo_untrusted_error_text(tmp_path,monk
                  'rejectionCategory':'private 0xdeadbeef','uiState':{'workerOutcome':'password=SECRET'}}
         }),encoding='utf-8')
         return 1,'exited-1'
-    monkeypatch.setattr(live,'urlopen',lambda *a,**k:FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--action','run','--gate','wallet-msk',
                       '--authorize-wallet-signing','--report',str(output)])==1
@@ -705,11 +707,11 @@ def test_missing_node_evidence_reports_safe_startup_cause(tmp_path,monkeypatch,c
         status=200
         def __enter__(self):return self
         def __exit__(self,*args):return False
-        def read(self,*args):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*args):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         assert not report_path.exists()
         return 1,'node-module-not-found'
-    monkeypatch.setattr(live,'urlopen',lambda *args,**kwargs:Response())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=Response().status, body=lambda: Response().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--action','run','--gate','offer-registration',
       '--authorize-wallet-signing','--authorize-worker-offer','--report',str(output)])==1
@@ -717,7 +719,7 @@ def test_missing_node_evidence_reports_safe_startup_cause(tmp_path,monkeypatch,c
     assert 'WORKER_LIVE_GATE offer-registration UNVERIFIED reason=node-module-not-found stage=NOT_AVAILABLE' in printed
     assert 'WORKER_LIVE_NODE_EVIDENCE status=not-written cause=node-module-not-found' in printed
     assert 'WORKER_LIVE_OFFER_DIAGNOSTIC_VERSION_MISMATCH expected=offer-registration-v3' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE' in printed
 
 
 def test_offer_v3_failure_reports_real_offer_state_instead_of_diagnostic_mismatch(tmp_path,monkeypatch,capsys):
@@ -726,7 +728,7 @@ def test_offer_v3_failure_reports_real_offer_state_instead_of_diagnostic_mismatc
         status=200
         def __enter__(self):return self
         def __exit__(self,*args):return False
-        def read(self,*args):return b'<html data-mcel-worker-phase="candidate"></html>'
+        def read(self,*args):return b'<html data-mcel-shell-canonical-promoted="true"></html>'
     def fake_invoke(gate,report_path,timeout,url,**kwargs):
         report_path.write_text(json.dumps({'schema':'mcel.worker.native-live-evidence.v1',
           'gate':'offer-registration','surface':'native-mcel','network':'testnet',
@@ -736,7 +738,7 @@ def test_offer_v3_failure_reports_real_offer_state_instead_of_diagnostic_mismatc
             'availabilityModeBaseline':'totally_idle','restoration':{'policyAttempted':True,
               'policyVerified':True,'failedAt':'none'}}}),encoding='utf-8')
         return 1,'exited-1'
-    monkeypatch.setattr(live,'urlopen',lambda *args,**kwargs:Response())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=Response().status, body=lambda: Response().read()))))
     monkeypatch.setattr(live,'invoke_node',fake_invoke)
     assert live.main(['--action','run','--gate','offer-registration',
        '--authorize-wallet-signing','--authorize-worker-offer','--report',str(output)])==1
@@ -863,7 +865,7 @@ def test_successful_work_cycle_reports_funding_and_returns_zero(tmp_path, monkey
         def __exit__(self, *_):
             return False
         def read(self, *_):
-            return b'<html data-mcel-worker-phase="candidate"></html>'
+            return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, path, timeout, url, **kwargs):
         assert gate == 'work-cycle'
@@ -871,6 +873,9 @@ def test_successful_work_cycle_reports_funding_and_returns_zero(tmp_path, monkey
             'schema': 'mcel.worker.native-live-evidence.v1',
             'surface': 'native-mcel', 'network': 'testnet', 'gate': gate,
             'stage': 'workerDelivered', 'ok': True, 'cleanupOk': True,
+            'gatewayAuthenticated': True, 'gatewaySessionRevoked': True,
+            'canonicalRoute': {'url': live.DEFAULT_URL, 'childUrl': live.DEFAULT_URL + '?mcel-shell-child=1',
+                               'phase': 'promoted', 'mounted': True},
             'verifiedAt': datetime.now(timezone.utc).isoformat(),
             'proofs': {name: True for name in (
                 'realExtension', 'testnetChain', 'hubMskVerified',
@@ -889,7 +894,7 @@ def test_successful_work_cycle_reports_funding_and_returns_zero(tmp_path, monkey
         }), encoding='utf-8')
         return 0, 'exited-0'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     assert live.main(['--action', 'run', '--gate', 'work-cycle',
                       '--authorize-wallet-signing', '--authorize-worker-offer',
@@ -899,7 +904,7 @@ def test_successful_work_cycle_reports_funding_and_returns_zero(tmp_path, monkey
     assert 'WORKER_LIVE_GATE work-cycle PASS' in printed
     assert 'WORKER_LIVE_CAPTAIN_FUNDING verified=yes' in printed
     assert 'bridge-needed=no' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED canonical-route-unchanged' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL PASS_LIVE_GATE target=canonical-worker' in printed
     assert json.loads(output.read_text(encoding='utf-8'))['gates']['work-cycle']['status'] == 'PASS'
 
 
@@ -913,7 +918,7 @@ def test_work_cycle_failed_funding_without_offer_diagnostic_is_reported(tmp_path
         def __exit__(self, *_):
             return False
         def read(self, *_):
-            return b'<html data-mcel-worker-phase="candidate"></html>'
+            return b'<html data-mcel-shell-canonical-promoted="true"></html>'
 
     def fake_invoke(gate, path, timeout, url, **kwargs):
         path.write_text(json.dumps({
@@ -934,7 +939,7 @@ def test_work_cycle_failed_funding_without_offer_diagnostic_is_reported(tmp_path
         }), encoding='utf-8')
         return 1, 'exited-1'
 
-    monkeypatch.setattr(live, 'urlopen', lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(live, 'authenticated_request', lambda base: nullcontext(SimpleNamespace(get=lambda *a, **k: SimpleNamespace(status=FakeResponse().status, body=lambda: FakeResponse().read()))))
     monkeypatch.setattr(live, 'invoke_node', fake_invoke)
     monkeypatch.setattr(live, 'build_failure_bundle', lambda **kwargs: None)
     assert live.main(['--action', 'run', '--gate', 'work-cycle',
@@ -945,4 +950,20 @@ def test_work_cycle_failed_funding_without_offer_diagnostic_is_reported(tmp_path
     assert 'WORKER_LIVE_GATE work-cycle UNVERIFIED' in printed
     assert 'WORKER_LIVE_CAPTAIN_FUNDING verified=no' in printed
     assert 'bridge-needed=no' in printed
-    assert 'WORKER_LIVE_CUTOVER BLOCKED canonical-route-unchanged' in printed
+    assert 'WORKER_LIVE_FUNCTIONAL INCOMPLETE target=canonical-worker' in printed
+
+
+def test_canonical_receipt_requires_real_shell_and_exact_promoted_child():
+    row = {'schema':'mcel.worker.native-live-evidence.v1','gate':'requester-enforcement',
+           'surface':'native-mcel','network':'testnet','ok':True,'cleanupOk':True,
+           'verifiedAt':datetime.now(timezone.utc).isoformat(),
+           'proofs':{name:True for name in ('requesterPolicyRead','backendDeniedUnauthorizedSpend',
+               'noPaidSubmission','budgetLimitDenied','localBusyPolicyDenied','restartRetainedReservation',
+               'duplicateDenied','consentReplayDenied','concurrentBudgetDenied')}}
+    assert live.verify_evidence(row,'requester-enforcement',require_canonical=True) == (False,'canonical-worker-browser-not-proven')
+    row['canonicalRoute']={'url':live.DEFAULT_URL,'childUrl':live.DEFAULT_URL+'?mcel-shell-child=1',
+                           'phase':'promoted','mounted':True}
+    row.update(gatewayAuthenticated=True,gatewaySessionRevoked=True)
+    assert live.verify_evidence(row,'requester-enforcement',require_canonical=True)[0]
+    row['canonicalRoute']['phase']='candidate'
+    assert not live.verify_evidence(row,'requester-enforcement',require_canonical=True)[0]

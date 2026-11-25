@@ -129,6 +129,24 @@ module.exports = mcel.defineApp(
     const saveSlhTarget=dsl.intent.capabilityRequest("save-slh-target",slhWriter,{
       operation:"save",inputs:{hubUrl:text},resultTo:slhTarget,confirmationRequired:true
     });
+    const enrollmentShape=dsl.field.record({deviceId:text,transport:text,endpoint:text,status:text,requestId:text,role:text});
+    const enrollment=dsl.state.derived("worker-enrollment",enrollmentShape);
+    const enrollmentInputs={transport:text.oneOf(["local","slh","seh"]),endpoint:text};
+    const enrollmentControl=dsl.capability.external("worker-enrollment",{
+      risk:"consequential",description:"Request signed Worker enrollment and reobserve authorization; never approve"
+    });
+    enrollmentControl.operation("request","requestWorkerEnrollment",{
+      inputs:{deviceId:text,...enrollmentInputs},result:enrollmentShape,risk:"consequential"
+    });
+    enrollmentControl.operation("status","observeWorkerEnrollment",{
+      inputs:{deviceId:text,...enrollmentInputs},result:enrollmentShape,risk:"consequential"
+    });
+    const requestEnrollment=dsl.intent.capabilityRequest("request-enrollment",enrollmentControl,{
+      operation:"request",inputs:enrollmentInputs,arguments:{deviceId:selectedIdentity},resultTo:enrollment,confirmationRequired:true
+    });
+    const observeEnrollment=dsl.intent.capabilityRequest("observe-enrollment",enrollmentControl,{
+      operation:"status",inputs:enrollmentInputs,arguments:{deviceId:selectedIdentity},resultTo:enrollment,confirmationRequired:false
+    });
     const savePolicy=dsl.intent.capabilityRequest("save-policy",policyWriter,{
       operation:"save",inputs:{sellerEnabled:dsl.field.boolean(),availabilityMode},
       resultTo:policy,confirmationRequired:true
@@ -281,6 +299,21 @@ module.exports = mcel.defineApp(
         dsl.surface.text("slh-selected-local-identity",{
           label:"Identity selected for SLH/SEH access (not authenticated)",
           value:selectedIdentity,when:inSlhHub
+        }),
+        dsl.surface.form("request-worker-enrollment",{
+          label:"Request Worker enrollment (SLH or SEH)",fields:enrollmentInputs,
+          defaults:{transport:"local",endpoint:""},
+          placeholders:{endpoint:"Local: empty; SLH: https://IP:API-port; SEH: wss://host"},
+          submitLabel:"Request enrollment",resetControl:false,intent:requestEnrollment,when:inView("hub-choice")
+        }),
+        dsl.surface.form("observe-worker-enrollment",{
+          label:"Verify enrollment / authentication",fields:enrollmentInputs,
+          defaults:{transport:"local",endpoint:""},
+          placeholders:{endpoint:"Same endpoint as enrollment"},
+          submitLabel:"Verify access",resetControl:false,intent:observeEnrollment,when:inView("hub-choice")
+        }),
+        dsl.surface.text("worker-enrollment-status",{
+          label:"Last verified enrollment result (identity and target shown; not a persistent Worker connection)",value:enrollment,when:inView("hub-choice")
         }),
         dsl.surface.text("slh-target-status",{
           label:"Configured SLH target (connection and authentication not verified)",
@@ -444,11 +477,11 @@ module.exports = mcel.defineApp(
         dsl.surface.relate(activity,"reports-for",hubChoices)]
     });
     return {
-      states:[view,destinations,selected,identities,identitySummary,selectedIdentity,destination,savedHubChoice,runtime,policy,slhTarget,seller,requester,marketplaceStatus,marketplaceResult],
-      capabilities:[observer,chooser,controller,policyWriter,slhWriter,marketReader,marketWriter,marketActions],
+      states:[view,destinations,selected,identities,identitySummary,selectedIdentity,destination,savedHubChoice,runtime,policy,slhTarget,seller,requester,marketplaceStatus,marketplaceResult,enrollment],
+      capabilities:[observer,chooser,controller,policyWriter,slhWriter,marketReader,marketWriter,marketActions,enrollmentControl],
       intents:[switchView,chooseNetwork,chooseIdentity,refreshIdentities,refreshIdentityStatus,
         refreshDestinations,refreshDestination,refreshRuntime,refreshPolicy,
-        refreshSlhTarget,commitHubChoice,selectDestination,disconnect,savePolicy,saveSlhTarget,refreshSeller,refreshRequester,refreshMarketplaceStatus,saveSeller,saveRequester,registerOffer,startWorkNow,finishWorkNow,pauseSelling,retryHub],
+        refreshSlhTarget,commitHubChoice,selectDestination,disconnect,savePolicy,saveSlhTarget,refreshSeller,refreshRequester,refreshMarketplaceStatus,saveSeller,saveRequester,registerOffer,startWorkNow,finishWorkNow,pauseSelling,retryHub,requestEnrollment,observeEnrollment],
       surfaces:[surface]
     };
   }

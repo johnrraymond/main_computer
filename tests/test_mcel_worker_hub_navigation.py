@@ -306,3 +306,90 @@ def test_refused_hub_choice_has_visible_diagnostic_in_hub_workarea():
             assert diagnostic.inner_text().startswith('Hub change refused; previous choice retained:')
         finally:
             browser.close()
+
+
+def test_radio_collection_keeps_full_focus_outline_inside_scrollport():
+    """A focused edge choice must not lose its gold outline to overflow:auto."""
+    pw = pytest.importorskip('playwright.sync_api')
+    with pw.sync_playwright() as driver:
+        chrome = shutil.which('chromium') or shutil.which('chromium-browser')
+        try:
+            browser = driver.chromium.launch(headless=True, **({'executable_path': chrome} if chrome else {}))
+        except Exception as exc:
+            pytest.skip(f'Chromium unavailable: {exc}')
+        try:
+            for width in (740, 1100):
+                page = browser.new_page(viewport={'width': width, 'height': 850})
+                page.evaluate(MOCK_LOCAL_BACKEND)
+                page.set_content(render_worker_page(ROOT))
+                page.wait_for_function("window.__mcelWorker?.app.readState('state:selected-network')==='testnet'")
+                for value in ('none', 'slh'):
+                    radio = page.locator(f'[data-mcel-radio-choices] input[value="{value}"]')
+                    radio.focus()
+                    evidence = radio.evaluate('''input => {
+                        const row = input.closest('[data-mcel-radio-choice]');
+                        const grid = row.parentElement;
+                        const r = row.getBoundingClientRect(), g = grid.getBoundingClientRect();
+                        const s = getComputedStyle(row);
+                        return {extent: parseFloat(s.outlineWidth) + parseFloat(s.outlineOffset),
+                            style: s.outlineStyle,
+                            clearance: [r.left-g.left-grid.clientLeft, r.top-g.top-grid.clientTop,
+                                g.left+grid.clientLeft+grid.clientWidth-r.right,
+                                g.top+grid.clientTop+grid.clientHeight-r.bottom]};
+                    }''')
+                    assert evidence['style'] == 'solid', evidence
+                    assert evidence['extent'] > 0, evidence
+                    assert min(evidence['clearance']) >= evidence['extent'] - 0.05, evidence
+                page.close()
+        finally:
+            browser.close()
+
+
+def test_selected_radio_has_complete_perimeter_without_focus():
+    """Selection owns all four edges; record separators must not break the frame."""
+    pw = pytest.importorskip('playwright.sync_api')
+    with pw.sync_playwright() as driver:
+        chrome = shutil.which('chromium') or shutil.which('chromium-browser')
+        try:
+            browser = driver.chromium.launch(headless=True, **({'executable_path': chrome} if chrome else {}))
+        except Exception as exc:
+            pytest.skip(f'Chromium unavailable: {exc}')
+        try:
+            page = browser.new_page(viewport={'width': 1100, 'height': 850})
+            page.evaluate(MOCK_LOCAL_BACKEND)
+            page.set_content(render_worker_page(ROOT))
+            page.wait_for_function("window.__mcelWorker?.app.readState('state:selected-network')==='testnet'")
+            group = page.locator('[data-mcel-radio-choices]')
+            for value in ('testnet', 'slh', 'none', 'mainnet', 'test', 'dev'):
+                radio = group.locator(f'input[value="{value}"]')
+                if not radio.is_checked():
+                    radio.check()
+                    page.wait_for_function('''value => window.__mcelWorker.app.readState('state:saved-hub-choice')===value''', arg=value)
+                page.evaluate('document.activeElement.blur()')
+                evidence = group.locator('[data-mcel-radio-choice]').evaluate_all('''rows => rows.map(row => {
+                    const s = getComputedStyle(row), input = row.querySelector('input');
+                    const sides = ['Top', 'Right', 'Bottom', 'Left'];
+                    const probe = document.createElement('span');
+                    probe.style.color = 'var(--mcel-color-accent,#68b8c9)';
+                    row.append(probe);
+                    const accent = getComputedStyle(probe).color;
+                    probe.remove();
+                    return {value: input.value, checked: input.checked, selected: row.getAttribute('aria-selected'),
+                        focused: row.matches(':focus-within'), accent,
+                        colors: sides.map(side => s['border'+side+'Color']),
+                        widths: sides.map(side => parseFloat(s['border'+side+'Width'])),
+                        styles: sides.map(side => s['border'+side+'Style'])};
+                })''')
+                assert [row['value'] for row in evidence if row['checked']] == [value]
+                for row in evidence:
+                    assert row['selected'] == str(row['checked']).lower(), row
+                    assert not row['focused'], row
+                    assert len(set(row['colors'])) == 1, row
+                    assert len(set(row['widths'])) == 1 and row['widths'][0] > 0, row
+                    assert row['styles'] == ['solid'] * 4, row
+                    if row['checked']:
+                        assert row['colors'] == [row['accent']] * 4, row
+                    else:
+                        assert row['colors'][0] != row['accent'], row
+        finally:
+            browser.close()

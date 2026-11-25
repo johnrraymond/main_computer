@@ -1,0 +1,33 @@
+/* Geometry only: the unified presentation controller still owns colors and chrome. */
+html:has(body.mcel-rich-document-workspace),body.mcel-rich-document-workspace{height:100%;margin:0;overflow:hidden;}
+body.mcel-rich-document-workspace{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;}
+body.mcel-rich-document-workspace #mcel-workbench{height:100%;min-height:0;min-width:0;overflow:hidden;}
+#mcel-workbench > [data-rich-document-workspace]{display:grid!important;height:100%;min-height:0;overflow:hidden;grid-template-columns:clamp(135px,19%,245px) minmax(0,1fr) clamp(175px,20%,280px)!important;grid-template-rows:auto minmax(0,1fr)!important;gap:8px!important;padding:6px;}
+#mcel-workbench > [data-rich-document-workspace][data-document-hide-library]{grid-template-columns:0 minmax(0,1fr) clamp(175px,20%,280px)!important;}
+#mcel-workbench > [data-rich-document-workspace][data-document-hide-ai]{grid-template-columns:clamp(135px,19%,245px) minmax(0,1fr) 0!important;}
+#mcel-workbench > [data-rich-document-workspace][data-document-hide-library][data-document-hide-ai]{grid-template-columns:0 minmax(0,1fr) 0!important;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-region="interface-region:document.header"]{grid-column:1/-1!important;grid-row:1!important;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 10px;min-height:0;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone]{grid-row:2!important;min-width:0;min-height:0;max-height:100%;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="navigator"]{grid-column:1!important;overflow:auto;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="workspace"]{grid-column:2!important;overflow:hidden!important;scrollbar-gutter:auto;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="tools"]{grid-column:3!important;overflow:auto;}
+#mcel-workbench [data-document-hide-library] > [data-mcel-zone="navigator"],#mcel-workbench [data-document-hide-ai] > [data-mcel-zone="tools"]{visibility:hidden;overflow:hidden;}
+#mcel-workbench [data-rich-document-workspace] [data-mcel-region="interface-region:document.document"]{height:100%;flex:1 1 0;min-height:0!important;display:flex;flex-direction:column;padding:0!important;overflow:hidden!important;}
+#mcel-workbench [data-rich-document-workspace] [data-node-kind="document-surface"]{height:100%;flex:1 1 0;min-height:0!important;min-width:0;overflow:hidden;}
+#mcel-workbench [data-rich-document-workspace] [data-mcel-rich-document-host]{height:100%;min-height:0;}
+#mcel-workbench [data-rich-document-workspace] .mcel-document-surface-element{height:100%;min-height:0;}
+#mcel-workbench [data-rich-document-workspace] .mcel-document-surface-toolbar{gap:3px;padding:4px;}
+#mcel-workbench [data-rich-document-workspace] :is(button,input,select){min-height:26px;padding:3px 7px;font-size:12px;}
+#mcel-workbench [data-rich-document-workspace] [data-document-outline]{display:flex;flex-direction:column;gap:2px;}
+#mcel-workbench [data-rich-document-workspace] [data-document-outline] button{text-align:left;padding-inline-start:calc(6px + var(--outline-depth,0)*9px);white-space:normal;overflow-wrap:anywhere;}
+#mcel-workbench [data-rich-document-workspace] [data-mcel-zone="tools"] [data-mcel-purpose="inspection"]{flex:1 0 auto;display:flex;flex-direction:column;gap:6px;}
+#mcel-workbench [data-rich-document-workspace] [data-node-kind="state-value"] output{min-height:0;white-space:pre-wrap;overflow-wrap:anywhere;}
+#mcel-workbench-status{min-height:0;font-size:10px;padding:2px 6px;}
+@media(max-width:650px){
+#mcel-workbench > [data-rich-document-workspace],#mcel-workbench > [data-rich-document-workspace][data-document-hide-library],#mcel-workbench > [data-rich-document-workspace][data-document-hide-ai]{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;grid-template-rows:auto minmax(0,1fr) minmax(0,25%)!important;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="workspace"]{grid-column:1/-1!important;grid-row:2!important;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="navigator"]{grid-column:1!important;grid-row:3!important;}
+#mcel-workbench [data-rich-document-workspace] > [data-mcel-zone="tools"]{grid-column:2!important;grid-row:3!important;}
+#mcel-workbench [data-document-hide-library] > [data-mcel-zone="tools"],#mcel-workbench [data-document-hide-ai] > [data-mcel-zone="navigator"]{grid-column:1/-1!important;}
+#mcel-workbench > [data-rich-document-workspace][data-document-hide-ai][data-document-hide-library]{grid-template-rows:auto minmax(0,1fr) 0!important;}
+}

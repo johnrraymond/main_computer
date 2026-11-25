@@ -17,7 +17,7 @@ from main_computer.mcel_phase2c_candidate_host import CandidateHostError
 
 REGISTRY_PATH = Path("tools/fixtures/mcel_semantic_applications_shell/registry.json")
 CANONICAL_ROUTE_PATH = Path("main_computer/viewport_state.py")
-SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console", "slh", "worker"})
+SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console", "slh", "worker", "wallet", "document"})
 PROPERTIES = ("theme", "form", "chrome")
 POLICY_SCHEMA = "mcel.presentation-policy.v1"
 SELECTION_SCHEMA = "mcel.presentation-selection.v1"
@@ -141,7 +141,7 @@ def resolve_presentation(registry: dict, app_id: str, *, promoted: bool = True,
     rollout = registry["presentation"]["rollout"]
     # Keep the independent diagnostic Worker candidate after canonical
     # promotion; both surfaces use the same semantic presentation policy.
-    if semantic_candidate and app_id != "worker":
+    if semantic_candidate and app_id not in {"worker", "wallet", "document"}:
         raise CandidateHostError("Unknown semantic presentation candidate")
     eligible = promoted and (app["mount"] == "semantic" or semantic_candidate)
     enabled = bool(eligible and rollout["apps"].get(app_id, rollout["defaultEnabled"]))

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .evidence import validate_host_url
+from tools.mcel_functional_auth import new_context
 
 WIDTHS=(320,390,560,1100,1272)
 ROUTE='/applications/mcel-semantic-task-manager-generated-p3'
@@ -57,7 +58,8 @@ def probe(host_url:str, out:Path, timeout_ms=12000):
         browser,_=launch_semantic_browser(p)
         try:
             for width in WIDTHS:
-                page=browser.new_page(viewport={'width':width,'height':800},accept_downloads=False)
+                ctx=new_context(browser,host_url,viewport={'width':width,'height':800},accept_downloads=False)
+                page=ctx.new_page()
                 errors=[]; responses=[]
                 page.on('pageerror',lambda e:errors.append(str(e)[:300]))
                 page.on('response',lambda r:responses.append({'path':r.url.split('?')[0].split(host_url)[-1],
@@ -228,7 +230,7 @@ def probe(host_url:str, out:Path, timeout_ms=12000):
                 finally:
                     result['widths'][str(width)]=info
                     result['network']+=responses[:30]
-                    page.close()
+                    ctx.close()
         finally:browser.close()
     result['passed']=all(x.get('passed') for x in result['widths'].values())
     return result
@@ -885,9 +887,14 @@ def live_readonly_parity(host_url: str, output: Path):
     try:
         with sync_playwright() as player:
             browser,_=launch_semantic_browser(player)
+            contexts=[]
+            def fresh_page():
+                ctx=new_context(browser,host,viewport={'width':1100,'height':800})
+                contexts.append(ctx)
+                return ctx.new_page()
             try:
-                legacy=browser.new_page(viewport={'width':1100,'height':800})
-                generated=browser.new_page(viewport={'width':1100,'height':800})
+                legacy=fresh_page()
+                generated=fresh_page()
                 problems=[]
                 for page,tag in ((legacy,'legacy'),(generated,'generated')):
                     response=page.goto(host+(LEGACY_ROUTE if tag=='legacy' else ROUTE),
@@ -954,7 +961,7 @@ def live_readonly_parity(host_url: str, output: Path):
                         pair=[]
                         try:
                             for tag,route in (('legacy',LEGACY_ROUTE),('generated',ROUTE)):
-                                page=browser.new_page(viewport={'width':1100,'height':800})
+                                page=fresh_page()
                                 pair.append(page)
                                 response=page.goto(host+route,wait_until='load',timeout=20000)
                                 if response is None or response.status!=200:
@@ -977,7 +984,10 @@ def live_readonly_parity(host_url: str, output: Path):
                             for page in pair:
                                 page.close()
                     result['reason']='Read-only UI comparison complete. Consequential workflows require a verified lab host; AI requires explicit operator authorization.'
-            finally:browser.close()
+            finally:
+                try:
+                    for ctx in contexts: ctx.close()
+                finally: browser.close()
     except Exception as exc:
         result['reason']='Browser/transport blocked: '+type(exc).__name__+': '+str(exc)[:350]
     from .evidence import evidence_manifest

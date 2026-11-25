@@ -63,6 +63,10 @@ def reconcile(report):
 
 
 def validate_host_url(value: str) -> str:
+    from tools.mcel_functional_auth import ORIGIN, secure_target
+    value = secure_target(value)
+    if value in (ORIGIN, ORIGIN + "/"):
+        return ORIGIN
     p=urlsplit(value)
     if (p.scheme!='http' or p.hostname not in ('127.0.0.1','localhost','::1')
             or p.username or p.password or p.query or p.fragment or p.path not in ('','/')

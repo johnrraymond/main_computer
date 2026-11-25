@@ -28,7 +28,8 @@ from .storage import slh_state_dir
 from .marketplace_auto import AutomaticMarketplace, read_settings
 from .organization_wallet import OrganizationWallet
 from .private_requests import PrivateRequests
-from .pinky_sweep import PinkySweep
+from .pinky_sweep import PinkySweep, load_organization_signer
+from .public_requests import PublicRequests, PATH as PUBLIC_REQUEST_PATH, POLICY_PATH as PUBLIC_POLICY_PATH
 
 
 _SEH_OPERATION_LOCK = threading.RLock()
@@ -365,7 +366,7 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                     '/v1/org/admin/marketplace/config',
                     '/v1/org/admin/marketplace/authorization',
                     '/v1/org/admin/marketplace/connection-diagnostics',
-                    '/v1/org/admin/marketplace/wallet/bind'):
+                    '/v1/org/admin/marketplace/wallet/bind', PUBLIC_POLICY_PATH):
             try:
                 authority.authenticate(token, admin=True)
             except SLHError as exc:
@@ -399,7 +400,20 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                         raise SLHError('INVALID_MARKETPLACE_REQUEST')
                     self._respond(200, controller.configure(body['changes'], body['expected_revision']))
                     return
+                if path == PUBLIC_POLICY_PATH:
+                    public = getattr(self.server, 'public_requests', None)
+                    if public is None:
+                        raise SLHError('PUBLIC_REQUESTS_UNAVAILABLE',503)
+                    if method == 'GET':
+                        self._respond(200, public.policy())
+                        return
+                    if method == 'PATCH':
+                        self._respond(200, public.configure(body))
+                        return
                 if path.endswith('/authorization') and method == 'POST':
+                    if set(body) == {'issue'} and body['issue'] is True:
+                        self._respond(200, controller.issue_authorization())
+                        return
                     if set(body) != {'multisession_authorization'}:
                         raise SLHError('INVALID_MARKETPLACE_REQUEST')
                     controller.authorize(body['multisession_authorization'])
@@ -425,6 +439,28 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                               'kind': type(exc).__name__}})
                 return
             self._respond(405, {'error': {'code': 'METHOD_NOT_ALLOWED'}})
+            return
+        if path == PUBLIC_REQUEST_PATH or path.startswith(PUBLIC_REQUEST_PATH + '/'):
+            try:
+                identity = authority.authenticate(token)
+                if identity.get('role') != 'requester':
+                    raise SLHError('REQUESTER_REQUIRED',403)
+                public = getattr(self.server, 'public_requests', None)
+                if public is None:
+                    raise SLHError('PUBLIC_REQUESTS_UNAVAILABLE',503)
+                if self.path != path:
+                    raise SLHError('INVALID_PUBLIC_REQUEST',400)
+                if path == PUBLIC_REQUEST_PATH and method == 'POST':
+                    self._respond(200, public.submit(identity,body))
+                    return
+                if path.startswith(PUBLIC_REQUEST_PATH + '/') and method == 'GET' and not body:
+                    self._respond(200, public.get(identity,path[len(PUBLIC_REQUEST_PATH)+1:]))
+                    return
+                raise SLHError('METHOD_NOT_ALLOWED',405)
+            except SLHError as exc:
+                self._respond(exc.status, {'error':{'code':exc.code}})
+            except (TypeError, ValueError, RuntimeError, OSError) as exc:
+                self._respond(503, {'error':{'code':'PUBLIC_REQUEST_OPERATION_FAILED','kind':type(exc).__name__}})
             return
         # Full Coolify lifecycle management is available only over the DIRECT
         # TLS ORG-SLH channel. The distinct SEH identity listener rejects this
@@ -648,6 +684,7 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
     server.seh_operation_lock = threading.RLock()
     server.marketplace = None
     server.marketplace_controller = None
+    server.public_requests = None
     server.gateway = None
     server.private_requests = None
     server.pinky_sweeper = None
@@ -713,11 +750,16 @@ def _run_ready_service(state_dir: Path, parent_pid: int, parent_created: float,
                                                       wallet_service=server.wallet_service)
             gateway.scheduler.credit_provider = server.private_requests.net_credit_status
             server.api.private_requests = server.private_requests
-            server.pinky_sweeper = PinkySweep(server.private_requests, server.wallet_service)
+            server.pinky_sweeper = PinkySweep(server.private_requests, server.wallet_service,
+                signer_loader=lambda: load_organization_signer(server.wallet_service))
             server.api.pinky_sweeper = server.pinky_sweeper
             server.pinky_sweeper.start()
             server.marketplace = SLHMarketplaceProxy(gateway)
-            server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir, wallet_service=server.wallet_service)
+            server.marketplace_controller = AutomaticMarketplace(
+                server.marketplace, state_dir, wallet_service=server.wallet_service,
+                financial_startup=Path(state_dir).resolve() == slh_state_dir().resolve(),
+                provision_wallet=Path(state_dir).resolve() == slh_state_dir().resolve())
+            server.public_requests = PublicRequests(state_dir, server.marketplace_controller)
             server.private_requests.marketplace_controller = server.marketplace_controller
             gateway.on_worker_registered = server.marketplace_controller.wake
             gateway.on_worker_disconnected = server.marketplace_controller.wake

@@ -210,10 +210,17 @@ def _verify_current_host_page(host_url: str):
     """Read the current loopback host before reusing a prior hosted browser pass."""
     from .hosted import ROUTE
     expected=_expected_host_page_sha256()
-    with urlopen(validate_host_url(host_url)+ROUTE, timeout=12) as response:
-        if response.status!=200:
-            raise ValueError('current-host-page-not-200')
-        actual=hashlib.sha256(response.read()).hexdigest()
+    from tools.mcel_functional_auth import is_secure, authenticated_request
+    base = validate_host_url(host_url)
+    if is_secure(base):
+        with authenticated_request(base) as client:
+            response = client.get(base+ROUTE, max_redirects=0, timeout=12000)
+            if response.status != 200: raise ValueError('current-host-page-not-200')
+            actual = hashlib.sha256(response.body()).hexdigest()
+    else:
+        with urlopen(base+ROUTE, timeout=12) as response:
+            if response.status != 200: raise ValueError('current-host-page-not-200')
+            actual = hashlib.sha256(response.read()).hexdigest()
     if actual!=expected:
         raise ValueError('current-host-source-mismatch')
     return actual

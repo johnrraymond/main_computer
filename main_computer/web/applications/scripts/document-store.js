@@ -11,27 +11,7 @@
       activeThread: "main-computer-document-ai-active-thread-v1",
       undoStack: "main-computer-document-ai-undo-v1"
     };
-    const documentPagePresets = {
-      letter: {label: "Letter", widthPx: 816, heightPx: 1056},
-      a4: {label: "A4", widthPx: 794, heightPx: 1123},
-      legal: {label: "Legal", widthPx: 816, heightPx: 1344},
-      screen: {label: "Screen", widthPx: 960, heightPx: 1280}
-    };
-    function defaultDocumentLayoutState() {
-      return {
-        layout: {
-          mode: "preset",
-          preset: "letter",
-          custom: null,
-          margins: {top: 96, right: 96, bottom: 96, left: 96}
-        },
-        view: {
-          mode: "paged",
-          zoom: 1,
-          showPageBreaks: true
-        }
-      };
-    }
+    const {documentPagePresets, defaultDocumentLayoutState} = McelDocumentEngine;
     const docsApi = {
       async listDocuments() {
         const response = await fetch("/api/applications/docs/files", {
@@ -201,7 +181,6 @@
       inFlight: false,
       lastError: ""
     };
-    let documentRepaginationFrame = 0;
     const documentAiState = {
       threads: [],
       activeThreadId: "",

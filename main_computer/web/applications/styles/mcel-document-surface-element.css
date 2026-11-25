@@ -1,0 +1,54 @@
+.mcel-document-surface-element {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  --document-page-width: 816px;
+  --document-page-height: 1056px;
+  --document-margin-top: 96px;
+  --document-margin-right: 96px;
+  --document-margin-bottom: 96px;
+  --document-margin-left: 96px;
+  --document-zoom: 1;
+}
+.mcel-document-surface-element > .document-canvas {
+  align-content: start;
+  background: var(--panel, transparent);
+  color: inherit;
+  padding: 12px;
+  max-width: 100%;
+  box-sizing: border-box;
+  overscroll-behavior: contain;
+}
+.mcel-document-surface-element .mc-page-content { overflow-wrap: anywhere; }
+.mcel-document-surface-lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.mcel-document-surface-lab-card { min-width: 0; display: grid; gap: 8px; }
+.mcel-document-surface-lab-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.mcel-document-surface-lab-host { height: 460px; min-width: 0; }
+
+/* A native MCEL node supplies a bounded scroll host; the element owns its canvas. */
+[data-mcel-rich-document-host] { height: clamp(280px, 55vh, 640px); min-width: 0; }
+
+.mcel-document-surface-with-toolbar { grid-template-rows: auto minmax(0,1fr); }
+.mcel-document-surface-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:4px; }
+.mcel-document-surface-toolbar button { font:inherit; }
+
+/* Authored paper is independent of application shell paint. */
+[data-mcel-rich-document-host]{overflow:hidden;}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-mcel-content-kind="document"]:has([data-mcel-rich-document-host]) output[data-state]{min-height:0;white-space:pre-wrap;}
+/* A formatting toggle must operate on document markup, not inherited shell boldness.
+   Keep the legacy document application's stylesheet unchanged. */
+.mcel-document-surface-element .mc-page-content { font-weight: 400; }
+
+/* A toolbar-bearing element has independent stationary ruler and scroll viewport. */
+.mcel-document-surface-with-toolbar { grid-template-rows:auto auto minmax(0,1fr); }
+.mcel-document-surface-with-toolbar > .document-canvas { border-radius:0; border:0; scrollbar-gutter:stable both-edges; padding:12px; }
+.mcel-document-surface-with-toolbar .mc-page-content { font-size:calc(16px * var(--document-zoom)); }
+.mcel-document-surface-element .mc-page { background:#fffefa; color:#191919; isolation:isolate; }
+.mcel-document-ruler-rail { min-width:0; overflow:hidden; scrollbar-gutter:stable both-edges; display:grid; justify-items:safe center; padding:0 12px; }
+.mcel-document-ruler { position:relative; height:24px; color:inherit; background:var(--panel,transparent); background-image:repeating-linear-gradient(to right,currentColor 0 1px,transparent 1px var(--ruler-tick)); background-size:100% 5px; background-position:bottom; background-repeat:no-repeat; }
+.mcel-document-ruler span { position:absolute; top:0; font-size:10px; transform:translateX(-50%); }
+.mcel-document-ruler::before,.mcel-document-ruler::after { content:""; position:absolute; bottom:0; border:5px solid transparent; border-top-color:currentColor; transform:translateX(-50%); }
+.mcel-document-ruler::before { left:var(--ruler-left); }
+.mcel-document-ruler::after { left:calc(100% - var(--ruler-right)); }

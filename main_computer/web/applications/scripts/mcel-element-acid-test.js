@@ -2459,7 +2459,47 @@
         activate(shell.getAttribute("data-mcel-lab-active-mode") || "mission");
       }
 
+      const documentSurfaceLabInstances = new WeakMap();
+      function renderDocumentSurfaceLab(document, panel) {
+        const grid = createNode(document, "div", "mcel-document-surface-lab-grid");
+        const instances = [];
+        panel.append(createNode(document, "p", "", "Two independent MCEL Document Surface elements. Edits are in memory only; the buttons exercise the same interface the AI Chat Console can consume."), grid);
+        for (const name of ["A", "B"]) {
+          const card = createNode(document, "section", "mcel-document-surface-lab-card");
+          const controls = createNode(document, "div", "mcel-document-surface-lab-controls");
+          const host = createNode(document, "div", "mcel-document-surface-lab-host");
+          const status = createNode(document, "output", "");
+          status.setAttribute("aria-live", "polite");
+          card.append(createNode(document, "strong", "", `Document ${name}`), controls, host, status);
+          grid.append(card);
+          const surface = global.McelElementRegistry.mountElement("element.authoring.document-surface", host, {
+            label: `Document ${name}`, html: `<h1>Document ${name}</h1><p>Select this text or edit it directly.</p><p><strong>Rich text</strong> and <em>formatting</em> are retained.</p>`,
+            layout: {view: {mode: "endless"}}
+          });
+          instances.push(surface);
+          let locked = null;
+          function show(message = "") { const state = surface.getState(); status.textContent = `Revision ${state.revision} · ${state.layout.view.mode}${message ? ` · ${message}` : ""}`; }
+          function button(label, action) {
+            const b = createNode(document, "button", "", label); b.type = "button";
+            b.addEventListener("mousedown", e => e.preventDefault());
+            b.addEventListener("click", () => { try { action(); show("OK"); } catch (e) { show(e.message); } }); controls.append(b);
+          }
+          button("Bold", () => surface.format("bold"));
+          button("Append via API", () => surface.mutate({operation: "append", expectedRevision: surface.getState().revision, html: "<p>Inserted through the MCEL element API.</p>"}));
+          button("Lock selection", () => { locked = surface.getSelection(); if (!locked || !locked.text) throw new Error("Select text in this document first"); });
+          button("Replace locked text", () => { if (!locked) throw new Error("Lock a selection first"); surface.mutate({operation: "replace-selection", expectedRevision: locked.revision, anchor: locked, text: "Revised through the API"}); locked = null; });
+          button("Insert math", () => surface.insertMath("E = mc^2", "paragraph"));
+          button("Paged / endless", () => { const state = surface.getState().layout; state.view.mode = state.view.mode === "paged" ? "endless" : "paged"; surface.setLayout(state); });
+          button("Undo", () => surface.undo());
+          button("Redo", () => surface.redo());
+          surface.subscribe(() => show()); show();
+        }
+        return instances;
+      }
+
       function buildDemoUi(document, canvas, definitions) {
+        documentSurfaceLabInstances.get(canvas)?.forEach(instance => instance.destroy());
+        documentSurfaceLabInstances.delete(canvas);
         canvas.replaceChildren();
         const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
         const shell = applyElementAttributes(createNode(document, "section", "mcel-element-acid-shell"), requireDefinition(definitionsById, "element.core.app"), "acid-root");
@@ -2486,6 +2526,7 @@
           ["toolkit", "Toolkit"],
           ["proofs", "Proofs"],
           ["views", "Views"],
+          ["document-surface", "Document Surface"],
           ["registry", "Registry"]
         ].forEach(([id, label], index) => {
           const button = createNode(document, "button", "", label);
@@ -2502,6 +2543,7 @@
         const toolkitPanel = createWorkbenchPanel(document, "toolkit", "Toolkit atlas", false);
         const proofPanel = createWorkbenchPanel(document, "proofs", "Migration proof surfaces", false);
         const viewPanel = createWorkbenchPanel(document, "views", "Visual resource specimens", false);
+        const documentPanel = createWorkbenchPanel(document, "document-surface", "Reusable Document Surface", false);
         const registryPanel = createWorkbenchPanel(document, "registry", "Element registry catalog", false);
 
         renderLabMissionControl(document, missionPanel, definitionsById);
@@ -2542,11 +2584,15 @@
         layout.append(navigation, grid, proofRail);
         catalogDisclosure.append(catalogSummary, layout);
         registryPanel.appendChild(catalogDisclosure);
-        panels.append(missionPanel, concernPanel, toolkitPanel, proofPanel, viewPanel, registryPanel);
+        panels.append(missionPanel, concernPanel, toolkitPanel, proofPanel, viewPanel, documentPanel, registryPanel);
         workbench.append(modeNav, panels);
         shell.append(hero, workbench);
         canvas.appendChild(shell);
         wireLabWorkbenchModes(workbench);
+        // Mount lazily, only when the specimen is opened. Re-running the Lab disposes both instances.
+        modeNav.querySelector('[data-mcel-lab-mode="document-surface"]')?.addEventListener("click", () => {
+          if (!documentSurfaceLabInstances.has(canvas)) documentSurfaceLabInstances.set(canvas, renderDocumentSurfaceLab(document, documentPanel));
+        });
         return records;
       }
 

@@ -57,6 +57,8 @@ class OrganizationWorkerClient:
             ("POST", "/v1/admin/devices/trash/empty"),
             ("GET", "/v1/org/admin/services"),
             ("GET", "/v1/org/admin/marketplace/status"),
+            # R01: compare the actual administrative spending policy across restart.
+            ("GET", "/v1/org/admin/marketplace/requester-policy"),
             ("GET", "/v1/org/admin/seh/deployment"),
             ("GET", "/v1/org/admin/seh/connection"),
             ("POST", "/v1/org/admin/seh/connection"),
@@ -65,6 +67,13 @@ class OrganizationWorkerClient:
             ("POST", "/v1/org/admin/seh/deployment/harness"),
             ("GET", "/v1/auth/session"),
             ("GET", "/v1/org/identity"),
+            ("GET", "/v1/wallets"),
+            ("POST", "/v1/accounting/reconcile"),
+            ("POST", "/v1/wallets/transfer"),
+            ("POST", "/v1/wallets/portfolio"),
+            ("POST", "/v1/wallets/managed-transfer"),
+            ("POST", "/v1/wallets/transfer-status"),
+            ("POST", "/v1/wallets/managed-transfer-status"),
             ("GET", "/v1/admin/authenticator/software-otp"),
             ("POST", "/v1/admin/authenticator/software-otp"),
             ("POST", "/v1/admin/authenticator/software-otp/revoke"),
@@ -89,6 +98,11 @@ class OrganizationWorkerClient:
                 raise WorkerBridgeError("INVALID_AUTH_REQUEST", 400)
         elif body is not None:
             allowed_body = (
+                ((method,path)==('POST','/v1/wallets/portfolio') and type(body) is dict and set(body)=={'limit','before'}) or
+                ((method=='POST' and path in ('/v1/wallets/managed-transfer','/v1/wallets/managed-transfer-status')) and type(body) is dict and set(body)=={'intent'}) or
+                ((method,path)==('POST','/v1/accounting/reconcile') and body=={}) or
+                ((method=='POST' and path in ('/v1/wallets/transfer','/v1/wallets/transfer-status')) and
+                 type(body) is dict and set(body)=={'intent','signature'}) or
                 ((method,path)==('POST','/v1/admin/authenticator/software-otp') and
                  isinstance(body,dict) and set(body)=={'secret','code','service_fingerprint'} and
                  all(isinstance(v,str) for v in body.values()) and

@@ -317,7 +317,7 @@
           checkSchema(n.fields[field],value,n.id + ".defaults." + field);
         }
       }
-      assert(["form","control","state-value","collection","record-notebook","operation-notebook","plot","operation-evidence","document-editor","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
+      assert(["form","control","state-value","collection","record-notebook","operation-notebook","plot","operation-evidence","document-editor","document-surface","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
       if(n.nodeKind==="operation-evidence" && own(n,"activityEntries")){
         assert(Array.isArray(n.activityEntries),"invalid-activity-entries:"+n.id);
         const keys=new Set();
@@ -450,6 +450,25 @@
         }
       }
       if (n.nodeKind === "state-value") assert(states.has(ref(n.value?.state)), "unbound-display:" + n.id);
+      if (n.nodeKind === "document-surface") {
+        const value=states.get(ref(n.contentState)), mode=states.get(ref(n.modeState));
+        assert(n.elementId==="element.authoring.document-surface" && value?.authority==="renderer-local" &&
+          value.schema?.kind==="string" && !value.schema.enum && !value.schema.minLength &&
+          typeof value.initial==="string", "document-surface-value-invalid:"+n.id);
+        assert([...nodes.values()].filter(other=>other.nodeKind==="document-surface" && ref(other.contentState)===value.id).length===1,
+          "document-surface-value-shared:"+n.id);
+        assert(![...intents.values()].some(intent=>(intent.viewWrites||[]).some(w=>ref(w)===value.id) ||
+          (intent.writes||[]).some(w=>ref(w)===value.id)) && ![...nodes.values()].some(other=>other!==n &&
+          (Object.values(other.fieldState||{}).some(w=>ref(w)===value.id) ||
+          (other.nodeKind==="document-editor" && [other.draft,other.path].some(w=>ref(w)===value.id)))),
+          "document-surface-value-writer-conflict:"+n.id);
+        if(own(n,"modeState"))assert(mode?.authority==="renderer-local" && mode.schema?.kind==="string" &&
+          mode.schema.enum?.length===2 && ["paged","endless"].every(v=>mode.schema.enum.includes(v)) &&
+          mode.schema.enum.includes(mode.initial),"document-surface-mode-invalid:"+n.id);
+        assert(n.label===undefined || (typeof n.label==="string" && n.label.trim().length>0 && n.label.length<=120),
+          "document-surface-label-invalid:"+n.id);
+        assert(n.toolbar===undefined || typeof n.toolbar==="boolean","document-surface-toolbar-invalid:"+n.id);
+      }
       if (n.nodeKind === "document-editor") {
         if(n.externalJob){
           const job=n.externalJob,launch=intents.get(ref(job.launchIntent)),refresh=intents.get(ref(job.statusIntent));
@@ -854,6 +873,8 @@
     assert(root && root.nodeType === 1, "missing-root");
     assert(!root.hasAttribute("data-mcel-semantic-operational"), "already-mounted");
     const c = contract(ir, options.composition); // Refuse before modifying DOM.
+    if([...c.nodes.values()].some(n=>n.nodeKind==="document-surface"))
+      assert(global.McelElementRegistry?.hasRenderer?.("element.authoring.document-surface"),"document-surface-renderer-missing");
     // The inference engine uses one canonical IR contract across all apps.
     // The Lab enables preview on its iframe route; deployed routes only
     // activate when the shared application-registry rollout permits it.
@@ -942,6 +963,7 @@
     const rememberedInputs = new Map();
     const chatControllers=[];
     const pendingChatMounts=[];
+    const pendingDocumentSurfaceMounts=[], richDocumentHosts=new Map();
     // Source-declared form/output links, not application-name selectors.
     const resultReceivers = new Map();
     for (const s of c.states.values()) {
@@ -1165,6 +1187,11 @@
         shadowObserve('plot',n.id,()=>updatePlot(n,host),host);
       for (const [n, session] of documentHosts)
         shadowObserve('document',n.id,()=>updateDocument(n,session),session.surface,['editor-local']);
+      for(const [n,session] of richDocumentHosts) if(n.modeState)
+        shadowObserve('rich-document-mode',n.id,()=>{
+          const mode=read(ref(n.modeState)), layout=session.element.getState().layout;
+          if(layout.view.mode!==mode){layout.view.mode=mode;session.element.setLayout(layout);}
+        },session.host);
       let semanticActionChanged=false;
       for(const {button,intent,node} of [...actionButtons,...guardedFormButtons])
         shadowObserve('action-control',node?.id||intent.id,()=>{
@@ -2566,6 +2593,9 @@
               rootState:rootArg?ref(rootArg.state):null,intent:directoryIntent,pathParameter,
               rootListingIntent:rootListing?.id||null});
         }
+      } else if (n.nodeKind === "document-surface") {
+        const host=elt("div",{"data-mcel-rich-document-host":n.id});
+        holder.append(host);pendingDocumentSurfaceMounts.push({node:n,host});
       } else if (n.nodeKind === "document-editor") {
         const outer=elt("div",{"data-mcel-document-editor":n.id});
         const bar=elt("div",{"data-mcel-document-actions":""});
@@ -3649,11 +3679,12 @@
           const parameter=select.input.find(p=>p.id===ref(select.collectionSelection.input));
           const opensDocument=[...documentHosts.keys()].some(doc=>ref(doc.path)===ref(select.collectionSelection.target));
           const navigation=navigationRoots.find(nav=>nav.selection.id===select.id);
+          const compact=holder.getAttribute("data-mcel-navigation-list")==="compact";
           const selected=navigation && String(read(navigation.rootState))===String(item[n.key]);
-          if(navigation)row.setAttribute("aria-selected",String(!!selected));
+          if(navigation || compact)row.setAttribute("aria-selected",String(navigation?!!selected:String(read(ref(select.collectionSelection.target)))===String(item[n.key])));
           const button=elt("button",{type:"button","data-select-key":String(item[n.key]),
             ...(navigation?{"data-mcel-generated-action":selected?"refresh-location":"open-location"}:{})},
-            navigation?(selected?"Current · refresh":"Open location"):opensDocument?"Open":"Select");
+            navigation?(selected?"Current · refresh":"Open location"):opensDocument?"Open":compact?String(item[n.fields[0]]??item[n.key]):"Select");
           const regionId=holder.closest("[data-mcel-region]")?.getAttribute("data-mcel-region");
           const region=c.regions.get(regionId);
           const directoryForm=(region?.members||[]).map(m=>c.nodes.get(ref(m))).find(node=>{
@@ -4019,7 +4050,47 @@
       }
       if(chrome.childNodes.length)rail.prepend(chrome);
     }
+    // Mount only the registered element, after layout hosts are connected.
+    // A failed mount must not strand a partially instantiated document surface.
+    const priorChildren=[...root.childNodes];
     root.replaceChildren(tree);
+    try {
+      for(const {host,node:n} of pendingDocumentSurfaceMounts){
+        const contentId=ref(n.contentState), modeId=ref(n.modeState);
+        const element=global.McelElementRegistry.mountElement(n.elementId,host,{
+          html:read(contentId),label:n.label||fmt(n.sourceName),toolbar:n.toolbar===true,modeOwned:!!modeId,
+          ...(modeId?{layout:{view:{mode:read(modeId)}}}:{})});
+        const session={host,element,unsubscribe:null,api:null};
+        richDocumentHosts.set(n,session);
+        // Sanitized engine serialization, not untrusted input, is authoritative
+        // for the application draft. Do not write back to the engine on notify.
+        state.set(contentId,element.getState().html);
+        session.unsubscribe=element.subscribe(event=>{
+          if(disposed)return;
+          const changed=event.kind==="content" && read(contentId)!==event.html;
+          if(changed){state.set(contentId,event.html);notify();}
+          if(typeof global.CustomEvent==="function")host.dispatchEvent(new global.CustomEvent("mcel:document-surface-change",{
+            bubbles:true,detail:{nodeId:n.id,stateId:contentId,...clone(event)}}));
+        });
+        // No root, destroy, storage, network or arbitrary state setter escapes
+        // through the application-facing handle. Lifetime is runtime-owned.
+        session.api=Object.freeze({getState:element.getState,getSelection:element.getSelection,
+          mutate:element.mutate,format:element.format,insertMath:element.insertMath,
+          undo:element.undo,redo:element.redo,validateImport:element.validateImport,getExportPages:element.getExportPages,
+          getOutline:element.getOutline,navigateHeading:element.navigateHeading,
+          loadDocument(request){
+            if(modeId && request?.layout?.view?.mode!==read(modeId))throw Error("DOCUMENT_SURFACE_MODE_STATE_OWNED");
+            return element.loadDocument(request);
+          },
+          setLayout(layout){
+            if(modeId && layout?.view?.mode!==read(modeId))throw Error("DOCUMENT_SURFACE_MODE_STATE_OWNED");
+            return element.setLayout(layout);
+          }});
+      }
+    }catch(error){
+      for(const session of richDocumentHosts.values()){session.unsubscribe?.();session.element.destroy();}
+      richDocumentHosts.clear();root.replaceChildren(...priorChildren);throw error;
+    }
     for(const {host,node} of pendingChatMounts){
       const controller=port.mountEmbeddedChat(host,node,read);
       assert(controller,"embedded-chat-mount-failed");
@@ -4128,7 +4199,9 @@
     // Equivalent read-only startup is safe only with one unambiguous,
     // source-declared navigation chain; all requests pass the same port gates.
     if(navigationRoots.length===1)void execute(navigationRoots[0].loader.id);
-    return Object.freeze({execute,setNotebookAuthorization:changeNotebookAuthorization,activateNotebooks,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
+    return Object.freeze({execute,
+      getDocumentSurface:nodeId=>disposed?null:richDocumentHosts.get(c.nodes.get(nodeId))?.api||null,
+      setNotebookAuthorization:changeNotebookAuthorization,activateNotebooks,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
       signalCandidateReport:signalSchedulingReport,
       setSignalSchedulingMode,
@@ -4157,6 +4230,8 @@
         current.clear();targetRuns.clear();
         port.closeDocument?.();
         for(const controller of chatControllers)controller.destroy?.();
+        for(const session of richDocumentHosts.values()){session.unsubscribe?.();session.element.destroy();}
+        richDocumentHosts.clear();
         if(documentHosts.size) global.MainComputerMonacoAdapter?.dispose?.("semantic-unmount");
         root.replaceChildren();root.removeAttribute("data-mcel-semantic-operational");}});
   }

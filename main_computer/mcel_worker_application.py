@@ -51,7 +51,7 @@ def compile_worker_application(repo: Path = ROOT) -> tuple[dict, dict]:
     if set(capabilities) != {"capability:worker-observer", "capability:worker-hub-choice-control",
                              "capability:worker-destination-control", "capability:worker-policy-control",
                              "capability:worker-slh-target-control", "capability:worker-marketplace-observer",
-                             "capability:worker-marketplace-settings", "capability:worker-marketplace-actions"}:
+                             "capability:worker-marketplace-settings", "capability:worker-marketplace-actions", "capability:worker-enrollment"}:
         raise WorkerSemanticApplicationError("Worker migration may not invent external authorities")
     risks = {"capability:worker-observer": "external-read",
              "capability:worker-hub-choice-control": "consequential",
@@ -60,7 +60,8 @@ def compile_worker_application(repo: Path = ROOT) -> tuple[dict, dict]:
              "capability:worker-slh-target-control": "consequential",
              "capability:worker-marketplace-observer": "external-read",
              "capability:worker-marketplace-settings": "consequential",
-             "capability:worker-marketplace-actions": "consequential"}
+             "capability:worker-marketplace-actions": "consequential",
+             "capability:worker-enrollment": "consequential"}
     if any(capabilities[key].get("risk") != risk for key, risk in risks.items()):
         raise WorkerSemanticApplicationError("Worker capability risk mismatch")
     try:

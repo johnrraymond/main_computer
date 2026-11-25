@@ -68,7 +68,7 @@ def test_protected_authentication_failure_is_identified_by_status_only():
     ]) is None
 
 
-def test_admin_is_explicit_and_prevalidated_without_launching_browser():
+def test_optional_admin_override_is_prevalidated_without_launching_browser():
     assert slh.validate_admin_id('059-LNF-AL-074-TM-26-11-09', protected_reads=True)
     assert slh.validate_admin_id(None, protected_reads=True) is None
     for invalid in ('', ' ', '../escape', 'admin id', 'a' * 65):
@@ -114,7 +114,8 @@ def test_live_runner_is_explicit_strict_and_records_incomplete(tmp_path, monkeyp
     assert result['apps']['slh']['status'] == 'INCOMPLETE'
     assert result['apps']['slh']['failure_code'] == 'ADMIN_ID_REQUIRED'
     assert json.loads(report.read_text())['status'] == 'INCOMPLETE'
-    assert calls == [('four',BASE,('calculator',)), ('slh',BASE,False,None)]
+    from tools.mcel_functional_auth import ORIGIN
+    assert calls == [('four',ORIGIN,('calculator',)), ('slh',ORIGIN,False,None)]
     with pytest.raises(ValueError):
         lane.run('https://example.com', tmp_path/'x.json', ('slh',))
     with pytest.raises(ValueError):
@@ -256,7 +257,7 @@ def test_slh_live_browser_lane_uses_http_fixture_not_mocks(tmp_path):
         protected = None
         if result['status']=='PASS_LIVE_READ_ONLY':
             protected = slh.run(f'http://127.0.0.1:{server.server_port}',
-                                tmp_path/'protected.json',protected_reads=True,admin_id='one')
+                                tmp_path/'protected.json',protected_reads=True)
     finally:
         server.shutdown();server.server_close();worker.join(timeout=3)
     # An explicit fail is never promoted; print diagnostics to aid a genuine
@@ -273,6 +274,8 @@ def test_slh_live_browser_lane_uses_http_fixture_not_mocks(tmp_path):
     assert ('GET','/applications/slh/local') not in seen
     assert any(x[0]=='POST' and x[2]=='inspect' for x in seen)
     assert protected is not None and protected['status']=='PASS_LIVE_READ_ONLY', protected
+    assert protected['admin_identity_source'] == 'LMS_DEFAULT'
+    assert protected['admin_id_supplied'] is False
     assert protected['checks']['anonymous_does_not_authenticate']
     assert protected['checks']['admin_selected_via_mcel']
     assert protected['checks']['pending_loaded_without_tab_click']
@@ -362,3 +365,29 @@ def test_anonymous_visible_pending_does_not_authenticate_then_selected_admin_hyd
               c.body.operation==='read-pending')''')
         finally:
             browser.close()
+
+
+def test_lms_default_identity_is_not_inferred_from_order_or_label():
+    summary = {'state':'AVAILABLE', 'defaultDeviceId':'two'}
+    rows = [{'deviceId':'one','defaultStatus':'ADDITIONAL','label':'Administrator'},
+            {'deviceId':'two','defaultStatus':'DEFAULT','label':'Local'}]
+    assert slh._default_identity_id(summary, rows) == 'two'
+    assert slh._default_identity_id(summary, list(reversed(rows))) == 'two'
+    assert slh._default_identity_id({**summary,'state':'UNVERIFIED'}, rows) is None
+    assert slh._default_identity_id({**summary,'defaultDeviceId':'one'}, rows) is None
+    assert slh._default_identity_id(summary, rows[:1]) is None
+    assert slh._default_identity_id(summary, rows + [rows[1]]) is None
+    assert slh._default_identity_id(summary, [{**rows[0],'defaultStatus':'DEFAULT'},rows[1]]) is None
+    assert slh._default_identity_id({'state':'AVAILABLE','defaultDeviceId':'../bad'}, rows) is None
+    assert slh._default_identity_id(summary, None) is None
+
+
+def test_protected_lane_needs_no_manual_identity_argument(tmp_path, monkeypatch):
+    calls = []
+    def fake(host, report, *, protected_reads, admin_id):
+        calls.append((protected_reads, admin_id))
+        return {'status':'PASS_LIVE_READ_ONLY','protected_reads':'PASS'}
+    monkeypatch.setattr(lane, 'slh_run', fake)
+    assert lane.main(['--app','slh','--protected-reads','--report',str(tmp_path/'report.json')]) == 0
+    assert calls == [(True,None)]
+    assert json.loads((tmp_path/'report.json').read_text())['admin_id_supplied'] is False

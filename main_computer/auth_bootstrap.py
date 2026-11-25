@@ -954,6 +954,8 @@ class BootstrapHandler(BaseHTTPRequestHandler):
                     # Preserve presence even for invalid credentials, so the
                     # native local/network target checks cannot be bypassed.
                     names += ['Authorization', 'X-MCEL-SLH-Operation']
+                if route in ('/api/applications/wallet/org','/api/applications/wallet/portfolio'):
+                    names.append('X-MCEL-Wallet-Operation')
                 if route.startswith('/api/applications/browser/'):
                     names.append('X-MCEL-Browser-Operation')
                 for name in names:

@@ -71,9 +71,9 @@ def test_complete_isolated_coverage_does_not_claim_live_cutover():
              for case in acceptance.CASES}
     report = acceptance.summarize(cases, profile='full',
                                   selected=list(acceptance.CASES), mode='isolated')
-    assert report['intentCoverage']['declared'] == 25
+    assert report['intentCoverage']['declared'] == 27
     assert report['intentCoverage']['counts'] == {
-        'PASS': 25, 'FAIL': 0, 'NOT_TESTED': 0, 'UNVERIFIED': 0,
+        'PASS': 27, 'FAIL': 0, 'NOT_TESTED': 0, 'UNVERIFIED': 0,
     }
     assert report['status'] == 'PASS_ISOLATED_FUNCTIONAL'
     assert report['cutover']['status'] == 'BLOCKED'

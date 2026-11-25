@@ -8,12 +8,13 @@ The reference tab receives the original bytes. Actual same-origin backends are
 used for bounded read operations, with a deny-by-default route firewall.
 
 Run on the *same Windows machine* as Main Computer:
-  python -m tools.mcel_hosted_signal_cutover_acceptance --host-url http://127.0.0.1:8765
+  python -m tools.mcel_hosted_signal_cutover_acceptance --host-url https://dev.main-computer.localhost:8875
 
 Requires isolated certifications already completed. Does not constitute full
 live-write/Mathics/Aider acceptance; an explicit future gate is still needed.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 import argparse
 from base64 import b64encode
@@ -134,7 +135,7 @@ def _preflight_parent_shell(browser, base: str, repo: Path, apps,
     """Prove each ordinary app URL still returns the exact promoted MCEL shell."""
     shell=render_applications_shell_candidate(repo,canonical_promoted=True).encode('utf-8')
     expected_sha=hashlib.sha256(shell).hexdigest()
-    ctx=browser.new_context(service_workers='block',storage_state=storage_state)
+    ctx=new_context(browser, base, service_workers='block',storage_state=storage_state)
     out={}
     try:
         for app in apps:
@@ -168,7 +169,7 @@ def _preflight_parent_shell(browser, base: str, repo: Path, apps,
 def _preflight_host_documents(browser, base: str, repo: Path, apps,
                               *, storage_state=None) -> dict:
     """Read the *native child* document, not the promoted parent shell."""
-    ctx=browser.new_context(service_workers='block',storage_state=storage_state)
+    ctx=new_context(browser, base, service_workers='block',storage_state=storage_state)
     out={}
     parent_shell=render_applications_shell_candidate(repo,canonical_promoted=True).encode('utf-8')
     try:
@@ -221,38 +222,10 @@ def expected_html(app: str, repo: Path = ROOT) -> str:
     return render_semantic_page(app, repo, promoted=True)
 
 
-def _editor_role_html(original: str, *, candidate: bool) -> str:
-    """For a promoted Code Editor, retain a true incumbent reference in memory.
-
-    All HTML still must equal the authoritative live host before this exact
-    test-only substitution. Do not modify the server, runtime or write policy.
-    """
-    if original.count('signalSchedulerIntegration:true') != 1 or (
-        original.count('signalSchedulerStartEnabled:true') +
-        original.count('signalSchedulerStartEnabled:false') != 1):
-        raise ValueError('EDITOR_PRODUCTION_SIGNAL_MOUNT_DRIFT')
-    if len(list(GATE.finditer(original))) != 1:
-        raise ValueError('EDITOR_RUNTIME_GATE_DRIFT')
-    desired='true' if candidate else 'false'
-    result=re.sub(r'signalSchedulerStartEnabled:(?:true|false)',
-                  'signalSchedulerStartEnabled:'+desired, original, count=1)
-    if not candidate:
-        result=result.replace('signalSchedulerIntegration:true',
-                              'signalSchedulerIntegration:false',1)
-    return result
-
-
-def instrument_reference(app: str, original: str) -> str:
-    if app not in APPS:raise ValueError('UNSUPPORTED_APP')
-    return _editor_role_html(original,candidate=False) if app=='code-editor' else original
-
-
 def instrument_candidate(app: str, original: str) -> str:
-    """Exact in-memory signal candidate; no persistent route modification."""
+    """Exact, nonpersistent HTML instrumentation; fail closed on drift."""
     if app not in APPS:
         raise ValueError('UNSUPPORTED_APP')
-    if app=='code-editor':
-        return _editor_role_html(original,candidate=True)
     if app == 'calculator':
         needle = "capabilities:port,presentation:'expert'"
         if original.count(needle) != 1 or original.count('</head>') != 1:
@@ -263,8 +236,19 @@ def instrument_candidate(app: str, original: str) -> str:
             '<script>window.__MCEL_CALCULATOR_SIGNAL_ACCEPTANCE__=true;</script></head>', 1)
     if original.count('signalSchedulerIntegration:false') != 1 or original.count('signalSchedulerStartEnabled:false') != 1:
         raise ValueError('HOST_DEFAULT_NOT_INCUMBENT')
-    return (original.replace('signalSchedulerIntegration:false', 'signalSchedulerIntegration:true', 1)
-                    .replace('signalSchedulerStartEnabled:false', 'signalSchedulerStartEnabled:true', 1))
+    result = (original.replace('signalSchedulerIntegration:false', 'signalSchedulerIntegration:true', 1)
+                      .replace('signalSchedulerStartEnabled:false', 'signalSchedulerStartEnabled:true', 1))
+    if app == 'code-editor':
+        matches = list(GATE.finditer(result))
+        if len(matches) != 1 or result.count('<head>') != 1:
+            raise ValueError('EDITOR_RUNTIME_GATE_DRIFT')
+        match = matches[0]
+        code = match.group()
+        code = code[:-2] + '||(ir.application.appId==="code-editor" && global.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__===true));'
+        result = result[:match.start()] + code + result[match.end():]
+        result = result.replace('<head>',
+               '<head><script>window.__MCEL_CODE_EDITOR_SIGNAL_ACCEPTANCE__=true;</script>', 1)
+    return result
 
 
 def _app_handle(app: str) -> str:
@@ -297,7 +281,7 @@ def _guard_context(ctx, app: str, base: str, *, candidate: bool, original_html: 
 
     def guard(route, request):
         parsed = urlsplit(request.url)
-        same = parsed.scheme == 'http' and parsed.netloc == urlsplit(base).netloc
+        same = (parsed.scheme, parsed.netloc) == (urlsplit(base).scheme, urlsplit(base).netloc)
         if (same and request.method == 'GET' and parsed.path == route_path
                 and parsed.query == NATIVE_CHILD_QUERY):
             if request.resource_type != 'document':
@@ -314,7 +298,7 @@ def _guard_context(ctx, app: str, base: str, *, candidate: bool, original_html: 
                     firewall['blocked'].append('SERVED_CANONICAL_HTML_MISMATCH_'+info['reason'])
                     route.abort(); return
                 firewall['servedHashes'].append(_sha(content))
-                result = instrument_candidate(app, content) if candidate else instrument_reference(app, content)
+                result = instrument_candidate(app, content) if candidate else content
                 route.fulfill(response=response, body=result, headers={
                     **{k: v for k, v in response.headers.items()
                        if k.lower() not in ('content-length', 'content-encoding', 'etag')},
@@ -347,18 +331,6 @@ def _guard_context(ctx, app: str, base: str, *, candidate: bool, original_html: 
     if not hasattr(ctx, 'route_web_socket'):
         raise RuntimeError('PLAYWRIGHT_WEBSOCKET_GUARD_UNAVAILABLE')
     ctx.route_web_socket('**/*', lambda ws: (firewall['blocked'].append('WEBSOCKET_DENIED'), ws.close()))
-
-
-def _monaco_resource_evidence(url: str, *, result: str, status: int | None=None) -> dict | None:
-    """Path-only Monaco worker/loader evidence; no query or response bodies."""
-    parsed=urlsplit(url)
-    if ('/monaco-editor/' not in parsed.path and
-        not (parsed.path.endswith(('/editor.main.js','/workerMain.js')))):
-        return None
-    if not (parsed.path.endswith(('.js','.css','.wasm'))):return None
-    entry={'path':parsed.path[:200], 'result':result[:30]}
-    if status is not None:entry['httpStatus']=status
-    return entry
 
 
 def _settle(page):
@@ -439,13 +411,6 @@ def _stabilize_file_manager_live_listing(pages: dict, max_resamples: int=3) -> d
         evidence['liveResamples']+=1
     return evidence
 
-def _exact_snapshot_resamples(app: str, phase: str) -> int:
-    """Bounded full-DOM re-observation, never selective field normalization."""
-    if app=='calculator':return 3
-    if app=='code-editor' and phase=='hosted-source-open':return 4
-    return 0
-
-
 def _snapshot_difference_diagnostics(left: dict, right: dict, samples: list[dict]) -> list[dict]:
     '''Report location and digests, never source text or private cell contents.
 
@@ -456,24 +421,6 @@ def _snapshot_difference_diagnostics(left: dict, right: dict, samples: list[dict
     for sample in samples[:8]:
         path=sample.get('path','')
         entry={'path':path}
-        style_found=re.fullmatch(r'rows\[(\d+)\]\.attrs\.style',path)
-        if style_found:
-            idx=int(style_found.group(1))
-            for role,snapshot in [('incumbent',left),('signals',right)]:
-                rows=snapshot.get('rows',[])
-                if idx>=len(rows):continue
-                item=rows[idx]
-                attrs=item.get('attrs',{})
-                style=attrs.get('style','')
-                # Never log style *values* (they may contain source URLs).
-                entry[role]={'tag':item.get('tag'), 'nodePath':item.get('path'),
-                             'className':str(attrs.get('class',''))[:100],
-                             'styleBytes':len(style.encode('utf8')),
-                             'styleSha256':_sha(style),
-                             'styleProperties':sorted(set(re.findall(
-                                  r'(?:^|;)\s*([a-zA-Z-]+)\s*:',style)))[:16]}
-            result.append(entry)
-            continue
         found=re.fullmatch(r'rows\[(\d+)\]\.(text|value)',path)
         if found:
             idx=int(found.group(1))
@@ -502,49 +449,6 @@ def _snapshot_difference_diagnostics(left: dict, right: dict, samples: list[dict
                         break
         result.append(entry)
     return result
-
-
-def _safe_browser_error_text(value: str, limit: int=360) -> str:
-    """Keep actionable JS failure text, never browser credentials or file paths.
-
-    Exception messages are untrusted; do not persist arbitrary stack text,
-    query strings, absolute paths, bearer credentials, or source snippets.
-    """
-    line=str(value).splitlines()[0].strip() if value else ''
-    line=re.sub(r'(?i)\b(authorization|cookie|password|api[_-]?key|token|secret)\s*[:=]\s*\S+',
-                lambda m: m.group(1)+'=[REDACTED]',line)
-    line=re.sub(r'https?://[^\s\)\]\>\"\']+', '[URL]', line, flags=re.I)
-    line=re.sub(r'(?<!\w)[A-Za-z]:[\\/][^\s\)\]\>\"\']+', '[LOCAL_PATH]', line)
-    line=re.sub(r'(?<!\w)(?:/home/|/Users/|/mnt/)[^\s\)\]\>\"\']+', '[LOCAL_PATH]', line)
-    return line[:limit]
-
-
-def _browser_pageerror_evidence(exc, role: str, stage: str) -> dict:
-    """Capture a bounded actionable browser exception without leaking state.
-
-    The old listener stored only ``type(exc).__name__`` (usually ``Error``),
-    making a true live-write pass impossible to diagnose when a JavaScript
-    page exception occurred independently of the completed HTTP save.
-    """
-    message=str(exc)
-    stack=getattr(exc,'stack',None) or message
-    frames=[]
-    for line in str(stack).splitlines()[:18]:
-        # Match a basename and position, not the URL/Windows/Unix path prefix.
-        found=re.search(r'(?P<file>[A-Za-z0-9_.$-]+\.(?:js|html|mjs)):'
-                        r'(?P<line>\d+):(?P<column>\d+)',line)
-        if not found:
-            continue
-        func=re.search(r'\bat\s+([^()]+?)\s*\(',line)
-        function=func.group(1).strip() if func else None
-        if function and not re.fullmatch(r'[A-Za-z0-9_$#.-]{1,80}',function):
-            function=None
-        frames.append({'file':found.group('file'),'line':int(found.group('line')),
-                       'column':int(found.group('column')),'function':function})
-        if len(frames)==8:break
-    return {'role':role,'stage':stage,'errorClass':type(exc).__name__,
-            'message':_safe_browser_error_text(message),
-            'frames':frames,'fingerprint':hashlib.sha256(message.encode('utf8',errors='replace')).hexdigest()[:16]}
 
 
 def _await_editor_monaco_ready(page, path: str, timeout: int=30000) -> dict:
@@ -696,7 +600,7 @@ def _exercise_pending(pages, app, record):
 
 
 def _visit_dependency_routes(browser, base, *, storage_state=None):
-    ctx = browser.new_context(service_workers='block', storage_state=storage_state)
+    ctx = new_context(browser, base, service_workers='block', storage_state=storage_state)
     try:
         output={}
         for path in DEPENDENCIES:
@@ -724,17 +628,10 @@ def _single_app(browser, app, base, repo, storage_state=None,
           'requiredReadApi':{}, 'pendingRollback':'NOT_TESTED',
           'promotionAuthorized':False,'disposableWrite':'NOT_TESTED'}
     contexts={};pages={};firewalls={};errors={k:[] for k in roles}
-    monaco_resources={k:[] for k in roles}
-    stage_tracker={'stage':'browser-mount'}
-    def observed_pageerror(exc,role):
-        event=_browser_pageerror_evidence(exc,role,stage_tracker['stage'])
-        errors[role].append(event)
-        if len(errors[role])<=6:
-            print('MCEL_HOSTED_PAGEERROR',app,json.dumps(event,sort_keys=True),flush=True)
     skip_total=0;skip_counter=0
     try:
         for role in roles:
-            ctx = browser.new_context(viewport={'width':1272,'height':900}, device_scale_factor=1,
+            ctx = new_context(browser, base, viewport={'width':1272,'height':900}, device_scale_factor=1,
                                       service_workers='block',accept_downloads=False,storage_state=storage_state)
             contexts[role]=ctx
             firewall={'blocked':[],'requests':[],'responses':[],'servedHashes':[]}
@@ -749,15 +646,7 @@ def _single_app(browser, app, base, repo, storage_state=None,
             page=ctx.new_page()
             pages[role]=page
             page.set_default_timeout(12000)
-            page.on('pageerror',lambda exc,r=role:observed_pageerror(exc,r))
-            def note_monaco_resource(url, result, role=role, status=None):
-                event=_monaco_resource_evidence(url,result=result,status=status)
-                if event is not None and len(monaco_resources[role])<40:
-                    monaco_resources[role].append(event)
-            page.on('response',lambda response, r=role:
-                note_monaco_resource(response.url,'response',r,response.status))
-            page.on('requestfailed',lambda request,r=role:
-                note_monaco_resource(request.url,'failed',r))
+            page.on('pageerror',lambda exc,r=role:errors[r].append(type(exc).__name__))
             page.on('response',lambda response,f=firewall: f['responses'].append({
                 'method':response.request.method,'path':urlsplit(response.url).path,'status':response.status})
                 if urlsplit(response.url).path.startswith('/api/') else None)
@@ -786,7 +675,6 @@ def _single_app(browser, app, base, repo, storage_state=None,
         refused=pages['incumbent'].evaluate(f'window.{_app_handle(app)}.app.setSignalSchedulingMode("certified")')
         if refused['status']!='REFUSED':raise RuntimeError('INCUMBENT_SCHEDULER_GUARD_FAILED')
         def record(phase):
-            stage_tracker['stage']=phase
             nonlocal skip_total,skip_counter
             for page in pages.values():_settle(page)
             left=_snapshot(pages['incumbent'],app)
@@ -796,14 +684,8 @@ def _single_app(browser, app, base, repo, storage_state=None,
             # Re-observe only while a *complete* byte-for-byte semantic
             # comparison is still failing; never normalize or discard a delta.
             settled_after=0
-            # Monaco asynchronously lays out cursor, textarea and view layers
-            # after the model is ready. For the initial source-open snapshot,
-            # repeat the *entire* comparison briefly, with no ignored nodes or
-            # normalized styles; persistent differences remain hard failures.
-            # Page errors remain independent hard blockers.
-            exact_convergence_attempts=_exact_snapshot_resamples(app,phase)
-            if differences and exact_convergence_attempts:
-                for _ in range(exact_convergence_attempts):
+            if differences and app=='calculator':
+                for _ in range(3):
                     pages['incumbent'].wait_for_timeout(350)
                     for page in pages.values():_settle(page)
                     left=_snapshot(pages['incumbent'],app)
@@ -905,13 +787,11 @@ def _single_app(browser, app, base, repo, storage_state=None,
                 data['sourceOpen']='BLOCKED_BY_DEFAULT_EDITOR_READ_RECORDS_AIDER_CONTEXT'
             data['pendingRollback']=_exercise_pending(pages,app,record)['status']
             if write_fixture is not None:
-                stage_tracker['stage']='disposable-live-save-and-rollback'
                 data['disposableWrite']=disposable.exercise_write(pages,write_fixture,firewalls=firewalls)
                 if data['disposableWrite']=='PASS_DISPOSABLE_SOURCE_WRITE_ROLLBACK':
                     data['liveWrites']='PASS_DISPOSABLE_ONLY'
                 if data['disposableWrite']!='PASS_DISPOSABLE_SOURCE_WRITE_ROLLBACK':
                     data['failures'].append('DISPOSABLE_WRITE_LANE_FAILED')
-                stage_tracker['stage']='post-disposable-live-save'
         final=pages['signals'].evaluate(f'window.{_app_handle(app)}.app.signalCandidateReport()')
         data['endMode']=_sanitize_report(final)
         data['actualSkips']=skip_total
@@ -934,11 +814,7 @@ def _single_app(browser, app, base, repo, storage_state=None,
             data['requiredReadApi'][path]=all(any(x['path']==path and x['status']==200
                              for x in f['responses']) for f in firewalls.values())
         if not all(data['requiredReadApi'].values()):data['failures'].append('REQUIRED_LIVE_READ_API_MISSING')
-        if any(errors.values()):
-            data['failures'].append('BROWSER_PAGEERROR')
-            data['monacoResourceEvidence']=monaco_resources
-            print('MCEL_HOSTED_MONACO_RESOURCE_EVIDENCE',app,
-                  json.dumps(monaco_resources,sort_keys=True),flush=True)
+        if any(errors.values()):data['failures'].append('BROWSER_PAGEERROR')
         if any(x['status']!='PASS' for x in data['stages']):data['failures'].append('HOSTED_SCHEDULER_DIFFERENTIAL')
         if skip_total<1:data['failures'].append('NO_ACTUAL_SKIPS')
         if data['unsafeFallbacks']:data['failures'].append('SIGNAL_UNSAFE_FALLBACK')
@@ -964,25 +840,22 @@ def _single_app(browser, app, base, repo, storage_state=None,
                 for role,firewall in firewalls.items()}
         data['failures'].append(type(exc).__name__+':'+str(exc).splitlines()[0][:160])
     finally:
-        if any(errors.values()):
-            data['browserPageErrors']={role:events[:12] for role,events in errors.items() if events}
-            data['browserPageErrorCount']={role:len(events) for role,events in errors.items()}
-            if 'BROWSER_PAGEERROR' not in data['failures']:
-                data['failures'].append('BROWSER_PAGEERROR')
-            data['status']='BLOCKED'
         if 'requestGuard' not in data:
             data['requestGuard']={role:{'blocked':list(f['blocked']),'servedHashes':list(f['servedHashes']),
                                         'readApiCount':len(f['responses'])} for role,f in firewalls.items()}
         for ctx in contexts.values():
             try:ctx.close()
-            except Exception:pass
+            except Exception:
+                data['status']='BLOCKED'
+                data['promotionAuthorized']=False
+                data['failures'].append('DISPOSABLE_AUTH_CLEANUP_UNVERIFIED')
     return data
 
 
 def run(host_url: str, repo: Path=ROOT, apps=APPS, *, storage_state: Path | None=None,
         allow_editor_read_history: bool=False, authorize_disposable_writes: bool=False,
         report: Path=DEFAULT, preflight_only: bool=False) -> dict:
-    base = validate_loopback_base(host_url)
+    base = validate_loopback_base(secure_target(host_url))
     if not apps or len(set(apps))!=len(apps) or any(a not in APPS for a in apps):
         raise ValueError('INVALID_APPLICATION_SELECTION')
     if authorize_disposable_writes and ('code-editor' not in apps or not allow_editor_read_history):
@@ -1094,7 +967,7 @@ def run(host_url: str, repo: Path=ROOT, apps=APPS, *, storage_state: Path | None
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host-url',required=True,help='http://127.0.0.1:<port> (live Main Computer)')
+    parser.add_argument('--host-url',default=ORIGIN,help='http://127.0.0.1:<port> (live Main Computer)')
     parser.add_argument('--app',choices=APPS,action='append',help='Subset; default all three')
     parser.add_argument('--storage-state',type=Path,help='Existing browser authentication state; never included in reports')
     parser.add_argument('--allow-editor-read-history',action='store_true',

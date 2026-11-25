@@ -332,6 +332,107 @@ class OrganizationWallet:
                 raise
             return self.status()
 
+    def portfolio(self, body):
+        if type(body) is not dict or set(body) != {'limit','before'}:
+            raise SLHError('INVALID_WALLET_REQUEST',400)
+        with self._lock:
+            status = self.reconcile()
+            binding = status['binding']
+            url,key = self._settings()
+            with self._db() as db:
+                private = self._binding(db)
+            reader = self.reader_factory(url,private['tls_sha256'])
+            view = reader.request('POST','/api/hub/v1/credits/wallet-portfolio',
+                {'wallet_address':binding['wallet_address'],**body},bearer_token=key)
+            if not view.get('ok') or any(view.get(k)!=binding[k] for k in ('wallet_address','account_id','cluster_id','chain_id')):
+                raise SLHError('HUB_WALLET_MISMATCH',502)
+            return {'wallet':status,'portfolio':view,'managedSigner':self.managed_signer_available(binding['wallet_address'])}
+
+    def _managed_signer(self, wallet):
+        # Separate explicit authority; never repurpose Pinky's restricted signer.
+        from main_computer.multisession_key_signing import private_key_to_address
+        raw = os.environ.get('MAIN_COMPUTER_ORG_WALLET_TRANSFER_SIGNER_FILE','').strip()
+        if not raw:
+            raise SLHError('ORG_TRANSFER_SIGNER_NOT_CONFIGURED',409)
+        path=Path(raw)
+        if path.is_symlink() or not path.is_file() or (os.name=='posix' and path.stat().st_mode & 0o077):
+            raise SLHError('ORG_TRANSFER_SIGNER_UNAVAILABLE',409)
+        try:
+            secret=path.read_text(encoding='ascii').strip()
+            if private_key_to_address(secret).lower()!=wallet:
+                raise ValueError('wrong signer')
+        except (ValueError,OSError,TypeError) as exc:
+            raise SLHError('ORG_TRANSFER_SIGNER_MISMATCH',409) from exc
+        return secret
+
+    def managed_signer_available(self,wallet):
+        try:
+            self._managed_signer(wallet)
+            return True
+        except SLHError:
+            return False
+
+    def managed_transfer(self, body, *, status_only=False):
+        from main_computer.org_credit_transfer import canonical_transfer_intent
+        from main_computer.multisession_key_signing import sign_personal_message
+        if type(body) is not dict or set(body)!={'intent'}:
+            raise SLHError('INVALID_WALLET_REQUEST',400)
+        intent=body['intent']
+        try:
+            message=canonical_transfer_intent(intent)
+        except (ValueError,TypeError) as exc:
+            raise SLHError('INVALID_WALLET_REQUEST',400) from exc
+        with self._lock:
+            with self._db() as db:
+                binding=self._binding(db)
+            if not binding or any(intent[k]!=binding[k] for k in ('wallet_address','cluster_id','chain_id')):
+                raise SLHError('WALLET_TRANSFER_BINDING_MISMATCH',409)
+            secret=self._managed_signer(binding['wallet_address'])
+            return self.transfer({'intent':intent,'signature':sign_personal_message(message,secret)},status_only=status_only)
+
+    def transfer(self, body, *, status_only=False):
+        """Relay an explicit wallet signature, never an MSK spending grant."""
+        from main_computer.org_credit_transfer import verify_transfer_signature
+        if type(body) is not dict or set(body) != {'intent', 'signature'}:
+            raise SLHError('INVALID_WALLET_REQUEST', 400)
+        intent = body['intent']
+        try:
+            message = verify_transfer_signature(intent, body['signature'])
+        except (ValueError, TypeError) as exc:
+            raise SLHError('WALLET_SIGNATURE_REFUSED', 403) from exc
+        with self._lock:
+            with self._db() as db:
+                binding = self._binding(db)
+            if binding is None:
+                raise SLHError('ORG_WALLET_NOT_BOUND', 409)
+            if any(intent[field] != binding[field] for field in ('wallet_address','cluster_id','chain_id')):
+                raise SLHError('WALLET_TRANSFER_BINDING_MISMATCH', 409)
+            url, key = self._settings()
+            if url != binding['hub_url'] or _digest_key(key) != binding['msk_digest']:
+                raise SLHError('WALLET_BINDING_CHANGED', 409)
+            reader = self.reader_factory(url, binding['tls_sha256'])
+            if reader.trust_mode != binding['trust_mode']:
+                raise SLHError('HUB_TRUST_CHANGED', 409)
+            proof = self._validate(reader, key, hub_id=binding['hub_id'],
+                                   cluster_id=binding['cluster_id'], chain_id=binding['chain_id'])
+            if proof['wallet_address'] != binding['wallet_address'] or proof['account_id'] != binding['account_id']:
+                raise SLHError('HUB_WALLET_MISMATCH', 409)
+            if status_only:
+                receipt=reader.request('POST','/api/hub/v1/credits/org-transfer-status',body)
+                if receipt.get('ok') is not True or any(receipt.get(field)!=value for field,value in intent.items()):
+                    raise SLHError('TRANSFER_RECEIPT_UNVERIFIED',502)
+                return receipt
+            # A lost response can conceal a committed debit. Invalidate the
+            # observation before submission, and never infer success locally.
+            self._mark_stale('TRANSFER_RECONCILIATION_REQUIRED')
+            receipt = reader.request('POST', '/api/hub/v1/credits/org-transfers', body)
+            if (receipt.get('ok') is not True or receipt.get('status') != 'confirmed' or
+                not isinstance(receipt.get('receipt_id'), str) or not receipt['receipt_id'] or
+                receipt.get('intent_digest') != hashlib.sha256(message.encode('ascii')).hexdigest() or
+                any(receipt.get(field) != value for field, value in intent.items())):
+                raise SLHError('TRANSFER_RECEIPT_UNVERIFIED', 502)
+            return receipt
+
     def status(self):
         with self._lock, self._db() as db:
             binding = self._binding(db)

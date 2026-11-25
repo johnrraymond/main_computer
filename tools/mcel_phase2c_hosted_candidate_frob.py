@@ -3,6 +3,8 @@
 Without --hosted-url, passing local tests is NOT proof of real viewport route.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context, is_secure, authenticated_request
+
 
 import argparse
 import json
@@ -37,6 +39,7 @@ def run(hosted_url: str | None = None) -> int:
         diagnostic += '\n' + (result.stderr or '')[-1200:]
 
     if hosted_url is not None:
+        hosted_url=secure_target(hosted_url)
         checks['realViewportHost'] = False
         if hosted_url.rstrip('/').split('?', 1)[0].endswith('/applications/mcel-semantic-calculator-candidate'):
             try:
@@ -44,16 +47,18 @@ def run(hosted_url: str | None = None) -> int:
                 with sync_playwright() as p:
                     browser, backend = launch_semantic_browser(p)
                     try:
-                        page = browser.new_page()
+                        ctx = new_context(browser, hosted_url)
+                        page = ctx.new_page()
                         response = page.goto(hosted_url, timeout=20000)
                         if response and response.status == 200:
                             page.locator('input[name="expression"]').fill('6 * 7')
                             page.locator('form[data-intent="intent:compute"] button').click()
                             page.locator('[data-state="state:result"]').get_by_text('42').wait_for(timeout=10000)
                             checks['realViewportHost'] = page.locator('[data-disposition="completed"]').count() > 0
-                        page.close()
                     finally:
-                        browser.close()
+                        try:
+                            if 'ctx' in locals(): ctx.close()
+                        finally: browser.close()
             except Exception as exc:
                 diagnostic += '\nHosted route: ' + str(exc)[:600]
         else:

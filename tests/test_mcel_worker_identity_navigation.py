@@ -52,12 +52,13 @@ def test_identity_semantics_preserve_worker_authority():
     assert intentions['intent:choose-identity']['risk']=='local-state'
     for action in ('refresh-identities', 'refresh-identity-status'):
         assert intentions['intent:'+action]['risk']=='external-read'
-    assert not any('enroll' in x['id'] or 'admin-approve' in x['id'] for x in ir['intents'])
+    assert intentions['intent:request-enrollment']['risk']=='consequential'
+    assert not any('admin-approve' in x['id'] for x in ir['intents'])
     assert {c['id'] for c in ir['capabilities']} == {
         'capability:worker-observer', 'capability:worker-hub-choice-control',
         'capability:worker-destination-control', 'capability:worker-policy-control',
         'capability:worker-slh-target-control', 'capability:worker-marketplace-observer',
-        'capability:worker-marketplace-settings', 'capability:worker-marketplace-actions'
+        'capability:worker-marketplace-settings', 'capability:worker-marketplace-actions', 'capability:worker-enrollment'
     }
 
 

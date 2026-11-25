@@ -12,6 +12,8 @@ Without --execute-effects, hosted mode refuses native execution and cannot PASS.
 The browser uses an isolated Playwright context: no existing notebook is edited.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context, is_secure, authenticated_request
+
 
 import argparse
 import hashlib
@@ -135,6 +137,11 @@ def validate_effect_output(output_cell: dict[str, Any], cell_id: str, source: st
 
 
 def _http_get(base: str, path: str) -> bytes:
+    if is_secure(base):
+        with authenticated_request(base) as client:
+            response = client.get(base+path, timeout=25000)
+            if response.status != 200: raise RuntimeError(f'GET {path}: HTTP {response.status}')
+            return response.body()
     with urlopen(base + path, timeout=25) as response:
         if response.status != 200:
             raise RuntimeError(f"GET {path}: HTTP {response.status}")
@@ -142,6 +149,10 @@ def _http_get(base: str, path: str) -> bytes:
 
 
 def _http_post(base: str, path: str, data: dict[str, Any], *, origin: str | None = None) -> tuple[int, dict[str, Any]]:
+    if is_secure(base):
+        with authenticated_request(base) as client:
+            response = client.post(base+path, data=data, timeout=20000, negative_origin=origin)
+            return response.status, response.json()
     headers = {"Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
@@ -238,7 +249,7 @@ def run_hosted_browser(base: str, scratch: Path, token: str, *, timeout_s: int) 
         try:
             # New context: an empty temporary thread store. Does not alter the
             # user's real browser profile, active chats, or saved threads.
-            context = browser.new_context(viewport={"width": 1272, "height": 900}, accept_downloads=False)
+            context = new_context(browser, base, viewport={"width": 1272, "height": 900}, accept_downloads=False)
             page = context.new_page()
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             responses: list[dict[str, Any]] = []
@@ -305,7 +316,10 @@ def run_hosted_browser(base: str, scratch: Path, token: str, *, timeout_s: int) 
             context.close()
             return result
         finally:
-            browser.close()
+            try:
+                if 'context' in locals(): context.close()
+            finally:
+                browser.close()
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -330,10 +344,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError("Live host mode requires --execute-effects; refused to execute silently")
         if os.name != "nt":
             raise RuntimeError("Native PowerShell filesystem/process acceptance requires a Windows host")
-        parsed = urlsplit(args.host_url)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            raise RuntimeError("Acceptance refuses a non-loopback or non-HTTP target")
-        base = args.host_url.rstrip("/")
+        from tools.mcel_v1_four_app_hosted_acceptance import validate_loopback_base
+        base = validate_loopback_base(secure_target(args.host_url))
+        report['host_url'] = base
         checks["canonical_host"] = check_hosted_routes(base, checks["source_contract"])
         checks["authorization_boundaries"] = check_negative_boundaries(base)
         failed_gates = [name for name, check in checks.items() if check["status"] != "PASS"]
@@ -371,7 +384,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("source", "hosted"), default="source")
-    parser.add_argument("--host-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--host-url", default=ORIGIN)
     parser.add_argument("--execute-effects", action="store_true", help="Authorize bounded scratch-file and owned child process effects")
     parser.add_argument("--timeout-s", type=int, default=90)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)

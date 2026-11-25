@@ -1,3 +1,4 @@
+import {ORIGIN} from './secure_functional_auth.mjs'
 import {advanceSidepanelApproval} from './metamask_sidepanel_cdp.mjs'
 // Approve ONLY known, test-scoped MetaMask UI requests produced by the actual
 // Worker Connect Wallet handler. No provider mocks, extension-store edits,
@@ -17,6 +18,8 @@ const CONNECT_HEADING = /^(?:Connect (?:with MetaMask|to this site|to site|accou
 function trustedWorkerPage(page) {
   try {
     const url = new URL(page.url())
+    if (process.env.MC_WORKER_LIVE_GATE && process.env.MC_WORKER_TEST_URL === ORIGIN+'/applications/worker')
+      return url.origin===ORIGIN && url.pathname==='/applications/worker' && !url.hash && (!url.search || url.search==='?mcel-shell-child=1')
     return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) &&
       url.port === '8765' && (url.pathname === '/applications/worker' || (
         process.env.MC_WORKER_LIVE_GATE &&
@@ -56,13 +59,16 @@ async function clickFirst(page, names) {
 }
 
 async function permissionState(page, workerPage = null) {
+  const secure = process.env.MC_WORKER_LIVE_GATE && process.env.MC_WORKER_TEST_URL === ORIGIN+'/applications/worker'
+  if(secure && !trustedWorkerPage(workerPage))return {}
+  const originPattern=secure?/(?<![\w.-])dev\.main-computer\.localhost:8875(?![\w.-])/i:EXPECTED_ORIGIN
   const [chain, origin, rpc, add, change, connect] = await Promise.all([
-    visibleText(page, EXPECTED_CHAIN), visibleText(page, EXPECTED_ORIGIN),
+    visibleText(page, EXPECTED_CHAIN), visibleText(page, originPattern),
     visibleText(page, EXPECTED_RPC), visibleText(page, ADD_HEADING),
     visibleText(page, SWITCH_HEADING), visibleText(page, CONNECT_HEADING),
   ])
   const modernConnect = trustedWorkerPage(workerPage) &&
-    await visibleText(page, /^(?:127\.0\.0\.1|localhost)$/i) &&
+    await visibleText(page, secure?/^dev\.main-computer\.localhost$/i:/^(?:127\.0\.0\.1|localhost)$/i) &&
     await visibleText(page, /Connect this website with MetaMask/i) &&
     await visibleText(page, /See addresses, balances, and activity/i)
   return {chain, origin, rpc, add, change, connect, modernConnect}
@@ -211,7 +217,7 @@ async function safeExtensionTargetKinds(context, page, extensionId) {
   if (!page || typeof context.newCDPSession !== 'function') return []
   let session
   try {
-    session = await context.newCDPSession(page)
+    session = await context.newCDPSession(page.hostPage || page)
     const result = await session.send('Target.getTargets')
     const types = []
     for (const target of result?.targetInfos || []) {

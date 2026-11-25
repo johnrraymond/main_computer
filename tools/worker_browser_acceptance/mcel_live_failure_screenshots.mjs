@@ -157,7 +157,7 @@ async function captureCdpTargets(context,workerPage,extensionId,save) {
       typeof context.newCDPSession !== 'function') return
   let root
   try {
-    root=await context.newCDPSession(workerPage)
+    root=await context.newCDPSession(workerPage.hostPage || workerPage)
     const result=await root.send('Target.getTargets')
     const targets=(result?.targetInfos||[]).filter(target=>{
       if(!['page','other'].includes(target.type))return false

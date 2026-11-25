@@ -31,12 +31,13 @@ def test_worker_native_source_has_generated_layout_and_distinct_authorities():
         "capability:worker-observer", "capability:worker-hub-choice-control", "capability:worker-destination-control",
         "capability:worker-policy-control", "capability:worker-slh-target-control",
         "capability:worker-marketplace-observer", "capability:worker-marketplace-settings",
-        "capability:worker-marketplace-actions",
+        "capability:worker-marketplace-actions", "capability:worker-enrollment",
     }
     assert {intent["id"] for intent in ir["intents"] if intent["risk"] == "consequential"} == {
         "intent:select-destination", "intent:commit-hub-choice", "intent:disconnect", "intent:save-policy",
         "intent:save-slh-target", "intent:retry-hub", "intent:save-seller", "intent:save-requester",
         "intent:register-offer", "intent:work-now", "intent:finish-work-now", "intent:pause-selling",
+        "intent:request-enrollment", "intent:observe-enrollment",
     }
 
 

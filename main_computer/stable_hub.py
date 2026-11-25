@@ -2368,6 +2368,35 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/hub/v1/credits/multisession-keys/revoke":
                 self._send_json(200, self.server.multisession_key_service.revoke_key(self._read_json()))
                 return
+            if path == "/api/hub/v1/credits/wallet-portfolio":
+                from main_computer.wallet_portfolio import verify_read, ledger_view
+                body = self._read_json()
+                if set(body) not in ({'wallet_address','limit','before'}, {'intent','signature','limit','before'}):
+                    raise ValueError('invalid_wallet_portfolio_request')
+                directory = self.server.payout_ledger_directory
+                if 'intent' in body:
+                    wallet = verify_read(body['intent'],body['signature'],directory.cluster_id,directory.topology.network.get('chain_id'))
+                else:
+                    wallet = normalize_evm_address(body['wallet_address'],field_name='wallet_address')
+                    if not self._balance_read_authorized(wallet):
+                        self._send_json(403,{'ok':False,'error':'account_authorization_required'})
+                        return
+                self._send_json(200,ledger_view(directory,wallet,limit=body['limit'],before=body['before']))
+                return
+            if path == "/api/hub/v1/credits/org-transfer-status":
+                from main_computer.wallet_portfolio import transfer_status
+                body=self._read_json()
+                if set(body)!={'intent','signature'}: raise ValueError('invalid_credit_transfer_request')
+                self._send_json(200,transfer_status(self.server.payout_ledger_directory,body['intent'],body['signature']))
+                return
+            if path == "/api/hub/v1/credits/org-transfers":
+                body = self._read_json()
+                if set(body) != {'intent', 'signature'}:
+                    raise ValueError('invalid_credit_transfer_request')
+                receipt = self.server.payout_ledger_directory.transfer_org_credits(
+                    intent=body['intent'], signature=body['signature'])
+                self._send_json(200, receipt)
+                return
             if path == "/api/hub/v1/credits/pinky-reserve/sweep":
                 # Only a wallet-signed, recipient-fixed aggregate transfer can
                 # move organizational credits. An MSK alone cannot authorize it.
@@ -2510,6 +2539,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/hub/v1/credits/wallet-funding/completion":
             self._send_json(200, self.server.credit_bridge_completion.status())
+            return
+        if path == "/api/hub/v1/credits/wallet-scope":
+            directory=self.server.payout_ledger_directory
+            self._send_json(200,{'ok':True,'cluster_id':directory.cluster_id,'chain_id':str(directory.topology.network.get('chain_id') or '')})
             return
         if path == "/api/hub/v1/credits/balance":
             query = parse_qs(urlparse(self.path).query)

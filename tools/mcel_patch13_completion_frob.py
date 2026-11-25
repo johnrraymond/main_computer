@@ -7,6 +7,7 @@ machinery, NOT a new production UI, layout engine, or authority. Host optional:
     "http://127.0.0.1:8765/applications/task-manager/server-processes?mcel_task_notebook=lab"
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import secure_target, new_context
 
 import argparse
 import json
@@ -39,6 +40,7 @@ def _project(snapshot, request_scope):
 
 def _browser(snap, scope, *, host_url=None, expect_sample=True):
     from playwright.sync_api import sync_playwright
+    host_url=secure_target(host_url)
     projection, parity=_project(snap,scope)
     spec=projection['spec']
     checks={};cases=[];errors=[]
@@ -46,7 +48,8 @@ def _browser(snap, scope, *, host_url=None, expect_sample=True):
         browser=_chrome(playwright,None)
         try:
             for width in WIDTHS:
-                page=browser.new_page(viewport={'width':width,'height':800},reduced_motion='reduce')
+                ctx=new_context(browser,host_url,viewport={'width':width,'height':800},reduced_motion='reduce')
+                page=ctx.new_page()
                 page.on('pageerror',lambda err:errors.append(str(err)))
                 try:
                     if host_url:
@@ -116,7 +119,7 @@ def _browser(snap, scope, *, host_url=None, expect_sample=True):
                                   'inspectorHasFullCommand':'very-long '*15 in result['exactSourceInspector'],
                                   'noEffects':True})
                 finally:
-                    page.close()
+                    ctx.close()
         finally:
             browser.close()
     checks['source-parity']=parity['ok'] and parity['canonicalRecordsUnchanged']

@@ -1499,6 +1499,29 @@ function createDsl(metadata, source) {
         sourceName: name, state: ref(options.state), x: options.x, y: options.y,
         ...authoredColor(options,`surface.plot:${name}`)});
     },
+    documentSurface(name, options = {}) {
+      knownOptions(options, ["id", "value", "mode", "label", "when", "toolbar"], `surface.documentSurface:${name}`);
+      const value=options.value, mode=options.mode;
+      assert(value instanceof StateHandle && stateById.get(value.id)===value &&
+        value.record.authority==="renderer-local" && value.record.schema.kind==="string" &&
+        !value.record.schema.enum && !value.record.schema.minLength && typeof value.record.initial==="string",
+        "MCEL_DSL_DOCUMENT_SURFACE_VALUE_INVALID", "Document Surface requires initialized unrestricted renderer-local HTML state.");
+      assert(!issuedSurfaceNodes.some(n=>n.record.nodeKind==="document-surface" && n.record.contentState.ref===value.id),
+        "MCEL_DSL_DOCUMENT_SURFACE_VALUE_SHARED", "Each editable Document Surface requires its own HTML state.");
+      if(mode!==undefined) assert(mode instanceof StateHandle && stateById.get(mode.id)===mode &&
+        mode.record.authority==="renderer-local" && mode.record.schema.kind==="string" &&
+        mode.record.schema.enum?.length===2 && ["paged","endless"].every(v=>mode.record.schema.enum.includes(v)) &&
+        mode.record.schema.enum.includes(mode.record.initial), "MCEL_DSL_DOCUMENT_SURFACE_MODE_INVALID",
+        "Mode requires initialized renderer-local paged/endless choice state.");
+      if(options.label!==undefined)assert(typeof options.label==="string" && options.label.trim().length>0 && options.label.length<=120,
+        "MCEL_DSL_DOCUMENT_SURFACE_LABEL_INVALID", "Document Surface label must be nonempty semantic text.");
+      assert(options.toolbar===undefined || typeof options.toolbar==="boolean", "MCEL_DSL_DOCUMENT_SURFACE_TOOLBAR_INVALID", "Toolbar must be boolean.");
+      return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"document-surface",sourceName:name,
+        elementId:"element.authoring.document-surface",contentState:ref(value),
+        ...(options.toolbar?{toolbar:true}:{}),
+        ...(mode?{modeState:ref(mode)}:{}),...(options.label?{label:options.label}:{}),
+        ...modeCondition(options,`surface.documentSurface:${name}`)});
+    },
     documentEditor(name, options = {}) {
       knownOptions(options, ["id", "value", "path", "draft", "loadIntent", "saveIntent"], `surface.documentEditor:${name}`);
       for (const key of ["value", "path", "draft"]) {
@@ -1860,6 +1883,17 @@ function finalizeApplication(metadata, built, dsl, source, sourceHash, sourcePat
     assert(bound.length === issued.length && new Set(bound).size === bound.length &&
       bound.every(id => issued.includes(id)),
       "MCEL_DSL_UNBOUND_SURFACE_NODE", "All declared surface nodes must be bound exactly once to HTML regions.");
+  }
+  // The document engine is the single writer of its renderer-local draft.
+  // A state may be read by other nodes/intents, but not reassigned by them.
+  const allSurfaceNodes=surfaceRecords.flatMap(surface=>surface.nodes||[]);
+  for(const node of allSurfaceNodes.filter(n=>n.nodeKind==="document-surface")){
+    const id=node.contentState.ref;
+    assert(!intentRecords.some(intent=>(intent.viewWrites||[]).some(w=>w.ref===id) ||
+      (intent.writes||[]).some(w=>w.ref===id)) && !allSurfaceNodes.some(other=>other!==node &&
+      (Object.values(other.fieldState||{}).some(w=>w.ref===id) ||
+      (other.nodeKind==="document-editor" && [other.draft,other.path].some(w=>w?.ref===id)))),
+      "MCEL_DSL_DOCUMENT_SURFACE_VALUE_WRITER_CONFLICT", "Document Surface HTML must be edited through its document API, not a competing state writer.");
   }
   const layoutRecords = unwrap(built.layouts, LayoutHandle, "layouts");
   const invariantRecords = built.proof && Array.isArray(built.proof.invariants)

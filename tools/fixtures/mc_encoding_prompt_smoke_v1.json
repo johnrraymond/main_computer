@@ -1,0 +1,87 @@
+[
+  {
+    "kind": "UNCHECKED_CODE",
+    "path": "main_computer/web/applications/scripts/mcel-semantic-icon-core.js",
+    "finding_id": "0e899f9c6f6b82f02a14",
+    "expected_candidates": [
+      "tests/test_mcel_semantic_icon_oracle.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_CODE_SYMBOL",
+    "path": "main_computer/mcel_knowledge/ir_bridge.py",
+    "finding_id": "c51736478b392146b07e",
+    "symbol": "compile_knowledge_ir",
+    "expected_candidates": [
+      "tests/test_mcel_knowledge_ir_bridge.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_CODE",
+    "path": "main_computer/web/applications/scripts/mcel-semantic-modal-subprogram.js",
+    "finding_id": "d968cf9c6f41f1266c49",
+    "expected_candidates": [
+      "tests/test_mcel_modal_subprogram_lab.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_CODE_SYMBOL",
+    "path": "main_computer/slh/organization_controller.py",
+    "finding_id": "1d100c00fe22a436443d",
+    "symbol": "OrganizationController",
+    "expected_candidates": [
+      "tests/test_mcel_slh_organization_oracle_v3.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_CODE",
+    "path": "main_computer/web/applications/scripts/mcel-task-manager-process-contract.js",
+    "finding_id": "894b62367242ae0ad339",
+    "expected_candidates": [
+      "main_computer/web/applications/scripts/task-manager.js"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_DOCUMENT",
+    "path": "docs/nanojev_contract_v3_governance_heldout.md",
+    "finding_id": "224c2fa6d89fb188242c",
+    "expected_candidates": [
+      "tools/nanojev_contract_v3_governance_generalization.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_DOCUMENT",
+    "path": "docs/mcel_diagnostic_plugins.md",
+    "finding_id": "e37e3ce9a7bb75a7b1ca",
+    "expected_candidates": [
+      "main_computer/web/applications/scripts/mcel-diagnostic-plugins.js"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_DOCUMENT",
+    "path": "docs/nanojev-frozen-direct-arithmetic-logp-1000-v1.md",
+    "finding_id": "7f4abc29e880e33a322c",
+    "expected_candidates": [
+      "nanojev/tools/nanojev_frozen_arithmetic_direct_logp_probe.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_DOCUMENT",
+    "path": "docs/nanojev-binary-consensus-continuous-v1.md",
+    "finding_id": "3796ee1c81969f08aca7",
+    "expected_candidates": [
+      "nanojev/tools/nanojev_binary_consensus_continuous_train.py"
+    ]
+  },
+  {
+    "kind": "UNCHECKED_DOCUMENT",
+    "path": "docs/nanojev_contract_liveness_smoke.md",
+    "finding_id": "52651dd249c6e7e702c0",
+    "expected_candidates": [
+      "tools/nanojev_contract_liveness.py",
+      "tools/nanojev_contract_liveness_smoke.py",
+      "tests/test_nanojev_contract_liveness_smoke.py",
+      "tools/fixtures/nanojev_contract_liveness_challenges_v1.json"
+    ]
+  }
+]

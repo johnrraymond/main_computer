@@ -1,8 +1,8 @@
 """Live, actual-host functional lane for the existing MCEL test battery.
 
 Usage:
-  python -m tools.mcel_functional_live_acceptance --host-url http://127.0.0.1:8765
-  python -m tools.mcel_functional_live_acceptance --host-url http://127.0.0.1:8765 --app slh --protected-reads --admin-id <ID>
+  python -m tools.mcel_functional_live_acceptance --host-url https://dev.main-computer.localhost:8875
+  python -m tools.mcel_functional_live_acceptance --host-url https://dev.main-computer.localhost:8875 --app slh --protected-reads
 
 All requests are browser-routed through fail-closed read allowlists. Identity
 approval/rejection, deployment/undeployment, file/process mutations and Aider
@@ -10,6 +10,7 @@ writes are NEVER attempted. Protected reads require explicit opt-in because
 they create an authentication session. Host must be explicit loopback.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 import argparse
 import json
@@ -25,7 +26,7 @@ DEFAULT_REPORT = Path('runtime/reports/mcel-functional-live-acceptance/report.js
 
 def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = ALL_APPS,
         *, protected_reads: bool = False, admin_id: str | None = None) -> dict:
-    base = validate_loopback_base(host_url)
+    base = validate_loopback_base(secure_target(host_url))
     if not apps or len(set(apps)) != len(apps) or any(app not in ALL_APPS for app in apps):
         raise ValueError('Select one or more distinct supported applications')
     if protected_reads and 'slh' not in apps:
@@ -76,12 +77,12 @@ def run(host_url: str, report: Path = DEFAULT_REPORT, apps: tuple[str, ...] = AL
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host-url', required=True, help='Explicit http://127.0.0.1:<port>')
+    parser.add_argument('--host-url', default=ORIGIN, help='Explicit http://127.0.0.1:<port>')
     parser.add_argument('--app', choices=ALL_APPS, action='append', help='Repeatable; defaults to all five apps')
     parser.add_argument('--protected-reads', action='store_true',
                         help='Allow SLH authentication and *read-only* protected notebook inspection')
     parser.add_argument('--admin-id',
-                        help='LMS-SLH identity to select via MCEL for the protected lane; never inferred')
+                        help='Optional identity override; defaults to the LMS-designated local identity')
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args(argv)
     try:

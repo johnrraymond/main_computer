@@ -1,6 +1,6 @@
 # Worker — MCEL migration candidate
 
-`application.js` is the sole native semantic application source; generated composition is the layout authority. A bounded local-only observer projects existing Worker settings, runtime and network destination. The only navigation destinations are Hub Choice, Worker, and Requester. Hub Choice contains exactly six mutually exclusive radio choices: None, Mainnet, Testnet, Local Test, Local Dev, and SLH/SEH. Selecting SLH/SEH reveals a separately configured managed SLH/SEH HTTPS Hub endpoint. The selection is local until an explicit Apply Hub choice request; saving the endpoint is a separate consequential operation using a single allowed settings key. Only explicitly requested destination, policy, and SLH target updates have consequential authority. Identity and SLH worker enrollment **are not implemented** by this candidate; choosing SLH does not constitute enrollment. Any future SLH/SEH enrollment dialog is **request-only**: select the requesting identity, submit the signed access request, and observe Pending / Approved / Rejected. It must not offer `For Admin Use Only`, administrator identity/passkey/OTP entry, key redemption, or direct approval. The separate SLH administrator application owns authorization. Marketplace wallet signing, funding, registration and multitask work execution remain in the incumbent Worker pending typed-port migration and acceptance. The canonical `/applications/worker` must not be promoted until the missing bridges are closed.
+`application.js` is the sole native semantic application source; generated composition is the layout authority. A bounded local-only observer projects existing Worker settings, runtime and network destination. The only navigation destinations are Hub Choice, Worker, and Requester. Hub Choice contains exactly six mutually exclusive radio choices: None, Mainnet, Testnet, Local Test, Local Dev, and SLH/SEH. Selecting SLH/SEH reveals a separately configured managed SLH/SEH HTTPS Hub endpoint. The selection is local until an explicit Apply Hub choice request; saving the endpoint is a separate consequential operation using a single allowed settings key. Only explicitly requested operations have consequential authority. Identity selection does not enroll or authenticate a device. The signed enrollment bridge is request-only: the selected LMS identity requests Worker admission to the local SLH or an already paired direct SLH / SEH endpoint, and the Worker observes Pending / Denied / authenticated role from the organization authority. The Worker never offers an administrator credential input, key redemption, or direct approval. The separate SLH administrator application owns authorization. A verified login receipt is not proof of a persistent managed Worker connection. The canonical Worker UI has been promoted; live approval acceptance remains a separate requirement.
 
 ```mcel-app
 id: worker
@@ -47,12 +47,12 @@ requires:
   - Valid generated P3 composition with no authored Worker HTML layout
   - Typed Worker capability boundaries for read, destination, policy, and a single-field SLH target update
   - Local-only non-mutating Worker observation, excluding credentials and private keys
-  - No canonical Worker registry promotion until identity, SLH and marketplace bridges pass
+  - Worker enrollment is request-only; the SLH notebook owns approval
 ```
 
 ```mcel-finding
 id: worker.finding.cutover
 app: worker
 status: candidate-only
-finding: Native generated presentation works; full marketplace parity, SLH enrollment and identity authority are not yet migrated or certified.
+finding: Native Worker is promoted; the signed enrollment bridge is implemented, with live approval and managed registration requiring distinct verification.
 ```

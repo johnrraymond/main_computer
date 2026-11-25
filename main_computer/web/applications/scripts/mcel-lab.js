@@ -79,7 +79,9 @@
       slh: Object.freeze({label: "SLH", route: "/applications/slh",
         rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "slh", wrappedIr: true}),
       worker: Object.freeze({label: "Worker candidate", route: "/applications/mcel-semantic-worker",
-        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "worker", wrappedIr: true})
+        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "worker", wrappedIr: true}),
+      wallet: Object.freeze({label: "Wallet", route: "/applications/wallet?mcel-shell-child=1",
+        rootId: "mcel-workbench", irId: "mcel-generated-data", appId: "wallet", wrappedIr: true})
     });
     function selectedMcelSemanticPreviewApp() {
       const value = document.getElementById("mcel-semantic-preview-app")?.value ||

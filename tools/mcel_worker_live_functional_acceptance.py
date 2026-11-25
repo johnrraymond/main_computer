@@ -35,7 +35,10 @@ from tools import worker_browser_acceptance as legacy
 from tools.worker_live_failure_bundle import build_failure_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_URL = 'http://127.0.0.1:8765/applications/mcel-semantic-worker'
+from tools.mcel_functional_auth import ORIGIN, secure_target, authenticated_request
+DEFAULT_URL = ORIGIN + '/applications/worker'
+# Recovery receipts describe shared settings, not the page that initiated them.
+LEGACY_POLICY_RECEIPT_TARGET = 'http://127.0.0.1:8765/applications/mcel-semantic-worker'
 DEFAULT_REPORT = Path('runtime/reports/mcel-worker-live-functional/report.json')
 GATES = ('wallet-msk', 'offer-registration', 'work-cycle', 'requester-enforcement')
 SCHEMA = 'mcel.worker.live-functional.v1'
@@ -43,19 +46,23 @@ MAX_CREDIT_CEILING = 2
 
 
 def valid_native_url(value: str) -> str:
-    url = urlsplit(value)
-    if (url.scheme != 'http' or url.hostname != '127.0.0.1' or url.port != 8765
-            or url.username is not None or url.password is not None
-            or url.path != '/applications/mcel-semantic-worker' or url.query or url.fragment):
-        raise ValueError('Live Worker target must be exactly http://127.0.0.1:8765/applications/mcel-semantic-worker')
-    return value
+    if secure_target(value) != DEFAULT_URL:
+        raise ValueError('Live Worker target must be exactly ' + DEFAULT_URL)
+    return DEFAULT_URL
 
 
 def fingerprint() -> str:
     digest = hashlib.sha256()
     for rel in ('tools/mcel_worker_full_functional_acceptance.py',
+                'tools/mcel_functional_auth.py',
+                'tools/worker_browser_acceptance/secure_functional_auth.mjs',
+                'main_computer/mcel_worker_application.py',
+                'main_computer/mcel_worker_route_promotion.py',
                 'tools/mcel_worker_live_functional_acceptance.py',
                 'tools/worker_browser_acceptance/mcel_live_acceptance.mjs',
+                'tools/worker_browser_acceptance/canonical_worker_surface.mjs',
+                'main_computer/mcel_applications_shell_host.py',
+                'main_computer/web/applications/scripts/mcel-applications-shell.js',
                 'tools/worker_browser_acceptance/mcel_wallet_connect_evidence.mjs',
                 'tools/worker_browser_acceptance/mcel_live_msk_inspection.mjs',
                 'tools/worker_browser_acceptance/metamask_sidepanel_cdp.mjs',
@@ -67,6 +74,7 @@ def fingerprint() -> str:
                 'main_computer/web/applications/scripts/worker.js',
                 'main_computer/web/applications/scripts/mcel-semantic-worker-ports.js',
                 'main_computer/requester_spend_guard.py',
+                'main_computer/mcel_worker_enrollment.py',
                 'main_computer/remote_overflow.py',
                 'main_computer/viewport_routes_chat_console.py',
                 'main_computer/viewport_routes_energy.py',
@@ -106,7 +114,7 @@ def safe_stage(row: dict | None) -> str:
     return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', value) else 'NOT_AVAILABLE'
 
 
-def verify_evidence(row: dict, gate: str) -> tuple[bool, str]:
+def verify_evidence(row: dict, gate: str, *, require_canonical: bool = False) -> tuple[bool, str]:
     if not isinstance(row, dict) or row.get('schema') != 'mcel.worker.native-live-evidence.v1':
         return False, 'wrong-evidence-schema'
     if row.get('gate') != gate or row.get('surface') != 'native-mcel' or row.get('network') != 'testnet':
@@ -145,6 +153,12 @@ def verify_evidence(row: dict, gate: str) -> tuple[bool, str]:
                  'duplicateDenied', 'consentReplayDenied', 'concurrentBudgetDenied')
         if any(marks.get(name) is not True for name in extra):
             return False, 'requester-adversarial-proof-missing'
+    if require_canonical and (row.get('canonicalRoute') != {
+            'url': DEFAULT_URL, 'childUrl': DEFAULT_URL + '?mcel-shell-child=1',
+            'phase': 'promoted', 'mounted': True}):
+        return False, 'canonical-worker-browser-not-proven'
+    if require_canonical and (row.get('gatewayAuthenticated') is not True or row.get('gatewaySessionRevoked') is not True):
+        return False, 'gateway-session-not-verified'
     return True, 'verified'
 
 
@@ -341,7 +355,7 @@ def invoke_node(gate: str, report_path: Path, timeout: int, url: str,
         extension_dir = ''
     env = {**os.environ,
            'MC_WORKER_TEST_URL': url, 'MC_WORKER_TEST_WALLET_FILE': str(wallet_file),
-           'MC_WORKER_TEST_PROFILE_DIR': str(profile_dir),
+           'MC_WORKER_TEST_PROFILE_DIR': str(profile_dir) if gate != 'requester-enforcement' else '',
            'MC_WORKER_TEST_PROFILE_MARKER': str(marker_file),
            'MC_WORKER_TEST_EXTENSION_DIR': str(extension_dir),
            'MC_WORKER_LIVE_EVIDENCE': str(report_path),
@@ -432,7 +446,7 @@ def seed_interrupted_seller_policy_recovery(detail_path: Path) -> bool:
         return False
     receipt = {
         'schema': 'mcel.worker.offer-policy-recovery.v1',
-        'target': DEFAULT_URL,
+        'target': LEGACY_POLICY_RECEIPT_TARGET,
         'network': 'testnet',
         'sellerEnabled': policy['sellerEnabledBefore'],
         'sellerAvailabilityMode': policy['availabilityModeBefore'],
@@ -469,7 +483,7 @@ def prior_verified_gates(target: Path, current: dict) -> dict:
             evidence = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
-        if verify_evidence(evidence, gate)[0]:
+        if verify_evidence(evidence, gate, require_canonical=True)[0]:
             retained[gate] = prior
     return retained
 
@@ -492,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args(argv)
     try:
-        valid_native_url(args.url)
+        args.url = valid_native_url(args.url)
     except (ValueError, TypeError) as exc:
         parser.error(str(exc))
     if args.fresh_disposable_wallet and (args.action != 'run' or args.gate not in
@@ -525,12 +539,13 @@ def main(argv: list[str] | None = None) -> int:
               'no-mutations=TRUE', flush=True)
         return 0
     # No production operation is attempted without the exact route and a
-    # positive real HTTP response from the running local native candidate.
+    # positive real HTTP response from the running canonical native Worker.
     try:
-        with urlopen(Request(args.url, headers={'Accept': 'text/html'}), timeout=8) as response:
-            markup = response.read(3000000).decode('utf-8', errors='replace')
-            if response.status != 200 or 'data-mcel-worker-phase="candidate"' not in markup:
-                raise ValueError('native Worker candidate marker absent')
+        with authenticated_request(ORIGIN) as client:
+            response = client.get(args.url, max_redirects=0, timeout=10000, headers={'Accept': 'text/html'})
+            markup = response.body()[:3000000].decode('utf-8', errors='replace')
+            if response.status != 200 or 'data-mcel-shell-canonical-promoted="true"' not in markup:
+                raise ValueError('canonical MCEL shell marker absent')
     except Exception:
         report['gates'][args.gate] = {'status': 'REFUSED', 'reason': 'local-native-route-not-verified'}
         save(report, target)
@@ -555,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
         evidence = json.loads(detail_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         evidence = None
-    accepted, reason = verify_evidence(evidence, args.gate)
+    accepted, reason = verify_evidence(evidence, args.gate, require_canonical=True)
     status = 'PASS' if code == 0 and accepted else 'UNVERIFIED'
     if evidence is None:
         # Never report a browser-state/schema failure when Node did not write
@@ -1239,7 +1254,7 @@ def main(argv: list[str] | None = None) -> int:
                     'page','other','background_page','service_worker') else 'other'
                 print('WORKER_LIVE_METAMASK_TARGET', 'index=' + str(index),
                       'kind=' + kind, 'type=' + typ, flush=True)
-    print('WORKER_LIVE_CUTOVER', report['cutover']['status'], 'canonical-route-unchanged', flush=True)
+    print('WORKER_LIVE_FUNCTIONAL', report['status'], 'target=canonical-worker', flush=True)
     return 0 if status == 'PASS' else 1
 
 

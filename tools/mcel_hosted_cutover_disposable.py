@@ -5,6 +5,7 @@ verify that the live backend workspace is the exact checkout being tested. Each
 browser uses a different newly created file inside a temporary test directory.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context
 
 import hashlib
 import json
@@ -19,15 +20,12 @@ from tools.mcel_code_editor_functional_parity_frob import reveal as reveal_edito
 ORIGINAL='export const mcelHostedAcceptance = 1;'
 REPLACEMENT='export const mcelHostedAcceptance = 2;'
 FIXTURE_SCHEME='NO_NEWLINE_EXACT_BYTES_V2'
-# Required by the live forensic runner: prove the bounded browse implementation
-# is the one actually imported before launching a potentially consequential test.
-FORENSIC_BROWSE_PROTOCOL='ONE_SHOT_BOUNDED_DIRECTORY_V7C'
 
 
 def write_decision(base, url, method, body_text, exact_path):
     from urllib.parse import urlsplit
     target=urlsplit(url);origin=urlsplit(base)
-    if (not exact_path or method!='POST' or target.scheme!='http' or
+    if (not exact_path or method!='POST' or target.scheme!=origin.scheme or
         target.netloc!=origin.netloc or target.query or target.fragment or
         target.path!='/api/applications/editor/project/file/save'):
         return 'deny-disposable-write-scope'
@@ -47,7 +45,7 @@ def write_decision(base, url, method, body_text, exact_path):
 
 
 def verify_workspace(browser,base,repo,storage_state=None):
-    ctx=browser.new_context(storage_state=storage_state,service_workers='block')
+    ctx=new_context(browser, base, storage_state=storage_state,service_workers='block')
     try:
         response=ctx.request.post(base+'/api/applications/editor/files',
             data=json.dumps({'repo_dir':'.','path':'','limit':500}),
@@ -351,8 +349,6 @@ def _save_lifecycle_evidence(page, *, firewall=None):
           'requestCount':sum(r.get('path')==endpoint for r in firewall.get('requests',[])),
           'responseStatuses':[r.get('status') for r in firewall.get('responses',[])
                               if r.get('path')==endpoint],
-          'requestFailures':[r.get('failureClass') for r in firewall.get('failedRequests',[])
-                             if r.get('path')==endpoint],
           'blockedReasons':[reason for reason in firewall.get('blocked',[])
                             if 'disposable' in reason.lower() or 'write' in reason.lower()],
         }
@@ -364,10 +360,6 @@ def _save_unsettled_classification(lifecycle):
     network=lifecycle.get('network',{})
     if network.get('blockedReasons'):
         return 'GUARDED_REQUEST_REJECTED'
-    if network.get('requestFailures'):
-        return 'NETWORK_REQUEST_FAILED'
-    if network.get('responseStatuses'):
-        return 'HTTP_RESPONSE_SEEN_BUT_RECEIPT_UNSETTLED'
     if 'fetch-rejected' in phases:
         return 'FETCH_REJECTED_NO_OPERATION_RECEIPT'
     if 'fetch-response' in phases:
@@ -381,7 +373,7 @@ def _save_unsettled_classification(lifecycle):
     return 'SAVE_CLICK_NOT_OBSERVED'
 
 
-def _await_exact_save_receipt(page, role, before, disposable_path, *, timeout_seconds=180, firewall=None):
+def _await_exact_save_receipt(page, role, before, disposable_path, *, timeout_seconds=25, firewall=None):
     """Wait for exactly one *completed* save and the exact live file bytes.
 
     Playwright's default wait_for_function uses requestAnimationFrame, which
@@ -390,21 +382,11 @@ def _await_exact_save_receipt(page, role, before, disposable_path, *, timeout_se
     paint, and also exposes a genuine backend refusal instead of a timeout.
     """
     deadline=time.monotonic()+timeout_seconds
-    observed_buckets=set()
     while True:
         receipt=_save_receipt_evidence(page,before)
         if receipt['after']>before or time.monotonic()>=deadline:
             break
-        # Crucial for sync Playwright: Python time.sleep() starves the
-        # Playwright dispatch loop that must deliver route/response events.
-        # This call yields to Chromium/Playwright while still remaining a
-        # bounded, non-rAF wait. The Save receipt is not tied to painting.
-        page.wait_for_timeout(125)
-        # Progress indicates only elapsed observation, never success.
-        bucket=int((timeout_seconds-(deadline-time.monotonic()))//30)
-        if bucket>0 and bucket not in observed_buckets:
-            observed_buckets.add(bucket)
-            _progress('save-backend-still-pending-'+str(bucket*30)+'s',role)
+        time.sleep(0.12)
     file=_disposable_file_evidence(disposable_path)
     evidence={'receipt':receipt,'file':file}
     if receipt['after']!=before+1 or receipt['newDispositions']!=['completed'] or not file['replacement']:
@@ -428,19 +410,14 @@ def _await_exact_save_receipt(page, role, before, disposable_path, *, timeout_se
     return {'receiptCount':1,'disposition':'completed','fileSha256':file['sha256']}
 
 
-def _await_held_write_response(page, before, disposable_path, *, timeout_seconds=180):
+def _await_held_write_response(page, before, disposable_path, *, timeout_seconds=25):
     """Prove server wrote the fixture while the JS response remains held."""
     deadline=time.monotonic()+timeout_seconds
-    observed_buckets=set()
     while True:
         count=page.evaluate('''()=>window.__hostHeld?.length??0''')
         if count!=0 or time.monotonic()>=deadline:
             break
-        page.wait_for_timeout(125)
-        bucket=int((timeout_seconds-(deadline-time.monotonic()))//30)
-        if bucket>0 and bucket not in observed_buckets:
-            observed_buckets.add(bucket)
-            _progress('held-save-backend-still-pending-'+str(bucket*30)+'s','signals')
+        time.sleep(0.12)
     receipt=_save_receipt_evidence(page,before)
     file=_disposable_file_evidence(disposable_path)
     diagnostic=json.dumps({'heldCount':count,'receipt':receipt,'file':file},
@@ -454,93 +431,6 @@ def _await_held_write_response(page, before, disposable_path, *, timeout_seconds
     _progress('held-backend-write-verified','signals')
 
 
-
-def _browse_directory_evidence(page, role, depth, *, firewall=None, network_before=None):
-    """Content-free evidence for a real editor/files directory intent.
-
-    The browser has its own one-shot intent probe; no test bypasses the
-    semantic application, and no handler is called twice to poll completion.
-    """
-    browser=page.evaluate("""()=>{
-      const p=window.__mcelHostedBrowseProbe;
-      const receipts=window.__mcelWorkbench?.app?.receipts?.()||[];
-      const recent=receipts.filter(r=>r.intentId==='intent:browse-directory').slice(-3);
-      return {probePresent:!!p,phase:p?.phase||null,
-        disposition:p?.disposition||null,errorClass:p?.errorClass||null,
-        elapsedMilliseconds:p?.startedMs==null?null:Math.max(0,Date.now()-p.startedMs),
-        recentDispositions:recent.map(r=>r.disposition),
-        receivedCount:recent.length};
-    }""")
-    network={'requestCount':0,'responseStatuses':[],'failureClasses':[],
-             'blockedCount':0}
-    if firewall is not None:
-        target='/api/applications/editor/files'
-        network['requestCount']=sum(r.get('path')==target for r in firewall.get('requests',[]))
-        network['responseStatuses']=[r.get('status') for r in firewall.get('responses',[])
-                                      if r.get('path')==target][-8:]
-        network['failureClasses']=[r.get('failureClass') for r in firewall.get('failedRequests',[])
-                                   if r.get('path')==target][-8:]
-        # Blocked reason strings could contain arbitrary paths; do not emit them.
-        network['blockedCount']=len(firewall.get('blocked',[]))
-        if network_before is not None:
-            requests=firewall.get('requests',[])[network_before[0]:]
-            responses=firewall.get('responses',[])[network_before[1]:]
-            failures=firewall.get('failedRequests',[])[network_before[2]:]
-            network['stepRequestCount']=sum(r.get('path')==target for r in requests)
-            network['stepResponseStatuses']=[r.get('status') for r in responses
-                                             if r.get('path')==target][-8:]
-            network['stepFailureClasses']=[r.get('failureClass') for r in failures
-                                           if r.get('path')==target][-8:]
-            network['stepBlockedCount']=max(0,len(firewall.get('blocked',[]))-network_before[3])
-    return {'role':role,'depth':depth,'browser':browser,'network':network}
-
-
-def _browse_disposable_directory(page, path, role, depth, *, firewall=None,
-                                  timeout_ms=25000):
-    """One real semantic browse; bounded independently of page.evaluate.
-
-    A JS promise returned *to* page.evaluate can hang without obeying
-    Playwright's default action timeouts. Start the normal intent once, return
-    immediately, and observe its settlement with a Playwright deadline. A
-    timeout is a blocker, not a reason to reuse the pending intent or proceed
-    to any write.
-    """
-    _progress('observe-directory-'+str(depth),role)
-    network_before=tuple(len(firewall.get(key,[])) for key in
-                         ('requests','responses','failedRequests','blocked')) if firewall is not None else None
-    kickoff=page.evaluate("""path=>{
-      const old=window.__mcelHostedBrowseProbe;
-      if(old?.phase==='pending')return {accepted:false,reason:'previous-browse-pending'};
-      const probe={phase:'pending',startedMs:Date.now(),disposition:null,errorClass:null};
-      window.__mcelHostedBrowseProbe=probe;
-      Promise.resolve().then(()=>window.__mcelWorkbench.app.execute(
-        'intent:browse-directory',{path})).then(result=>{
-          probe.disposition=typeof result?.disposition==='string'?result.disposition:null;
-          probe.phase='settled';
-        },error=>{
-          probe.errorClass=String(error?.name||'Error').slice(0,64);
-          probe.phase='rejected';
-        });
-      return {accepted:true};
-    }""",path)
-    if kickoff.get('accepted') is not True:
-        raise RuntimeError('DISPOSABLE_DIRECTORY_PREVIOUS_INTENT_UNSETTLED:'+role+':depth='+str(depth))
-    try:
-        page.wait_for_function("""()=>window.__mcelHostedBrowseProbe?.phase!=='pending'""",
-                               polling=100,timeout=timeout_ms)
-    except PlaywrightTimeoutError as exc:
-        detail=_browse_directory_evidence(page,role,depth,firewall=firewall,network_before=network_before)
-        print('MCEL_HOSTED_DISPOSABLE_BROWSE_DIAGNOSTIC',json.dumps(detail,sort_keys=True),flush=True)
-        raise RuntimeError('DISPOSABLE_DIRECTORY_BROWSE_TIMEOUT:'+role+':depth='+str(depth)+
-                           ':'+json.dumps(detail,sort_keys=True)) from exc
-    detail=_browse_directory_evidence(page,role,depth,firewall=firewall,network_before=network_before)
-    if detail['browser']['phase']!='settled' or detail['browser']['disposition']!='completed':
-        print('MCEL_HOSTED_DISPOSABLE_BROWSE_DIAGNOSTIC',json.dumps(detail,sort_keys=True),flush=True)
-        raise RuntimeError('DISPOSABLE_DIRECTORY_NOT_AUTHORIZED_OR_FAILED:'+role+':depth='+str(depth)+
-                           ':'+json.dumps(detail,sort_keys=True))
-    _progress('directory-observed-'+str(depth),role)
-
-
 def exercise_write(pages,fixture,*,firewalls=None):
     _assert_original_fixture_bytes(fixture,'before-navigation')
     # Each role must obtain server-backed listing authority before it can open
@@ -549,8 +439,11 @@ def exercise_write(pages,fixture,*,firewalls=None):
         prefix=''
         for part in fixture['relativeDirectory'].split('/'):
             prefix=part if not prefix else prefix+'/'+part
-            _browse_disposable_directory(page,prefix,role,len(prefix.split('/')),
-                                          firewall=(firewalls or {}).get(role))
+            _progress('observe-directory-'+str(len(prefix.split('/'))),role)
+            outcome=page.evaluate('''async path=>window.__mcelWorkbench.app.execute(
+                'intent:browse-directory',{path})''',prefix)
+            if outcome.get('disposition')!='completed':
+                raise RuntimeError('DISPOSABLE_DIRECTORY_NOT_AUTHORIZED:'+role+':'+prefix)
         target=fixture['paths'][role]
         control=_reveal_explorer_source(page,target,role)
         before=page.evaluate('''()=>window.__mcelWorkbench.app.receipts()

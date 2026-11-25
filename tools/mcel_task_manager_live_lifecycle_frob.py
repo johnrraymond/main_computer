@@ -6,6 +6,8 @@ cross-domain collection. --host-url adds actual network/browser acceptance;
 absence of a running host is BLOCKED, never a substitute PASS.
 """
 from __future__ import annotations
+from tools.mcel_functional_auth import ORIGIN, secure_target, new_context, is_secure, authenticated_request
+
 import argparse, hashlib, json, shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -256,8 +258,11 @@ def run(output=REPORT,host_url=None):
           page.close()
         report['offline']='PASS' if all(case['status']=='PASS' for case in report['cases']) else 'FAIL'
         if host_url:
+          host_url=secure_target(host_url)
+          live_context=None
           try:
-            live=browser.new_page(viewport={'width':1100,'height':800})
+            live_context=new_context(browser,host_url,viewport={'width':1100,'height':800})
+            live=live_context.new_page()
             failures=[]
             cdp_exceptions=[]
             console_errors=[]
@@ -354,10 +359,11 @@ def run(output=REPORT,host_url=None):
                 report['hostEvidence']['screenshot']=str(screenshot)
               except Exception as screenshot_error:
                 report['hostEvidence']['screenshotError']=str(screenshot_error)
-            live.close()
           except Exception as exc:
             report['hosted']='BLOCKED'
             report['hostReason']=type(exc).__name__+': '+str(exc)[:500]
+          finally:
+            if live_context is not None: live_context.close()
       finally:browser.close()
     (output/'report.json').write_text(json.dumps(report,indent=2,default=str)+'\n',encoding='utf8')
     return report

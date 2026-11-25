@@ -18,6 +18,7 @@
     if(n.nodeKind==="plot")return "plot";
     if(n.nodeKind==="operation-evidence")return "evidence";
     if(n.nodeKind==="embedded-chat")return "embedded";
+    if(n.nodeKind==="document-surface")return "document-editor"; // Same presentation role, distinct editing contract.
     if(n.nodeKind==="collection" || n.nodeKind==="document-editor")return n.nodeKind;
     return null;
   }
@@ -62,7 +63,7 @@
         }
         case "state-value": return {role:"text.primary",surface:"text",context:"nested"};
         case "plot":case "operation-evidence":case "embedded-chat":
-        case "collection":case "document-editor":
+        case "collection":case "document-editor":case "document-surface":
           return {role:"surface.panel",surface:"panel",context:"nested"};
         default:return null; // Unsupported kinds are reported; never guessed.
       }
@@ -135,7 +136,7 @@
     const bindings=[],unresolved=[];
     // A built-in widget with its own semantic Color Law (E/W/G), or an
     // embedded, independently governed app, is not reclassified by the host.
-    const excluded='[data-mcel-embedded-chat],.mcel-diagnostics-counter,[data-mcel-color-role^="diagnostic."]';
+    const excluded='.mcel-document-surface-element .mc-page-content,[data-mcel-embedded-chat],.mcel-diagnostics-counter,[data-mcel-color-role^="diagnostic."]';
     const isExcluded=element=>!!element.closest(excluded);
     function add(element,color,kind="control") {
       if(consumed.has(element)||isExcluded(element))return;

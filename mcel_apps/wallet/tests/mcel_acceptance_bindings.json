@@ -1,0 +1,14 @@
+{
+  "schema": "mcel.package-acceptance-bindings.v1",
+  "appId": "wallet",
+  "bindings": [
+    {
+      "id": "wallet.binding.candidate",
+      "acceptanceContractId": "wallet.acceptance.candidate",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_acceptance.py::test_package_acceptance_candidate"
+      ]
+    }
+  ]
+}

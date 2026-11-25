@@ -1,0 +1,8 @@
+{
+  "schema":"mcel.application-package.v1","appId":"document","title":"Document Editor",
+  "template":{"id":"mcel.canonical-application-template","version":"2.0.0"},
+  "authoring":{"format":"mcel.paired-html-js.v1","html":"application.html","script":"application.js"},
+  "requirements":"requirements.md","tests":{"root":"tests"},
+  "conformance":{"currentMode":"paired-source-compiled","targetMode":"semantic-runtime-proven","missingBridges":["host-route-adoption","browser-runtime-acceptance"]},
+  "nativeRoute":"/applications/document"
+}

@@ -24,7 +24,9 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] form{display:flex;flex-wrap:wrap;align-items:end;gap:10px}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] form label{display:grid;gap:6px;color:#b4c5cd}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-collection]{max-height:min(70vh,730px);overflow:auto;scrollbar-gutter:stable}
-:where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-collection]>[data-record-key]{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid #375062;min-width:0}
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-collection]>[data-record-key]{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 4px;min-width:0}
+/* Row separators belong to ordinary records, not framed radio choices. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-collection]>[data-record-key]:not(:where([data-mcel-radio-choice])){border-bottom:1px solid #375062}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-record-field]{overflow-wrap:anywhere;min-width:0}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-record-field]:first-child{flex:1 1 50%;font-weight:600}
 :where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-record-field]:not(:first-child){color:#aec3cb;font-size:.88rem}
@@ -1398,7 +1400,11 @@ body.mcel-workbench-page:has([data-mcel-document-workbench]) > #mcel-workbench-s
  }
 }
 
-/* A keyed single-choice collection uses native radio semantics, not navigation cards. */
+/* A keyed single-choice collection uses native radio semantics, not navigation cards.
+ * Reserve the outward focus ring (2px outline + 1px offset) inside the
+ * collection's scrollport, including the first and last grid rows.
+ * One extra pixel accommodates fractional grid track rounding. */
+:where(body.mcel-workbench-page) [data-mcel-presentation="expert"] [data-mcel-radio-choices]{padding:4px}
 :where(body.mcel-workbench-page) [data-mcel-radio-choices]{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;min-width:0}
 :where(body.mcel-workbench-page) [data-mcel-radio-choice]{display:flex;align-items:center;gap:10px;padding:9px 12px;min-width:0;cursor:pointer;border:1px solid var(--edge);border-radius:7px}
 :where(body.mcel-workbench-page) [data-mcel-radio-choice] input{margin:0;flex:none;accent-color:var(--mcel-color-accent,#68b8c9)}

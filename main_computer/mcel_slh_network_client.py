@@ -266,6 +266,16 @@ class NetworkSlhClient:
         allowed={(m,p) for m,p in _READS.values()} | {(m,p) for m,p in _ACTIONS.values() if '{id}' not in p}
         allowed_path=any(re.fullmatch(p.replace('{id}',r'[A-Za-z0-9_.-]{1,160}'),path) and m==method
                          for m,p in _ACTIONS.values() if '{id}' in p)
+        if (method,path) in {('GET','/v1/wallets'), ('POST','/v1/accounting/reconcile'),
+                             ('POST','/v1/wallets/transfer'), ('POST','/v1/wallets/portfolio'), ('POST','/v1/wallets/managed-transfer'), ('POST','/v1/wallets/transfer-status'), ('POST','/v1/wallets/managed-transfer-status')}:
+            if ((method == 'GET' and body is not None) or
+                (path == '/v1/accounting/reconcile' and body != {}) or
+                (path == '/v1/wallets/portfolio' and (type(body) is not dict or set(body) != {'limit','before'})) or
+                (path in ('/v1/wallets/managed-transfer','/v1/wallets/managed-transfer-status') and (type(body) is not dict or set(body) != {'intent'})) or
+                (path in ('/v1/wallets/transfer','/v1/wallets/transfer-status') and (type(body) is not dict or set(body) != {'intent','signature'}))):
+                raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
+            self._check_session_transport(ticket)
+            return self._authenticated_request(ticket,method,path,body)
         if (method,path)==('POST','/v1/admin/authenticator/software-otp/revoke'):
             if body != {}:
                 raise NetworkConnectionError('NETWORK_OPERATION_NOT_ADMITTED',403)
