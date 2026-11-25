@@ -163,6 +163,14 @@ def normalize_stable_hub_topology(document: Mapping[str, Any]) -> StableHubTopol
 
     network_key = _require_non_empty_string(network.get("network_key"), field="network.network_key")
     network["network_key"] = network_key
+    # Correct persisted Hub Control topology documents written with the
+    # misnamed nested field. Do not infer the kind from the network key or
+    # chain ID (the smoke and local-test networks can share those values).
+    if "kind" in network:
+        persisted_kind = _require_non_empty_string(network.pop("kind"), field="network.kind")
+        if "network_kind" in network and network["network_kind"] != persisted_kind:
+            raise StableHubTopologyError("conflicting network.kind and network.network_kind")
+        network["network_kind"] = persisted_kind
     if network.get("chain_id") is not None:
         chain_id = _require_non_empty_string(network.get("chain_id"), field="network.chain_id")
         network["chain_id"] = chain_id
