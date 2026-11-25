@@ -692,12 +692,18 @@ def build_worker_live_session_smoke_result(
                     "kind": "multisession_key",
                     "multisession_key_id": multisession_key_id,
                 },
+                "market": {
+                    "rings": ["ring-2"],
+                    "models": ["stable-hub-lab-smoke"],
+                    "capabilities": ["python"],
+                    "max_concurrency": 1,
+                },
             },
         )
         accepted = _ws_recv_json(sock)
-        ping = _ws_recv_json(sock)
         if accepted.get("type") != "hub.auth.accepted":
             raise StableHubTopologyError(f"worker live-session auth failed: {accepted}")
+        ping = _ws_recv_json(sock)
         if ping.get("type") != "hub.ping":
             raise StableHubTopologyError(f"worker live-session did not receive hub.ping: {ping}")
         _ws_send_json(

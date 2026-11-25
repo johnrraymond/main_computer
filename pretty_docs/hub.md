@@ -1,5 +1,7 @@
 # Hub control surface
 
+**Current public API and runtime projection contract:** [Stable Hub public network API and release preflight](stable-hub-public-network-api.md). Stable Hub health is `/health`; public identity and topology use `/api/hub/v1/hub-identity` and `/api/hub/v1/topology`. Private FDB/RPC configuration is controller-attested, not published in public identity. The R02 source audit found a `kind` versus `network_kind` projection defect that must be reconciled by Hub Control; a public health response does not certify correct runtime identity or membership.
+
 Status: architecture baseline; first-Hub `unborn -> 1` lifecycle slice implemented.
 
 **Current deployment boundary:** Hub Control (`hub_mutate_harness.py`,

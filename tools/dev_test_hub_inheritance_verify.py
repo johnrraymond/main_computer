@@ -15,8 +15,9 @@ def verify_contract() -> dict[str, object]:
     checks = {
         "dev_test_handler_still_inherits_historical_handler":
             issubclass(ExperimentalFoundationDbHubServerHandler, HubServerHandler),
-        "legacy_health_preserved": inherited_legacy_hub_route("GET", "/api/hub/v1/health"),
-        "legacy_status_preserved": inherited_legacy_hub_route("GET", "/api/hub/status"),
+        "retired_health_not_inherited": not inherited_legacy_hub_route("GET", "/api/hub/v1/health"),
+        "retired_status_alias_not_inherited": not inherited_legacy_hub_route("GET", "/api/hub/status"),
+        "retired_status_not_inherited": not inherited_legacy_hub_route("GET", "/api/hub/v1/status"),
         "legacy_safe_chat_dev_simulation_preserved": inherited_legacy_hub_route("POST", "/api/hub/remote-overflow/safe-chat"),
         "legacy_multisession_auth_preserved": inherited_legacy_hub_route("POST", "/api/hub/v1/credits/multisession-keys/request"),
         "legacy_wallet_funding_preserved": inherited_legacy_hub_route("POST", "/api/hub/v1/credits/wallet-funding/complete"),

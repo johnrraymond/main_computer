@@ -3,6 +3,7 @@ import ast
 
 from .numeric import Compiler as PureCompiler
 from .effects import EffectCompiler, uses_effects
+from .json_runtime import JsonCompiler, uses_runtime_json
 from .syntax import TranslationError
 
 __all__ = ['Compiler', 'TranslationError', 'translate']
@@ -14,7 +15,9 @@ class Compiler:
     def __init__(self, source: str, source_name: str = '<input>', *,
                  show_return: bool = False, threshold: int = 8):
         tree = ast.parse(source, filename=source_name)
-        if uses_effects(tree):
+        if uses_runtime_json(tree):
+            self.backend = JsonCompiler(tree, source_name, show_return=show_return, threshold=threshold)
+        elif uses_effects(tree):
             self.backend = EffectCompiler(tree, source_name, show_return=show_return)
         else:
             self.backend = PureCompiler(source, source_name, show_return=show_return,

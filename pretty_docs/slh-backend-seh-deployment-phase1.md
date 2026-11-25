@@ -1,5 +1,9 @@
 # SLH Backend, Managed Connection Contracts and SEH Deploy Harness — Phase 1
 
+> **Current public-network contract (November 24, 2026):** [Stable Hub public network API and release preflight](stable-hub-public-network-api.md). The current Stable Hub GET routes are `/health`, `/api/hub/v1/hub-identity` and `/api/hub/v1/topology`. Legacy versioned health/status routes below are historical proposals or compatibility-server interfaces, not the deployed Stable Hub contract.
+
+The legacy `SLHControlBackend.probe_marketplace_hub()` helper still requests the old versioned health path in this snapshot; it is not a valid public Stable Hub probe. Migrate it separately if retained; use the current network smoke for release evidence.
+
 > **Historical phase-one implementation, not the current ownership contract.** The November 13 [LMS SEH Management and Deployment Authority](lms-seh-management-and-deployment-authority.md) supersedes the early `SLH` deploy-controller facade: the local LMS owns Coolify management and SEH deployment/undeployment; direct remote ORG-SLH authenticates and forwards narrowly to LMS, and MCEL owns only the interface. Earlier command examples below remain evidence of that phase, not approval to implement a second ORG-SLH deployment controller.
 
 **Status:** initial *control-plane implementation* against Main Computer's October 27, 2026 snapshot. It is not a working Secure Local Hub network listener, SEH relay, phone authenticator, wallet proxy, or complete Coolify deployment. This distinction is enforced in the harness result.

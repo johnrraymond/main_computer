@@ -16,7 +16,6 @@ from main_computer.hub_admin_site import HUB_ADMIN_ROUTES
 
 
 _LEGACY_GET_EXACT = frozenset(HUB_ADMIN_ROUTES) | frozenset({
-    "/api/hub/status", "/api/hub/v1/status", "/api/hub/v1/health",
     "/api/hub/v1/workers", "/api/hub/v1/models",
     # These are deliberately inherited *denials*, not public read access.
     "/api/hub/v1/admin/bootstrap", "/api/hub/v1/metrics",

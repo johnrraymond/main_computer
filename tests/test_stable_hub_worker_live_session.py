@@ -194,6 +194,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(c
                     "multisession_key_id": msk_id,
                 },
                 "market": {
+                    "models": ["model-alpha"],
                     "rings": ["ring-2"],
                     "price": {"amount": "0.05", "unit": "credit"},
                     "capabilities": ["python"],
@@ -213,6 +214,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(c
         assert accepted["market"]["partitions"] == ["ring-2"]
         assert accepted["market"]["price"] == {"amount": "0.05", "unit": "credit"}
         assert accepted["market"]["capabilities"] == ["python"]
+        assert accepted["market"]["models"] == ["model-alpha"]
         assert accepted["market"]["max_concurrency"] == 2
         assert accepted["heartbeat"]["transport"] == "websocket"
         assert ping["type"] == "hub.ping"
@@ -306,6 +308,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(c
             {
                 "ring": "ring-2",
                 "max_price": {"amount": "0.10", "unit": "credit"},
+                "model": "model-alpha",
                 "capabilities": ["python"],
             }
         )
@@ -371,7 +374,7 @@ def test_worker_live_session_logs_correlated_abrupt_tcp_eof(capsys) -> None:
                 "kind": "multisession_key",
                 "multisession_key_id": issued["key"]["id"],
             },
-            "market": {"rings": ["ring-2"], "capabilities": ["python"]},
+            "market": {"rings": ["ring-2"], "models": ["model-alpha"], "capabilities": ["python"]},
         })
         accepted = _ws_recv_json(sock)
         ping = _ws_recv_json(sock)
@@ -500,6 +503,7 @@ def test_same_wallet_concurrent_connections_have_independent_hub_slots() -> None
                     "kind": "multisession_key", "multisession_key_id": key_id,
                 },
                 "market": {"rings": ["ring-2"], "models": ["gemma4"],
+                           "capabilities": ["chat.completions"],
                            "price": {"amount": "0.01", "unit": "credit"}},
             })
             reply = _ws_recv_json(sock)
@@ -529,7 +533,9 @@ def test_same_wallet_concurrent_connections_have_independent_hub_slots() -> None
         second_market = hub.worker_market_directory.get_worker(second["connection_id"])
         assert second_market["status"] == "live"
         assert hub.worker_session_directory.get_owner(second["connection_id"])["status"] == "live"
-        selected = hub.worker_market_directory.select_worker_for_work({"ring": "ring-2"})
+        selected = hub.worker_market_directory.select_worker_for_work({
+            "ring": "ring-2", "model": "gemma4", "operation": "chat.completions",
+        })
         assert selected["worker_id"] == second["connection_id"]
     finally:
         for sock in sockets:
@@ -656,32 +662,7 @@ def test_websocket_upgrade_is_http11_and_invalid_first_frame_round_trips(capsys)
 
 def test_captain_websocket_client_handshake_and_live_auth_using_real_server() -> None:
     """No mock 101: Captain must complete the wallet-derived live handshake."""
-    # This snapshot omits game_projects/webgl-demo/game.json, which the viewport
-    # import requires.  Load the exact client class from its source, not a
-    # reimplementation; exercise its real sockets and methods below.
-    import ast
-    import hashlib
-    import ssl
-    from urllib.parse import urlparse
-
-    source = (Path(__file__).resolve().parents[1] / "main_computer" / "viewport_routes_energy.py")
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    client_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
-                        and node.name == "_WorkerHubLiveSessionClient")
-    module = ast.Module(body=[client_class], type_ignores=[])
-    ast.fix_missing_locations(module)
-    from main_computer.credit_units import credit_decimal_text_to_wei
-
-    namespace = {
-        "credit_decimal_text_to_wei": credit_decimal_text_to_wei,
-        "Any": object, "json": json, "os": os, "socket": socket,
-        "ssl": ssl, "threading": threading, "time": time,
-        "hashlib": hashlib, "base64": base64, "urlparse": urlparse,
-        "datetime": datetime, "timezone": timezone,
-        "_worker_runtime_public_redacted": lambda obj: obj,
-    }
-    exec(compile(module, str(source), "exec"), namespace)
-    _WorkerHubLiveSessionClient = namespace["_WorkerHubLiveSessionClient"]
+    from main_computer.worker_live_session import _WorkerHubLiveSessionClient
 
     msk_store = InMemoryStableMultiSessionKeyStore()
     hub, thread = _start_server(
@@ -706,6 +687,7 @@ def test_captain_websocket_client_handshake_and_live_auth_using_real_server() ->
                 },
                 "market": {
                     "rings": ["ring-3"],
+                    "models": ["model-alpha"],
                     "price": {"amount": "1", "unit": "compute_credit"},
                     "capabilities": ["chat.completions"],
                     "max_concurrency": 1,
@@ -774,7 +756,7 @@ def test_graceful_worker_close_ack_waits_for_durable_cleanup(monkeypatch) -> Non
             "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
             "multisession_authorization": {"kind": "multisession_key",
                                            "multisession_key_id": issued["key"]["id"]},
-            "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
+            "market": {"rings": ["ring-2"], "models": ["model-alpha"], "price": {"amount": "0.05", "unit": "credit"},
                        "capabilities": ["python"], "max_concurrency": 1},
         })
         auth, ping = _ws_recv_json(sock), _ws_recv_json(sock)
@@ -824,7 +806,7 @@ def test_graceful_worker_close_ack_waits_for_durable_cleanup(monkeypatch) -> Non
                 "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "multisession_authorization": {"kind": "multisession_key",
                                                "multisession_key_id": issued["key"]["id"]},
-                "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
+                "market": {"rings": ["ring-2"], "models": ["model-alpha"], "price": {"amount": "0.05", "unit": "credit"},
                            "capabilities": ["python"], "max_concurrency": 1},
             })
             deferred_auth, deferred_ping = _ws_recv_json(sock), _ws_recv_json(sock)

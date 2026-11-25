@@ -55,6 +55,12 @@ python tools/worker_browser_acceptance/rpc_origin_preflight.py --extension-id dn
 
 The browser-style extension-origin POST should return HTTP 200, an exact CORS origin, and a valid testnet chain proof. Python's default HTTP transport can independently receive Cloudflare 1010; that does not establish a failing Traefik route. Full acceptance still requires the real disposable MetaMask/Worker connection.
 
+## R02 public network smoke observation — November 24, 2026
+
+Both Mainnet and Testnet `scripts/smoke_hub_network_client.py --skip-level4` runs received Cloudflare HTTP 403 / error 1010 on the canonical `eth_chainId` POST. The owner-action-required response explicitly rejected the request client signature. Chain identity and contract bytecode checks remain unverified. This confirms the Python transport issue documented above can affect both public release smokes; it does not prove a CORS or Traefik regression. Preserve the ray IDs in the release evidence register; use owner-authorized diagnostic evidence and a supported client pathway before any policy change. Do not repeatedly send the denied request or change its identity to circumvent the denial. The existing origin-policy table describes the canonical renderer in the reviewed historical source; the current authenticated MCEL HTTPS gateway's actual RPC-origin behavior needs separate verification if used for acceptance.
+
+See [Stable Hub public network API](stable-hub-public-network-api.md) and [R02 evidence](release-acceptance-0.1.0-evidence.md).
+
 ## Regression tests
 
 ```text

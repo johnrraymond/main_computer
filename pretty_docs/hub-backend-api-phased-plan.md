@@ -1,5 +1,9 @@
 # Hub Backend/API Phased Plan
 
+> **Current public-network contract (November 24, 2026):** [Stable Hub public network API and release preflight](stable-hub-public-network-api.md). The current Stable Hub GET routes are `/health`, `/api/hub/v1/hub-identity` and `/api/hub/v1/topology`. Legacy versioned health/status routes below are historical proposals or compatibility-server interfaces, not the deployed Stable Hub contract.
+
+This phased plan is retained as historical design evidence; the statements of implementation status and endpoint examples below describe that earlier phase.
+
 ## Snapshot grounding
 
 The current repository already contains a first hub implementation. The plan below builds on that instead of replacing it wholesale.

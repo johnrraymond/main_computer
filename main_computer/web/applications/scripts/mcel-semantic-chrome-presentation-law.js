@@ -1447,12 +1447,92 @@ var McelSemanticChromePresentationLaw = (() => {
     return {clear(){resize.disconnect();profile.disconnect();win.removeEventListener('resize',fit);glass.remove();}};
   }
 
+  // Chrome owns all optical paint. A one-column LCD raster is stretched
+  // horizontally and clipped to the illuminated element only. The separate
+  // pointer-local glitter field may escape; no ambient sparkle or rays.
+  function mountGlassOptics(root) {
+    const doc=root.ownerDocument, win=doc.defaultView;
+    const cfg=Object.freeze({density:.035,period:3.2,base:.09,peak:.28});
+    const style=doc.createElement('style');
+    style.setAttribute('data-mcel-tng-optical-style','');
+    style.textContent=`
+      [data-mcel-tng-optical-part]{pointer-events:none!important;margin:0!important;padding:0!important;border:0!important;box-shadow:none;}
+      @keyframes mcelTngOpticalLCD {0%,25%,100%{opacity:var(--base)}12.5%{opacity:var(--peak)}}
+      @media(prefers-reduced-motion:reduce){[data-mcel-tng-optical-lcd]{animation:none!important;opacity:.12!important}}
+    `;
+    doc.head.appendChild(style);
+    function make(parent,css){
+      const e=doc.createElement('div');e.setAttribute('data-mcel-tng-optical-part','');
+      e.style.cssText=css;parent.appendChild(e);return e;
+    }
+    const overlay=make(doc.body,'position:fixed!important;inset:0!important;z-index:2147483647!important;overflow:hidden;display:none;');
+    overlay.setAttribute('data-mcel-tng-optical-glass','');
+    overlay.setAttribute('data-mcel-chrome-decorative','true');
+    overlay.setAttribute('aria-hidden','true');overlay.inert=true;
+    const lcd=make(overlay,'position:absolute;overflow:hidden;display:none;');
+    lcd.setAttribute('data-mcel-tng-optical-lcd-host','');
+    const random=(a,b)=>a+Math.random()*(b-a);
+    let lines=[],textureKey='',geometry='',disposed=false,chromeKey='';
+    function put(e,props){for(const [k,v] of Object.entries(props))if(e.style[k]!==v)e.style[k]=v;}
+    function prepareLCD(d){
+      const h=Math.max(1,Math.ceil(win.innerHeight*d)),key=[h,d,cfg.density,cfg.period].join('|');
+      if(key===textureKey)return;textureKey=key;
+      lcd.replaceChildren();lines=[];
+      for(let i=0;i<8;i++){
+        const c=doc.createElement('canvas');c.width=1;c.height=h;
+        const ctx=c.getContext('2d'),im=ctx.createImageData(1,h);
+        for(let y=0;y<h;y++)if(Math.random()<cfg.density)im.data.set([255,232,188,Math.round(random(75,255))],y*4);
+        ctx.putImageData(im,0,0);c.setAttribute('data-mcel-tng-optical-lcd','');
+        c.style.cssText=`position:absolute;left:0;width:100%;height:${h/d}px;image-rendering:pixelated;pointer-events:none;animation:mcelTngOpticalLCD ${cfg.period}s linear ${-i*cfg.period/8}s infinite;`;
+        lcd.append(c);lines.push(c);
+      }
+      geometry='';
+    }
+    function darken(){lcd.style.display='none';geometry='';}
+    function fit(){
+      if(disposed)return false;
+      const c=root.getBoundingClientRect(),d=win.devicePixelRatio||1;
+      if(!root.isConnected||root.getAttribute(rootAttr)!==profileId||doc.hidden||!c.width||!c.height){
+        darken();overlay.style.display='none';return false;
+      }
+      const key=[c.left,c.top,c.right,c.bottom,win.innerWidth,win.innerHeight,d].join('|');
+      if(key!==chromeKey||overlay.style.display==='none'){
+        chromeKey=key;
+        put(overlay,{display:'block',clipPath:`inset(${Math.max(0,c.top)}px ${Math.max(0,win.innerWidth-c.right)}px ${Math.max(0,win.innerHeight-c.bottom)}px ${Math.max(0,c.left)}px)`});
+      }
+      return true;
+    }
+    function illuminate(el,x,y,b,v,borderRadius){
+      if(disposed||!fit())return;
+      const d=win.devicePixelRatio||1,c=root.getBoundingClientRect();
+      v={left:Math.max(v.left,c.left),top:Math.max(v.top,c.top),right:Math.min(v.right,c.right),bottom:Math.min(v.bottom,c.bottom)};
+      if(v.right<=v.left||v.bottom<=v.top){darken();return;}
+      prepareLCD(d);
+      const sig=[b.left,b.top,b.width,b.height,v.left,v.top,v.right,v.bottom,borderRadius,x,y,d].join('|');
+      if(sig!==geometry){
+        geometry=sig;
+        const props={display:'block',left:`${b.left}px`,top:`${b.top}px`,width:`${b.width}px`,height:`${b.height}px`,borderRadius,
+          clipPath:`inset(${v.top-b.top}px ${b.right-v.right}px ${b.bottom-v.bottom}px ${v.left-b.left}px)`};
+        put(lcd,props);
+        for(const e of lines)put(e,{top:`${-b.top}px`});
+        lcd.style.setProperty('--base',cfg.base);lcd.style.setProperty('--peak',cfg.peak);
+        lcd.style.maskImage=`radial-gradient(circle 230px at ${x-b.left}px ${y-b.top}px,#000 0px,rgba(0,0,0,.5) 36px,rgba(0,0,0,.2) 72px,rgba(0,0,0,.06) 144px,transparent 230px)`;
+      }
+    }
+    const resize=new win.ResizeObserver(fit);resize.observe(root);
+    const events=new win.AbortController();
+    win.addEventListener('resize',fit,{signal:events.signal});
+    doc.addEventListener('visibilitychange',fit,{signal:events.signal});
+    fit();
+    return {illuminate,darken,clear(){disposed=true;darken();resize.disconnect();events.abort();overlay.remove();style.remove();}};
+  }
+
   // One non-tiled optical field, anchored to the glass. Only a cursor-struck
   // action emits light. The specular response can cross that action's edge.
-  function mountSuspendedGlints(root) {
+  function mountLocalizedGlitter(root) {
     const doc=root.ownerDocument, win=doc.defaultView;
     const canvas=doc.createElement('canvas');
-    canvas.setAttribute('data-mcel-tng-suspended-glints','');
+    canvas.setAttribute('data-mcel-tng-localized-glitter','');
     canvas.setAttribute('data-mcel-chrome-decorative','true');
     canvas.setAttribute('aria-hidden','true');canvas.inert=true;
     canvas.style.cssText='position:fixed!important;inset:auto;display:none;pointer-events:none!important;'+
@@ -1460,7 +1540,7 @@ var McelSemanticChromePresentationLaw = (() => {
     const ctx=canvas.getContext('2d',{alpha:true});
     if(!ctx)return {illuminate(){},darken(){},clear(){}};
     doc.body.appendChild(canvas);
-    const radius=98, epoch=win.performance.now();
+    const radius=25, sizeX=2, sizeY=2, epoch=win.performance.now();
     const reduced=win.matchMedia('(prefers-reduced-motion: reduce)');
     let active=null,frame=0,last=-Infinity,image=null,particles=[],disposed=false;
     const tau=2*Math.PI;
@@ -1475,7 +1555,7 @@ var McelSemanticChromePresentationLaw = (() => {
       if(!root.isConnected || root.getAttribute(rootAttr)!==profileId || doc.hidden){darken();return;}
       if(now-last>=30 || reduced.matches){
         last=now;
-        const time=reduced.matches?0:(now-epoch)/1000, data=image.data;
+        const time=reduced.matches?0:(now-epoch)/1000*0.5, data=image.data;
         data.fill(0);
         for(const p of particles){
           // Several overlapping waves impart coherent churning; every pixel
@@ -1486,7 +1566,15 @@ var McelSemanticChromePresentationLaw = (() => {
           if(alignment<=.993)continue;
           const alpha=Math.round(p.power*smooth((alignment-.993)/.00685));
           if(!alpha)continue;
-          data[p.i]=255;data[p.i+1]=214;data[p.i+2]=148;data[p.i+3]=alpha;
+          // Preserve the original reflection intensity while stamping a
+          // 2-by-2 physical-pixel particle (not a CSS-scaled raster).
+          for(let dy=0;dy<sizeY;dy++)for(let dx=0;dx<sizeX;dx++){
+            const x=p.i+dx,y=p.j+dy;
+            if(x>=image.width||y>=image.height)continue;
+            const k=(y*image.width+x)*4;
+            if(alpha<=data[k+3])continue;
+            data[k]=255;data[k+1]=214;data[k+2]=148;data[k+3]=alpha;
+          }
         }
         ctx.putImageData(image,0,0);canvas.style.display='block';
       }
@@ -1504,12 +1592,12 @@ var McelSemanticChromePresentationLaw = (() => {
       if(right<=left || bottom<=top){darken();return;}
       const width=Math.round((right-left)*dpr),height=Math.round((bottom-top)*dpr);
       if(active && active.x===x && active.y===y && active.left===left && active.top===top &&
-        active.rx===r.left && active.ry===r.top && active.dpr===dpr &&
+        active.rx===r.left && active.ry===r.top && active.rr===r.right && active.rb===r.bottom && active.dpr===dpr &&
         canvas.width===width && canvas.height===height)return;
       if(!image || canvas.width!==width || canvas.height!==height){canvas.width=width;canvas.height=height;image=ctx.createImageData(width,height);}
       Object.assign(canvas.style,{left:`${left}px`,top:`${top}px`,width:`${width/dpr}px`,height:`${height/dpr}px`,
         clipPath:`inset(${Math.max(0,r.top-top)}px ${Math.max(0,right-r.right)}px ${Math.max(0,bottom-r.bottom)}px ${Math.max(0,r.left-left)}px)`});
-      active={x,y,left,top,rx:r.left,ry:r.top,dpr};particles=[];
+      active={x,y,left,top,rx:r.left,ry:r.top,rr:r.right,rb:r.bottom,dpr};particles=[];
       // Compute every physical pixel's persistent properties and the local
       // source direction. Skip only responses that cannot reach one alpha bit.
       for(let j=0;j<height;j++){
@@ -1521,7 +1609,7 @@ var McelSemanticChromePresentationLaw = (() => {
           const key=hash(Math.floor(px*dpr)^0x68bc21eb)^hy;
           const power=(1-smooth(dist/radius))*Math.pow(random(key^0x1b56c4e9),12)*191.25;
           if(power<.5)continue;
-          particles.push({i:(j*width+i)*4,power,angle:Math.atan2(dy,dx),
+          particles.push({i,j,power,angle:Math.atan2(dy,dx),
             phase:random(key)*tau,rate:.43+.29*random(key^0xb5297a4d),
             wave1:px*.011+py*.017,wave2:-px*.023+py*.009,wave3:px*.037-py*.029});
         }
@@ -1529,7 +1617,13 @@ var McelSemanticChromePresentationLaw = (() => {
       // Subsequent churning frames do not read geometry or touch app DOM.
       if(frame)win.cancelAnimationFrame(frame);last=-Infinity;draw(win.performance.now());
     }
-    return {illuminate,darken,clear(){disposed=true;darken();canvas.remove();}};
+    function motionChanged(){
+      if(!active)return;
+      if(frame)win.cancelAnimationFrame(frame);
+      frame=0;last=-Infinity;draw(win.performance.now());
+    }
+    reduced.addEventListener('change',motionChanged);
+    return {illuminate,darken,clear(){disposed=true;darken();reduced.removeEventListener('change',motionChanged);canvas.remove();}};
   }
 
   // One lightweight, clipped light per mounted TNG root. It is outside the
@@ -1558,10 +1652,11 @@ var McelSemanticChromePresentationLaw = (() => {
       'rgba(255,138,35,.065) 49%,transparent 71%)';
     glass.appendChild(light);
     doc.body.appendChild(glass);
-    const glints=mountSuspendedGlints(root);
+    const glints=mountGlassOptics(root);
+    const glitter=mountLocalizedGlitter(root);
     const events=new win.AbortController();
     let point=null, frame=0;
-    function hide(){glass.style.display='none';glints.darken();}
+    function hide(){glass.style.display='none';glints.darken();glitter.darken();}
     function clearPoint(){
       point=null;
       if(frame)win.cancelAnimationFrame(frame);
@@ -1616,7 +1711,8 @@ var McelSemanticChromePresentationLaw = (() => {
         clipPath:`inset(${t-r.top}px ${r.right-rr}px ${r.bottom-b}px ${l-r.left}px)`,
         display:'block'});
       light.style.transform=`translate3d(${x-r.left-72}px,${y-r.top-72}px,0)`;
-      glints.illuminate(x,y);
+      glints.illuminate(el,x,y,r,{left:l,top:t,right:rr,bottom:b},glass.style.borderRadius);
+      glitter.illuminate(x,y);
     }
     function schedule(){if(point && !frame)frame=win.requestAnimationFrame(paint);}
     const opts={capture:true,passive:true,signal:events.signal};
@@ -1635,7 +1731,7 @@ var McelSemanticChromePresentationLaw = (() => {
     const observer=new win.MutationObserver(schedule);
     observer.observe(root,{subtree:true,childList:true,attributes:true,
       attributeFilter:[rootAttr,'disabled','aria-disabled','inert','href','role','type']});
-    return {clear(){events.abort();observer.disconnect();clearPoint();glints.clear();glass.remove();}};
+    return {clear(){events.abort();observer.disconnect();clearPoint();glints.clear();glitter.clear();glass.remove();}};
   }
 
   function mountGoldTypography(root) {

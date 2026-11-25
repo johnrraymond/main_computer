@@ -13,7 +13,6 @@ from main_computer.hub_admin_site import HUB_ADMIN_ROUTES
 
 
 @pytest.mark.parametrize("path", [
-    "/api/hub/status", "/api/hub/v1/status", "/api/hub/v1/health",
     "/api/hub/v1/workers", "/api/hub/v1/models", "/api/hub/v1/credits",
     "/api/hub/v1/credits/charges", "/api/hub/v1/credits/holds",
     "/api/hub/v1/requests", "/api/hub/v1/requests/test-result",
@@ -44,6 +43,9 @@ def test_existing_inherited_post_surface_explicit(path):
 
 @pytest.mark.parametrize("method,path", [
     ("GET", "/api/hub/future-broker"),
+    ("GET", "/api/hub/status"),
+    ("GET", "/api/hub/v1/status"),
+    ("GET", "/api/hub/v1/health"),
     ("POST", "/api/hub/future-broker"),
     ("POST", "/api/hub/remote-overflow/new-bypass"),
     ("POST", "/api/hub/v1/credits/deposits/import"),
@@ -86,7 +88,7 @@ def test_fdb_handler_rejects_undeclared_inherited_routes_before_base(monkeypatch
 
 
 @pytest.mark.parametrize("method,path", [
-    ("GET", "/api/hub/status?debug=true"),
+    ("GET", "/api/hub/v1/models?debug=true"),
     ("GET", "/api/hub/v1/credits/charges"),
     ("GET", "/admin"),
     ("POST", "/api/hub/sessions/start"),
@@ -113,21 +115,23 @@ def test_removed_legacy_worker_post_still_has_explicit_404_before_base(monkeypat
     assert replies[0][1]["status"] == HTTPStatus.NOT_FOUND
 
 
-def test_real_http_unknown_legacy_routes_404_and_existing_status_unchanged():
-    """Exercise the actual FDB handler's HTTP dispatch, not just route predicates."""
+@pytest.mark.parametrize("handler_class", [HubServerHandler, ExperimentalFoundationDbHubServerHandler])
+def test_real_http_retired_routes_404_and_other_get_routes_unchanged(handler_class):
+    """Exercise both HTTP handlers, without needing FoundationDB."""
     import json
     import threading
     from http.server import ThreadingHTTPServer
     from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), ExperimentalFoundationDbHubServerHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
     server.verbose = False
     # Minimal bounded-handler prerequisites; no FoundationDB is needed.
     server.resource_begin_headers = lambda connection: True
     server.resource_headers_complete = lambda connection: True
     server.stable_hub_node = SimpleNamespace(hub_id="dev-hub1")
-    server.config = SimpleNamespace(hub_network="dev", chain_id=42424242)
+    server.config = SimpleNamespace(hub_network="dev", chain_id=42424242, model="test-model")
+    server.stable_topology = SimpleNamespace(cluster_id="dev-cluster")
     server.registry = SimpleNamespace(status=lambda: {
         "worker_count": 2, "available_worker_count": 1, "stale_worker_count": 0,
     })
@@ -135,19 +139,24 @@ def test_real_http_unknown_legacy_routes_404_and_existing_status_unchanged():
     thread.start()
     try:
         root = f"http://127.0.0.1:{server.server_port}"
-        with urlopen(root + "/api/hub/status", timeout=3) as response:
-            status = json.load(response)
-        assert status["network_key"] == "dev"
-        assert status["worker_count"] == 2
-        for req in (
-            Request(root + "/api/hub/future-broker",method="GET"),
-            Request(root + "/api/hub/future-broker",data=b"{}",method="POST"),
-            Request(root + "/api/hub/future-broker",data=b"not-json",method="POST"),
-            Request(root + "/api/hub/v1/credits/deposits/import",data=b"{}",method="POST"),
-        ):
+        with urlopen(root + "/api/hub/v1/models", timeout=3) as response:
+            assert json.load(response)["models"] == ["test-model"]
+        if handler_class is ExperimentalFoundationDbHubServerHandler:
+            with urlopen(root + "/health", timeout=3) as response:
+                assert json.load(response)["ok"] is True
+        for path in ("/api/hub/status", "/api/hub/v1/status", "/api/hub/v1/health", "/api/hub/future-broker"):
             with pytest.raises(HTTPError) as error:
-                urlopen(req,timeout=3)
+                urlopen(root + path + "?debug=true", timeout=3)
             assert error.value.code == 404
+        if handler_class is ExperimentalFoundationDbHubServerHandler:
+            for req in (
+                Request(root + "/api/hub/future-broker",data=b"{}",method="POST"),
+                Request(root + "/api/hub/future-broker",data=b"not-json",method="POST"),
+                Request(root + "/api/hub/v1/credits/deposits/import",data=b"{}",method="POST"),
+            ):
+                with pytest.raises(HTTPError) as error:
+                    urlopen(req,timeout=3)
+                assert error.value.code == 404
         with pytest.raises(HTTPError) as private_read:
             urlopen(root + "/api/hub/v1/credits/charges",timeout=3)
         assert private_read.value.code == 403

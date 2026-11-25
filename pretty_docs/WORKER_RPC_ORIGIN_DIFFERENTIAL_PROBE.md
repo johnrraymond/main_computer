@@ -118,3 +118,8 @@ it; a missing Access-Control-Allow-Origin on a denied response is a
 Do not modify any route/Cloudflare setting based only on the Python client
 comparison. Require a browser-origin failure with its actual status or a
 corresponding policy event before selecting a mutation.
+
+
+## R02 release smoke — November 24, 2026
+
+The independent public network smoke now reports explicit Cloudflare 1010 on both canonical RPC domains. Its Python JSON-RPC transport is not proof of actual Chromium/MetaMask behavior. The rejection occurs at `eth_chainId`; no downstream contract evidence can be inferred. Match the reported rays with the owner's security events, and use a legitimate approved client path; do not retry a request explicitly denied by policy. See [current public network contract](stable-hub-public-network-api.md) and [release evidence](release-acceptance-0.1.0-evidence.md).

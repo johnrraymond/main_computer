@@ -1,6 +1,6 @@
 # Main Computer 0.1.0 — Release Patch Plan
 
-Revision 3 · November 24, 2026 · R01 complete; R02 next
+Revision 4 · November 24, 2026 · R01 complete; R02 public preflight blocked
 
 Governing document: [Release acceptance gate](release-acceptance-0.1.0.md). Historical and current proof: [Evidence register](release-acceptance-0.1.0-evidence.md).
 
@@ -8,7 +8,7 @@ Governing document: [Release acceptance gate](release-acceptance-0.1.0.md). Hist
 
 Release a secure distributed compute economy with Mainnet/Testnet, Stable Hub, ORG-SLH, SEH, Worker and Requester working together. Do not redesign wallet ownership or repeat the security migration. The resident ORG Mainnet wallet is CURRENT, MSK authorization is present, financial readiness is READY, and all seven read-only preflight assertions passed. Isolated ORG MSK and bidirectional passthrough passed 16/16; deployed-SEH dual employment passed 26/26. The public mock requester is sufficient. The resident wallet has zero credits, marketplace participation is disabled and no Workers are connected. These are operating conditions, not defects in startup readiness.
 
-Each patch is separately reviewable and uses relative repository paths. Preserve the installed signer, wallet DB, identity authority, authorization state and pending ledger records. Use the current source snapshot including applied patches; do not apply replacements built from an older snapshot without checking for intervening changes. Do not ship private state or raw Markdown at ZIP root. R01 is complete on operator-reported Windows and deployed SEH evidence. R02–R06 remain planned. Bind the evidence to the release candidate before final certification.
+Each patch is separately reviewable and uses relative repository paths. Preserve the installed signer, wallet DB, identity authority, authorization state and pending ledger records. Use the current source snapshot including applied patches; do not apply replacements built from an older snapshot without checking for intervening changes. Do not ship private state or raw Markdown at ZIP root. R01 is complete on operator-reported Windows and deployed SEH evidence. R02 is in progress; R03–R06 remain planned. Bind the evidence to the release candidate before final certification.
 
 ## Patch sequence
 
@@ -45,11 +45,18 @@ python -m pytest -q tests/test_slh_resident_restart_acceptance.py tests/test_slh
 
 ### R02 — Network-scoped release preflight and Hub integrity
 
-**Priority:** NEXT; P0-01/02/04/13. **Target:** existing network-client smoke, Mother observations, Stable Hub lab, resident diagnostic.
+**Priority:** IN PROGRESS — blocked public preflight; P0-01/02/04/13. **Target:** existing network-client smoke, Mother observations, Stable Hub lab, resident diagnostic.
 
 - Verify current Mainnet/Testnet identities, genesis/contract manifests, advancing finalized blocks, actual deployed Hub topology, network-specific health/routing and storage evidence. Chain ID alone is insufficient (local test can share Testnet ID).
 - Extend resident diagnostic to explicitly select and verify the intended network and instance in the test report. Present mode is hardcoded to Mainnet. Testnet must use a separately scoped ORG state/wallet binding; do not repoint or clear the resident Mainnet binding. Reuse canonical registry and automatic signer implementation. No manual endpoint or identity ID input in normal test execution.
 - Run isolated FDB crash/recovery and cross-Hub reservation/accounting tests. Do not disrupt public Hubs. Collect candidate deployment fingerprints.
+
+**Immediate R02 corrective sequence (no paid work):**
+
+1. R02-A — inspect public identity/topology responses for both networks and concrete Hubs. Resolve the source-proven `kind`/`network_kind` mismatch between Hub Control's generated topology and Stable Hub public serialization; test generated topology and real handler together, fail on conflicting keys. If deployment changes are needed, use the existing authorized Hub Control lifecycle. Do not replace missing evidence with guessed network values. Migrate the legacy SLH marketplace probe if still used for public networks. See [current public API contract](stable-hub-public-network-api.md).
+2. R02-B — resolve authorized public JSON-RPC client access. Both latest smokes received Cloudflare 1010 (owner action required); inspect matching events and existing approved client paths before choosing the fix. Do not retry the identical denied request, loosen TLS/CORS, or silently fall back to private/raw IP routes. Require successful canonical chain-ID and block reads on each network.
+3. R02-C — reconcile Testnet's outdated deployment manifest with authoritative chain deployment provenance and verified contract runtime/artifacts; preserve history and use the owner workflow. Mainnet manifest comparison already passed, but deployed bytecode is still unverified.
+4. R02-D — rerun both public smokes after corrections, then verify per-Hub readiness, actual routing and isolated FDB recovery; complete separate Testnet ORG readiness. Preserve earlier R01 evidence.
 
 **Existing entry points:**
 
@@ -60,7 +67,7 @@ python -m tools.stable_hub_lab.run_lab --verify-pathway-local --pathway-timeout 
 python -m tools.stable_hub_lab.crash_recovery --topology deploy/hub-topology/smoke-topology.json --timeout 110
 ```
 
-Start with the two deployed read-only network smokes. The source currently requires the network deployment manifest and its funded smoke-client wallet record; if these are missing, diagnose discovery rather than create or fund an account automatically. Successful reports are written to `runtime/hub/hub_network_client_smoke_testnet.json` and `runtime/hub/hub_network_client_smoke_mainnet.json`. These checks alone do not prove finalized-block progress, every Hub, or the candidate topology. Review FDB lab runbook and isolated namespace before executing recovery tests. The smoke skips paid work. **Exit:** independently verified network/Hub observations, recovery evidence, separate Testnet financial readiness. No production funds moved.
+The corrected public read-only smokes use the canonical HTTPS registry and compare the deployment manifest independently; they do not require a funded smoke-client wallet or its key. Reports, including blocked results, are written to `runtime/hub/hub_network_client_smoke_testnet.json` and `runtime/hub/hub_network_client_smoke_mainnet.json`. These checks alone do not prove finalized-block progress, every Hub, or the candidate topology. Review FDB lab runbook and isolated namespace before executing recovery tests. The smoke skips paid work. **Exit:** independently verified network/Hub observations, recovery evidence, separate Testnet financial readiness. No production funds moved.
 
 ### R03 — Resident Worker enrollment, connection and public earning
 
@@ -112,4 +119,4 @@ python -m tools.release_acceptance --version 0.1.0
 
 ## Immediate next action
 
-R01 is complete: preserve its baseline/restart and corrected deployed employment evidence. Proceed to R02, beginning with the existing read-only Mainnet/Testnet network smokes, then fill only the gaps those results expose. R03 follows the relevant R02 preflight. The wallet is already initialized. Do not generate it again. Marketplace remains disabled until an explicitly approved employment test. No manual Hub configuration is needed.
+R01 is complete: preserve its baseline/restart and corrected deployed employment evidence. R02 public smoke has exposed identity metadata, RPC client admission, and Testnet manifest gaps; resolve R02-A through R02-D above before advancing. R03 follows the relevant R02 preflight. The wallet is already initialized. Do not generate it again. Marketplace remains disabled until an explicitly approved employment test. No manual Hub configuration is needed.

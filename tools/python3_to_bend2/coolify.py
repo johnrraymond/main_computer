@@ -18,6 +18,7 @@ import tempfile
 import tokenize
 
 from . import translate
+from .library_exports import EXPORTS, programs
 from .native_execution import classify_proof_check, preflight, run_standalone
 
 HUB_CONTRACT = 'tools/hub_control/common/deployment.py'
@@ -259,6 +260,96 @@ def audit_functions(root: Path, *, native=False, bend='bend', wsl=False):
                     yield case, i, 'EXECUTION_ERROR', str(exc)
 
 
+_ERROR_MARKER = 'LINKED_EXPORT_ORACLE_ERROR\n'
+
+
+def export_oracle(path: Path, expected_error: str | None):
+    snippet = (
+        'import runpy,sys,traceback\n'
+        'fn = runpy.run_path(sys.argv[1])["main"]\n'
+        'try:\n'
+        '    value = fn()\n'
+        'except Exception as exc:\n'
+        '    if type(exc).__name__ != sys.argv[2]: raise\n'
+        f'    sys.stderr.write({_ERROR_MARKER!r} + "".join(traceback.format_exception_only(type(exc), exc)))\n'
+        '    sys.exit(1)\n'
+        'else:\n'
+        '    print(value)\n'
+    )
+    return subprocess.run([sys.executable, '-I', '-B', '-X', 'utf8', '-c', snippet,
+                           str(path), expected_error or ''], capture_output=True,
+                          text=True, encoding='utf-8', timeout=20)
+
+
+def compare_export(oracle, observed, expected_error: str | None):
+    if expected_error:
+        if (oracle.returncode != 1 or not oracle.stderr.startswith(_ERROR_MARKER)):
+            return 'ORACLE_FAILED'
+        expected = oracle.stderr.removeprefix(_ERROR_MARKER).removesuffix('\n')
+        actual = observed.stderr.removesuffix('\n')
+        if (observed.returncode == 1 and observed.stdout == oracle.stdout and
+                actual in (expected, 'Error: ' + expected)):
+            return 'VERIFIED'
+        return 'DIFFERENTIAL_FAILED'
+    if oracle.returncode or oracle.stderr:
+        return 'ORACLE_FAILED'
+    if observed.returncode:
+        return 'RUN_FAILED'
+    if observed.stdout != oracle.stdout or observed.stderr:
+        return 'DIFFERENTIAL_FAILED'
+    return 'VERIFIED'
+
+
+def audit_exports(root: Path, *, native=False, bend='bend', wsl=False, selected=None):
+    """Check linked dependency bundles, never import the deployed service."""
+    readiness = preflight(bend, wsl=wsl) if native else None
+    with tempfile.TemporaryDirectory(prefix='bend-coolify-export-') as directory:
+        folder = Path(directory)
+        cases = EXPORTS if selected is None else {selected: EXPORTS[selected]}
+        for name, export in cases.items():
+            for i, fixture in enumerate(export.fixtures):
+                try:
+                    original, lowered = programs(root, export, fixture)
+                    emitted = translate(lowered, name, show_return=True)
+                except Exception as exc:
+                    yield name, i, 'REJECTED', str(exc)
+                    continue
+                if not native:
+                    yield name, i, 'EMITTED', 'native not requested'
+                    continue
+                if not readiness.ready:
+                    yield name, i, 'PREFLIGHT_BLOCKED', readiness.detail
+                    continue
+                try:
+                    py = folder / 'case.py'
+                    py.write_text(original, encoding='utf-8')
+                    target = folder / 'case.bend'
+                    target.write_text(emitted, encoding='utf-8', newline='\n')
+                    oracle = export_oracle(py, fixture.error)
+                    # A failed oracle is not a valid execution target.
+                    if ((fixture.error and (oracle.returncode != 1 or not oracle.stderr.startswith(_ERROR_MARKER)))
+                            or (not fixture.error and (oracle.returncode or oracle.stderr))):
+                        yield name, i, 'ORACLE_FAILED', oracle.stderr[:1000]
+                        continue
+                    checked = classify_proof_check(run_standalone(target, bend=bend, wsl=wsl, check_only=True))
+                    if not checked.permits_execution:
+                        yield name, i, 'CHECK_FAILED', checked.detail
+                        continue
+                    observed = run_standalone(target, bend=bend, wsl=wsl, timeout=60)
+                    verdict = compare_export(oracle, observed, fixture.error)
+                    detail = f'proof={checked.status}'
+                    if verdict != 'VERIFIED':
+                        detail += (f' expected rc={oracle.returncode} out={oracle.stdout!r} '
+                                   f'error={oracle.stderr.removeprefix(_ERROR_MARKER)!r}; '
+                                   f'actual rc={observed.returncode} out={observed.stdout!r} '
+                                   f'error={observed.stderr[:2000]!r}')
+                    elif fixture.error:
+                        detail += f'; {fixture.error} matched'
+                    yield name, i, verdict, detail
+                except Exception as exc:
+                    yield name, i, 'EXECUTION_ERROR', str(exc)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path('.'))
@@ -266,8 +357,20 @@ def main(argv=None):
     parser.add_argument('--wsl', action='store_true')
     parser.add_argument('--bend', default='bend')
     parser.add_argument('--functions-only', action='store_true', help='Skip whole-module emission attempts, not the inventory')
+    parser.add_argument('--exports-only', action='store_true', help='Run linked export fixtures only')
+    parser.add_argument('--export', choices=tuple(EXPORTS), help='Run a single linked export contract')
     args = parser.parse_args(argv)
     root = args.repo.resolve()
+    if args.exports_only or args.export:
+        totals = Counter()
+        for case, i, status, detail in audit_exports(root, native=args.native or args.wsl, bend=args.bend, wsl=args.wsl, selected=args.export):
+            totals[status] += 1
+            print(f'LINKED_EXPORT {case}[{i}] {status}: {detail}')
+        print('LINKED_EXPORT_FIXTURES ' + ' '.join(f'{k}={v}' for k,v in sorted(totals.items())))
+        expected = len(EXPORTS[args.export].fixtures) if args.export else sum(len(e.fixtures) for e in EXPORTS.values())
+        passed = totals['VERIFIED' if args.native or args.wsl else 'EMITTED'] == expected
+        print('LINKED_EXPORT_GATE ' + ('PASS' if passed else 'FAIL') + ' (not a service gate)')
+        return 0 if passed else 2
     services = discover(root)
     for service in services:
         print(f'SERVICE {service.name} modules={len(service.modules)} missing={len(service.missing)} dynamic_import_sites={len(service.dynamic_import_sites)}')
@@ -292,9 +395,16 @@ def main(argv=None):
         totals[status] += 1
         print(f'FUNCTION {case}[{i}] {status}: {detail}')
     print('FUNCTION_FIXTURES ' + ' '.join(f'{k}={v}' for k,v in sorted(totals.items())))
+    export_totals = Counter()
+    for case, i, status, detail in audit_exports(root, native=args.native or args.wsl, bend=args.bend, wsl=args.wsl):
+        export_totals[status] += 1
+        print(f'LINKED_EXPORT {case}[{i}] {status}: {detail}')
+    print('LINKED_EXPORT_FIXTURES ' + ' '.join(f'{k}={v}' for k,v in sorted(export_totals.items())))
     print('SERVICE_CERTIFICATION NOT_PERFORMED: no full server, protocol, or dependency execution')
     expected = sum(len(case[-1]) for case in FUNCTION_CASES.values())
-    function_pass = totals['VERIFIED' if args.native or args.wsl else 'EMITTED'] == expected
+    wanted = 'VERIFIED' if args.native or args.wsl else 'EMITTED'
+    function_pass = (totals[wanted] == expected and
+                     export_totals[wanted] == sum(len(e.fixtures) for e in EXPORTS.values()))
     if args.functions_only:
         print('FUNCTION_GATE ' + ('PASS' if function_pass else 'FAIL') + ' (not a service gate)')
         return 0 if function_pass else 2

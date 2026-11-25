@@ -862,8 +862,35 @@ def PyStr.strip(text: String) -> String:
 '''
 
 
+# Pure character predicates. Membership of an iterated string character in a
+# literal string or literal set of characters has no observable side effects.
+CHAR_PREDICATES_BEND = r''' 
+@unsafe def PyStr.has_char(+ch: U32, allowed: String) -> Bool:
+  match allowed:
+    case SNil{}:
+      False{}
+    case SCon{Chr{c}, tail}:
+      Bool.or(U32.is_eq(ch, c), PyStr.has_char(ch, tail))
+
+@unsafe def PyStr.all_chars(text: String, +allowed: String) -> Bool:
+  match text:
+    case SNil{}:
+      True{}
+    case SCon{Chr{c}, tail}:
+      PyStr.all_chars_step(PyStr.has_char(c, allowed), tail, allowed)
+
+@unsafe def PyStr.all_chars_step(ok: Bool, tail: String, allowed: String) -> Bool:
+  match ok:
+    case True{}:
+      PyStr.all_chars(tail, allowed)
+    case False{}:
+      False{}
+'''.strip()
+
+
 class NormalizationLowerer(InheritanceLowerer):
     def __init__(self, source: str, source_name='<input>', *, show_return=False, threshold=8):
+        self.use_char_predicates = False
         self.v13_prepass = NormalizationPass(source_name)
         lowered = self.v13_prepass.apply(source)
         self.v13_lowered = lowered
@@ -886,6 +913,59 @@ class NormalizationLowerer(InheritanceLowerer):
         return super()._list_element_type(node,env)
 
     def expr(self, node, env, heap, lines):
+        if (isinstance(node, ast.Compare) and len(node.ops) == 1
+                and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                and isinstance(node.comparators[0], ast.Set)
+                and all(isinstance(e, ast.Constant) and type(e.value) is str
+                        for e in node.comparators[0].elts)):
+            heap, value, typ = self.expr(node.left, env, heap, lines)
+            if typ != 'str':
+                self.fail('literal string set membership requires a string', node)
+            terms = []
+            for item in node.comparators[0].elts:
+                heap, member, _ = self.expr(item, env, heap, lines)
+                terms.append(f'PyStr.equal(PyExc.message({value}), PyExc.message({member}))')
+            expr = 'False{}'
+            for term in reversed(terms):
+                expr = f'Bool.or({term}, {expr})'
+            if isinstance(node.ops[0], ast.NotIn):
+                expr = f'Bool.not({expr})'
+            return heap, self.bind(f'VBool{{{expr}}}', lines), 'bool'
+        # Recognize a pure, single-generator character predicate. Do not
+        # generalize to arbitrary iterables, expressions or shadowed builtins.
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ('all', 'any') and len(node.args) == 1
+                and not node.keywords and isinstance(node.args[0], ast.GeneratorExp)):
+            name = node.func.id
+            gen = node.args[0]
+            if name in env or name in self.signatures or name in self.class_fields:
+                self.fail('shadowed quantifier builtin', node)
+            if len(gen.generators) == 1:
+                g = gen.generators[0]
+                pred = gen.elt
+                if (not g.is_async and not g.ifs and isinstance(g.target, ast.Name)
+                        and isinstance(pred, ast.Compare) and len(pred.ops) == 1
+                        and isinstance(pred.left, ast.Name) and pred.left.id == g.target.id
+                        and ((name == 'all' and isinstance(pred.ops[0], ast.In))
+                             or (name == 'any' and isinstance(pred.ops[0], ast.NotIn)))):
+                    domain = pred.comparators[0]
+                    if isinstance(domain, ast.Constant) and type(domain.value) is str:
+                        allowed = domain.value
+                    elif isinstance(domain, ast.Set) and all(
+                            isinstance(e, ast.Constant) and type(e.value) is str and len(e.value) == 1
+                            for e in domain.elts):
+                        allowed = ''.join(sorted({e.value for e in domain.elts}))
+                    else:
+                        self.fail('character quantifier requires a literal character domain', node)
+                    heap, text, typ = self.expr(g.iter, env, heap, lines)
+                    if typ != 'str':
+                        self.fail('character quantifier requires a string iterable', g.iter)
+                    heap, alphabet, _ = self.expr(C(allowed), env, heap, lines)
+                    self.use_char_predicates = True
+                    result = f'PyStr.all_chars(PyExc.message({text}), PyExc.message({alphabet}))'
+                    if name == 'any':
+                        result = f'Bool.not({result})'
+                    return heap, self.bind(f'VBool{{{result}}}', lines), 'bool'
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == 'startswith' and len(node.args) == 1
                 and not node.keywords):
@@ -958,7 +1038,10 @@ class NormalizationLowerer(InheritanceLowerer):
     def compile(self):
         from tools.python3_to_bend2.integers import order_runtime_definitions
         source = super().compile()
-        return source.replace('def main() -> IO(Unit):', order_runtime_definitions(LIST_INDEX_BEND + '\n' + SLICE_BEND) + '\n\ndef main() -> IO(Unit):', 1)
+        runtime = LIST_INDEX_BEND + '\n' + SLICE_BEND
+        if self.use_char_predicates:
+            runtime += '\n' + CHAR_PREDICATES_BEND
+        return source.replace('def main() -> IO(Unit):', order_runtime_definitions(runtime) + '\n\ndef main() -> IO(Unit):', 1)
 
 
 def translate_normalized_file(path: Path, *, show_return=False, threshold=8):

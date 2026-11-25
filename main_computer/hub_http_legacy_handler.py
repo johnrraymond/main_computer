@@ -28,14 +28,13 @@ from main_computer.hub_http_runtime import HubHttpServer
 from main_computer.hub_http_legacy_support import (
     HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID, HUB_MULTISESSION_KEY_MAX_AGE_MINUTES,
     HubCreditAuthorizationError, HubPaymentRequired,
-    chat_message_from_dict, load_allfather_hub_remote_manifest,
+    chat_message_from_dict,
 )
 from main_computer.hub_plex_models import HubAIRequest
 from main_computer.hub_registry_json import _utc_now
 from main_computer.hub_registry_shared import (
     _clean_node_id, _hub_as_bool, _hub_as_int, _hub_credit_wei_from_decimal_text,
 )
-from main_computer.hub_security import HUB_SECURITY_PROFILE
 from main_computer.multisession_key_signing import (
     normalize_address, normalize_chain_id, verify_personal_sign_blob,
 )
@@ -1510,35 +1509,6 @@ class HubServerHandler(_JsonHandler):
         if path in HUB_ADMIN_ROUTES:
             html = render_hub_admin_html()
             self._send_bytes(html.encode("utf-8"), content_type="text/html; charset=utf-8")
-            return
-        if path == "/api/hub/v1/health":
-            self._send_json(
-                {
-                    "ok": True,
-                    "service": "main-computer-hub",
-                    "api_version": "v1",
-                    "security_profile": HUB_SECURITY_PROFILE,
-                    "network_key": getattr(self.server.config, "hub_network", ""),
-                    "cell_id": os.environ.get("MC_ALLFATHER_CELL_ID", ""),
-                    "bootstrap_hub": False,
-                    "full_main_computer_hub": True,
-                    "hub_remote_manifest": load_allfather_hub_remote_manifest(),
-                }
-            )
-            return
-        if path in {"/api/hub/status", "/api/hub/v1/status"}:
-            # Public health is intentionally aggregate-only. Registry workers,
-            # endpoints, per-worker accounts and finance belong to the Hub.
-            snapshot = self.server.registry.status()
-            self._send_json({
-                "ok": True,
-                "api_version": "v1" if path.startswith("/api/hub/v1/") else "legacy",
-                "network_key": self.server.config.hub_network,
-                "chain_id": self.server.config.chain_id,
-                "worker_count": snapshot.get("worker_count", 0),
-                "available_worker_count": snapshot.get("available_worker_count", 0),
-                "stale_worker_count": snapshot.get("stale_worker_count", 0),
-            })
             return
         if path == "/api/hub/v1/metrics":
             self._send_json(self.server.dispatcher.metrics())

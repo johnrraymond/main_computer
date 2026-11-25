@@ -1,5 +1,7 @@
 # Hub Chain Architecture: Devnet, Testnet, and Mainnet
 
+**Current deployment/release overlay (November 24, 2026):** [Stable Hub public network API and release preflight](stable-hub-public-network-api.md) defines the current public network endpoints, API, and read-only release smoke. The architecture and earlier local/remote bring-up examples below remain historical context; public Mainnet/Testnet now have canonical HTTPS ingress. Public `--skip-level4` checks require no funded smoke account. A Cloudflare 1010 refusal is transport evidence, not chain evidence; a stale deployment manifest must be independently reconciled.
+
 This is the working architecture note for the chain path that the Hub is chasing.
 
 It is intentionally README-like: it explains the current local developer chain, the

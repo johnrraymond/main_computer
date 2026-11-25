@@ -1,6 +1,6 @@
 # Main Computer 0.1.0 — Acceptance Evidence Register
 
-Revision 3 · November 24, 2026 · R01 closed
+Revision 4 · November 24, 2026 · R01 closed; R02 blocked on public preflight
 
 [Governing gates](release-acceptance-0.1.0.md) · [Patch plan](release-acceptance-0.1.0-patch-plan.md)
 
@@ -212,3 +212,28 @@ Operator evidence: Testnet smoke stopped on the deployment manifest RPC URL `htt
 R02 correction: public read-only smoke now uses `/health`, `/api/hub/v1/hub-identity`, `/api/hub/v1/topology`, canonical HTTPS RPC, and current public contract config. It records chain/Hub identity, routing contract advertisement, runtime bytecode presence and hashes, and manifest discrepancies independently. No private wallet or funded balance is required for a read-only public preflight. A manifest mismatch still blocks overall acceptance, but does not prevent canonical live observations. No manifest, network configuration, Hub, or private state is changed. Reports (including blocked results): `runtime/hub/hub_network_client_smoke_mainnet.json` and `runtime/hub/hub_network_client_smoke_testnet.json`.
 
 Focused regression suite: 11 passed (including both observed failure cases); broader `test_hub_networks.py` collection blocked by missing `game_projects/webgl-demo/game.json` in supplied snapshot. Live rerun pending. R02 remains open: this preflight does not prove all concrete Hubs healthy, actual routing, contract artifact equivalence, FDB recovery, Testnet organizational readiness, or real settlement. R01 closure is unchanged.
+
+
+### E-001B / E-002B — R02 public-network smoke rerun (operator-reported, November 24, 2026)
+
+Both corrected commands ran with `--skip-level4`. Edge timestamps are November 25 UTC; the operator's local date is November 24. Reports: `runtime/hub/hub_network_client_smoke_testnet.json` and `runtime/hub/hub_network_client_smoke_mainnet.json`. Overall `BLOCKED canonical_live=False` on both networks.
+
+| Assertion | Mainnet | Testnet | Evidence boundary |
+| --- | --- | --- | --- |
+| canonical_endpoints | PASS | PASS | HTTPS profile check |
+| hub | FAIL | FAIL | Stable Hub network kind mismatch |
+| chain | FAIL | FAIL | `eth_chainId` denied by edge, no chain result |
+| contract_registry | PASS | PASS | Local registry loaded |
+| contracts | NOT RUN | NOT RUN | `NOT_RUN_CHAIN_OR_REGISTRY_UNVERIFIED` |
+| manifest | PASS | FAIL | Testnet manifest differs from canonical public registry |
+
+Cloudflare HTTP 403 / error 1010, `browser_signature_banned`, `owner_action_required: true`, `retryable: false`:
+
+- Testnet: ray `a5fcf5f4fbe39bf9`, `2026-11-25T01:43:08Z`.
+- Mainnet: ray `a5fcf5ff7e206289`, `2026-11-25T01:43:10Z`.
+
+Source audit (not a new live test): Hub Control `render_runtime_topology()` emits `network.kind`; Stable Hub public identity reads only `network_kind`. This can produce a null public kind even with correct chain and network key. Actual identity payloads are needed to confirm the observed deployment has this exact defect. Earlier Mainnet 404 was a retired route assumption, no longer the current failing stage. The old SLH facade's public probe still contains that legacy route. See [current API contract](stable-hub-public-network-api.md).
+
+Snapshot Testnet manifest contains `http://198.199.75.153:30010`, escrow `0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6` and Reserve `0xa513E6E4b8f2a923D98304ec87F64353C4D5C853`; canonical registry contains HTTPS Testnet RPC, escrow `0x000000000000000000000000000000000000e5c0` and Reserve `0x000000000000000000000000000000000000c0de`. These are compared records, not newly verified chain addresses. Do not resolve by blind overwrite.
+
+**Disposition:** P0-01 and P0-02 blocked; P0-04 and Testnet P0-13 remain outstanding. No conclusion of chain outage, incorrect contract runtime, or failed settlement. R01 and previous scoped passes unchanged. Documentation-only update; no tests executed, deployments changed, or funds spent.
