@@ -573,6 +573,15 @@ def _copy_staged_install(
         ignore=_ignore_staged_install_entries,
     )
 
+    # The canonical MCEL host compiles paired application source at runtime.
+    # Stage the package-relative source and registry alongside main_computer,
+    # not by falling back to the working checkout.
+    for relative in (Path("mcel_apps"), Path("tools/fixtures"), Path("game_projects")):
+        if relative == Path("game_projects") and not (repo_root / relative).exists():
+            continue  # reduced repository exports omit the game tree; startup reports it
+        shutil.copytree(repo_root / relative, site_packages / relative,
+                        dirs_exist_ok=True, ignore=_ignore_staged_install_entries)
+
     dist_info.mkdir(parents=True, exist_ok=True)
     (dist_info / "METADATA").write_text(
         "\n".join(
@@ -609,8 +618,9 @@ def _copy_staged_install(
 
     critical_assets = [
         package_target / "web" / "applications.html",
-        package_target / "web" / "applications" / "scripts" / "onlyoffice-app.js",
-        package_target / "web" / "applications" / "styles" / "onlyoffice.css",
+        package_target / "web" / "applications" / "scripts" / "mcel-onlyoffice-port.js",
+        package_target / "web" / "applications" / "scripts" / "mcel-onlyoffice-workspace.js",
+        site_packages / "mcel_apps" / "onlyoffice" / "application.js",
     ]
     missing = [str(path) for path in critical_assets if not path.exists()]
     assert not missing, "Staged install is missing critical web assets:\n" + "\n".join(missing)

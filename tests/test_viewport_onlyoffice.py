@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 from dataclasses import replace
 import json
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 import tempfile
 import threading
 import unittest
@@ -54,68 +57,17 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def test_onlyoffice_app_is_routeable_and_shell_is_included(self) -> None:
+    def test_onlyoffice_app_is_routeable_and_native_shell_is_included(self) -> None:
+        from main_computer.mcel_onlyoffice_application import render_onlyoffice_page
         self.assertEqual(_application_route_target("/applications/onlyoffice"), "onlyoffice")
         self.assertIn('data-app="onlyoffice"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-app"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-editor-host"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-server-status"', APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeScheduleEditorViewportFix", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeCandidateDocumentServerUrls", APPLICATIONS_INDEX_HTML)
-        self.assertIn("mainComputerOnlyofficeApi", APPLICATIONS_INDEX_HTML)
-        self.assertIn("browser API:", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyoffice-contained-editor-stage", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyoffice-contained-editor-frame", APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="stage-advanced-toggle"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="stage-advanced-pane"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-advanced-code-panel"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-advanced-code-source"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-advanced-attach-code"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('id="onlyoffice-advanced-chat-panel"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('name="onlyoffice-advanced-code-type" value="javascript"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('name="onlyoffice-advanced-code-type" value="python"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('name="onlyoffice-advanced-code-type" value="basic"', APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeCloseAdvancedPane", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeMountAdvancedChat", APPLICATIONS_INDEX_HTML)
-        self.assertIn("const mount = api.mountEmbedded || window.chatConsoleMountEmbedded;", APPLICATIONS_INDEX_HTML)
-        self.assertIn('embedId: "onlyoffice"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('activeApp: "onlyoffice"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('notebookId: "onlyoffice-advanced-chat-notebook"', APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeState.advancedChatController", APPLICATIONS_INDEX_HTML)
-        self.assertIn("window.MainComputerChatConsole", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeAttachAdvancedCodeToSelectedCells", APPLICATIONS_INDEX_HTML)
-        self.assertIn('http://127.0.0.1:18085', APPLICATIONS_INDEX_HTML)
+        self.assertNotIn('id="onlyoffice-app"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="spreadsheet-app"', APPLICATIONS_INDEX_HTML)
-
-        code_panel_index = APPLICATIONS_INDEX_HTML.index('id="onlyoffice-advanced-code-panel"')
-        chat_panel_index = APPLICATIONS_INDEX_HTML.index('id="onlyoffice-advanced-chat-panel"')
-        self.assertLess(code_panel_index, chat_panel_index)
-
-    def test_onlyoffice_advanced_pane_scrolls_chat_without_scrolling_code_area(self) -> None:
-        self.assertIn(".stage-advanced-pane", APPLICATIONS_INDEX_HTML)
-        self.assertIn("grid-template-rows: auto auto minmax(0, 1fr);", APPLICATIONS_INDEX_HTML)
-        self.assertIn(".stage-advanced-code", APPLICATIONS_INDEX_HTML)
-        self.assertIn("overflow: visible;", APPLICATIONS_INDEX_HTML)
-        self.assertIn(".stage-advanced-chat", APPLICATIONS_INDEX_HTML)
-        self.assertIn("overflow-y: auto;", APPLICATIONS_INDEX_HTML)
-        self.assertIn("overflow-x: hidden;", APPLICATIONS_INDEX_HTML)
-        self.assertIn("overscroll-behavior: contain;", APPLICATIONS_INDEX_HTML)
-        self.assertIn(".stage-advanced-chat .chat-console-notebook", APPLICATIONS_INDEX_HTML)
-        self.assertIn("overflow: visible;", APPLICATIONS_INDEX_HTML)
-
-    def test_onlyoffice_advanced_code_addons_attach_to_selected_cells_not_chat_cells(self) -> None:
-        self.assertIn('data-stage-advanced-code-type="javascript"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('data-stage-advanced-code-type="python"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('data-stage-advanced-code-type="basic"', APPLICATIONS_INDEX_HTML)
-        self.assertNotIn("data-stage-advanced-chat-cell", APPLICATIONS_INDEX_HTML)
-        self.assertNotIn("onlyofficeAddAdvancedChatCell", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeSelectedAdvancedCodeType", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeCreateAdvancedCodeComment", APPLICATIONS_INDEX_HTML)
-        self.assertIn("onlyofficeAdvancedConnector", APPLICATIONS_INDEX_HTML)
-        self.assertIn("createConnector", APPLICATIONS_INDEX_HTML)
-        self.assertIn("Api.GetSelection()", APPLICATIONS_INDEX_HTML)
-        self.assertIn("selection.AddComment", APPLICATIONS_INDEX_HTML)
-        self.assertIn("Main Computer ONLYOFFICE code add-on", APPLICATIONS_INDEX_HTML)
+        page = render_onlyoffice_page()
+        self.assertIn('id="mcel-onlyoffice-root"', page)
+        self.assertIn('onlyoffice-advanced-chat-notebook', page)
+        self.assertIn('mc-oo-comment', page)
+        self.assertNotIn('onlyofficeLoadApiScript', page)
 
     def test_onlyoffice_status_reports_docker_urls(self) -> None:
         status = self.post_json("/api/applications/onlyoffice/status", {"probe": False})
@@ -357,6 +309,12 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
             data = response.read()
         self.assertTrue(data.startswith(b"PK"))
         self.assertIn(b"xl/workbook.xml", data)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            self.assertEqual([sheet.attrib["name"] for sheet in workbook.findall("x:sheets/x:sheet", ns)], ["Sheet1"])
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+            self.assertEqual(sheet.findall(".//x:sheetData/x:row/x:c", ns), [])
 
     def test_onlyoffice_safe_path_rejects_traversal(self) -> None:
         request = Request(

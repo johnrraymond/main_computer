@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("start", "stop", "status", "dev-hub-start")]
@@ -2203,7 +2203,8 @@ function New-MainComputerDevHubEndpointFromUrl(
   [string]$HubId,
   [string]$Network,
   [string]$ChainRpcUrl,
-  [string]$ChainId
+  [string]$ChainId,
+  [string]$ClusterId = ""
 ) {
   $hubBindHost = "127.0.0.1"
   $hubBindPort = 8871
@@ -2226,7 +2227,9 @@ function New-MainComputerDevHubEndpointFromUrl(
   return [ordered]@{
     hub_id = $HubId
     hub_url = $cleanUrl
-    status_url = ($cleanUrl.TrimEnd([char[]]"/") + "/api/hub/status")
+    status_url = ($cleanUrl.TrimEnd([char[]]"/") + "/health")
+    identity_url = ($cleanUrl.TrimEnd([char[]]"/") + "/api/hub/v1/hub-identity")
+    cluster_id = $ClusterId
     host = $hubBindHost
     port = $hubBindPort
     network = $Network
@@ -2265,7 +2268,7 @@ function Resolve-MainComputerDevHubEndpoints([string]$RootPath, [object]$LaunchC
         if ([string]::IsNullOrWhiteSpace($hubId) -or [string]::IsNullOrWhiteSpace($hubUrl)) {
           continue
         }
-        $endpoints += New-MainComputerDevHubEndpointFromUrl $hubUrl $hubId $network $chainRpcUrl $chainId
+        $endpoints += New-MainComputerDevHubEndpointFromUrl $hubUrl $hubId $network $chainRpcUrl $chainId ([string]$topology.cluster_id)
       }
       if ($endpoints.Count -gt 0) {
         return @($endpoints)
@@ -2309,87 +2312,104 @@ function Resolve-MainComputerDevHubEndpoint([string]$RootPath, [object]$LaunchCo
   return $endpoints[0]
 }
 
-function Test-MainComputerDevHubStatus([string]$StatusUrl) {
-  if ([string]::IsNullOrWhiteSpace($StatusUrl)) {
-    return [ordered]@{
-      ok = $false
-      state = "missing-status-url"
-      status_url = $StatusUrl
-    }
-  }
-
+function Test-MainComputerDevHubStatus([string]$StatusUrl, [int]$TimeoutSeconds = 5) {
   try {
-    $response = Invoke-RestMethod `
-      -Method Get `
-      -Uri $StatusUrl `
-      -TimeoutSec 5
+    $response = Invoke-RestMethod -Method Get -Uri $StatusUrl -TimeoutSec $TimeoutSeconds
+    $ok = (Get-ObjectPropertyValue $response "ok" $false) -eq $true
+    return [ordered]@{
+      ok = $ok
+      state = $(if ($ok) { "healthy" } else { "not-ok" })
+      status_url = $StatusUrl
+      response = $response
+    }
   } catch {
+    $httpStatus = $null
+    try { $httpStatus = [int]$_.Exception.Response.StatusCode } catch {}
     return [ordered]@{
       ok = $false
-      state = "unreachable"
+      state = $(if ($httpStatus -eq 404) { "protocol-mismatch" } else { "unreachable" })
       status_url = $StatusUrl
+      http_status = $httpStatus
       message = $_.Exception.Message
     }
   }
-
-  $ok = $false
-  try {
-    $ok = [bool](Get-ObjectPropertyValue $response "ok" $false)
-  } catch {
-    $ok = $false
-  }
-
-  return [ordered]@{
-    ok = $ok
-    state = $(if ($ok) { "healthy" } else { "not-ok" })
-    status_url = $StatusUrl
-    response = $response
-  }
 }
 
-function Wait-MainComputerDevHubStatus([string]$StatusUrl, [int]$TimeoutSeconds = 30) {
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-  $last = $null
-
-  do {
-    $last = Test-MainComputerDevHubStatus $StatusUrl
-    if ($last.ok) {
-      return $last
-    }
-    Start-Sleep -Milliseconds 500
-  } while ((Get-Date) -lt $deadline)
-
-  return [ordered]@{
-    ok = $false
-    state = "timeout"
-    status_url = $StatusUrl
-    last_health_check = $last
-  }
-}
-
-
-function Wait-MainComputerDevHubEndpointsStatus([object[]]$Endpoints, [int]$TimeoutSeconds = 30) {
+function Wait-MainComputerDevHubEndpointsStatus([object[]]$Endpoints, [int]$TimeoutSeconds = 30, [object]$Process = $null) {
+  # One monotonic budget for the whole topology, not one timeout per port.
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $checks = @()
-  $allOk = $true
-  foreach ($endpoint in @($Endpoints)) {
-    $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$TimeoutSeconds)
-    $checks += [ordered]@{
-      hub_id = [string]$endpoint.hub_id
-      hub_url = [string]$endpoint.hub_url
-      status_url = [string]$endpoint.status_url
-      health_check = $health
-      ok = [bool]$health.ok
+  $lastReport = ""
+  $lastReportAt = -10.0
+  do {
+    if ($null -ne $Process -and $Process.HasExited) {
+      return [ordered]@{ ok = $false; state = "process-exited"; exit_code = $Process.ExitCode; checks = $checks }
     }
-    if (-not $health.ok) {
-      $allOk = $false
+    $checks = @()
+    foreach ($endpoint in @($Endpoints)) {
+      if ($null -ne $Process -and $Process.HasExited) {
+        return [ordered]@{ ok = $false; state = "process-exited"; exit_code = $Process.ExitCode; checks = $checks }
+      }
+      $remaining = $TimeoutSeconds - $clock.Elapsed.TotalSeconds
+      if ($remaining -lt 1) { break }
+      $requestTimeout = [int][Math]::Min(5, [Math]::Floor($remaining))
+      $health = Test-MainComputerDevHubStatus ([string]$endpoint.status_url) $requestTimeout
+      $identity = $null
+      if ($health.ok) {
+        $remaining = $TimeoutSeconds - $clock.Elapsed.TotalSeconds
+        if ($remaining -lt 1) { break }
+        $identity = Test-MainComputerDevHubStatus ([string]$endpoint.identity_url) ([int][Math]::Min(5, [Math]::Floor($remaining)))
+        if ($identity.ok) {
+          $body = $identity.response
+          $network = Get-ObjectPropertyValue $body "network" $null
+          $cluster = [string](Get-ObjectPropertyValue $body "cluster_id" "")
+          $valid = (
+            [string](Get-ObjectPropertyValue $body "service" "") -eq "main_computer.exp_fdb_hub" -and
+            [string](Get-ObjectPropertyValue $health.response "service" "") -eq "main_computer.exp_fdb_hub" -and
+            [string](Get-ObjectPropertyValue $body "hub_id" "") -eq [string]$endpoint.hub_id -and
+            [string](Get-ObjectPropertyValue $health.response "hub_id" "") -eq [string]$endpoint.hub_id -and
+            [string](Get-ObjectPropertyValue $network "network_key" "") -eq [string]$endpoint.network -and
+            [string](Get-ObjectPropertyValue $network "chain_id" "") -eq [string]$endpoint.chain_id -and
+            -not [string]::IsNullOrWhiteSpace($cluster) -and
+            $cluster -eq [string](Get-ObjectPropertyValue $health.response "cluster_id" "") -and
+            ([string]::IsNullOrWhiteSpace([string]$endpoint.cluster_id) -or $cluster -eq [string]$endpoint.cluster_id)
+          )
+          if (-not $valid) {
+            $identity.ok = $false
+            $identity.state = "identity-mismatch"
+          }
+        }
+      }
+      $check = [ordered]@{
+        hub_id = [string]$endpoint.hub_id
+        hub_url = [string]$endpoint.hub_url
+        status_url = [string]$endpoint.status_url
+        health_check = $health
+        identity_check = $identity
+        ok = [bool]($health.ok -and $null -ne $identity -and $identity.ok)
+      }
+      $checks += $check
+      if ($health.state -eq "protocol-mismatch" -or ($null -ne $identity -and $identity.state -in @("protocol-mismatch", "identity-mismatch"))) {
+        Write-Host ("Dev Hub readiness contract refused: {0}; health={1}; identity={2}" -f $endpoint.hub_url, $health.state, $identity.state)
+        return [ordered]@{ ok = $false; state = "readiness-contract-mismatch"; checks = $checks }
+      }
     }
-  }
-
-  return [ordered]@{
-    ok = $allOk
-    state = $(if ($allOk) { "healthy" } else { "not-all-healthy" })
-    checks = $checks
-  }
+    if ($null -ne $Process -and $Process.HasExited) {
+      return [ordered]@{ ok = $false; state = "process-exited"; exit_code = $Process.ExitCode; checks = $checks }
+    }
+    if ($checks.Count -eq $Endpoints.Count -and $checks.Count -gt 0 -and @($checks | Where-Object { -not $_.ok }).Count -eq 0) {
+      return [ordered]@{ ok = $true; state = "healthy"; checks = $checks }
+    }
+    $report = (@($checks | ForEach-Object { "{0}={1}/{2}" -f $_.hub_id, $_.health_check.state, $_.identity_check.state }) -join ", ")
+    if ($report -ne $lastReport -or $clock.Elapsed.TotalSeconds - $lastReportAt -ge 10) {
+      Write-Host ("Dev Hub pending ({0:N1}s/{1}s): {2}" -f $clock.Elapsed.TotalSeconds, $TimeoutSeconds, $report)
+      $lastReport = $report
+      $lastReportAt = $clock.Elapsed.TotalSeconds
+    }
+    if ($clock.Elapsed.TotalSeconds -ge ($TimeoutSeconds - 1)) { break }
+    Start-Sleep -Milliseconds 500
+  } while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+  return [ordered]@{ ok = $false; state = "timeout"; checks = $checks }
 }
 
 
@@ -2495,8 +2515,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   # production default (mainnet) when local topology or environment is wrong.
   $hubKind = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb").Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($hubKind)) { $hubKind = "exp-fdb" }
-  if ($hubKind -notin @("exp-fdb", "legacy")) {
-    throw "Dev-Test Hub kind must be exp-fdb or legacy; got '$hubKind'."
+  if ($hubKind -ne "exp-fdb") {
+    throw "Dev-Test Hub startup requires exp-fdb; got '$hubKind'. The legacy Hub has no canonical readiness contract."
   }
   $requestedNetwork = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"
   $topologyMode = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_TOPOLOGY_MODE" "cluster").Trim().ToLowerInvariant()
@@ -2633,24 +2653,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   $stdout = Join-Path $hubRuntime ("dev-hub-topology-" + $stamp + ".stdout.log")
   $stderr = Join-Path $hubRuntime ("dev-hub-topology-" + $stamp + ".stderr.log")
 
-  if ($hubKind -eq "legacy") {
     $arguments = @(
-      "-m", "main_computer.cli",
-      "dev-test-hub",
-      "--host", [string]$endpoint.host,
-      "--port", [string]$endpoint.port,
-      "--network", [string]$endpoint.network,
-      "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
-      "--chain-id", [string]$endpoint.chain_id,
-      "--bridge-backend", [string]$bridgeBackend,
-      "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
-      "--contracts-path", [string]$contractsPath,
-      "--allow-missing-bridge-signer",
-      "-noverbose"
-    )
-  } else {
-    $arguments = @(
-      "exp-fdb-hub.py",
+      "-u", "exp-fdb-hub.py",
       "--runtime-env-file", [string]$runtimeEnvFile,
       "--host", [string]$endpoint.host,
       "-ports", [string]$hubPortsText,
@@ -2678,7 +2682,6 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     if (-not (Test-MainComputerDisabledFlag $missingBridgeSignerSetting)) {
       $arguments += "--allow-missing-bridge-signer"
     }
-  }
   $argString = Join-CommandLine $arguments
 
   $process = Start-Process `
@@ -2692,14 +2695,11 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
 
   Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
 
-  if ($hubKind -eq "legacy") {
-    Write-Host ("Waiting for dev Hub health at {0}; timeout {1}s." -f ([string]$endpoint.status_url), ([int]$hubStartTimeoutSeconds))
-    $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$hubStartTimeoutSeconds)
-  } else {
-    Write-Host ("Waiting for dev Hub topology health on ports {0}; timeout {1}s." -f $hubPortsText, ([int]$hubStartTimeoutSeconds))
-    $health = Wait-MainComputerDevHubEndpointsStatus $endpoints ([int]$hubStartTimeoutSeconds)
-  }
+  Write-Host ("Waiting for dev Hub topology health on ports {0}; timeout {1}s." -f $hubPortsText, ([int]$hubStartTimeoutSeconds))
+  $health = Wait-MainComputerDevHubEndpointsStatus $endpoints ([int]$hubStartTimeoutSeconds) $process
   if (-not $health.ok) {
+    Write-Host ("Dev Hub startup failed: {0}; stdout={1}; stderr={2}" -f $health.state, $stdout, $stderr)
+    if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Tail 30 | ForEach-Object { Write-Host $_ } }
     return [ordered]@{
       ok = $false
       state = "unhealthy-after-start"
@@ -2873,7 +2873,7 @@ function New-StartSession(
       [ordered]@{
         name = "dev-hub"
         display_name = "Dev-Test Hub"
-        module = $(if ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb") -eq "legacy") { "main_computer.cli dev-test-hub --network " + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev") } else { "exp-fdb-hub.py --network-key " + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev") })
+        module = ("exp-fdb-hub.py --network-key " + (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"))
         pid_file = Get-DevHubPidPath $RootPath
         state_file = Join-Path $RootPath "runtime\hub\dev"
       },

@@ -1,7 +1,7 @@
 # Main Computer 0.1.0 — Release Acceptance Gate
 
 **Status:** Proposed release policy; release candidate not yet certified  
-**Revision:** 5 · November 24, 2026 — R01 accepted; R02 public preflight blocked  
+**Revision:** 6 · November 25, 2026 — R01 accepted; R02 read-only network and isolated recovery subgates passed  
 **Owner:** Release authority / operator  
 **Recommended repository path:** `pretty_docs/release-acceptance-0.1.0.md`
 
@@ -42,7 +42,7 @@ Local `test` shares Testnet's chain ID in the repository configuration. Therefor
 
 **Evidence:** Mother deployment observations, RPC/validator/block observations, verified contract manifest, Coolify deployment identity, network-specific reports. Use the current authoritative deployed topology rather than assuming the checked-in example lists all active Hubs or validators.
 
-**Current blocker:** Both canonical RPC `eth_chainId` reads received Cloudflare HTTP 403 / 1010; deployed chain and contract code remain unverified. Testnet manifest comparison also fails. See [current API and preflight](stable-hub-public-network-api.md) and E-001B/E-002B.
+**Current evidence:** Both canonical public smokes now return `PASS_READ_ONLY canonical_live=True`. Chain IDs, block reads, PUSH0 gas estimation, registry, deployed runtime presence/hashes and manifests passed. The Testnet manifest was repaired; the new Mother pre-cleanup verifier passed independently against both live chains without writes. See E-001C/E-002C and E-001D. Remaining: candidate binding, finalized-block progression, authoritative validator/quorum evidence and any required artifact equivalence not already established. Runtime presence/hash is not compiled-artifact equivalence.
 
 **Existing starting points:** `tools.mother_deploy`, `tools.mother_coolify`, `scripts/smoke_hub_network_client.py`; the Mainnet and Testnet topology files under `deploy/hub-topology/`.
 
@@ -50,7 +50,7 @@ Local `test` shares Testnet's chain ID in the repository configuration. Therefor
 
 **Pass conditions:** Each active Hub for each network is reachable through its intended public endpoint and identifies the correct network, cluster, version, storage namespace and protocol contract. The entry Hub can locate an eligible Worker owned by another Hub where the topology supports it; only the Worker-owning execution Hub executes the authorized session. Live WebSocket heartbeats drive availability; an expired or withdrawn Worker is no longer selectable. No cross-network offers, requests, MSKs or credits are accepted. No stale or incompatible Hub is silently treated as healthy.
 
-**Current public API:** [Stable Hub public network API](stable-hub-public-network-api.md). Both latest public Hub checks fail the network-kind assertion. Source inspection finds Hub Control emits `kind` while the public identity reads `network_kind`; obtain live identity values and correct the projection before certification. Use controller-attested private configuration, not public disclosure.
+**Current public API:** [Stable Hub public network API](stable-hub-public-network-api.md). The prior network-kind defect is resolved on all three deployed Hubs. Both public smokes pass; sequential redeployments and direct concrete-Hub identity checks pass. Actual cross-Hub work routing, remaining active retired-route consumers and candidate evidence are still open. Use controller-attested private configuration, not public disclosure.
 
 **Evidence:** Per-Hub identity and health receipts, real routing correlation (request/session/connection/lease), and isolated multi-Hub tests backed by FoundationDB (FDB). Run the deployed-network wiring smoke for both networks; test paid execution separately under P0-03.
 
@@ -67,6 +67,8 @@ For Mainnet, repeat the identity, funding/bridge configuration, ledger and settl
 **Pass conditions:** In a disposable FDB namespace, show that abrupt owner-Hub process death during funded accepted work causes a surviving Hub to fence the exact dead connection and reconcile the hold once. No late completion from a fenced generation can bill; committed charges and earnings are preserved; missing or ambiguous records fail closed. Verify multi-Hub concurrent reservation, idempotent replay, restart recovery, and absence of orphaned holds. Restart and resumption must preserve committed ledger data.
 
 **Evidence:** Actual process-death lab and FDB transaction evidence, plus Worker-cycle and integrated-market regressions. Run fault injection on isolated processes only; do not kill deployed Mainnet or Testnet Hubs to collect release evidence.
+
+**Current evidence:** 35/35 accounting/recovery regressions and actual isolated FDB owner-Hub process-death campaign PASS (E-004A). Exactly one hold released, requester restored, no charge or earning. This closes that failure scenario, not every restart/concurrent routing or cluster-loss scenario.
 
 **Existing tools:** `tools.stable_hub_lab.crash_recovery`, `tools.stable_hub_lab.run_lab`, and the Stable Hub lab runbook.
 
@@ -176,7 +178,7 @@ python -m tools.stable_hub_lab.run_lab --verify-pathway-local --pathway-timeout 
 python -m tools.stable_hub_lab.crash_recovery --topology deploy/hub-topology/smoke-topology.json --timeout 110
 ```
 
-Use current Mother observations and the Mainnet/Testnet topology configuration to complete P0-01/P0-02. The corrected public-network smoke with `--skip-level4` is read-only, needs no funded smoke wallet, and is not P0-03. Its latest results are blocked on both networks; see the R02 corrective sequence before rerunning an explicitly denied RPC client. Run actual paid and settlement tests under explicit bounded authorization. Follow `pretty_docs/stable-hub-lab-runbook.md` for the separate FDB smoke cluster and crash campaign; do not reuse a production namespace.
+Use current Mother observations and the Mainnet/Testnet topology configuration to complete P0-01/P0-02. The corrected public-network smoke with `--skip-level4` is read-only, needs no funded smoke wallet, and is not P0-03. Its latest results pass on both networks using the established shared RPC client. The standalone pre-cleanup verifier also passes on both networks; the harness integration and resume guards pass tests, but a complete subsequent Mother deployment has not yet exercised the new stage. Run actual paid and settlement tests under explicit bounded authorization. Follow `pretty_docs/stable-hub-lab-runbook.md` for the separate FDB smoke cluster and crash campaign; do not reuse a production namespace.
 
 ### Phase C — SLH/SEH and managed Worker employment
 
@@ -226,10 +228,10 @@ The following is the historical acceptance baseline from the supplied conversati
 
 | Gate | Evidence already available | Remaining for release candidate |
 | --- | --- | --- |
-| P0-01 Chain | Both public RPCs denied at edge (403/1010); Testnet manifest mismatch; contract reads not run | Resolve legitimate RPC access, reconcile Testnet manifest, verify chain/contracts/topology and quorum |
-| P0-02 Hub routing | Both public Hub kind assertions fail; source projection mismatch identified; deployed relay used in-memory Hub | Correct/verify identity contract, per-Hub routing and FDB cluster proof |
+| P0-01 Chain | Both public read-only smokes PASS; runtime hashes match across networks; manifests and standalone pre-cleanup verification PASS | Candidate binding, finalized-block progress, validator topology/quorum and remaining provenance evidence |
+| P0-02 Hub routing | Hub Control inspection and redeployment/runtime verification PASS; all three identities correct; both public smokes PASS | Active consumer audit, actual deployed cross-Hub routing/ownership and candidate binding |
 | P0-03 Credits | Testnet work-cycle previously passed; synthetic public debit/earning/claim/settlement passed; resident Mainnet balance/preflight PASS | Actual Testnet bridge/settlement evidence; authorized Mainnet financial canary if enabled |
-| P0-04 Recovery | Existing FDB crash and market suites identified | Collect current isolated process-death and multi-Hub evidence |
+| P0-04 Recovery | 35/35 regressions; real isolated FDB process-death campaign PASS | Candidate binding and review of other required concurrency/restart scenarios |
 | P0-05 Security | Nine secure smoke checks PASS; canonical live Worker identity test PASS | Release-candidate repeat and session persistence/restart proof |
 | P0-06 SLH authority | Live protected reads PASS with automatic administrator discovery; disposable approval/revocation PASS | Lifecycle and administrator-negative coverage on candidate |
 | P0-07 SEH transport | Deployed healthz/readyz/lab-capabilities HTTP 200; isolated authenticated channel/reconnect and primary continuity PASS | Bind evidence to candidate; lifecycle rehearsal evidence |
@@ -241,7 +243,7 @@ The following is the historical acceptance baseline from the supplied conversati
 | P0-13 ORG startup readiness | Seven live resident Mainnet preflight checks PASS; isolated signer and maintenance tests passed; live restart and Windows ACL PASS | Testnet readiness; candidate binding |
 | P0-14 ORG MSK/passthrough | 16/16 isolated functional assertions PASS on operator machine; ORG_SERVICE authorization origin verified | Actual resident Worker account correlation and network-specific earnings/spending; remote requester relay if shipped |
 
-**Current decision: NOT YET CERTIFIED.** The resident Mainnet wallet is now initialized and financially READY, and the isolated ORG-owned signing and bidirectional passthrough tests pass. These are completed subgates, not proof of funded Mainnet execution. P0-08/P0-09 have substantial live approval/deployed transport evidence. Preserve these passes and rerun only where candidate dependencies change. R01 is complete. R02 is in progress and blocked on public Hub identity, RPC client admission and Testnet manifest reconciliation (see evidence register); isolated recovery and separate Testnet readiness remain outstanding, followed by actual network-scoped Worker earnings and requester spending. Chain/Hub certification, settlement/bridge/transfer evidence, recovery and candidate packaging remain outstanding. The evidence register records the exact results and superseded blockers.
+**Current decision: NOT YET CERTIFIED.** R01 is complete. R02 public network identity, canonical RPC, deployed runtime presence, manifest consistency and isolated owner-Hub crash recovery subgates pass. The standalone manifest rectifier and Mother pre-cleanup verifier are accepted in their tested scopes; full live harness execution is deferred to the next routine deployment. R02 remains open for active consumer review, remaining chain/topology/routing evidence and isolated Testnet ORG financial readiness. Resident Mainnet readiness, ORG passthrough and deployed SEH employment remain valid scoped passes. R03–R05 funded employment, spending and settlement and R06 candidate binding/package/approval remain open. Do not repeat passing tests unless their dependencies change. No funded execution is inferred from read-only or synthetic evidence.
 
 ## 7. Release evidence, packaging and final approval
 
@@ -270,10 +272,13 @@ Once the evidence is complete and the operator approves, tag and publish the exa
 
 This document is based on the November 23 repository snapshot `main_computer_test-20261123-103953.zip`, subsequent secure-functional, Worker approval and SEH dual-employment patches through November 24, and the operator's posted live acceptance results. Revision 2 additionally uses `main_computer_test-20261123-235635(6).zip`, the MSK/passthrough implementation, resident LMS auth fix, financial-startup and automatic-wallet provisioning patches dated November 24, and the latest posted resident and isolated acceptance results. The repository references include `pretty_docs/hub-chain-testnet-mainnet-architecture.md`, `pretty_docs/stable-hub-pathway-assurance.md`, `pretty_docs/stable-hub-lab-runbook.md`, `pretty_docs/worker-mcel-live-functional-acceptance-20261121.md`, `pretty_docs/seh-real-relay-deployment-and-acceptance.md`, `pretty_docs/slh-pinky-promise-economy.md`, and `tools/release_diagnosis.py`. Historical runbooks must be interpreted in light of the subsequent patches. No new live network checks were performed in drafting this document.
 
-**Next implementation:** Follow the [release patch plan](release-acceptance-0.1.0-patch-plan.md). Preserve the seven-check Mainnet preflight and 16-check ORG passthrough evidence. R01 restart comparison and corrected deployed dual-employment checks have passed. Resolve R02-A through R02-D in the patch plan using existing harnesses; integrate evidence into existing release diagnosis. No automatic spending, Hub reconfiguration, wallet replacement, or production fault injection is authorized by this document.
+**Next implementation:** Follow the [release patch plan](release-acceptance-0.1.0-patch-plan.md). Preserve the seven-check Mainnet preflight and 16-check ORG passthrough evidence. R01 restart comparison and corrected deployed dual-employment checks have passed. Preserve the completed R02-A/B/C and isolated recovery evidence; finish the open R02-D items in the patch plan using existing harnesses and integrate evidence into release diagnosis. No automatic spending, Hub reconfiguration, wallet replacement, or production fault injection is authorized by this document.
 
 
 **Revision 3 implementation evidence:** R01 is based on `main_computer_test-20261124-155306.zip` plus the previously accepted wallet-provisioning patch (the export lacks that patch and the release documents). 107 targeted tests passed on Linux; one actual-Windows ACL fixture skipped. Isolated ORG MSK/passthrough passed 16/16; local real-relay dual employment passed with the corrected final result. Actual resident restart/ACL and corrected deployed SEH rerun remain pending; full P0-13 remains open for Testnet readiness.
 
 
 **Revision 4 closure:** Based on `main_computer_test-20261124-171737.zip` and the operator-posted Windows restart report and deployed SEH console results. R01 is complete. P0-09 passes its defined mock-requester, deployed-isolated-channel scope; P0-13 Mainnet readiness/persistence/ACL subgates pass. P0-13 remains open for separate Testnet readiness; funded settlement, full release candidate fingerprint and remaining gates are not certified. Earlier R01 pending statements above are historical. No new live tests were executed while recording this closure.
+
+
+**Revision 6 (November 25):** Based on `main_computer_test-20261125-153007.zip`, subsequent targeted patches and operator-posted acceptance results. See E-001C/E-002C, E-001D and E-004A. Earlier blocked public preflight observations are historical, not current blockers. No new live tests were executed while recording this revision.

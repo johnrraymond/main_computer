@@ -682,6 +682,22 @@ What may the user change?
 What happens while it is inactive?
 ```
 
+### Paired MCEL viewport-height hint
+
+For an externally rendered primary workspace that cannot surrender vertical
+space to surrounding controls, declare `data-mcel-prefer-vertical-extent="viewport"`
+on its primary workspace region. The shared expert natural layout places the
+region flush with the top and bottom of the available application viewport.
+Other regions dock to the start or end side and scroll independently; a hidden
+end dock releases its horizontal space. Use the existing `data-mcel-prefer-side`
+start/end preferences to distinguish those docks. The embedded element is
+responsible for filling its region, not for the surrounding layout.
+
+This first implementation supports one unconditional primary workspace directly
+under the application root, without a width group. It does not define individual
+edge constraints, competing owners, or a new solver. Unhinted applications retain
+their existing layout. The hint is not a request to cover the application shell.
+
 ### Live application-local vocabulary
 
 The following `data-mc-layout-*` vocabulary is live in Code Editor and Git Tools markup. It is parsed by their application-local contract modules, but it is not yet registered as a generic schema in `mcel-contract.js`:

@@ -3735,6 +3735,7 @@
         ...(r.preferences?.widthGroup ? {"data-mcel-width-group":r.preferences.widthGroup} : {}),
         ...(r.preferences?.sizing ? {"data-mcel-sizing":r.preferences.sizing} : {}),
         ...(r.preferences?.align ? {"data-mcel-align":r.preferences.align} : {}),
+        ...(r.preferences?.verticalExtent ? {"data-mcel-vertical-extent":r.preferences.verticalExtent} : {}),
         ...(isRedundantFormObservation?{"data-mcel-observed-form-disclosure":""}:{})});
       regionHosts.set(r,el);
       if(c.generated && r.recipe!=="root") {
@@ -3972,11 +3973,16 @@
       // fractions. Ordinary regions remain the same live DOM nodes so their
       // actions, focus, state, and result bindings retain their authority.
       const children=[...tree.children];
+      const extentOwner=children.find(child=>child.getAttribute("data-mcel-vertical-extent")==="viewport");
+      if(extentOwner)tree.setAttribute("data-mcel-viewport-height", "");
+      const preferSide=child=>c.regions.get(child.getAttribute("data-mcel-region"))?.preferences?.side;
+      const extentEnd=child=>preferSide(child)==="end" ||
+        (preferSide(child)!=="start" && ["inspection","status"].includes(child.getAttribute("data-mcel-purpose")));
       const navigation=elt("div",{"data-mcel-zone":"navigator", "data-mcel-natural-scroller":"navigation", role:"navigation", "aria-label":"Application navigation"});
       const workspace=elt("div",{"data-mcel-zone":"workspace", "data-mcel-natural-scroller":"workspace", role:"main", "aria-label":"Application workspace"});
       const hasInspector=children.some(child=>child.getAttribute("data-mcel-purpose")==="inspection");
       const hasEvidence=children.some(child=>child.getAttribute("data-mcel-purpose")==="status");
-      const inspector=hasInspector||hasEvidence ? elt("aside",{"data-mcel-zone":"tools",
+      const inspector=(extentOwner ? children.some(child=>child!==extentOwner && extentEnd(child)) : hasInspector||hasEvidence) ? elt("aside",{"data-mcel-zone":"tools",
         "data-mcel-zone-kind":"inspector","data-mcel-placement":"dock-end",
         "data-mcel-natural-scroller":"inspection", "aria-label":"Application details and activity"}) : null;
       // Explicit navigation semantics win over the legacy generic-control
@@ -4002,7 +4008,12 @@
       const orderedChildren=[...children].sort((a,b)=>focusRank(b)-focusRank(a));
       for (const child of orderedChildren) {
         const purpose=child.getAttribute("data-mcel-purpose")||"";
-        if (["navigation","mode-control"].includes(purpose) ||
+        if(extentOwner) {
+          if(child===extentOwner)workspace.append(child);
+          else if(inspector && extentEnd(child))inspector.append(child);
+          else navigation.append(child);
+        }
+        else if (["navigation","mode-control"].includes(purpose) ||
             (!hasAuthoredNavigation && purpose==="query-controls"))navigation.append(child);
         else if(inspector && ["inspection","status"].includes(purpose))inspector.append(child);
         else workspace.append(child);
@@ -4122,7 +4133,7 @@
         selector:selector(r.id),children:(c.children.get(r.id)||[]).map(child=>child.id)})),constraints:[]};
       const layoutHost=root.querySelector(selector(rootRegion.id));
       const placeNaturalInspector=()=>{
-        if(!naturalInspector || !naturalWorkspace || !naturalTree)return;
+        if(!naturalInspector || !naturalWorkspace || !naturalTree || naturalTree.hasAttribute("data-mcel-viewport-height"))return;
         const width=layoutHost.getBoundingClientRect().width || global.innerWidth || 320;
         // At constrained widths an inspector below a 200px-high workarea
         // creates two independently scrolling fragments of the same task.

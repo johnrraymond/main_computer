@@ -193,7 +193,7 @@ def test_failed_deployment_retry_does_not_consume_second_wallet(tmp_path, monkey
     assert len(final_state["wallets"]["hub_admin_reserve"]) == 14
 
 
-def test_observer_requires_exact_installed_admin_address(monkeypatch):
+def test_experimental_observer_does_not_infer_installed_admin_address(monkeypatch):
     from tools.hub_control.common import deployment
 
     target = {
@@ -208,24 +208,24 @@ def test_observer_requires_exact_installed_admin_address(monkeypatch):
     installed = _wallet(2)["address"]
     def fake_get_json(url, **kwargs):
         if url.endswith("/health"):
-            return {"ok": True}
+            return {"ok": True, "service": "main_computer.exp_fdb_hub", "hub_id": "hub1", "cluster_id": "test-cluster"}
         if url.endswith("/hub-identity"):
             return {
-                "hub_id": "hub1", "hub_admin": {"address": installed, "wallet_loaded": True},
+                "ok": True, "service": "main_computer.exp_fdb_hub", "cluster_id": "test-cluster", "hub_id": "hub1",
                 "network": {"chain_id": 42424240, "chain_rpc_url": "https://rpc.example.invalid"},
                 "storage": {"backend": "foundationdb", "cluster_file": "/data/cluster", "namespace": "network"},
             }
-        return {"network": {"chain_id": 42424240, "chain_rpc_url": "https://rpc.example.invalid"}}
+        raise AssertionError(url)
     monkeypatch.setattr(deployment, "_get_json", fake_get_json)
     monkeypatch.setattr(deployment.time, "sleep", lambda _: None)
     rejected = deployment.observe_hub(target, wait_timeout_s=0)
     assert rejected["verified"] is False
     assert rejected["hub_admin_verified"] is False
-    assert rejected["last_error"]["failed_checks"] == ["hub_admin_address"]
+    assert rejected["last_error"]["failed_checks"] == ["hub_admin_wallet_loaded", "hub_admin_address"]
     installed = _wallet(1)["address"]
     accepted = deployment.observe_hub(target, wait_timeout_s=0)
-    assert accepted["verified"] is True
-    assert accepted["hub_admin_verified"] is True
+    assert accepted["verified"] is False
+    assert accepted["hub_admin_verified"] is False
 
 
 def test_add_hub_prep_completes_six_to_fifteen_through_verified_private_state(tmp_path):

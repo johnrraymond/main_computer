@@ -1448,3 +1448,38 @@ body.mcel-workbench-page:has([data-mcel-document-workbench]) > #mcel-workbench-s
 :where(body.mcel-workbench-page) [data-mcel-credential-detail] button{
   min-height:24px;width:100%;max-width:100%;font-size:.75rem;
 }
+
+/* Opt-in viewport block extent: one exclusive workspace; ancillary regions
+ * dock on either side and scroll independently at every width. No app IDs.
+ * Viewport means the available application viewport, not the browser shell. */
+.mcel-workbench-page [data-mcel-presentation="expert"]:has(> [data-mcel-viewport-height]),
+.mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-viewport-height]{
+  box-sizing:border-box!important;height:100%!important;min-height:0!important;
+  max-height:100%!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;
+}
+.mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-region][data-mcel-viewport-height]{
+  display:grid!important;grid-template-areas:none!important;
+  grid-template-columns:min(22%,240px) minmax(0,1fr)!important;
+  grid-template-rows:minmax(0,1fr)!important;gap:0!important;align-items:stretch!important;
+}
+.mcel-workbench-page [data-mcel-presentation="expert"] > [data-mcel-region][data-mcel-viewport-height]:has(> [data-mcel-natural-scroller="inspection"] > :not([hidden])){
+  grid-template-columns:min(22%,240px) minmax(0,1fr) min(27%,340px)!important;
+}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] > [data-mcel-natural-scroller]{
+  grid-row:1!important;grid-column:auto!important;grid-area:auto!important;
+  height:100%!important;min-height:0!important;min-width:0!important;
+  margin:0!important;padding:0!important;border:0!important;
+  overflow-x:hidden!important;overflow-y:auto!important;
+}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] > [data-mcel-natural-scroller="navigation"]{grid-column:1!important;grid-row:1!important}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] > [data-mcel-natural-scroller="workspace"]{
+  grid-column:2!important;grid-row:1!important;overflow:hidden!important;gap:0!important;scrollbar-gutter:auto!important;
+}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] > [data-mcel-natural-scroller="inspection"]{grid-column:3!important;grid-row:1!important}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] > [data-mcel-natural-scroller="inspection"]:not(:has(> :not([hidden]))){display:none!important}
+.mcel-workbench-page [data-mcel-presentation="expert"] [data-mcel-viewport-height] [data-mcel-region][data-mcel-vertical-extent="viewport"]{
+  display:flex!important;flex-direction:column!important;flex:1 1 0!important;
+  height:100%!important;min-height:0!important;min-width:0!important;max-height:100%!important;
+  width:100%!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;
+  box-shadow:none!important;gap:0!important;
+}

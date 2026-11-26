@@ -1,0 +1,30 @@
+html,body.mcel-onlyoffice-page{height:100%;margin:0;min-width:0}
+body.mcel-onlyoffice-page{overflow:hidden}
+
+/* Geometry of the workbench comes from the shared vertical-extent hint.
+ * This adapter owns only the external editor host and its own controls. */
+#mcel-onlyoffice-root{
+    display:block!important;height:100%!important;min-height:0!important;
+    min-width:0!important;overflow:hidden!important;
+}
+#mcel-onlyoffice-root [data-mcel-region="interface-region:onlyoffice.header"]{
+    display:flex;flex-direction:column;align-items:stretch;gap:6px;
+}
+#mcel-onlyoffice-root [data-mcel-region="interface-region:onlyoffice.advanced"]{
+    display:flex;flex-direction:column;gap:8px;
+}
+#mcel-onlyoffice-root .mcel-onlyoffice-layout [hidden]{display:none!important}
+#mcel-onlyoffice-root #onlyoffice-editor-host{
+    flex:1 1 0!important;min-height:0!important;min-width:0!important;
+    overflow:hidden!important;position:relative;
+}
+#mcel-onlyoffice-root #onlyoffice-editor-host > iframe{
+    display:block!important;width:100%!important;height:100%!important;border:0!important;
+}
+.mcel-onlyoffice-chat{width:100%;min-height:0;flex:1 1 0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;border:0}
+.mcel-onlyoffice-layout [data-mcel-node="surface-node:onlyoffice.selected-cell-code"]{flex:0 0 auto;max-height:48%;overflow:auto}
+.mcel-onlyoffice-layout [data-mcel-node="surface-node:onlyoffice.selected-cell-code"] textarea{width:100%;min-width:0;min-height:80px;max-height:180px;resize:vertical}
+.mcel-onlyoffice-layout input[type=file]{width:100%;max-width:100%}
+.mcel-onlyoffice-layout output[data-state]{max-height:60px;overflow:auto;padding:4px 6px}
+.mcel-onlyoffice-layout h2{font-size:1rem;margin:0 0 6px}
+#mcel-onlyoffice-root .mcel-onlyoffice-layout #onlyoffice-status{display:block;overflow-wrap:anywhere}

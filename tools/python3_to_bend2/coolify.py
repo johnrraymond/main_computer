@@ -19,6 +19,7 @@ import tokenize
 
 from . import translate
 from .library_exports import EXPORTS, programs
+from .json_decode import REJECTION as JSON_DECODE_REJECTION
 from .native_execution import classify_proof_check, preflight, run_standalone
 
 HUB_CONTRACT = 'tools/hub_control/common/deployment.py'
@@ -281,12 +282,22 @@ def export_oracle(path: Path, expected_error: str | None):
                           text=True, encoding='utf-8', timeout=20)
 
 
-def compare_export(oracle, observed, expected_error: str | None):
+def compare_export(oracle, observed, expected_error: str | None, *, json_decode=False):
     if expected_error:
         if (oracle.returncode != 1 or not oracle.stderr.startswith(_ERROR_MARKER)):
             return 'ORACLE_FAILED'
         expected = oracle.stderr.removeprefix(_ERROR_MARKER).removesuffix('\n')
         actual = observed.stderr.removesuffix('\n')
+        if json_decode and expected_error == 'JSONDecodeError':
+            if not expected.startswith('json.decoder.JSONDecodeError: '):
+                return 'ORACLE_FAILED'
+            # A decoder syntax failure has no Python offset/line diagnostic.
+            # Require a real CPython JSONDecodeError plus the exact native
+            # rejection sentinel. Do NOT count unrelated errors as rejection.
+            if (observed.returncode == 1 and observed.stdout == oracle.stdout
+                    and actual in (JSON_DECODE_REJECTION, 'Error: ' + JSON_DECODE_REJECTION)):
+                return 'VERIFIED_REJECTION'
+            return 'DIFFERENTIAL_FAILED'
         if (observed.returncode == 1 and observed.stdout == oracle.stdout and
                 actual in (expected, 'Error: ' + expected)):
             return 'VERIFIED'
@@ -336,13 +347,15 @@ def audit_exports(root: Path, *, native=False, bend='bend', wsl=False, selected=
                         yield name, i, 'CHECK_FAILED', checked.detail
                         continue
                     observed = run_standalone(target, bend=bend, wsl=wsl, timeout=60)
-                    verdict = compare_export(oracle, observed, fixture.error)
+                    verdict = compare_export(oracle, observed, fixture.error, json_decode=export.json_decode)
                     detail = f'proof={checked.status}'
-                    if verdict != 'VERIFIED':
+                    if verdict not in ('VERIFIED', 'VERIFIED_REJECTION'):
                         detail += (f' expected rc={oracle.returncode} out={oracle.stdout!r} '
                                    f'error={oracle.stderr.removeprefix(_ERROR_MARKER)!r}; '
                                    f'actual rc={observed.returncode} out={observed.stdout!r} '
                                    f'error={observed.stderr[:2000]!r}')
+                    elif verdict == 'VERIFIED_REJECTION':
+                        detail += '; invalid JSON rejected (diagnostic parity not claimed)'
                     elif fixture.error:
                         detail += f'; {fixture.error} matched'
                     yield name, i, verdict, detail
@@ -368,7 +381,7 @@ def main(argv=None):
             print(f'LINKED_EXPORT {case}[{i}] {status}: {detail}')
         print('LINKED_EXPORT_FIXTURES ' + ' '.join(f'{k}={v}' for k,v in sorted(totals.items())))
         expected = len(EXPORTS[args.export].fixtures) if args.export else sum(len(e.fixtures) for e in EXPORTS.values())
-        passed = totals['VERIFIED' if args.native or args.wsl else 'EMITTED'] == expected
+        passed = (totals['VERIFIED'] + totals['VERIFIED_REJECTION'] if args.native or args.wsl else totals['EMITTED']) == expected
         print('LINKED_EXPORT_GATE ' + ('PASS' if passed else 'FAIL') + ' (not a service gate)')
         return 0 if passed else 2
     services = discover(root)
@@ -404,7 +417,8 @@ def main(argv=None):
     expected = sum(len(case[-1]) for case in FUNCTION_CASES.values())
     wanted = 'VERIFIED' if args.native or args.wsl else 'EMITTED'
     function_pass = (totals[wanted] == expected and
-                     export_totals[wanted] == sum(len(e.fixtures) for e in EXPORTS.values()))
+                     export_totals[wanted] + (export_totals['VERIFIED_REJECTION'] if wanted == 'VERIFIED' else 0)
+                     == sum(len(e.fixtures) for e in EXPORTS.values()))
     if args.functions_only:
         print('FUNCTION_GATE ' + ('PASS' if function_pass else 'FAIL') + ' (not a service gate)')
         return 0 if function_pass else 2

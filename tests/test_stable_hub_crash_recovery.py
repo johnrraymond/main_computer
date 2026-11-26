@@ -71,7 +71,7 @@ def _scenario(*, hours_old=2, accepted=True):
     )
     victim.worker_market_directory.record_worker_live(
         worker_id=worker, owner=owner,
-        market_profile={'rings': ['ring-2'], 'capabilities': ['python'],
+        market_profile={'rings': ['ring-2'], 'models': ['model-alpha'], 'capabilities': ['python'],
                         'price': {'amount': '0.512', 'unit': 'credit'}, 'max_concurrency': 1},
         worker_msk_id='msk_worker', worker_wallet_address='0x' + 'cd' * 20,
         worker_account_id='worker-abc',
@@ -92,7 +92,7 @@ def _scenario(*, hours_old=2, accepted=True):
             requester_wallet_address=wallet, worker_id=worker,
             worker_connection_id=worker, owner_hub_id='smoke-hub3',
             owner_hub_url=victim.hub.hub_url, partition='ring-2',
-            task_queue='main-computer-work-ring-2', work={'ring': 'ring-2'},
+            task_queue='main-computer-work-ring-2', work={'ring': 'ring-2', 'model': 'model-alpha', 'capabilities': ['python']},
             worker_acceptance={'type': 'worker.work.accepted'},
             payout={'hold_id': hold['hold_id'], 'hold_status': 'held'},
         )

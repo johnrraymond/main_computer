@@ -41,7 +41,7 @@ def _args(**overrides):
         "git_commit_sha": "",
         "base_directory": "/",
         "dockerfile_location": "",
-        "health_path": "/api/hub/v1/health",
+        "health_path": "/health",
         "github_app_uuid": "",
         "deploy_key_uuid": "",
         "hub_runtime_dir": "",
@@ -149,7 +149,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         )
         self.assertLessEqual(len(payload["start_command"]), 255)
         self.assertTrue(payload["health_check_enabled"])
-        self.assertEqual(payload["health_check_path"], "/api/hub/v1/health")
+        self.assertEqual(payload["health_check_path"], "/health")
 
     def test_wait_for_hub_uses_public_url_without_backend_port(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -169,14 +169,10 @@ class CoolifyHubServiceTests(unittest.TestCase):
                 return False
 
             def read(self) -> bytes:
-                return json.dumps(
-                    {
-                        "network": {
-                            "network_key": "testnet",
-                            "chain_id": 42424241,
-                        }
-                    }
-                ).encode("utf-8")
+                payload = {"ok": True, "service": "main_computer.stable_hub", "cluster_id": "cluster"}
+                if captured[-1].endswith("/hub-identity"):
+                    payload["network"] = {"network_key": "testnet", "chain_id": 42424241}
+                return json.dumps(payload).encode("utf-8")
 
         original_urlopen = coolify_hub_service.urllib.request.urlopen
 
@@ -194,7 +190,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(
             captured,
-            ["https://testnet-hub.greatlibrary.io/api/hub/v1/health"],
+            ["https://testnet-hub.greatlibrary.io/health", "https://testnet-hub.greatlibrary.io/api/hub/v1/hub-identity"],
         )
         self.assertEqual(
             coolify_hub_service.coolify_domain_with_backend_port(profile),
@@ -845,7 +841,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
     def test_hub_status_request_uses_operator_headers_for_https_edges(self) -> None:
         request = coolify_hub_service.hub_status_request(
-            "https://mainnet-hub.greatlibrary.io/api/hub/v1/health",
+            "https://mainnet-hub.greatlibrary.io/health",
             user_agent="UnitTestHubAgent/1.0",
         )
 
@@ -871,7 +867,9 @@ class CoolifyHubServiceTests(unittest.TestCase):
                 return False
 
             def read(self) -> bytes:
-                return b'{"network":{"network_key":"mainnet","chain_id":42424240}}'
+                if captured["request"].full_url.endswith("/health"):
+                    return b'{"ok":true,"service":"main_computer.stable_hub","cluster_id":"cluster"}'
+                return b'{"ok":true,"service":"main_computer.stable_hub","cluster_id":"cluster","network":{"network_key":"mainnet","chain_id":42424240}}' 
 
         def fake_urlopen(request, timeout):
             captured["request"] = request
@@ -888,7 +886,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured["timeout"], 2.5)
         request = captured["request"]
-        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/v1/health")
+        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/v1/hub-identity")
         self.assertEqual(request.get_header("Accept"), "application/json")
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 

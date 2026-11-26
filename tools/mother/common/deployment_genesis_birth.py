@@ -723,7 +723,7 @@ def _proof_script(
     cleanup_value = cleanup_project_uuid if cleanup_project_uuid is not None else ""
     cleanup_required = cleanup_project_uuid is not None
     lines = [
-        "import hashlib, json, os, time, urllib.request",
+        "import hashlib, hmac, json, os, secrets, time, urllib.request",
         f"RPC = 'http://{node}:8545'",
         f"HUB = 'http://{_HUB_SERVICE}:{_HUB_PORT}'",
         f"EXPECTED_CHAIN_ID = {chain_id}",
@@ -793,16 +793,26 @@ def _proof_script(
         "    second = int(rpc('eth_blockNumber', []), 16)",
         "    if second <= first:",
         "        raise RuntimeError('block height did not advance')",
-        "    health = hub('/api/hub/v1/health')",
-        f"    if health.get('ok') is not True or health.get('service') != 'main-computer-hub' or health.get('network_key') != {network!r}:",
+        "    health = hub('/health')",
+        f"    if health.get('ok') is not True or health.get('service') != 'main_computer.stable_hub' or health.get('hub_id') != {_HUB_SERVICE!r} or health.get('cluster_id') != {f'main-computer-{network}-hubs'!r}:",
         "        raise RuntimeError('hub health mismatch')",
-        "    status = hub('/api/hub/v1/status')",
+        "    status = hub('/api/hub/v1/hub-identity')",
         "    network = status.get('network') if isinstance(status, dict) else None",
-        "    if not isinstance(network, dict):",
+        f"    if not isinstance(network, dict) or status.get('ok') is not True or status.get('service') != 'main_computer.stable_hub' or network.get('network_key') != {network!r} or not status.get('cluster_id') or status.get('cluster_id') != health.get('cluster_id') or status.get('hub_id') != health.get('hub_id'):",
         "        raise RuntimeError('hub status network missing')",
-        "    if network.get('chain_id') != EXPECTED_CHAIN_ID or network.get('chain_rpc_url') != RPC:",
+        "    if str(network.get('chain_id')) != str(EXPECTED_CHAIN_ID):",
+        "        raise RuntimeError('hub chain ID mismatch')",
+        "    with open('/hub-attestation/key', encoding='ascii') as handle:",
+        "        key = bytes.fromhex(handle.read().strip())",
+        "    if len(key) != 32:",
+        "        raise RuntimeError('hub attestation key unavailable')",
+        "    nonce = secrets.token_hex(16)",
+        "    attestation = hub('/api/hub/v1/runtime-attestation?nonce=' + nonce)",
+        f"    state = {{'schema':'main_computer.stable_hub.runtime_attestation.v1','nonce':nonce,'hub_id':{_HUB_SERVICE!r},'storage_backend':'foundationdb','fdb_cluster_file':{f'/data/main-computer/hub/{node}/fdb.cluster'!r},'fdb_namespace':{f'main-computer-{network}-{node}'!r},'chain_id':str(EXPECTED_CHAIN_ID),'chain_rpc_url':RPC}}",
+        "    expected = hmac.new(key, json.dumps(state, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8'), hashlib.sha256).hexdigest()",
+        "    if attestation.get('ok') is not True or attestation.get('schema') != state['schema'] or attestation.get('hub_id') != state['hub_id'] or attestation.get('nonce') != nonce or not hmac.compare_digest(str(attestation.get('hmac_sha256') or ''), expected):",
         "        raise RuntimeError('hub local RPC binding mismatch')",
-        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':" + repr(network) + ",'hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),'health_marker_contract':'proof-json-valid-and-fresh-healthy-marker','health_marker_path':HEALTHY,'last_error_path':LAST_ERROR,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main_computer.stable_hub','hub_network_key':" + repr(network) + ",'hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),'health_marker_contract':'proof-json-valid-and-fresh-healthy-marker','health_marker_path':HEALTHY,'last_error_path':LAST_ERROR,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    proof_sha256 = hashlib.sha256(json.dumps(proof, sort_keys=True, separators=(',', ':')).encode()).hexdigest()",
         "    write_json_atomic(PROOF, proof)",
         "    write_json_atomic(HEALTHY, {'ok': True, 'proof_sha256': proof_sha256, 'proved_at': proof['proved_at'], 'refreshed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})",
@@ -821,7 +831,7 @@ def _proof_script(
     if not requires_hub:
         # The same chain proof applies to either profile.  Hub observations are
         # included only when the release actually deploys a Hub component.
-        hub_start = lines.index("    health = hub('/api/hub/v1/health')")
+        hub_start = lines.index("    health = hub('/health')")
         hub_end = next(i for i, line in enumerate(lines) if line.startswith("    proof = {") )
         del lines[hub_start:hub_end]
         hub_helper_start = lines.index("def hub(path):")
@@ -940,6 +950,26 @@ def _internal_proof_compose(
             "released first-genesis Compose does not match the supported secure template",
         )
     updated = original.replace(host_mapping, "", 1)
+    if requires_hub:
+        # The guardian needs private runtime evidence without publishing FDB/RPC
+        # paths. Generate the attestation key inside the Hub container; only
+        # the guardian gets a read-only mount of the dedicated secret volume.
+        launch = "        exec python /app/run-stable-hub.py"
+        hub_mount = "      - mother-hub-data:"
+        if updated.count(launch) != 1 or updated.count(hub_mount) != 1:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_DEPLOY_GENESIS_BIRTH_COMPOSE_UNSUPPORTED",
+                "stable Hub runtime attestation bootstrap is unavailable",
+            )
+        bootstrap = "\n".join([
+            "        umask 077",
+            "        python -c 'import os,secrets; p=\"/hub-attestation/key\"; open(p+\".tmp\",\"w\").write(secrets.token_hex(32)); os.chmod(p+\".tmp\",0o600); os.replace(p+\".tmp\",p)'",
+            '        export MAIN_COMPUTER_HUB_RUNTIME_ATTESTATION_KEY="$$(cat /hub-attestation/key)"',
+            launch,
+        ])
+        updated = updated.replace(launch, bootstrap, 1)
+        updated = updated.replace(hub_mount, "      - mother-hub-attestation:/hub-attestation\n" + hub_mount, 1)
+        updated = updated.replace("  mother-hub-data:\n", "  mother-hub-data:\n  mother-hub-attestation:\n", 1)
 
     cleanup_service = ""
     if superseded_service_uuid is not None:
@@ -1030,6 +1060,7 @@ def _internal_proof_compose(
         "      start_period: 20s",
         "    volumes:",
         "      - mother-config:/config:ro",
+        *(["      - mother-hub-attestation:/hub-attestation:ro"] if requires_hub else []),
         "      - mother-proof:/proof",
         "",
     ])
@@ -1430,8 +1461,8 @@ def build_genesis_birth_release(
             "hub": {
                 "service": _HUB_SERVICE,
                 "internal_port": _HUB_PORT,
-                "health_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/api/hub/v1/health",
-                "status_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/api/hub/v1/status",
+                "health_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/health",
+                "status_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}/api/hub/v1/hub-identity",
                 "local_rpc_url": f"http://{chain['node']}:8545",
                 "public_endpoint_created": False,
             },

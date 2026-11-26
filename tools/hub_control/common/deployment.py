@@ -421,7 +421,7 @@ def render_runtime_topology(
         "network": {
             "network_key": network,
             "display_name": profile.display_name,
-            "kind": profile.kind,
+            "network_kind": profile.kind,
             "chain_id": str(chain_contract.payload["chain_id"]),
             "chain_rpc_url": str(chain_contract.payload["rpc_url"]),
         },
@@ -1870,9 +1870,8 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
         status: dict[str, Any] | None = None
         endpoint_errors: dict[str, str] = {}
         for label, path in (
-            ("health", "/api/hub/v1/health"),
+            ("health", "/health"),
             ("identity", "/api/hub/v1/hub-identity"),
-            ("status", "/api/hub/v1/status"),
         ):
             try:
                 payload = _get_json(base + path, timeout_s=request_timeout_s)
@@ -1889,8 +1888,10 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
         expected_chain = target["chain_contract"]
         network = identity.get("network") if isinstance(identity, Mapping) and isinstance(identity.get("network"), Mapping) else {}
         storage = identity.get("storage") if isinstance(identity, Mapping) and isinstance(identity.get("storage"), Mapping) else {}
-        status_network = status.get("network") if isinstance(status, Mapping) and isinstance(status.get("network"), Mapping) else {}
-        bridge_backend = status.get("bridge_backend") if isinstance(status, Mapping) and isinstance(status.get("bridge_backend"), Mapping) else {}
+        # The retired aggregate status was not an authorized signer proof.
+        # Experimental identity does not expose signer/admin authority. Do not
+        # substitute guessed values or relax the existing signer gate.
+        bridge_backend: dict[str, Any] = {}
         signer_required = _bridge_signer_required(target)
 
         def int_matches(raw: object, expected: object) -> bool:
@@ -1899,17 +1900,15 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             except (TypeError, ValueError):
                 return False
 
-        hub_running = isinstance(health, Mapping) and health.get("ok") is True
+        hub_running = isinstance(health, Mapping) and health.get("ok") is True and health.get("service") == "main_computer.exp_fdb_hub"
         checks = {
             "health": hub_running,
-            "hub_identity": isinstance(identity, Mapping) and identity.get("hub_id") == target["hub_id"],
+            "hub_identity": isinstance(identity, Mapping) and identity.get("ok") is True and identity.get("service") == "main_computer.exp_fdb_hub" and identity.get("hub_id") == target["hub_id"] and bool(identity.get("cluster_id")) and isinstance(health, Mapping) and health.get("hub_id") == identity.get("hub_id") and health.get("cluster_id") == identity.get("cluster_id"),
             "fdb_backend": storage.get("backend") == "foundationdb",
             "fdb_cluster_file": str(storage.get("cluster_file") or "") == str(target["cluster_file_path"]),
             "fdb_namespace": str(storage.get("namespace") or "") == str(expected_fdb["namespace"]),
             "chain_id": int_matches(network.get("chain_id"), expected_chain["chain_id"]),
             "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
-            "status_chain_id": int_matches(status_network.get("chain_id"), expected_chain["chain_id"]),
-            "status_rpc": str(status_network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
         }
         if signer_required:
             checks["bridge_signer_configured"] = bridge_backend.get("signer_configured") is True
@@ -1918,11 +1917,11 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             checks["bridge_signer_mode"] = str(bridge_backend.get("mode") or "") == "bridge-signer"
         expected_admin = str(target.get("hub_admin_address") or "").strip()
         if expected_admin:
-            hub_admin = identity.get("hub_admin") if isinstance(identity, Mapping) and isinstance(identity.get("hub_admin"), Mapping) else {}
+            hub_admin: dict[str, Any] = {}  # No authenticated admin proof on this implementation.
             checks["hub_admin_wallet_loaded"] = hub_admin.get("wallet_loaded") is True
             checks["hub_admin_address"] = str(hub_admin.get("address") or "").lower() == expected_admin.lower()
         fdb_verified = all(checks[key] for key in ("hub_identity", "fdb_backend", "fdb_cluster_file", "fdb_namespace"))
-        chain_verified = all(checks[key] for key in ("hub_identity", "chain_id", "chain_rpc", "status_chain_id", "status_rpc"))
+        chain_verified = all(checks[key] for key in ("hub_identity", "chain_id", "chain_rpc"))
         bridge_signer_verified = (
             not signer_required
             or all(
@@ -1976,9 +1975,9 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             )
             last_report_signature = signature
             last_report_at = elapsed
-        if now >= deadline:
+        if now >= deadline or signer_required or expected_admin:
             _progress(
-                f"runtime verification: timeout elapsed={int(elapsed)}s "
+                f"runtime verification: incomplete elapsed={int(elapsed)}s "
                 f"hub_running={'yes' if hub_running else 'no'} "
                 f"fdb={'verified' if fdb_verified else 'not-verified'} "
                 f"chain={'verified' if chain_verified else 'not-verified'} "
@@ -1986,7 +1985,7 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             )
             return {
                 "verified": False,
-                "reason": "hub-runtime-verification-timeout",
+                "reason": ("experimental-runtime-authority-proof-unavailable" if signer_required or expected_admin else "hub-runtime-verification-timeout"),
                 "hub_running": hub_running,
                 "fdb_adoption_verified": fdb_verified,
                 "chain_adoption_verified": chain_verified,

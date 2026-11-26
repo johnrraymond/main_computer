@@ -261,24 +261,14 @@ def test_legacy_hub_raw_reads_refuse_anonymous_requesters(path):
 
 
 @pytest.mark.parametrize('path', ['/api/hub/v1/status', '/api/hub/status'])
-def test_legacy_hub_public_status_is_aggregate_only(path):
+def test_legacy_hub_public_status_is_retired(path):
     from types import SimpleNamespace
     from main_computer.hub import HubServerHandler
-    handler=object.__new__(HubServerHandler)
-    handler.path=path
-    handler.server=SimpleNamespace(
-        config=SimpleNamespace(hub_network='testnet',chain_id=42424241),
-        registry=SimpleNamespace(status=lambda: {
-            'worker_count':1,'available_worker_count':1,'stale_worker_count':0,
-            'workers':[{'node_id':'PRIVATE_DEVICE_SENTINEL',
-                        'wallet_address':'0x'+'2'*40,
-                        'endpoint':'https://private.invalid'}],
-            'upstream_hubs':[{'internal_endpoint':'PRIVATE_UPSTREAM_SENTINEL'}]}))
-    responses=[]
-    handler._send_json=lambda payload, status=200: responses.append((int(status), payload))
+    handler = object.__new__(HubServerHandler)
+    handler.path = path
+    handler.server = SimpleNamespace()
+    responses = []
+    handler.send_error = lambda status: responses.append(int(status))
+    handler._send_json = lambda *args, **kwargs: pytest.fail('retired status exposed a payload')
     handler.do_GET()
-    assert responses[0][0]==200
-    assert responses[0][1]['worker_count']==1
-    assert 'workers' not in responses[0][1]
-    assert 'upstream_hubs' not in responses[0][1]
-    _assert_no_identity(responses[0][1])
+    assert responses == [404]

@@ -12,9 +12,11 @@ import ast
 from .numeric import Compiler as PureCompiler
 from .syntax import TranslationError
 from .declaration_order import reorder_bend_declarations
+from .json_decode import (DECODE_RUNTIME, IMPORTS, LOADS, has_loads, has_dynamic_loads,
+                          validate_pipeline)
 
 _DUMPS = '__pyjson_dumps'
-_JSON_TYPES = {'JsonDict', 'JsonList', 'str', 'int', 'bool', 'None'}
+_JSON_TYPES = {'JsonDict', 'JsonList', 'JsonValue', 'str', 'int', 'bool', 'None'}
 
 
 def json_aliases(tree):
@@ -24,7 +26,7 @@ def json_aliases(tree):
 
 def uses_runtime_json(tree):
     aliases = json_aliases(tree)
-    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    return has_dynamic_loads(tree, aliases) or any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                and isinstance(n.func.value, ast.Name) and n.func.value.id in aliases
                and n.func.attr == 'dumps' for n in ast.walk(tree))
 
@@ -40,21 +42,23 @@ class JsonSource(ast.NodeTransformer):
         self.filename = filename
         self.aliases = json_aliases(tree)
         self.functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        self.decode = has_loads(tree, self.aliases)
 
     def fail(self, n, reason):
         raise TranslationError(f'JSON runtime: {reason} (line {getattr(n, "lineno", "?")})', source=self.filename)
 
     def apply(self):
+        validate_pipeline(self.tree, self.aliases, self.fail)
         for n in ast.walk(self.tree):
             if isinstance(n, (ast.Name, ast.arg, ast.FunctionDef)):
                 name = n.id if isinstance(n, ast.Name) else n.arg if isinstance(n, ast.arg) else n.name
-                if name.startswith('__pyjson_') or name in ('JsonDict', 'JsonList'):
+                if name.startswith('__pyjson_') or name in ('JsonDict', 'JsonList', 'JsonValue'):
                     self.fail(n, 'reserved identifier')
                 if name in self.aliases and (not isinstance(n, ast.Name) or not isinstance(n.ctx, ast.Load)):
                     self.fail(n, 'JSON import shadowed')
                 if (isinstance(n, ast.arg) or isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))) and name in self.functions:
                     self.fail(n, 'function binding shadowed')
-                if isinstance(n, ast.FunctionDef) and name in {'dict', 'list', 'str', 'int', 'bool'}:
+                if isinstance(n, ast.FunctionDef) and name in {'dict', 'list', 'str', 'int', 'bool', 'object'}:
                     self.fail(n, 'built-in type binding shadowed')
         body = []
         for stmt in self.tree.body:
@@ -67,6 +71,8 @@ class JsonSource(ast.NodeTransformer):
         return ast.unparse(ast.fix_missing_locations(self.tree))
 
     def annotation(self, node):
+        if self.decode and isinstance(node, ast.Name) and node.id == 'object':
+            return ast.copy_location(ast.Name(id='JsonValue', ctx=ast.Load()), node)
         if isinstance(node, ast.Name) and node.id in ('dict', 'list', 'str', 'int', 'bool'):
             return ast.copy_location(ast.Name(id={'dict':'JsonDict', 'list':'JsonList'}.get(node.id, node.id), ctx=ast.Load()), node)
         if isinstance(node, ast.Constant) and node.value is None:
@@ -80,7 +86,7 @@ class JsonSource(ast.NodeTransformer):
         for arg in a.args:
             arg.annotation = self.annotation(arg.annotation)
         node.returns = self.annotation(node.returns)
-        if node.name == "main" and isinstance(node.returns, ast.Name) and node.returns.id in ("JsonDict", "JsonList"):
+        if node.name == "main" and isinstance(node.returns, ast.Name) and node.returns.id in ("JsonDict", "JsonList", "JsonValue"):
             self.fail(node, "main must return a scalar, not a heap object")
         for i, stmt in enumerate(node.body):
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
@@ -120,8 +126,12 @@ class JsonSource(ast.NodeTransformer):
                 node.args = [self.expression(x) for x in node.args]
                 return node
             if (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id in self.aliases and node.func.attr == 'dumps'):
-                return self.dumps(node)
+                    and node.func.value.id in self.aliases):
+                if node.func.attr == 'dumps':
+                    return self.dumps(node)
+                if node.func.attr == 'loads' and self.decode:
+                    return ast.copy_location(ast.Call(func=ast.Name(id=LOADS, ctx=ast.Load()),
+                        args=[self.expression(node.args[0])], keywords=[]), node)
         self.fail(node, 'expression outside the read-only JSON tree domain')
 
     def dumps(self, node):
@@ -338,10 +348,18 @@ def PyJSON.concat(a: PyValue, b: PyValue) -> PyValue:
 
 class JsonCompiler(PureCompiler):
     def __init__(self, tree, source_name='<input>', **kwargs):
-        source = JsonSource(tree, source_name).apply()
+        frontend = JsonSource(tree, source_name)
+        self.decode = frontend.decode
+        source = frontend.apply()
         super().__init__(source, source_name, **kwargs)
 
     def expr(self, node, env, heap, lines):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == LOADS:
+            heap, text, typ = self.expr(node.args[0], env, heap, lines)
+            if typ != "str":
+                self.fail("json.loads requires a string", node)
+            heap, value = self.pair(f"PyJSON.decode({heap}, {text})", lines)
+            return heap, value, "JsonValue"
         if isinstance(node, ast.Dict):
             heap, ref = self.pair(f'PyHeap.new_dict({heap})', lines)
             for k, v in zip(node.keys, node.values):
@@ -374,4 +392,12 @@ class JsonCompiler(PureCompiler):
 
     def compile(self):
         source = super().compile()
-        return reorder_bend_declarations(source + '\n' + JSON_RUNTIME)
+        runtime = JSON_RUNTIME
+        if self.decode:
+            # A failed parse must reach the final process boundary unchanged.
+            anchor = '    case VNone{}:\n      VStr{"null"}'
+            assert runtime.count(anchor) == 1
+            runtime = runtime.replace(anchor, '    case VError{message}:\n      VError{message}\n' + anchor)
+            source = source.replace('import Base\n', 'import Base\n' + IMPORTS, 1)
+            runtime += '\n' + DECODE_RUNTIME
+        return reorder_bend_declarations(source + '\n' + runtime)

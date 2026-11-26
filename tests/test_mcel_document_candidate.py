@@ -64,14 +64,14 @@ def test_canonical_package_and_candidate_route():
         assert ns['_semantic_canonical_route'](path)==('document',None)
 
 STUB='''<script>
-window.calls=[];window.confirm=()=>true;window.storage={};window.legacy={};
+window.calls=[];window.confirm=()=>true;window.storage={};window.legacy={};window.aiChanges=null;window.aiWait=null;
 window.fetch=async(url,opts)=>{const a=JSON.parse(opts.body);calls.push([url,a]);let d={ok:true};
-if(url.endsWith('/files'))d.documents=[{path:'sample.md',title:'Sample',kind:'markdown'},{path:'other.md',title:'Other',kind:'markdown'}];
+if(url.endsWith('/files'))d.documents=[{path:'sample.md',title:'Sample',kind:'markdown'},{path:'other.md',title:'Other',kind:'markdown'},...Object.keys(storage).filter(p=>p.startsWith('new:')).map(path=>({path,title:storage[path].metadata?.name||'Untitled Document',kind:'draft'}))];
 else if(url.endsWith('/candidate-draft/read'))Object.assign(d,{path:a.path,exists:!!storage[a.path],token:storage[a.path]?.token||'',...storage[a.path]});
 else if(url.endsWith('/draft/read'))Object.assign(d,{path:a.path,exists:!!legacy[a.path],...legacy[a.path]});
 else if(url.endsWith('/read'))Object.assign(d,{path:a.path,title:a.path,kind:'markdown',content:'# Sample\\nHello world',content_hash:'abc',mtime:1});
-else if(url.endsWith('/candidate-draft/write')){storage[a.path]={html:a.html,layout:a.layout,token:'token-'+calls.length};Object.assign(d,{path:a.path,...storage[a.path]});}
-else if(url.endsWith('/ai'))d.suggestion={operation:'replace_selection',replacement_text:'revised',rationale:'test'};
+else if(url.endsWith('/candidate-draft/write')){storage[a.path]={html:a.html,layout:a.layout,metadata:a.metadata,token:'token-'+calls.length};Object.assign(d,{path:a.path,...storage[a.path]});}
+else if(url.endsWith('/ai')){if(window.aiWait)await window.aiWait;d.suggestion=a.preferred_operation==='transform_document'?{operation:'transform_document',changes:window.aiChanges||{},rationale:'test'}:{operation:'replace_selection',replacement_text:'revised',rationale:'test'};}
 else if(url.endsWith('/export/pdf'))return new Response('%PDF-1.4 mock',{status:200,headers:{'Content-Type':'application/pdf'}});
 else throw Error('Unexpected endpoint '+url);
 return new Response(JSON.stringify(d),{status:200,headers:{'Content-Type':'application/json'}});};
@@ -178,3 +178,69 @@ def test_workspace_scroll_outline_and_chrome_boundary(page):
     page.wait_for_function("getComputedStyle(document.querySelector('[data-mcel-tng-stationary-glass]')).clipPath.includes('evenodd')")
     before=page.evaluate('s.getState().html');page.get_by_role('button',name='Zoom in',exact=True).click();assert page.evaluate('s.getState().html')==before
     assert page.locator('.mc-page').first.evaluate('e=>getComputedStyle(e).backgroundColor')=='rgb(255, 254, 250)'
+
+
+def test_full_state_proposal_validated_and_bound_to_ui(page):
+    open_sample(page)
+    before=page.evaluate('s.getState()')
+    page.evaluate("""window.aiChanges={html:'<h1>New</h1><p><b>Body</b></p>',metadata:{name:'Changed',date:'1929-09-04',type:'memorandum',author:'Author',description:'Description'},layout:{layout:{mode:'custom',preset:null,custom:{widthPx:900,heightPx:1200},margins:{top:72,right:80,bottom:88,left:64}},view:{mode:'endless',zoom:1.25,showPageBreaks:false}}}""")
+    page.get_by_role('button',name='Lock Entire Document',exact=True).click()
+    page.wait_for_function("app.readState('state:proposal').startsWith('Locked: entire document')")
+    form=page.locator('[data-mcel-node="surface-node:document.ai-instruction"] form');form.locator('input,textarea').first.fill('Transform');form.locator('button[type=submit]').click()
+    page.wait_for_function("app.readState('state:proposal').startsWith('Proposed document changes:')")
+    assert page.evaluate('s.getState()')==before
+    assert page.evaluate('calls.at(-1)[1].document.layout')==before['layout']
+    page.get_by_role('button',name='Apply AI Proposal',exact=True).click();page.wait_for_function("app.readState('state:proposal').startsWith('Document state applied')")
+    assert page.evaluate('s.getState().layout.layout.custom.widthPx')==900
+    assert page.evaluate('s.getState().layout.view.zoom')==1.25
+    assert page.evaluate('__mcelWorkbench.getDocumentMetadata().date')=='1929-09-04'
+    assert page.locator('[data-document-metadata] [name=name]').input_value()=='Changed'
+    assert page.evaluate('app.readState("state:draft")')==page.evaluate('s.getState().html')
+    execute(page,'save-candidate-draft');execute(page,'open-scratchpad');execute(page,'open-document')
+    assert page.evaluate('__mcelWorkbench.getDocumentMetadata().name')=='Changed'
+    assert page.evaluate('s.getState().layout.layout.custom.widthPx')==900
+    execute(page,'lock-document');execute(page,'request-ai-proposal',{'instruction':'Transform'})
+    page.evaluate('s.setLayout({...s.getState().layout,view:{mode:"paged",zoom:1,showPageBreaks:true}})')
+    execute(page,'apply-ai-proposal',success=False)
+    page.evaluate("window.aiChanges={metadata:{name:'Unsafe'},html:'<script>alert(1)</script>'}")
+    execute(page,'lock-document');execute(page,'request-ai-proposal',{'instruction':'Invalid'},success=False)
+    assert page.evaluate('__mcelWorkbench.getDocumentMetadata().name')=='Changed'
+
+
+def test_new_document_ui_blank_and_queued_creation(page):
+    page.get_by_role('button',name='New Document',exact=True).click()
+    dialog=page.locator('[data-document-new-dialog]')
+    dialog.get_by_role('button',name='OK',exact=True).click();dialog.wait_for(state='hidden')
+    assert page.evaluate('Object.keys(storage).filter(p=>p.startsWith("new:")).length')==1
+    assert not page.evaluate('calls.some(([url])=>url.endsWith("/ai"))')
+    page.evaluate("()=>{window.aiChanges={metadata:{name:'Generated title'},html:'<h1>Generated</h1>'};window.aiWait=new Promise(r=>window.releaseAI=r);}")
+    page.get_by_role('button',name='New Document',exact=True).click()
+    dialog.locator('[name=prompt]').fill('Write a document about banking')
+    dialog.get_by_role('button',name='Current',exact=True).click()
+    dialog.get_by_role('button',name='OK',exact=True).click();dialog.wait_for(state='hidden')
+    page.wait_for_function("calls.some(([url])=>url.endsWith('/ai'))")
+    assert page.evaluate('Object.keys(storage).filter(p=>p.startsWith("new:")).length')==2
+    context=page.evaluate("calls.find(([url])=>url.endsWith('/ai'))[1].document.creation")
+    assert context['defaults']==context['values'] and context['explicit']==['date']
+    assert context['prompt']=='Write a document about banking'
+    assert page.locator('[data-document-creation-status]').inner_text().startswith('AI creation proposal queued')
+    page.evaluate('releaseAI()')
+    page.wait_for_function("document.querySelector('[data-document-creation-status]').textContent.startsWith('AI creation proposal ready')")
+    execute(page,'apply-ai-proposal')
+    assert page.evaluate('__mcelWorkbench.getDocumentMetadata().name')=='Generated title'
+    assert 'Generated' in page.evaluate('s.getState().html')
+    execute(page,'save-candidate-draft');execute(page,'list-documents')
+    assert page.get_by_text('Generated title',exact=True).count()>=1
+
+
+def test_new_storage_identity_and_metadata(tmp_path):
+    from main_computer.mcel_document_candidate_drafts import created_documents
+    h=Handler(tmp_path);path='new:'+'a'*32
+    data={'path':path,'expected_token':'','html':'<p></p>','layout':{},'metadata':{'name':'Untitled Document','date':'1929-09-04'}}
+    code,created=h.run(data,True);assert code==200
+    code,updated=h.run({**data,'expected_token':created['token'],'metadata':{'name':'Renamed'}},True);assert code==200
+    assert updated['created_at']==created['created_at']
+    assert created_documents(h)==[{'path':path,'title':'Renamed','kind':'draft'}]
+    assert h.run({'path':path})[1]['metadata']=={'name':'Renamed'}
+    assert h.run({**data,'metadata':{'id':'malicious'}},True)[0]==409
+    assert h.run({**data,'expected_token':updated['token'],'metadata':{'id':'malicious'}},True)[0]==400

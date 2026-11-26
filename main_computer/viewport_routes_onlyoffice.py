@@ -634,10 +634,7 @@ class ViewportOnlyOfficeRoutesMixin:
                 "Sheet1": {
                     "rows": 50,
                     "cols": 26,
-                    "cells": {
-                        "A1": {"value": "ONLYOFFICE workbook"},
-                        "B1": {"value": "42"},
-                    },
+                    "cells": {},
                 }
             },
             "metadata": {},

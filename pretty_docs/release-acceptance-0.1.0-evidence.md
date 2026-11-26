@@ -1,12 +1,12 @@
 # Main Computer 0.1.0 — Acceptance Evidence Register
 
-Revision 4 · November 24, 2026 · R01 closed; R02 blocked on public preflight
+Revision 5 · November 25, 2026 · R01 closed; R02 public preflight and isolated recovery PASS
 
 [Governing gates](release-acceptance-0.1.0.md) · [Patch plan](release-acceptance-0.1.0-patch-plan.md)
 
 ## Evidence rules
 
-This is a durable index of operator-reported acceptance results and inspected patch contracts, not a new execution report. Preserve the original JSON/log files under their runtime paths, copying redacted versions into the candidate evidence directory before subsequent tests overwrite them. No source commit, runtime hashes or raw report attachments were supplied for the newest runs; candidate binding remains outstanding. A pass is valid for its stated test scope, not for a larger untested workflow. Do not store secrets, MSKs, cookies, private state, or unnecessary personal information in release evidence. The public resident wallet address is retained here as an operational comparison anchor; redact it from publicly distributed release materials if unnecessary.
+This is a durable index of operator-reported acceptance results and inspected patch contracts, not a new execution report. Preserve the original JSON/log files under their runtime paths, copying redacted versions into the candidate evidence directory before subsequent tests overwrite them. The operator supplied Hub redeploy Git revision and selected live contract hashes for the November 25 results; full source/build/report fingerprints and candidate binding remain outstanding. A pass is valid for its stated test scope, not for a larger untested workflow. Do not store secrets, MSKs, cookies, private state, or unnecessary personal information in release evidence. The public resident wallet address is retained here as an operational comparison anchor; redact it from publicly distributed release materials if unnecessary.
 
 ## E-013A — Resident Mainnet financial startup (latest observation)
 
@@ -193,7 +193,10 @@ All 26 assertions passed: isolated relay target; worker/requester pending, unaut
 | --- | --- | --- |
 | R01 | Resident same-wallet restart, Windows ACL | PASS — E-013B |
 | R01 | Correct dual employment report decision | PASS deployed 26/26 — E-009B |
-| R02 | Current deployed network/Hub identity, routing and isolated crash durability | NOT_RUN for candidate |
+| R02 | Canonical public network, manifest and concrete-Hub identity | PASS — E-001C/E-002C; candidate binding open |
+| R02 | Manifest recurrence protection | PASS standalone live and harness tests — E-001D; full live harness run pending |
+| R02 | Isolated FDB owner-Hub recovery | PASS — E-004A; remaining durability scope review open |
+| R02 | Active retired-route consumers, remaining chain/topology and actual deployed routing | OPEN |
 | R02 | Separate Testnet ORG financial readiness | NOT_RUN |
 | R03 | Resident canonical managed Worker registration via deployed SEH; organizational account mapping | NOT_RUN |
 | R03/R04 | Actual Testnet public earning, ORG requester debit and private employment | NOT_RUN for resident path |
@@ -202,7 +205,7 @@ All 26 assertions passed: isolated relay target; worker/requester pending, unaut
 | R05 | Actual settlement, bridges, transfers, Pinky Reserve and policy reconciliation | NOT_RUN for required live scope |
 | R06 | Candidate fingerprint, consolidated release gate, package, operator approval | NOT_RUN |
 
-**Release decision: NOT YET CERTIFIED.** Do not count partial readiness as a complete economic release, nor repeat already verified implementation work without cause. R01 is complete; the next action is R02 current network/Hub verification, followed by resident employment/financial evidence.
+**Release decision: NOT YET CERTIFIED.** Do not count partial readiness as a complete economic release, nor repeat already verified implementation work without cause. R01 is complete; next actions are separate Testnet ORG readiness, remaining R02 network/routing and active consumer evidence, followed by resident employment/financial evidence.
 
 
 ### R02 initial public-network smoke correction (2026-11-24)
@@ -237,3 +240,46 @@ Source audit (not a new live test): Hub Control `render_runtime_topology()` emit
 Snapshot Testnet manifest contains `http://198.199.75.153:30010`, escrow `0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6` and Reserve `0xa513E6E4b8f2a923D98304ec87F64353C4D5C853`; canonical registry contains HTTPS Testnet RPC, escrow `0x000000000000000000000000000000000000e5c0` and Reserve `0x000000000000000000000000000000000000c0de`. These are compared records, not newly verified chain addresses. Do not resolve by blind overwrite.
 
 **Disposition:** P0-01 and P0-02 blocked; P0-04 and Testnet P0-13 remain outstanding. No conclusion of chain outage, incorrect contract runtime, or failed settlement. R01 and previous scoped passes unchanged. Documentation-only update; no tests executed, deployments changed, or funds spent.
+
+
+## E-001C / E-002C — R02 public read-only network and concrete-Hub acceptance (November 25, operator-reported)
+
+Both `python scripts/smoke_hub_network_client.py --network NETWORK --skip-level4` runs ultimately returned `PASS_READ_ONLY canonical_live=True`. Reports: `runtime/hub/hub_network_client_smoke_mainnet.json` and `runtime/hub/hub_network_client_smoke_testnet.json`. The Testnet final console confirms the manifest pass after rectification; detailed chain/runtime observations below come from the preceding canonical-live PASS report (manifest still failed at that time).
+
+| Check | Mainnet | Testnet |
+| --- | --- | --- |
+| Canonical endpoints, Hub, chain, registry, contracts, manifest | All PASS | All PASS |
+| Chain ID | 42424240 | 42424241 |
+| Observed block (detailed report) | 1993482 | 1422526 |
+| PUSH0 gas estimate | 60358 | 60358 |
+| Accepted Hub deployment generation | 19 | 5 |
+| FDB contract generation / chain contract generation | 8 / 33, current | 11 / 33, current |
+| Concrete Hubs redeployed and runtime verified | mainneta-hub1, mainnetc-hub1 | testnetb-hub1 |
+| Concrete identity network key/kind | mainnet/mainnet, both Hubs | testnet/testnet |
+
+Hub Control redeploy revision: `8d49dc67992783def76971734bd78584063f3aeb`; both accepted generations unchanged. Bridge controller already authorized and runtime verification passed for each Hub. Public smoke topology advertises only mainneta-hub1 for Mainnet in the supplied report; do not infer cross-Hub routing or complete public membership from that response. Temporal reported `configured: false`, `ready: false`; assess against advertised scope rather than infer readiness.
+
+Both chains report identical runtime lengths and SHA-256 hashes:
+
+| Contract | Address | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| hub_credit_bridge_escrow | `0x000000000000000000000000000000000000e5c0` | 7402 | `4d84f375d77bab65b4223dc1cfb17e817d2336cba812da9ff0dea64f3960fb7f` |
+| xlag-bridge-reserve | `0x000000000000000000000000000000000000c0de` | 11911 | `9486280d22c8c4050164bb7058312ab52520d4b97c3062dba05e9b297560d108` |
+
+Superseded E-001B/E-002B blockers: identity projection mismatch fixed in topology producer/load path; RPC 403/1010 resolved by shared RPC client rather than Cloudflare policy changes; Testnet stale manifest repaired (E-001D). No paid work, actual routing, finalized progression, artifact equivalence, or settlement inferred. Earlier 110/110 combined Hub/Worker/endpoint regressions passed on operator machine. The retired routes were removed locally; review remaining active consumers rather than claim all consumers or public route removal verified.
+
+## E-001D — Manifest repair and Mother pre-cleanup gate (November 25)
+
+`python tools/wallet_address_rectifier.py --network testnet --metadata-only --apply` returned `UPDATED`, `write_performed: true`. Both contract records and deployment records were corrected to the addresses above; `rpc_url`, `host_rpc_url`, `container_rpc_url` were synchronized to `https://testnet-rpc.greatlibrary.io`. The final Testnet public smoke passed. No chain or Hub redeployment was needed for manifest repair.
+
+`python -m pytest -q tests/test_mother_pre_cleanup_verify.py`: 28 passed in 7.28s. Harness integration and direct-resume protection are covered by tests. The standalone commands `python tools/mother_pre_cleanup_verify.py --network testnet --apply` and the equivalent Mainnet command both returned `status: pass`, correct chain ID and contract runtime hashes above, manifest reconciliation `PASS`, `changed: false`, `write_performed: false`, `manifest_verified: true`. The new pre-cleanup stage runs after RPC verification, before cleanup, in the add-node harness. It checks the expected genesis addresses and live runtime presence before reconciliation; failed verification blocks cleanup. Existing rectifier remains independent. Full live harness-stage execution during a subsequent routine deployment is not yet observed. Do not initiate an unnecessary deployment for this purpose.
+
+## E-004A — Actual isolated FDB recovery (November 25)
+
+Operator regression command: `python -m pytest -q tests/test_stable_hub_fdb_atomic_accounting.py tests/test_stable_hub_crash_recovery.py tests/test_stable_hub_crash_recovery_lab_contract.py`: 35 passed in 16.07s. `python -m tools.stable_hub_lab.crash_recovery`: `STABLE_HUB_CRASH_RECOVERY_PASS`, `ok: true`, `funding: SYNTHETIC_ISOLATED_FDB_ONLY`.
+
+Namespace: `main-computer-hub-smoke-crash-recovery-c2479467b4d151c6`; victim smoke-hub3, survivor smoke-hub1. Pre-balance: 1 credit available, 0 held, 0 spent; after acceptance: 0.488 available, 0.512 held, 0 spent. All five proof assertions true: `accepted_session_failed`, `captain_balance_restored`, `no_charge_or_worker_earning`, `owner_process_killed`, `survivor_released_exactly_one_hold`. Actual FDB and actual owner process death; synthetic isolated funds. This certifies the tested recovery scenario, not loss of an entire FDB cluster or all possible restart/settlement failures.
+
+## R02 disposition and remaining work
+
+The November 25 ORG passthrough rerun passed 16/16, resident Mainnet preflight passed 7/7 (`READY`, zero credit, marketplace disabled, no connected Workers), and deployed isolated SEH employment rerun passed 26/26. Preserve these scoped results; they do not establish separate Testnet ORG readiness or actual funded network employment. R01 remains complete. R02 public read-only network and isolated process-death subgates pass; remaining evidence queue above governs. Release remains NOT YET CERTIFIED. No tests or deployments were performed by this documentation update.

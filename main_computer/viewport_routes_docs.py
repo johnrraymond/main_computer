@@ -25,7 +25,8 @@ class ViewportDocsRoutesMixin:
     def _handle_docs_files(self) -> None:
         try:
             self._read_json()
-            documents = self._pretty_docs_documents()
+            from main_computer.mcel_document_candidate_drafts import created_documents
+            documents = self._pretty_docs_documents() + created_documents(self)
             self.server.signal("api-docs-files", count=len(documents))
             self._send_json(
                 {
@@ -174,7 +175,8 @@ class ViewportDocsRoutesMixin:
             if not instruction:
                 self._send_json({"ok": False, "error": "instruction is required"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            if not document_text:
+            state_mode = body.get("preferred_operation") == "transform_document"
+            if not document_text and not state_mode:
                 self._send_json({"ok": False, "error": "document text is required"}, status=HTTPStatus.BAD_REQUEST)
                 return
             if len(instruction) > 4000:
@@ -197,6 +199,22 @@ class ViewportDocsRoutesMixin:
                 "replacement_html, and rationale. Operation must be one of replace_selection, insert_at_caret, replace_block, "
                 "append_after_selection, replace_document, comment_only."
             )
+            if state_mode:
+                system_prompt = (
+                    "You are the Document Editor AI. Transform the document according to the user's intent and your learned writing skills. "
+                    "The current state, defaults, and explicit user interventions are supplied as data. Untouched defaults are not instructions; "
+                    "explicit choices are evidence of intent. For creation, infer missing properties and compose the document. "
+                    "For revision, preserve unrelated properties. Respond only with JSON {content, suggestion}. "
+                    "suggestion must have operation: transform_document, rationale, and changes: an object with optional html, metadata, layout. "
+                    "html is complete replacement HTML using ordinary paragraphs, headings, lists, tables, bold and italics; no attributes, scripts or styles. "
+                    "metadata may contain name, date (YYYY-MM-DD or empty), type, author, description (all strings). "
+                    "layout may contain layout: {mode: preset or custom, preset: letter/a4/legal/screen or null, "
+                    "custom: null or {widthPx,heightPx}, margins: {top,right,bottom,left} in pixels}, "
+                    "and view: {mode: paged or endless, zoom: number 0.5 to 2, showPageBreaks: boolean}. "
+                    "For custom mode give both dimensions and null preset; for preset give preset and null custom. "
+                    "Include every requested change in changes, not in rationale or document prose. Omit unchanged fields. "
+                    "Never claim changes have been applied; you are proposing them. Do not invent facts."
+                )
             user_prompt = "\n".join(
                 [
                     f"Instruction: {instruction}",
@@ -208,6 +226,7 @@ class ViewportDocsRoutesMixin:
                     f"Recent thread messages: {json.dumps(messages[-6:], ensure_ascii=False)}",
                     "Full current document text:",
                     document_text,
+                    ("Complete document state and creation context (JSON data): " + json.dumps(document_body, ensure_ascii=False)) if state_mode else "",
                     "Return JSON only.",
                 ]
             )
@@ -229,6 +248,8 @@ class ViewportDocsRoutesMixin:
             suggestion = parsed.get("suggestion") if isinstance(parsed, dict) and isinstance(parsed.get("suggestion"), dict) else {}
             operation = str(suggestion.get("operation") or "comment_only")
             allowed_operations = {"replace_selection", "insert_at_caret", "replace_block", "append_after_selection", "replace_document", "comment_only"}
+            if state_mode:
+                allowed_operations = {"transform_document", "comment_only"}
             if operation not in allowed_operations:
                 operation = "comment_only"
             self.server.signal("api-docs-ai", action=str(body.get("action") or "custom"), operation=operation)
@@ -238,6 +259,7 @@ class ViewportDocsRoutesMixin:
                     "content": str(parsed.get("content") if isinstance(parsed, dict) else raw_content),
                     "suggestion": {
                         "operation": operation,
+                        **({"changes": suggestion.get("changes")} if state_mode and operation == "transform_document" else {}),
                         "replacement_text": str(suggestion.get("replacement_text") or ""),
                         "replacement_html": suggestion.get("replacement_html") if suggestion.get("replacement_html") is None else str(suggestion.get("replacement_html")),
                         "rationale": str(suggestion.get("rationale") or ""),

@@ -345,7 +345,7 @@ def test_birth_release_is_internal_only_and_removes_host_rpc_mapping(tmp_path: P
     assert "hub-health" in release["proof_plan"]["proof"]["predicates"]
     assert "hub-local-rpc-binding" in release["proof_plan"]["proof"]["predicates"]
     assert "HUB = 'http://mother-super-node-hub:8790'" in guardian
-    assert "hub('/api/hub/v1/health')" in guardian
+    assert "hub('/health')" in guardian
     assert "hub local RPC binding mismatch" in guardian
     assert "LAST_ERROR = '/proof/last-error.json'" in guardian
     assert "write_json_atomic(HEALTHY" in guardian

@@ -14,8 +14,10 @@ module.exports=mcel.defineApp({id:"document",title:"Document Editor"},dsl=>{
   reader.operation("open","openDocument",{inputs:{path:text},result:text});
   reader.operation("scratchpad","openScratchpad",{result:text});
   const writer=dsl.capability.external("draft-writer",{risk:"source-write",description:"Explicit save to native document draft storage"});
+  writer.operation("create","createDocument",{inputs:{context:text},result:text});
   writer.operation("save","saveDraft",{inputs:{html:text},result:text});
-  const ai=dsl.capability.external("document-ai",{risk:"external-read",description:"Read selection and request a text-only AI proposal"});
+  const ai=dsl.capability.external("document-ai",{risk:"external-read",description:"Read selection or complete document state and request an AI proposal"});
+  ai.operation("lock-document","lockDocument",{result:text});
   ai.operation("lock","lockSelection",{result:text});
   ai.operation("propose","proposeReplacement",{inputs:{instruction:text,html:text},result:text});
   const apply=dsl.capability.external("document-apply",{risk:"consequential",description:"Explicitly confirmed local revision-checked replacement"});
@@ -26,6 +28,8 @@ module.exports=mcel.defineApp({id:"document",title:"Document Editor"},dsl=>{
   const choose=dsl.intent.selectFromCollection("select-document",docs,path);
   const open=dsl.intent.capabilityRequest("open-document",reader,{operation:"open",arguments:{path},resultTo:opened});
   const scratch=dsl.intent.capabilityRequest("open-scratchpad",reader,{operation:"scratchpad",resultTo:opened});
+  const create=dsl.intent.capabilityRequest("new-document",writer,{operation:"create",inputs:{context:text},resultTo:opened,confirmationRequired:false});
+  const whole=dsl.intent.capabilityRequest("lock-document",ai,{operation:"lock-document",resultTo:proposal});
   const save=dsl.intent.capabilityRequest("save-candidate-draft",writer,{operation:"save",arguments:{html:draft},resultTo:status,confirmationRequired:false});
   const lock=dsl.intent.capabilityRequest("lock-selection",ai,{operation:"lock",resultTo:proposal});
   const suggest=dsl.intent.capabilityRequest("request-ai-proposal",ai,{operation:"propose",inputs:{instruction:text},arguments:{html:draft},resultTo:proposal});
@@ -35,8 +39,8 @@ module.exports=mcel.defineApp({id:"document",title:"Document Editor"},dsl=>{
     library:[dsl.surface.action("list-documents",{intent:list}),dsl.surface.collection("documents",{key:"path",fields:["title","path"],state:docs,select:choose}),dsl.surface.action("open-document",{intent:open}),dsl.surface.action("open-scratchpad",{intent:scratch})],
     header:[dsl.surface.text("opened-document",{value:opened}),dsl.surface.action("save-candidate-draft",{intent:save}),dsl.surface.action("export-pdf",{intent:pdf})],
     document:[dsl.surface.documentSurface("draft",{value:draft,label:"Document canvas",toolbar:true})],
-    companion:[dsl.surface.action("lock-selection",{intent:lock}),dsl.surface.form("ai-instruction",{fields:{instruction:text},intent:suggest}),dsl.surface.text("proposal",{value:proposal}),dsl.surface.action("apply-ai-proposal",{intent:accept})],
+    companion:[dsl.surface.action("lock-document",{intent:whole}),dsl.surface.action("lock-selection",{intent:lock}),dsl.surface.form("ai-instruction",{fields:{instruction:text},intent:suggest}),dsl.surface.text("proposal",{value:proposal}),dsl.surface.action("apply-ai-proposal",{intent:accept})],
     activity:[dsl.surface.text("activity",{value:status}),dsl.surface.receipt("receipts")]
   }});
-  return {states:[docs,path,draft,opened,status,proposal],capabilities:[reader,writer,ai,apply,exporter],intents:[list,choose,open,scratch,save,lock,suggest,accept,pdf],surfaces:[surface]};
+  return {states:[docs,path,draft,opened,status,proposal],capabilities:[reader,writer,ai,apply,exporter],intents:[list,choose,open,scratch,create,save,whole,lock,suggest,accept,pdf],surfaces:[surface]};
 });

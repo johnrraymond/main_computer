@@ -164,7 +164,11 @@ class Ollama:
                 diag['phase']='awaiting_first_frame'; diag['headers_seconds']=round(time.monotonic()-started,3)
                 announce('headers')
                 while True:
+                    if getattr(self,'deadline',None) and time.monotonic()-started>=self.deadline:
+                        raise ValueError('atomic inference elapsed-time budget exhausted')
                     line=res.readline(1_000_001)
+                    if getattr(self,'deadline',None) and time.monotonic()-started>=self.deadline:
+                        raise ValueError('atomic inference elapsed-time budget exhausted')
                     if not line: break
                     total_bytes += len(line)
                     if len(line)>1_000_000 or total_bytes>8_000_000:
@@ -570,6 +574,10 @@ def add_args(p):
     p.add_argument('--think',choices=['auto','on','off'],default='auto',help='Auto disables extended thinking for Qwen control cases only')
     p.add_argument('--resume',metavar='EXECUTION_ID',help='Reuse validated passing controls and repair failed controls from a previous execution-* directory in --out')
     p.add_argument('--include-ignored',action='store_true'); p.add_argument('--controls-only',action='store_true')
+    p.add_argument('--atomic',action='store_true',help='Bounded responsibility-level repository investigations with checkpoints')
+    p.add_argument('--examples',help='Comma-separated pinned example numbers (1-10); default all ten')
+    p.add_argument('--atomic-unit-limit',type=int,default=0,help='Maximum NEW judgments per example per invocation; 0 means unlimited')
+    p.add_argument('--atomic-deadline',type=int,default=1200,help='Atomic streaming elapsed-time budget per inference, checked at frame boundaries')
 
 
 def load_resume(out,name,provider,judge):
@@ -622,6 +630,13 @@ def run(a):
     if not out.is_relative_to(report_root) or not report_root.resolve().is_relative_to(root):
         raise ValueError('execution reports must stay inside runtime/reports/mc_encoding')
     if not 1<=a.turns<=30 or not 1<=a.timeout<=3600 or not 2048<=a.control_context<=131072 or not 2048<=a.context<=131072 or not 128<=a.predict<=32768: raise ValueError('invalid execution budget')
+    atomic=getattr(a,'atomic',False)
+    selected=set(range(1,11))
+    if getattr(a,'examples',None):
+        selected={int(x) for x in a.examples.split(',')}
+        if not selected or not selected<=set(range(1,11)): raise ValueError('examples must be between 1 and 10')
+    if not 0<=getattr(a,'atomic_unit_limit',0)<=10000 or not 60<=getattr(a,'atomic_deadline',1200)<=7200: raise ValueError('invalid atomic budget')
+    if getattr(a,'atomic_unit_limit',0) and not atomic: raise ValueError('--atomic-unit-limit requires --atomic')
     url=a.ollama_url if '://' in a.ollama_url else 'http://'+a.ollama_url
     provider=Ollama(url,a.model,a.timeout); judge=Ollama(url,a.judge_model or provider.model,a.timeout)
     def configure(control):
@@ -639,18 +654,24 @@ def run(a):
     summary={'status':'RUNNING','model':provider.model,'judge_model':judge.model,'same_model':provider.model==judge.model,
              'semantic_certification':'NOT_PERFORMED','production_edits':'NOT_AUTHORIZED_OR_PERFORMED','cases':entries,'report':str(run_dir/'summary.json'),'review':str(run_dir/'review.txt')}
     if resume: summary['resumed_from']=resume[0].name
+    if atomic: summary.update(investigation_mode='atomic-v1',selected_examples=sorted(selected),atomic_unit_limit=a.atomic_unit_limit,atomic_deadline=a.atomic_deadline)
     def publish():
         ck.atomic_write(run_dir/'summary.json',json.dumps(summary,indent=2,ensure_ascii=False)+'\n')
         sections=['# MC encoding execution smoke review',dump(summary)]
         for entry in entries:
             r=json.loads((run_dir/entry['artifact']).read_text(encoding='utf-8'))
-            sections.append('=== '+entry['case']+' | '+entry['path']+' ===\n'+json.dumps({k:r.get(k) for k in ('status','errors','answer','evaluation','oracle','provider_diagnostics','blocked_turn','provider_calls','repairs','semantic_repairs','judge_diagnostics','counterpart_coverage','resume_status')},indent=2,ensure_ascii=False))
+            sections.append('=== '+entry['case']+' | '+entry['path']+' ===\n'+json.dumps({k:r.get(k) for k in ('status','errors','answer','evaluation','oracle','provider_diagnostics','blocked_turn','provider_calls','repairs','semantic_repairs','judge_diagnostics','counterpart_coverage','resume_status','atomic_units','atomic_plans','atomic_passages_total','atomic_complete','atomic_new_units','atomic_new_plans','atomic_limit_reached','atomic_failed')},indent=2,ensure_ascii=False))
         ck.atomic_write(run_dir/'review.txt','\n\n'.join(sections)+'\n')
     def save(result,label):
         dest=run_dir/(label+'.json'); ck.atomic_write(dest,json.dumps(result,indent=2,ensure_ascii=False)+'\n')
         answer=result.get('answer'); answer=answer if isinstance(answer,dict) else {}; items=answer.get('items'); items=items if isinstance(items,list) else []
         entries.append({'case':label,'path':result['path'],'direction':result['direction'],'evidence':result['status'],'evaluation':result['evaluation']['status'],
                         'oracle':result.get('oracle',{}).get('status','NOT_APPLICABLE'),'verdicts':dict(Counter(x.get('verdict') for x in items if isinstance(x,dict) and isinstance(x.get('verdict'),str))),'artifact':dest.name,**({'resume_status':result['resume_status']} if 'resume_status' in result else {})})
+        if 'atomic_units' in result:
+            entries[-1].update(atomic_units_reviewed=sum(x['evaluation']=='PASS' for x in result['atomic_units']),
+                               atomic_units_attempted=len(result['atomic_units']),atomic_new_units=result['atomic_new_units'],
+                               atomic_passages_total=result['atomic_passages_total'],atomic_complete=result['atomic_complete'],
+                               atomic_limit_reached=result['atomic_limit_reached'],atomic_failed=result['atomic_failed'])
         publish(); print('MC_ENCODING_EXECUTION_CASE '+dump(entries[-1]),flush=True)
     publish()
     try:
@@ -675,17 +696,30 @@ def run(a):
             publish(); print('MC_ENCODING_EXECUTION '+dump(summary),flush=True); return 2 if summary['status']=='CONTROL_BLOCKED' else 1
         if not a.controls_only:
             configure(False)
+            if atomic:
+                from tools import mc_encoding_atomic as atom
+                for client in (provider,judge):
+                    client.context=min(a.context,8192)
+                    client.think=False
+                    client.deadline=a.atomic_deadline
+                store=run_dir/'atomic'; store.mkdir()
+                atom.copy_checkpoints(resume,store)
+                ck.progress('atomic=READY context='+str(provider.context)+' deadline='+str(a.atomic_deadline)+' unit_limit='+str(a.atomic_unit_limit))
             anchors=json.loads((Path(ck.__file__).resolve().parent/'fixtures'/'mc_encoding_prompt_smoke_v1.json').read_text(encoding='utf-8'))
             s=ck.scan(root,a.source or ['.'],a.docs or ['docs'],include_ignored=a.include_ignored,on_progress=ck.progress)
             s.index=ck.CandidateIndex(s,ck.progress)
             summary['inventory']={'files':len(s.texts),'unreadable':len(s.hashes)-len(s.texts),'documents':sum(k=='doc' for k in s.kinds.values()),'mode':s.inventory}
             for j,anchor in enumerate(anchors,1):
+                if j not in selected: continue
                 path=anchor['path']; kind=anchor['kind']; symbol=anchor.get('symbol','')
                 direction='CODE_TO_DOC' if kind in ck.CODE_REVIEW else 'DOC_TO_CODE'
                 matches=[x for x in s.issues if (x['path'],x['kind'],x.get('symbol',''))==(path,kind,symbol)]
                 if len(matches)!=1: result={'status':'BLOCKED','errors':['pinned finding missing or ambiguous; not substituted'],'evaluation':{'status':'NOT_RUN'},'path':path,'direction':direction}
+                elif atomic: result=atom.run_case(provider,judge,s,matches[0],direction,store,a.atomic_unit_limit,ck.progress)
                 else: result=case(provider,judge,s,matches[0],direction,a.turns,ck.progress)
                 result['original_finding_id']=anchor['finding_id']; save(result,f'example-{j:02d}')
+                if atomic and (result.get('atomic_failed') or result['status']=='BLOCKED'):
+                    ck.progress('atomic=STOP_EARLY after='+f'example-{j:02d}'); break
             # Reject stale evidence if any read file has changed on disk since the scan.
             changed=[]
             for entry in entries:
@@ -697,11 +731,34 @@ def run(a):
                     try: ok=p.resolve().is_relative_to(root) and hashlib.sha256(p.read_bytes()).hexdigest()==r['sha256']
                     except OSError: ok=False
                     if not ok: changed.append(r['path'])
+            if atomic:
+                # Scoped absence depends on the entire searched opposite-role
+                # inventory, including files not selected for reading. Check
+                # additions/removals and changed bytes before publishing.
+                absence_roles=set()
+                for entry in entries:
+                    for v,role in [('MISSING_DOCUMENTATION','documentation'),('MISSING_IMPLEMENTATION','implementation')]:
+                        if entry['case'].startswith('example-') and entry['verdicts'].get(v): absence_roles.add(role)
+                if absence_roles:
+                    changed.extend(atom.changed_absence_scope(s,a.source or ['.'],a.docs or ['docs'],absence_roles))
             summary['changed_evidence_paths']=sorted(set(changed))
         summary['unverified_cases']=[x['case'] for x in entries if x['case'].startswith('example-') and not any(v!='UNVERIFIED' and n for v,n in x['verdicts'].items())]
         summary['status']='PASS_REVIEW_REQUIRED' if all(x['evidence']=='EVIDENCE_PASS' and x['evaluation']=='PASS' for x in entries) and not summary.get('changed_evidence_paths') else 'FAIL'
+        if atomic and not a.controls_only:
+            examples=[x for x in entries if x['case'].startswith('example-')]
+            summary['atomic_units_reviewed']=sum(sum(x['verdicts'].values()) for x in examples)
+            summary['atomic_units_conclusive']=sum(n for x in examples for v,n in x['verdicts'].items() if v not in {'UNVERIFIED','NOT_APPLICABLE'})
+            summary['atomic_unattempted_examples']=sorted(selected-{int(x['case'].split('-')[1]) for x in examples})
+            if summary.get('changed_evidence_paths'): summary['status']='FAIL_STALE_EVIDENCE'
+            elif any(x.get('atomic_failed') for x in examples): summary['status']='ATOMIC_FAIL'
+            elif any(x['evidence']=='BLOCKED' for x in examples): summary['status']='ATOMIC_BLOCKED'
+            elif len(examples)==len(selected) and all(x.get('atomic_units_reviewed',0)>0 for x in examples) and (a.atomic_unit_limit or len(selected)!=10):
+                summary['status']='ATOMIC_PILOT_PASS_REVIEW_REQUIRED'
+            elif any(x['evidence']=='PARTIAL' for x in examples) or len(examples)!=10: summary['status']='ATOMIC_PARTIAL_REVIEW_REQUIRED'
+            elif summary['status']=='PASS_REVIEW_REQUIRED':
+                summary['status']='ATOMIC_INCONCLUSIVE' if len(summary['unverified_cases'])==len(examples) else 'ATOMIC_PASS_REVIEW_REQUIRED'
         if summary['status']=='PASS_REVIEW_REQUIRED' and len(summary['unverified_cases'])==10: summary['status']='INCONCLUSIVE'
-        publish(); print('MC_ENCODING_EXECUTION '+dump(summary),flush=True); return 0 if summary['status']=='PASS_REVIEW_REQUIRED' else 1
+        publish(); print('MC_ENCODING_EXECUTION '+dump(summary),flush=True); return 0 if summary['status'] in {'PASS_REVIEW_REQUIRED','ATOMIC_PASS_REVIEW_REQUIRED','ATOMIC_PILOT_PASS_REVIEW_REQUIRED'} else 1
     except KeyboardInterrupt:
         summary['status']='INTERRUPTED'; publish(); return 130
     except Exception as exc:

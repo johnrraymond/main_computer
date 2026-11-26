@@ -51,6 +51,13 @@ FILES = (
     'main_computer/onlyoffice_durable_journal.py', 'main_computer/onlyoffice_revision_fence.py',
     'main_computer/web/auth_login.js', 'main_computer/web/auth_login.html',
     'main_computer/web/applications/scripts/onlyoffice-app.js',
+    'main_computer/mcel_onlyoffice_application.py', 'mcel_apps/onlyoffice/application.js',
+    'mcel_apps/onlyoffice/application.html', 'mcel_apps/onlyoffice/mcel.app.json',
+    'main_computer/web/applications/scripts/mcel-onlyoffice-port.js',
+    'main_computer/web/applications/scripts/mcel-onlyoffice-workspace.js',
+    'main_computer/web/applications/styles/mcel-onlyoffice-workspace.css',
+    'main_computer/mcel_applications_registry.py',
+    'tools/fixtures/mcel_semantic_applications_shell/registry.json',
     'deploy/onlyoffice-hardened-nginx.conf', 'deploy/onlyoffice-editor-host.html',
     'deploy/onlyoffice-editor-host.js', 'docker-compose.onlyoffice.hardened.yml',
     'tools/mcel_onlyoffice_cutover.py', 'tools/mcel_onlyoffice_real_editor_lab.py',
@@ -224,7 +231,7 @@ def backend_child(config_path):
                     self._send_text('<!doctype html><html><head><meta charset="utf-8"></head><body><div id="editor-host" style="width:100vw;height:95vh"></div></body></html>', 'text/html; charset=utf-8')
             elif route == '/cutover-probe-script':
                 if admit(self, 'GET'):
-                    self._send_text((ROOT/'main_computer/web/applications/scripts/onlyoffice-app.js').read_text(encoding='utf-8'), 'application/javascript; charset=utf-8')
+                    self._send_text((ROOT/'main_computer/web/applications/scripts/mcel-onlyoffice-port.js').read_text(encoding='utf-8'), 'application/javascript; charset=utf-8')
             else:
                 if admit(self, 'GET'):
                     self._send_json({'error':'NOT_A_LAB_ROUTE'}, 404)
@@ -388,10 +395,9 @@ def live(work, report, tag):
 
                     def open_editor(page):
                         page.goto(base+'/cutover-probe',wait_until='domcontentloaded',timeout=120000)
-                        page.evaluate('''() => { window.onlyofficeEditorHost=document.getElementById('editor-host'); window.onlyofficeStatus=null; }''')
                         page.add_script_tag(url=base+'/cutover-probe-script')
                         # Real config + real production mount function. No DocsAPI script on MC origin.
-                        data=page.evaluate('''async () => { const data=await onlyofficeApi('/api/applications/onlyoffice/config',{path:'Probe.xlsx'}); if(!data.hardened_editor_origin)throw Error('hardened mode missing'); window.probeEditor=await mountHardenedOnlyOffice(data); return {key:data.config.document.key,callback:data.config.editorConfig.callbackUrl,download:data.config.document.url}; }''')
+                        data=page.evaluate('''async () => { const response=await fetch('/api/applications/onlyoffice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'Probe.xlsx'})}); const data=await response.json(); if(!response.ok||!data.hardened_editor_origin)throw Error('hardened mode missing'); window.probeEditor=McelOnlyOfficePort.mountEditor(document.getElementById('editor-host'),data); await window.probeEditor.ready; return {key:data.config.document.key,callback:data.config.editorConfig.callbackUrl,download:data.config.document.url}; }''')
                         check('actual-editor-config-and-isolated-host-ready',bool(data['key']))
                         check('docs-js-not-executed-on-mc-origin',page.evaluate('typeof window.DocsAPI === "undefined"'))
                         return data
@@ -411,7 +417,7 @@ def live(work, report, tag):
                         for command in ('Control+Home','F2','Control+A'): page.keyboard.press(command)
                         page.keyboard.type(value,delay=25);page.keyboard.press('Enter');page.wait_for_timeout(3000)
                     def save(page,value):
-                        result=page.evaluate('''async () => onlyofficeApi('/api/applications/onlyoffice/force-save',{path:'Probe.xlsx'})''')
+                        result=page.evaluate('''async () => {const response=await fetch('/api/applications/onlyoffice/force-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'Probe.xlsx'})});if(!response.ok)throw Error('force-save refused');return await response.json();}''')
                         check('actual-commandservice-accepted',result.get('command_response',{}).get('error')==0)
                         wait_until(lambda:cell_is(value),180,'genuine-signed-callback-persisted')
                     launch=open_editor(first)

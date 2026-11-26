@@ -79,11 +79,11 @@ def test_agent_runtime_writes_durable_state_and_signal_events() -> None:
     assert "agent-events.jsonl" in runtime
     assert "signal.SIGTERM" in runtime
     assert "agent.shutdown" in runtime
-    assert "/api/hub/v1/health" in runtime
+    assert "/health" in runtime
 
 
 def test_hub_health_url_joins_exp_fdb_hub_health_endpoint() -> None:
-    assert hub_health_url("http://host.docker.internal:8870/") == "http://host.docker.internal:8870/api/hub/v1/health"
+    assert hub_health_url("http://host.docker.internal:8870/") == "http://host.docker.internal:8870/health"
 
 
 def test_export_script_keeps_exp_fdb_agent_entrypoint_in_snapshots() -> None:

@@ -250,3 +250,98 @@ def test_atomic_replace_rejects_changed_manifest(tmp_path):
     with pytest.raises(wr.RectifierError, match='changed'):
         wr._atomic_replace_if_unchanged(target, b'old version', b'replacement')
     assert target.read_bytes() == b'new version'
+
+
+def setup_metadata(monkeypatch, tmp_path, network='testnet'):
+    def forbidden(*args, **kwargs):
+        pytest.fail('metadata-only mode must not read or format officer identities')
+    monkeypatch.setattr(wr, '_load_mother_officers', forbidden)
+    monkeypatch.setattr(wr, '_office_records_from_dev_chain_reset', forbidden)
+    registry = tmp_path / 'main_computer/config/hub_networks.json'
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_bytes((wr.REPO_ROOT / 'main_computer/config/hub_networks.json').read_bytes())
+    create_contract_config(tmp_path, network)
+    old_rpc = 'http://192.0.2.10:30010'
+    return create_manifest(
+        tmp_path, network, offices=[{'office': 'O0', 'address': ADDRESSES[0]}],
+        schema='main-computer.deployment.v1', dry_run=False,
+        chain={'chain_id': 42424241 if network == 'testnet' else 42424240,
+               'rpc_url': old_rpc, 'host_rpc_url': old_rpc, 'container_rpc_url': old_rpc,
+               'container': 'preserve-me'},
+    )
+
+
+def test_metadata_only_dry_run_apply_and_idempotence(monkeypatch, tmp_path):
+    target = setup_metadata(monkeypatch, tmp_path)
+    other = create_manifest(tmp_path, 'mainnet')
+    other_bytes = other.read_bytes()
+    before = target.read_bytes()
+    original = json.loads(before)
+    report = wr.rectify(tmp_path, 'testnet', apply=False, metadata_only=True)
+    assert report['status'] == 'DRIFT' and not report['write_performed']
+    assert target.read_bytes() == before
+    assert report['rpc']['changed_fields'] == ['rpc_url', 'host_rpc_url', 'container_rpc_url']
+    report = wr.rectify(tmp_path, 'testnet', apply=True, metadata_only=True)
+    assert report['status'] == 'UPDATED' and report['write_performed']
+    result = json.loads(target.read_bytes())
+    for field in ('rpc_url', 'host_rpc_url', 'container_rpc_url'):
+        assert result['chain'][field] == 'https://testnet-rpc.greatlibrary.io'
+    assert result['chain']['container'] == original['chain']['container']
+    assert result['chain']['chain_id'] == original['chain']['chain_id']
+    for section in ('contracts', 'deployments'):
+        assert result[section]['hub_credit_bridge_escrow'] == {'address': NEW_ESCROW}
+        assert result[section]['xlag-bridge-reserve'] == original[section]['xlag-bridge-reserve']
+        assert result[section]['alpha-beta-lockout'] == original[section]['alpha-beta-lockout']
+    assert {k: v for k, v in result.items() if k not in ('chain', 'contracts', 'deployments')} == {
+        k: v for k, v in original.items() if k not in ('chain', 'contracts', 'deployments')}
+    assert other.read_bytes() == other_bytes
+    after = target.read_bytes()
+    assert wr.rectify(tmp_path, 'testnet', apply=True, metadata_only=True)['status'] == 'PASS'
+    assert target.read_bytes() == after
+
+
+def test_metadata_preserves_distinct_container_route_and_missing_alias(monkeypatch, tmp_path):
+    target = setup_metadata(monkeypatch, tmp_path, 'mainnet')
+    document = json.loads(target.read_bytes())
+    document['chain']['container_rpc_url'] = 'http://chain-internal:8545'
+    del document['chain']['host_rpc_url']
+    target.write_text(json.dumps(document))
+    wr.rectify(tmp_path, 'mainnet', apply=True, metadata_only=True)
+    chain = json.loads(target.read_bytes())['chain']
+    assert chain['rpc_url'] == 'https://mainnet-rpc.greatlibrary.io'
+    assert chain['container_rpc_url'] == 'http://chain-internal:8545'
+    assert 'host_rpc_url' not in chain
+
+
+@pytest.mark.parametrize('defect', ['chain_id', 'schema', 'dry_run', 'registry', 'contracts'])
+def test_metadata_invalid_input_no_write(monkeypatch, tmp_path, defect):
+    target = setup_metadata(monkeypatch, tmp_path)
+    document = json.loads(target.read_bytes())
+    if defect == 'chain_id':
+        document['chain']['chain_id'] = 42424240
+    elif defect == 'schema':
+        document['schema'] = 'invalid'
+    elif defect == 'dry_run':
+        document['dry_run'] = True
+    elif defect == 'registry':
+        (tmp_path / 'main_computer/config/hub_networks.json').unlink()
+    else:
+        (tmp_path / 'main_computer/config/testnet_contracts.json').unlink()
+    target.write_text(json.dumps(document))
+    before = target.read_bytes()
+    with pytest.raises(Exception):
+        wr.rectify(tmp_path, 'testnet', apply=True, metadata_only=True)
+    assert target.read_bytes() == before
+
+
+def test_metadata_cli(monkeypatch, tmp_path, capsys):
+    target = setup_metadata(monkeypatch, tmp_path)
+    monkeypatch.setattr(wr, 'REPO_ROOT', tmp_path)
+    before = target.read_bytes()
+    assert wr.main(['--network', 'testnet', '--metadata-only', '--dry-run']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'DRIFT'
+    assert target.read_bytes() == before
+    assert wr.main(['--network', 'testnet', '--metadata-only', '--apply']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'UPDATED'
+    assert wr.main(['--network', 'testnet', '--metadata-only', '--apply']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'PASS'

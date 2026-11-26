@@ -125,7 +125,7 @@
     // The four accepted semantic apps are canonical standalone routes.
     // A desktop-icon click must navigate there, rather than rendering the
     // incumbent panel inside the already-loaded legacy application shell.
-    const semanticCanonicalApps = new Set(["calculator", "file-explorer", "task-manager", "code-editor", "chat-console"]);
+    const semanticCanonicalApps = new Set(["calculator", "file-explorer", "task-manager", "code-editor", "chat-console", "onlyoffice"]);
     function setActiveApp(appName, options = {}) {
       const normalizedApp = routeableApps.has(appName) ? appName : "desktop";
       if (semanticCanonicalApps.has(normalizedApp)) {
@@ -153,7 +153,6 @@
       const isCalculator = normalizedApp === "calculator";
       const isDocument = normalizedApp === "document";
       const isSpreadsheet = normalizedApp === "spreadsheet";
-      const isOnlyOffice = normalizedApp === "onlyoffice";
       const isTaskManager = normalizedApp === "task-manager";
       const isConductor = normalizedApp === "conductor";
       const isTerminal = normalizedApp === "terminal";
@@ -181,17 +180,12 @@
       if (previousApp === "game-editor" && normalizedApp !== "game-editor") {
         disposeGameEditorSurface();
       }
-      if (previousApp === "onlyoffice" && normalizedApp !== "onlyoffice") {
-        window.onlyofficeResetEditorViewportFix?.();
-        window.onlyofficeCloseAdvancedPane?.();
-      }
       canvas.style.display = isWebgl ? "block" : "none";
       if (desktopOverlay) desktopOverlay.style.display = isDesktop ? "grid" : "none";
       if (astrometricApp) astrometricApp.style.display = isAstrometric ? "grid" : "none";
       calculatorApp.style.display = isCalculator ? "grid" : "none";
       documentApp.style.display = isDocument ? "grid" : "none";
       spreadsheetApp.style.display = isSpreadsheet ? "grid" : "none";
-      if (onlyofficeApp) onlyofficeApp.style.display = isOnlyOffice ? "grid" : "none";
       taskManagerApp.style.display = isTaskManager ? "grid" : "none";
       if (conductorApp) conductorApp.style.display = isConductor ? "grid" : "none";
       terminalApp.style.display = isTerminal ? "grid" : "none";
@@ -243,11 +237,6 @@
         running = false;
         glStatus.textContent = "spreadsheet ready";
         initSpreadsheetApp();
-      } else if (isOnlyOffice) {
-        running = false;
-        glStatus.textContent = "onlyoffice ready";
-        initOnlyOfficeApp();
-        window.onlyofficeScheduleEditorViewportFix?.();
       } else if (isTaskManager) {
         running = false;
         glStatus.textContent = "task manager ready";

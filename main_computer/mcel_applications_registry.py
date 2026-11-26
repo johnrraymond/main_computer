@@ -17,7 +17,7 @@ from main_computer.mcel_phase2c_candidate_host import CandidateHostError
 
 REGISTRY_PATH = Path("tools/fixtures/mcel_semantic_applications_shell/registry.json")
 CANONICAL_ROUTE_PATH = Path("main_computer/viewport_state.py")
-SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console", "slh", "worker", "wallet", "document"})
+SEMANTIC_APPS = frozenset({"calculator", "file-explorer", "task-manager", "code-editor", "chat-console", "slh", "worker", "wallet", "document", "onlyoffice"})
 PROPERTIES = ("theme", "form", "chrome")
 POLICY_SCHEMA = "mcel.presentation-policy.v1"
 SELECTION_SCHEMA = "mcel.presentation-selection.v1"

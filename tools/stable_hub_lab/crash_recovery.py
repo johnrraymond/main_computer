@@ -18,10 +18,16 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from main_computer.stable_hub_topology import load_stable_hub_topology
+from main_computer.hub_credit_indexer import wallet_account_id
+from main_computer.stable_hub_worker_sessions import (
+    StableHubPayoutLedgerDirectory, stable_worker_session_store_from_topology,
+)
 from tools.stable_hub_lab.run_lab import (
-    _new_user_slug, _post_json_url, _read_json_url, _read_json_url_status, _ws_connect,
+    _new_user_slug, _post_json_url, _ws_connect,
     _ws_recv_json, _ws_send_json, build_stable_msk_smoke_result,
     check_cluster,
 )
@@ -55,18 +61,53 @@ def _pick_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _payout(url: str) -> dict[str, Any]:
-    body = _read_json_url(url + '/api/hub/v1/payout/status', timeout=5)
-    if body.get('ok') is not True or not isinstance(body.get('payout'), dict):
-        raise RuntimeError(f'payout unavailable: {body}')
-    return body['payout']
+def _payout(store) -> dict[str, Any]:
+    # The public API deliberately forbids raw ledger reads. Inspect only the
+    # fresh disposable namespace allocated by this campaign, in one snapshot.
+    data = store.load()
+    return {
+        'holds': list(data['payout_holds'].values()),
+        'charges': list(data['payout_charges'].values()),
+        'worker_earnings': list(data['worker_earnings'].values()),
+    }
 
 
-def _balance(url: str, wallet: str) -> dict[str, Any]:
-    body = _read_json_url(url + '/api/hub/v1/credits/balance?wallet_address=' + quote(wallet), timeout=5)
-    if body.get('ok') is not True:
-        raise RuntimeError(f'balance unavailable: {body}')
+def _authorized_read(url: str, credential: str) -> tuple[int, dict[str, Any]]:
+    if not _is_loopback(url) or not credential:
+        raise ValueError('authenticated crash-lab read requires loopback and credential')
+    request = Request(url, headers={'Authorization': 'Bearer ' + credential,
+                                    'Accept': 'application/json'})
+    # No redirects carrying bearer credentials. Both endpoints are on the
+    # ephemeral local Hub; an unexpected redirect must fail the campaign.
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    try:
+        with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=5) as response:
+            return int(response.status), json.loads(response.read())
+    except HTTPError as exc:
+        with exc:
+            return int(exc.code), json.loads(exc.read())
+
+
+def _balance(url: str, wallet: str, msk_id: str) -> dict[str, Any]:
+    status, body = _authorized_read(url + '/api/hub/v1/credits/balance?wallet_address=' + quote(wallet), msk_id)
+    if status != 200 or body.get('ok') is not True:
+        raise RuntimeError(f'authenticated balance unavailable: HTTP {status}')
     return body['account']
+
+
+def _market_and_work(capability: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    # This is an abandoned acceptance test, not a model execution test.
+    # The same isolated capability and canonical model must match on both sides.
+    model = 'model-alpha'
+    return (
+        {'rings': ['ring-2'], 'models': [model], 'capabilities': ['python', capability],
+         'max_concurrency': 1, 'price': {'amount': '0.512', 'unit': 'credit'}},
+        {'ring': 'ring-2', 'model': model, 'capabilities': [capability],
+         'max_price': {'amount': '0.512', 'unit': 'credit'},
+         'input': {'kind': 'echo', 'value': 'crash'}},
+    )
 
 
 def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float = 110) -> dict[str, Any]:
@@ -102,7 +143,8 @@ def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float
     worker_sock = None
     evidence: dict[str, Any] = {'ok': False, 'cluster_id': topology.cluster_id,
                                'namespace': topology.storage['namespace'],
-                               'victim': victim.hub_id, 'survivor': entry.hub_id}
+                               'victim': victim.hub_id, 'survivor': entry.hub_id,
+                               'funding': 'SYNTHETIC_ISOLATED_FDB_ONLY'}
     try:
         env = dict(os.environ)
         env['MAIN_COMPUTER_STABLE_HUB_RECOVERY_LEASE_SECONDS'] = '30'
@@ -132,16 +174,28 @@ def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float
             user_slug=_new_user_slug(), request_id='captain-' + run_id,
             origin='isolated-crash-recovery-captain', timeout=15,
         )
-        pre = _balance(entry.hub_url, captain_msk['wallet_address'])
+        if worker_msk.get('ok') is not True or captain_msk.get('ok') is not True:
+            raise RuntimeError('isolated MSK issuance or cross-Hub validation failed')
+        # Synthetic credits in this campaign's unique namespace only. Do not
+        # depend on public funding endpoints or an implicit free balance.
+        store = stable_worker_session_store_from_topology(topology, repo_root=ROOT)
+        ledger = StableHubPayoutLedgerDirectory(topology=topology, hub_id=entry.hub_id, store=store)
+        wallet = captain_msk['wallet_address']
+        captain_key = captain_msk['multisession_key_id']
+        ledger.fund_account(account_id=wallet_account_id(wallet), wallet_address=wallet,
+                            credits='1', replace=False)
+        pre = _balance(entry.hub_url, wallet, captain_key)
+        if int(pre['available_credit_wei']) != 10**18 or int(pre['held_credit_wei']) or int(pre['spent_credit_wei']):
+            raise RuntimeError('disposable requester funding baseline is incorrect')
         capability = 'crash_' + run_id
+        market, work = _market_and_work(capability)
         worker_sock = _ws_connect(victim.hub_url, '/api/hub/v1/workers/live-session', timeout=15)
         worker_sock.settimeout(20)
         _ws_send_json(worker_sock, {
             'type': 'worker.auth', 'execution_protocol': 'durable-authorization-v1',
             'multisession_authorization': {'kind': 'multisession_key',
                                            'multisession_key_id': worker_msk['multisession_key_id']},
-            'market': {'rings': ['ring-2'], 'capabilities': ['python', capability],
-                       'max_concurrency': 1, 'price': {'amount': '0.512', 'unit': 'credit'}},
+            'market': market,
         })
         auth, ping = _ws_recv_json(worker_sock), _ws_recv_json(worker_sock)
         if auth.get('type') != 'hub.auth.accepted' or auth.get('execution_protocol') != 'durable-authorization-v1':
@@ -152,9 +206,6 @@ def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float
         if _ws_recv_json(worker_sock).get('type') != 'hub.pong.accepted':
             raise RuntimeError('initial owner heartbeat was not acknowledged')
         request_id = 'req_crash_' + run_id
-        work = {'ring': 'ring-2', 'capabilities': [capability],
-                'max_price': {'amount': '0.512', 'unit': 'credit'},
-                'input': {'kind': 'echo', 'value': 'crash'}}
         submission: queue.Queue[Any] = queue.Queue()
         def send_captain():
             try:
@@ -182,13 +233,22 @@ def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float
             raise RuntimeError(f'execution authorization missing: {authorized}')
         submitted = submission.get(timeout=20)
         if isinstance(submitted, BaseException) or submitted.get('accepted') is not True:
-            raise RuntimeError(f'Captain request not accepted: {submitted}')
+            raise RuntimeError('Captain request not accepted')
+        continuation_token = submitted.get('continuation_token')
+        if not isinstance(continuation_token, str) or not continuation_token:
+            raise RuntimeError('requester continuation credential missing')
         session_id = offer['session_id']
-        holds_before = [h for h in _payout(entry.hub_url)['holds']
+        holds_before = [h for h in _payout(store)['holds']
                         if h.get('session_id') == session_id and h.get('status') == 'held']
         if len(holds_before) != 1:
             raise RuntimeError(f'no durable reserved hold before process kill: {holds_before}')
-        held_account = _balance(entry.hub_url, captain_msk['wallet_address'])
+        held_account = _balance(entry.hub_url, wallet, captain_key)
+        hold_wei = int(holds_before[0]['credit_wei'])
+        if (hold_wei != 512_000_000_000_000_000
+                or int(held_account['available_credit_wei']) != int(pre['available_credit_wei']) - hold_wei
+                or int(held_account['held_credit_wei']) != int(pre['held_credit_wei']) + hold_wei
+                or int(held_account['spent_credit_wei']) != int(pre['spent_credit_wei'])):
+            raise RuntimeError('pre-kill reservation accounting is incorrect')
         evidence.update({'request_id': request_id, 'session_id': session_id,
                          'connection_id': connection_id,
                          'hold_id': holds_before[0]['hold_id'],
@@ -206,21 +266,22 @@ def run_isolated_process_death(*, topology_path: Path, out: Path, timeout: float
             if any(proc.poll() is not None for proc in processes[:2]):
                 raise RuntimeError('surviving Hub exited during recovery')
             try:
-                payout = _payout(entry.hub_url)
+                payout = _payout(store)
                 related_holds = [h for h in payout['holds'] if h.get('session_id') == session_id]
                 charges = [c for c in payout['charges'] if c.get('session_id') == session_id]
                 earnings = [e for e in payout['worker_earnings'] if e.get('session_id') == session_id]
                 if len(related_holds) == 1 and related_holds[0]['status'] == 'released':
-                    after = _balance(entry.hub_url, captain_msk['wallet_address'])
-                    hold_wei = int(holds_before[0]['credit_wei'])
-                    if (charges or earnings
+                    after = _balance(entry.hub_url, wallet, captain_key)
+                    if (related_holds[0]['hold_id'] != holds_before[0]['hold_id']
+                            or charges or earnings
                             or int(after['held_credit_wei']) != int(held_account['held_credit_wei']) - hold_wei
                             or int(after['available_credit_wei']) != int(held_account['available_credit_wei']) + hold_wei
                             or int(after['spent_credit_wei']) != int(held_account['spent_credit_wei'])):
                         raise RuntimeError(f'financial invariants violated after recovery: {after}')
-                    status_code, session = _read_json_url_status(
-                        entry.hub_url + '/api/hub/v1/work/sessions/' + session_id + '/stream', timeout=5)
-                    if status_code != 409 or session.get('status') != 'failed':
+                    status_code, session = _authorized_read(
+                        entry.hub_url + '/api/hub/v1/work/sessions/' + session_id + '/stream', continuation_token)
+                    if (status_code != 409 or session.get('status') != 'failed'
+                            or session.get('session_id') != session_id):
                         raise RuntimeError(f'hold released without session failing: {session}')
                     evidence['ok'] = True
                     evidence['proof'] = {

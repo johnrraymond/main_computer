@@ -82,8 +82,6 @@ def build_admin_bootstrap_payload(
         "credits": credit_status,
         "credit_indexer": credit_indexer_status,
         "endpoints": {
-            "health": "/api/hub/v1/health",
-            "status": "/api/hub/v1/status",
             "metrics": "/api/hub/v1/metrics",
             "workers": "/api/hub/v1/workers",
             "worker_register": "/api/hub/v1/workers/register",

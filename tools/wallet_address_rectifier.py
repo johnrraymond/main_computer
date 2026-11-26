@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Synchronize Mother officers and published contracts into deployment latest.json.
 
-Only latest.json officers, contracts, and deployments are rectified. No chain
-reset, contract deployment, private-state mutation, or wallet creation.
+The default mode synchronizes officers and contracts. Metadata-only mode
+synchronizes published contracts and canonical RPC metadata without reading
+Mother private state. Neither mode performs chain or deployment operations.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import runpy
 import sys
 import tempfile
 from typing import Any
+from urllib.parse import urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from main_computer.contract_config import contract_address_map, load_contract_config
+from main_computer.hub_networks import load_hub_network_registry
 from tools.mother.common.ethereum_identity import is_address, is_private_key, private_key_to_address
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
@@ -178,23 +181,52 @@ def _atomic_replace_if_unchanged(path: Path, previous: bytes, replacement: bytes
         temp_path.unlink(missing_ok=True)
 
 
-def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
+def _synchronize_rpc(repo_root: Path, network: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    profile = load_hub_network_registry(
+        repo_root / "main_computer" / "config" / "hub_networks.json"
+    ).get(network)
+    profile.validate_runnable()
+    if profile.kind != network or profile.chain_id != manifest["chain"]["chain_id"]:
+        raise RectifierError(f"Canonical {network} identity does not match the destination manifest")
+    url = profile.chain_rpc_url
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise RectifierError(f"Canonical {network} RPC must be a public HTTPS URL")
+    chain = dict(manifest["chain"])
+    previous = chain.get("rpc_url")
+    chain["rpc_url"] = url
+    # Only migrate aliases of the old public route; distinct internal routes
+    # may be intentional. Do not invent missing aliases.
+    for field in ("host_rpc_url", "container_rpc_url"):
+        if field in chain and previous and chain[field] == previous:
+            chain[field] = url
+    return chain
+
+
+def rectify(repo_root: Path, network: str, *, apply: bool, metadata_only: bool = False) -> dict[str, Any]:
     if network not in ("mainnet", "testnet"):
         raise RectifierError("Only mainnet and testnet may be rectified from Mother")
-    addresses, generation, chain_id = _load_mother_officers(repo_root, network)
-    offices = _office_records_from_dev_chain_reset(repo_root, addresses)
+    generation = None
+    offices = []
+    if not metadata_only:
+        addresses, generation, chain_id = _load_mother_officers(repo_root, network)
+        offices = _office_records_from_dev_chain_reset(repo_root, addresses)
     target = repo_root / "runtime" / "deployments" / network / "latest.json"
     old_bytes, manifest = _read_manifest(target, network)
-    if manifest["chain"]["chain_id"] != chain_id:
+    if not metadata_only and manifest["chain"]["chain_id"] != chain_id:
         raise RectifierError(f"Mother {network} chain ID does not match the destination manifest")
     contract_source, published_contracts = _published_contract_addresses(repo_root, network)
     previous = manifest.get("offices")
     updated = dict(manifest)
-    updated["offices"] = offices
+    if metadata_only:
+        if manifest.get("schema") != "main-computer.deployment.v1" or manifest.get("dry_run") is not False:
+            raise RectifierError("Metadata reconciliation requires a real v1 deployment manifest")
+        updated["chain"] = _synchronize_rpc(repo_root, network, manifest)
+    else:
+        updated["offices"] = offices
     updated["contracts"] = _synchronize_contract_section(manifest, published_contracts, "contracts")
     updated["deployments"] = _synchronize_contract_section(manifest, published_contracts, "deployments")
-    # This operation can change only the three synchronized fields.
-    synchronized = {"offices", "contracts", "deployments"}
+    synchronized = {"contracts", "deployments", "chain" if metadata_only else "offices"}
     if {k: v for k, v in updated.items() if k not in synchronized} != {
         k: v for k, v in manifest.items() if k not in synchronized
     }:
@@ -206,7 +238,7 @@ def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
         check = json.loads(target.read_text(encoding="utf-8"))
         if check != updated:
             raise RectifierError("Deployment manifest readback failed")
-    return {
+    report = {
         "network": network,
         "source": str(repo_root / "runtime" / "state" / "mother" / "identity.private.yaml"),
         "mother_generation": generation,
@@ -242,20 +274,35 @@ def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
         "previous_manifest_sha256": hashlib.sha256(old_bytes).hexdigest(),
     }
 
+    if metadata_only:
+        report.pop("source")
+        report.pop("mother_generation")
+        report.pop("offices")
+        report["mode"] = "metadata-only"
+        report["rpc"] = {
+            "canonical_url": updated["chain"]["rpc_url"],
+            "changed_fields": [
+                field for field in ("rpc_url", "host_rpc_url", "container_rpc_url")
+                if manifest["chain"].get(field) != updated["chain"].get(field)
+            ],
+        }
+    return report
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync Mother's O0-O3 officers and published contracts into deployment latest.json (no chain operations)")
     parser.add_argument("--network", required=True, choices=("mainnet", "testnet"))
+    parser.add_argument("--metadata-only", action="store_true", help="Synchronize contracts and RPC metadata only; preserve officers")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true", help="Show changes only (default)")
-    modes.add_argument("--apply", action="store_true", help="Synchronize offices, contracts, and deployments in the manifest")
+    modes.add_argument("--apply", action="store_true", help="Apply the selected synchronization to the manifest")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        result = rectify(REPO_ROOT, args.network, apply=args.apply)
+        result = rectify(REPO_ROOT, args.network, apply=args.apply, metadata_only=args.metadata_only)
     except Exception as exc:
         # Don't print the Mother identity object or private-key material.
         print(f"WALLET_ADDRESS_RECTIFIER_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

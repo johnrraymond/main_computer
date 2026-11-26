@@ -40,9 +40,9 @@ const root=document.getElementById('mcel-workbench'),status=document.getElementB
 let app;try{const ir=JSON.parse(document.getElementById('mcel-workbench-ir').textContent);
 const port=McelDocumentCandidatePort.create(()=>app);
 app=McelSemanticOperationalRuntime.mount(root,ir,{capabilities:port,presentation:'expert'});
-window.__mcelWorkbench=Object.freeze({app,appId:'document'});
+window.__mcelWorkbench=Object.freeze({app,appId:'document',getDocumentMetadata:port.getMetadata});
 window.addEventListener('beforeunload',event=>{if(port.isDirty()){event.preventDefault();event.returnValue='';}});
-McelDocumentWorkspace.mount(root,app);
+McelDocumentWorkspace.mount(root,app,port);
 status.textContent='Document Editor ready';
 }catch(e){status.dataset.error='true';status.textContent='Document Editor unavailable: '+String(e.message||e);throw e;}
 })();</script></body></html>'''

@@ -239,7 +239,9 @@ def _summarize_hub(
         "wallet_address": config.wallet_address,
         "worker_node_id": config.worker_node_id,
     }
-    status = fetch_json(hub_url, "/api/hub/v1/status", {}, config.timeout_seconds)
+    status = fetch_json(hub_url, "/api/hub/v1/hub-identity", {}, config.timeout_seconds)
+    if status.get("ok") is not True or status.get("service") not in {"main_computer.stable_hub", "main_computer.exp_fdb_hub"}:
+        raise HubBridgeAuditCliError("Canonical Hub identity was not verified")
     credits = fetch_json(hub_url, "/api/hub/v1/credits", {}, config.timeout_seconds)
     audit = fetch_json(hub_url, "/api/hub/v1/bridge/audit", params, config.timeout_seconds)
     holds = fetch_json(
@@ -289,7 +291,7 @@ def _summarize_hub(
         "hub_url": hub_url.rstrip("/"),
         "ok": bool(status),
         "reachable": True,
-        "bridge_backend": status.get("bridge_backend", {}),
+        "bridge_backend": {},  # Not available through the public identity contract.
         "credit_status": {
             key: credits.get(key)
             for key in (

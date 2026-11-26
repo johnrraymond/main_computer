@@ -15,10 +15,8 @@ def test_host_projection_preserves_critical_controls():
     ):
         assert marker in html
 
-def test_viewport_uses_declared_layout_not_old_html():
+def test_canonical_viewport_uses_native_package_not_old_html():
     source = (ROOT / 'main_computer/viewport_pages.py').read_text(encoding='utf-8')
-    assert 'if include_name == "applications/apps/onlyoffice.html":' in source
-    assert 'from main_computer.mcel_onlyoffice_host_projection import project' in source
-
-def test_no_onlyoffice_in_incomplete_package_tree():
-    assert not (ROOT / 'mcel_apps/onlyoffice').exists()
+    assert 'from main_computer.mcel_onlyoffice_host_projection import project' not in source
+    assert (ROOT / 'mcel_apps/onlyoffice/application.js').is_file()
+    assert 'render_onlyoffice_page' in (ROOT / 'main_computer/viewport_route_dispatch.py').read_text(encoding='utf-8')

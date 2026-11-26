@@ -15,8 +15,8 @@ from main_computer.hub_bridge_audit_cli import (
 
 
 def _fake_fetch_json(hub_url: str, path: str, params: dict[str, object], timeout_seconds: float) -> dict[str, object]:
-    if path == "/api/hub/v1/status":
-        return {"bridge_backend": {"backend": "dev-chain", "escrow_address": "0xescrow"}}
+    if path == "/api/hub/v1/hub-identity":
+        return {"ok": True, "service": "main_computer.exp_fdb_hub"}
     if path == "/api/hub/v1/credits":
         return {"account_count": 1, "transaction_count": 4, "hold_count": 0}
     if path == "/api/hub/v1/bridge/audit":

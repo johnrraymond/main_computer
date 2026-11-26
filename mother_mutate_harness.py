@@ -63,6 +63,7 @@ COMMON_STEPS = [
     "verify-identity-evidence",
 ]
 
+PRE_CLEANUP_VERIFY_STEP = "pre-cleanup-verify"
 POST_WORK_CLEANUP_STEP = "post-work-cleanup"
 PRISTINE_CLEANUP_STEP = "pristine-cleanup"
 FRESH_EMPTY_TOPOLOGY_REFRESH_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
@@ -77,6 +78,7 @@ SINGLE_NODE_STEPS = [
     "publish-genesis-contracts",
     "publish-officer-addresses",
     "ensure-rpc-route",
+    PRE_CLEANUP_VERIFY_STEP,
     POST_WORK_CLEANUP_STEP,
     PRISTINE_CLEANUP_STEP,
 ]
@@ -92,6 +94,7 @@ REPLICA_ADMISSION_STEPS = [
     "verify-validator-admission-evidence",
     "finalize-post-admission-topology",
     "ensure-rpc-route",
+    PRE_CLEANUP_VERIFY_STEP,
     POST_WORK_CLEANUP_STEP,
     PRISTINE_CLEANUP_STEP,
 ]
@@ -141,6 +144,7 @@ MUTATION_STEPS = {
     "execute-replica-sync",
     "execute-validator-admission",
     "ensure-rpc-route",
+    PRE_CLEANUP_VERIFY_STEP,
     "execute-remove-do",
     PRISTINE_CLEANUP_STEP,
 }
@@ -2808,6 +2812,21 @@ class Harness:
             raise SystemExit("MOTHER_MUTATE_HARNESS_RPC_ROUTE_NOT_ENSURED")
         self.state["rpc_route_ensure"] = obj
 
+    def step_pre_cleanup_verify(self) -> None:
+        """Verify and reconcile local deployment metadata before add-node cleanup."""
+        if self.args.operation != "add-node" or self.args.network not in {"mainnet", "testnet"}:
+            return
+        obj = self.run(PRE_CLEANUP_VERIFY_STEP, [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_pre_cleanup_verify.py"),
+            "--network", self.args.network,
+            "--timeout", str(self.args.timeout),
+            "--apply",
+        ])
+        if obj.get("status") != "pass" or obj.get("manifest_verified") is not True or obj.get("network") != self.args.network:
+            raise SystemExit("MOTHER_MUTATE_HARNESS_PRE_CLEANUP_VERIFY_FAILED")
+        self.state["pre_cleanup_verify"] = obj
+
     def step_post_work_cleanup(self) -> None:
         if self.args.skip_post_work_cleanup:
             print(f"\n=== {POST_WORK_CLEANUP_STEP} skipped ===")
@@ -3105,6 +3124,7 @@ class Harness:
             "verify-remove-do-evidence": self.step_verify_remove_do_evidence,
             "finalize-remove": self.step_finalize_remove,
             "verify-remove-finalize": self.step_verify_remove_finalize,
+            PRE_CLEANUP_VERIFY_STEP: self.step_pre_cleanup_verify,
             POST_WORK_CLEANUP_STEP: self.step_post_work_cleanup,
             PRISTINE_CLEANUP_STEP: self.step_pristine_cleanup,
         }
@@ -3112,6 +3132,11 @@ class Harness:
     def run_steps(self, steps: list[str], start_at: str) -> None:
         methods = self.methods()
         start_index = steps.index(start_at) if start_at in steps else 0
+        # A direct resume at either cleanup stage must re-run the verification
+        # gate, but must not repeat a cleanup stage the operator explicitly skipped.
+        if (self.args.operation == "add-node" and PRE_CLEANUP_VERIFY_STEP in steps
+                and start_at in {POST_WORK_CLEANUP_STEP, PRISTINE_CLEANUP_STEP}):
+            methods[PRE_CLEANUP_VERIFY_STEP]()
         for step in steps[start_index:]:
             methods[step]()
 

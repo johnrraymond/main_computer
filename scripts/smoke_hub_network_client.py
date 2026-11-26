@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import hashlib
+import os
 import re
 import sys
 import time
@@ -18,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from main_computer.hub_credit_bridge_completion import JsonRpcClient
+from main_computer.hub_private_https import ROUTES_ENV, REQUIRE_ENV
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.contract_config import contract_address_map, load_contract_config, canonical_contract_key
 from main_computer.hub_networks import HubNetworkConfigError, HubNetworkProfile, load_hub_network_registry, profile_with_deployment_manifest_defaults
@@ -90,28 +93,11 @@ def http_json(
 
 
 def rpc_json(url: str, method: str, params: list[Any] | None = None, *, timeout: float = 10.0) -> Any:
-    request = Request(
-        url,
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
+    # Use the established chain client, including its API identity and error reporting.
     try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace"))
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SmokeFailure(f"RPC {method} returned HTTP {exc.code}: {body[:1000]}") from exc
-    except URLError as exc:
-        raise SmokeFailure(f"RPC {method} failed against {url}: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise SmokeFailure(f"RPC {method} timed out after {timeout} seconds against {url}") from exc
-
-    if not isinstance(payload, dict):
-        raise SmokeFailure(f"RPC {method} returned non-object JSON: {payload!r}")
-    if payload.get("error"):
-        raise SmokeFailure(f"RPC {method} returned error: {payload['error']}")
-    return payload.get("result")
+        return JsonRpcClient(url, timeout_s=timeout).rpc(method, params)
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise SmokeFailure(str(exc)) from exc
 
 
 def repo_relative_path(path_text: str, *, repo_root: Path = REPO_ROOT) -> Path:
@@ -226,9 +212,11 @@ def verify_contract_code(profile: HubNetworkProfile, contracts: dict[str, Any], 
 
 
 def verify_hub(profile: HubNetworkProfile, *, hub_url: str, timeout: float) -> dict[str, Any]:
-    health = http_json("GET", join_url(hub_url, "/api/hub/v1/health"), timeout=timeout)
+    health = http_json("GET", join_url(hub_url, "/health"), timeout=timeout)
     require(health.get("ok") is True, "Hub health did not return ok=true")
-    status = http_json("GET", join_url(hub_url, "/api/hub/v1/status"), timeout=timeout)
+    status = http_json("GET", join_url(hub_url, "/api/hub/v1/hub-identity"), timeout=timeout)
+    require(health.get("service") == status.get("service") == "main_computer.exp_fdb_hub" and status.get("ok") is True, "Local Hub identity not verified")
+    require(bool(status.get("cluster_id")) and status.get("cluster_id") == health.get("cluster_id"), "Hub cluster mismatch")
     network = status.get("network") if isinstance(status.get("network"), dict) else {}
     require(network.get("network_key") == profile.network_key, f"Hub reports network {network.get('network_key')!r}, expected {profile.network_key!r}")
     require(int(network.get("chain_id", -1)) == int(profile.chain_id or -1), "Hub status chain_id does not match profile")
@@ -330,7 +318,14 @@ def run_public_preflight(profile: HubNetworkProfile, *, hub_url: str, deployment
     if not probe("canonical_endpoints", canonical):
         return report
     probe("hub", lambda: verify_stable_hub(profile, hub_url=hub_url, timeout=timeout))
-    chain = probe("chain", lambda: verify_chain(profile, timeout=timeout))
+    def public_chain():
+        # The shared client can dial Mother-owned VPN addresses while retaining
+        # the public URL. That would not prove public RPC reachability.
+        require(not os.environ.get(ROUTES_ENV, "").strip()
+                and os.environ.get(REQUIRE_ENV, "").strip().lower() not in {"1", "true", "yes"},
+                f"Public RPC certification requires a client without private HTTPS routing ({ROUTES_ENV}, {REQUIRE_ENV})")
+        return verify_chain(profile, timeout=timeout)
+    chain = probe("chain", public_chain)
     records = probe("contract_registry", lambda: public_contract_records(profile))
     if chain is not None and records is not None:
         probe("contracts", lambda: verify_public_contracts(profile, records, timeout=timeout))
@@ -444,8 +439,8 @@ def run_smoke(
         "chain": chain,
         "hub": {
             "network": hub["network"],
-            "api_version": hub["status"].get("api_version"),
-            "worker_count": hub["status"].get("worker_count"),
+            "hub_id": hub["status"].get("hub_id"),
+            "cluster_id": hub["status"].get("cluster_id"),
         },
         "deployment_manifest": str(manifest_path),
         "contract_code_bytes": contracts,

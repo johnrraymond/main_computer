@@ -135,6 +135,8 @@ def test_retired_level4_smoke_refuses_before_any_http(monkeypatch):
 
 
 def public_fixture(smoke, monkeypatch, tmp_path, network='testnet'):
+    monkeypatch.delenv(smoke.ROUTES_ENV, raising=False)
+    monkeypatch.delenv(smoke.REQUIRE_ENV, raising=False)
     registry = smoke.load_hub_network_registry()
     profile = registry.get(network)
     records = smoke.public_contract_records(profile)
@@ -238,3 +240,86 @@ def test_public_failure_report_persists_and_returns_nonzero(monkeypatch, tmp_pat
     monkeypatch.setattr(smoke, 'run_smoke', lambda **kw: result)
     assert smoke.main(['--network', 'testnet', '--skip-level4']) == 1
     assert json.loads((tmp_path / 'runtime/hub/hub_network_client_smoke_testnet.json').read_text()) == result
+
+
+def test_public_rpc_uses_shared_chain_client_for_all_read_only_methods(monkeypatch, tmp_path):
+    from io import BytesIO
+    from main_computer import hub_credit_bridge_completion as bridge
+
+    smoke = load_smoke_client()
+    real_rpc = smoke.rpc_json
+    profile, _, _, _, _ = public_fixture(smoke, monkeypatch, tmp_path)
+    monkeypatch.setattr(smoke, 'rpc_json', real_rpc)
+    for name in ('MAIN_COMPUTER_CHAIN_RPC_USER_AGENT', 'MAIN_COMPUTER_HUB_USER_AGENT',
+                 smoke.ROUTES_ENV, smoke.REQUIRE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    requests = []
+    results = {'eth_chainId': hex(profile.chain_id), 'eth_blockNumber': '0xa',
+               'eth_getBlockByNumber': {'baseFeePerGas': '0x1'}, 'eth_estimateGas': '0x10000',
+               'eth_getCode': '0x6001'}
+
+    def fake_open(request, timeout):
+        assert request.full_url == profile.chain_rpc_url
+        assert request.get_method() == 'POST'
+        assert timeout == 7
+        headers = {k.lower(): v for k, v in request.header_items()}
+        assert headers['user-agent'] == 'main-computer-chain-rpc/1.0 (+https://greatlibrary.io)'
+        assert headers['x-main-computer-client'] == 'chain-rpc'
+        assert headers['accept'] == headers['content-type'] == 'application/json'
+        assert 'origin' not in headers
+        payload = json.loads(request.data)
+        assert payload['jsonrpc'] == '2.0'
+        requests.append(payload)
+        return BytesIO(json.dumps({'jsonrpc': '2.0', 'id': payload['id'],
+                                   'result': results[payload['method']]}).encode())
+
+    monkeypatch.setattr(bridge, 'urlopen', fake_open)
+    result = smoke.run_smoke(network='testnet', repo_root=tmp_path, skip_level4=True, timeout=7)
+    assert result['ok'] and result['canonical_live_ok']
+    assert [p['method'] for p in requests[:4]] == list(results)[:4]
+    assert requests[0]['params'] == []
+    assert requests[2]['params'] == ['latest', False]
+    assert requests[3]['params'][0]['data'] == smoke.PUSH0_CANARY_INITCODE
+    assert {p['params'][0] for p in requests[4:]} == {
+        record['address'] for record in smoke.public_contract_records(profile).values()}
+    assert all(p['method'] == 'eth_getCode' and p['params'][1] == 'latest' for p in requests[4:])
+
+
+def test_public_rpc_refusal_preserves_error_and_does_not_retry(monkeypatch, tmp_path):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from main_computer import hub_credit_bridge_completion as bridge
+
+    smoke = load_smoke_client()
+    real_rpc = smoke.rpc_json
+    profile, _, _, _, _ = public_fixture(smoke, monkeypatch, tmp_path)
+    monkeypatch.setattr(smoke, 'rpc_json', real_rpc)
+    monkeypatch.delenv(smoke.ROUTES_ENV, raising=False)
+    monkeypatch.delenv(smoke.REQUIRE_ENV, raising=False)
+    calls = []
+
+    def refused(request, timeout):
+        calls.append((request.full_url, json.loads(request.data)['method']))
+        raise HTTPError(request.full_url, 403, 'Forbidden', None,
+                        BytesIO(b'{"error_code":1010,"owner_action_required":true,"ray_id":"test-ray"}'))
+
+    monkeypatch.setattr(bridge, 'urlopen', refused)
+    result = smoke.run_smoke(network='testnet', repo_root=tmp_path, skip_level4=True)
+    assert not result['ok'] and not result['canonical_live_ok']
+    assert result['checks']['hub'] and result['checks']['contract_registry'] and result['checks']['manifest']
+    assert not result['checks']['chain'] and not result['checks']['contracts']
+    assert 'HTTP 403' in result['errors']['chain'] and 'test-ray' in result['errors']['chain']
+    assert result['errors']['contracts'] == 'NOT_RUN_CHAIN_OR_REGISTRY_UNVERIFIED'
+    assert calls == [(profile.chain_rpc_url, 'eth_chainId')]
+
+
+def test_public_rpc_refuses_private_routing_configuration(monkeypatch, tmp_path):
+    smoke = load_smoke_client()
+    profile, _, _, _, calls = public_fixture(smoke, monkeypatch, tmp_path)
+    monkeypatch.setenv(smoke.ROUTES_ENV, json.dumps({'testnet-rpc.greatlibrary.io': '10.1.2.3'}))
+    result = smoke.run_smoke(network='testnet', repo_root=tmp_path, skip_level4=True)
+    assert not result['ok'] and not result['canonical_live_ok']
+    assert 'private HTTPS routing' in result['errors']['chain']
+    assert result['checks']['hub'] and result['checks']['manifest']
+    assert not result['checks']['contracts']
+    assert calls == [profile.hub_url + p for p in ('/health', '/api/hub/v1/hub-identity', '/api/hub/v1/topology')]

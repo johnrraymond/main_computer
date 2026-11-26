@@ -59,7 +59,7 @@ class SLHControlBackend:
             result["status"] = "NOT_CONFIGURED"
             return result
         try:
-            request = urllib.request.Request(profile.url.rstrip('/') + '/api/hub/v1/health',
+            request = urllib.request.Request(profile.url.rstrip('/') + '/health',
                                              method='GET', headers={"Accept": "application/json"})
             with urllib.request.urlopen(request, timeout=timeout_s) as response:
                 result['http_status'] = response.status

@@ -167,3 +167,22 @@ def test_existing_js_only_and_hostbound_keep_compiling():
     if optional.exists():
         result=compile_dsl_application(optional)
         assert result.valid,(optional,result.diagnostics)
+
+
+def test_viewport_extent_hint_is_validated_and_preserved(tmp_path):
+    html,js=_base()
+    hint=' data-mcel-prefer-vertical-extent="viewport"'
+    authored=html.replace('data-mcel-id="workspace"','data-mcel-id="workspace"'+hint)
+    report=_compile(authored,js,tmp_path/'valid')
+    assert report.valid, report.diagnostics
+    regions=report.normalized_ir['surfaces'][0]['interfaceIntent']['regions']
+    owner=next(r for r in regions if r['id'].endswith('.workspace'))
+    assert owner['preferences']['verticalExtent']=='viewport'
+    assert validate_application_ir(report.normalized_ir).valid
+    bad=[authored.replace('vertical-extent="viewport"','vertical-extent="screen"'),
+         html.replace('data-mcel-id="locations"','data-mcel-id="locations"'+hint),
+         authored.replace('data-mcel-id="details"','data-mcel-id="details"'+hint),
+         authored.replace('data-mcel-id="application"','data-mcel-id="application"'+hint)]
+    for index,source in enumerate(bad):
+        result=_compile(source,js,tmp_path/str(index))
+        assert not result.valid, source

@@ -49,16 +49,16 @@ def test_legacy_handler_status_over_loopback_and_dev_test_inheritance():
     server.verbose=False
     server.resource_begin_headers=lambda connection: True
     server.resource_headers_complete=lambda connection: True
-    server.registry=SimpleNamespace(status=lambda: {'worker_count': 2, 'available_worker_count': 1, 'stale_worker_count': 0})
+    server.registry=SimpleNamespace(status=lambda: {'workers': [{}, {}], 'available_worker_count': 1, 'stale_worker_count': 0})
     server.config=SimpleNamespace(hub_network='dev',chain_id=42424242, hub_id='dev-hub1')
     server.stable_hub_node=SimpleNamespace(hub_id='dev-hub1')
     thread=threading.Thread(target=server.serve_forever,daemon=True)
     thread.start()
     try:
-        with urlopen(f'http://127.0.0.1:{server.server_port}/api/hub/status',timeout=3) as response:
+        with urlopen(f'http://127.0.0.1:{server.server_port}/api/hub/v1/workers',timeout=3) as response:
             body=json.load(response)
         assert body['worker_count']==2
-        assert body['network_key']=='dev'
+        assert body['ok'] is True
     finally:
         server.shutdown()
         server.server_close()

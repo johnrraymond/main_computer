@@ -46,7 +46,7 @@ DEFAULT_RETRY_SLEEP_S = 2.0
 DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub.exp-fdb"
 DEFAULT_EXP_FDB_DOCKERFILE_LOCATION = DEFAULT_DOCKERFILE_LOCATION
 DEFAULT_BASE_DIRECTORY = "/"
-DEFAULT_HEALTH_PATH = "/api/hub/v1/health"
+DEFAULT_HEALTH_PATH = "/health"
 DEFAULT_JSON_RPC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "MainComputerHubDeployer/1.0"
@@ -2805,12 +2805,22 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
             request = hub_status_request(status_url, user_agent=user_agent)
             with urllib.request.urlopen(request, timeout=args.hub_status_timeout_s) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            network = payload.get("network") if isinstance(payload, dict) else {}
+            if not isinstance(payload, dict) or payload.get("ok") is not True:
+                raise CoolifyHubDeployError("Hub health response is not ready")
+            identity_url = str(profile.hub_url or "").rstrip("/") + "/api/hub/v1/hub-identity"
+            with urllib.request.urlopen(hub_status_request(identity_url, user_agent=user_agent), timeout=args.hub_status_timeout_s) as response:
+                identity = json.loads(response.read().decode("utf-8"))
+            expected_service = "main_computer.stable_hub" if profile.network_key in {"mainnet", "testnet"} else "main_computer.exp_fdb_hub"
+            if (not isinstance(identity, dict) or identity.get("ok") is not True
+                    or identity.get("service") != expected_service or payload.get("service") != expected_service
+                    or not identity.get("cluster_id") or identity.get("cluster_id") != payload.get("cluster_id")):
+                raise CoolifyHubDeployError("Hub health/identity contract mismatch")
+            network = identity.get("network")
             if isinstance(network, dict):
                 network_key = network.get("network_key") or network.get("network")
                 chain_id = network.get("chain_id")
                 if network_key == profile.network_key and int(chain_id) == int(profile.chain_id or -1):
-                    return {"ok": True, "status_url": status_url, "status": payload}
+                    return {"ok": True, "status_url": status_url, "status": identity, "health": payload}
                 last_error = f"unexpected Hub status network={network_key!r} chain_id={chain_id!r}"
             else:
                 last_error = "Hub status response has no network object"

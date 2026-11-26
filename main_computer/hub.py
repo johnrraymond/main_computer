@@ -157,7 +157,7 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
     print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; {scheme_note}")
     print(f"Hub admin/control site: http://{host}:{server.server_port}/admin")
     print(
-        "Hub endpoints: GET /admin, GET /api/hub/v1/admin/bootstrap, GET /api/hub/status, "
+        "Hub endpoints: GET /admin, GET /api/hub/v1/models, GET /api/hub/v1/workers, "
         "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
         "POST /api/hub/v1/workers/results, "

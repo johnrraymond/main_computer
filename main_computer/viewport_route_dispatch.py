@@ -1176,13 +1176,23 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
             "error": "hub TCP endpoint is closed",
         }
         if hub_tcp_probe.get("ok"):
-            hub_status_probe = _control_panel_http_json(f"{hub_url}/api/hub/v1/status", timeout_s=0.6)
-            if not hub_status_probe.get("ok"):
-                hub_health_probe = _control_panel_http_json(f"{hub_url}/api/hub/v1/health", timeout_s=0.6)
+            hub_status_probe = _control_panel_http_json(f"{hub_url}/api/hub/v1/hub-identity", timeout_s=0.6)
+            hub_health_probe = _control_panel_http_json(f"{hub_url}/health", timeout_s=0.6)
 
         status_data = hub_status_probe.get("data") if isinstance(hub_status_probe, dict) else None
         hub_network = status_data.get("network") if isinstance(status_data, dict) and isinstance(status_data.get("network"), dict) else {}
-        hub_reachable = bool(hub_status_probe.get("ok") or hub_health_probe.get("ok"))
+        health_data = hub_health_probe.get("data")
+        expected_service = "main_computer.stable_hub" if key in {"mainnet", "testnet"} else "main_computer.exp_fdb_hub"
+        hub_reachable = bool(
+            hub_status_probe.get("ok") and hub_health_probe.get("ok")
+            and isinstance(status_data, dict) and status_data.get("ok") is True
+            and isinstance(health_data, dict) and health_data.get("ok") is True
+            and status_data.get("service") == health_data.get("service") == expected_service
+            and hub_network.get("network_key") == key
+            and str(hub_network.get("chain_id")) == str(profile.chain_id)
+            and bool(status_data.get("cluster_id"))
+            and status_data.get("cluster_id") == health_data.get("cluster_id")
+        )
         state, severity, status_text = _control_panel_network_state(key, hub_reachable)
         rpc_probe = _control_panel_rpc_probe(profile.chain_rpc_url)
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
@@ -1899,6 +1909,7 @@ _SEMANTIC_CANONICAL_APPLICATIONS = {
     "chat-console": "chat-console",
     "wallet": "wallet",
     "document": "document",
+    "onlyoffice": "onlyoffice",
 }
 _SEMANTIC_TASK_TABS = {
     "server-processes": "server-processes",
@@ -2139,6 +2150,9 @@ def dispatch_get(self) -> None:
         elif name == "document":
             from main_computer.mcel_document_candidate_host import render_document_candidate
             page = render_document_candidate()
+        elif name == "onlyoffice":
+            from main_computer.mcel_onlyoffice_application import render_onlyoffice_page
+            page = render_onlyoffice_page()
         elif name == "worker":
             from main_computer.mcel_worker_application import render_worker_page
             page = render_worker_page(canonical=True)

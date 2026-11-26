@@ -1,4 +1,4 @@
-"""Read-only Worker Hub health contract tests: Stable Hub identity, network isolation, legacy fallback."""
+"""Read-only Worker Hub health contract tests: Stable Hub identity, network isolation, no legacy fallback."""
 from __future__ import annotations
 
 from io import BytesIO
@@ -97,17 +97,27 @@ def test_prod_404_does_not_downgrade_to_legacy_status(tmp_path, monkeypatch):
     requests = _wire(monkeypatch, status=404, legacy={"ok": True})
     result = service._worker_network_session_payload({"selectedNetwork": "testnet"}, check_hub=True)["session"]
     assert result["connection_status"] == "failed"
-    assert "require a verified Stable Hub" in result["connection_error"]
-    assert len(requests) == 2
+    assert "HTTP 404" in result["connection_error"]
+    assert len(requests) == 1
 
 
-def test_legacy_test_hub_still_uses_old_status_route(tmp_path, monkeypatch):
+@pytest.mark.parametrize("network,chain", [("test", "42424241"), ("dev", "42424242")])
+def test_local_hub_requires_canonical_experimental_identity(tmp_path, monkeypatch, network, chain):
     service = _routes(tmp_path, monkeypatch)
-    requests = _wire(monkeypatch, status=404, legacy={"workers": []})
-    result = service._worker_network_session_payload({"selectedNetwork": "test"}, check_hub=True)["session"]
+    requests = _wire(monkeypatch, _identity(network=network, chain=chain, service="main_computer.exp_fdb_hub", hub_id="local-hub1"))
+    result = service._worker_network_session_payload({"selectedNetwork": network}, check_hub=True)["session"]
     assert result["connection_status"] == "connected"
-    assert result["hub_status"]["protocol"] == "legacy-hub-status"
-    assert requests[-1][0].endswith("/api/hub/status")
+    assert result["hub_status"]["protocol"] == "exp-fdb-hub-identity-v1"
+    assert len(requests) == 1
+    assert requests[0][0].endswith("/api/hub/v1/hub-identity")
+
+
+def test_local_404_never_falls_back(tmp_path, monkeypatch):
+    service = _routes(tmp_path, monkeypatch)
+    requests = _wire(monkeypatch, status=404, legacy={"ok": True})
+    result = service._worker_network_session_payload({"selectedNetwork": "test"}, check_hub=True)["session"]
+    assert result["connection_status"] == "failed"
+    assert len(requests) == 1
 
 
 def test_503_never_downgrades(tmp_path, monkeypatch):

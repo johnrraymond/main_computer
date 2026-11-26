@@ -38,12 +38,6 @@ def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> 
             from main_computer.mcel_calculator_host_projection import project
 
             return project(_REPOSITORY_ROOT)
-        if include_name == "applications/apps/onlyoffice.html":
-            # Generate the host from its declared layout. The checked-in HTML is
-            # a snapshot, never the live presentation authority.
-            from main_computer.mcel_onlyoffice_host_projection import project
-
-            return project(_REPOSITORY_ROOT)
         if include_name == "applications/scripts/mcel-lab-canonical-presentation-source.js":
             from main_computer.mcel_lab_semantic_presentation_source import project
 

@@ -35,6 +35,7 @@ class Export:
     result: str
     fixtures: tuple[Fixture, ...]
     json_tree: bool = False
+    json_decode: bool = False
 
     @property
     def name(self):
@@ -110,6 +111,28 @@ EXPORTS = {
         {'x': [[], {}, [1, 2, 3]], 'none': None},
         {'first': {'b': 2, 'a': 1}, 'second': {'a': 1, 'b': 2}},
     )), json_tree=True),
+    # Wire input is raw text, never json.loads evaluated by the translator.
+    # The original _frame implementation remains pinned and is called on the
+    # decoded object by both runtimes. These are codec tests, not relay tests.
+    'seh_frame_json_decode': Export((SEH_FRAME,), 'str', tuple(Fixture((raw,)) for raw in (
+        '{}',
+        '{ "type" : "seh.auth.proof", "signature": "fixture-signature" }',
+        '{"z":[null,true,false,-42,"text",{"b":1,"a":[]}],"a":{}}',
+        '{"n":' + str(2**256 - 1) + ',"negative":' + str(-(2**128)) + '}',
+        '{"x":1,"x":2,"a":3}',
+        r'{"a":1,"\u0061":2,"b":3}',
+        r'{"unicode":"\u00e9\u4e2d\ud83d\ude00","\u00e9":"accent"}',
+        '{"unicode":"é中😀"}',
+        r'{"escapes":"\u0000\b\t\n\f\r\u001f\u007f\"\\\/"}',
+        '{"a":[[],{},[1,2,3]],"none":null}',
+        '{"negative_zero":-0,"zero":0,"negative":-10}',
+        ' \t\r\n{"z":true,"a":false}\n',
+        '{"first":{"b":2,"a":1},"second":{"a":1,"b":2}}',
+        '[]', '[1,true,null,"hello"]', '"text"', '42', 'false', 'null',
+    )) + tuple(Fixture((raw,), error='JSONDecodeError') for raw in (
+        '', '{', '{"a":}', '{"a":1,}', '[1,]', '{"a":01}',
+        '{"a":1} {"b":2}', r'{"a":"\q"}', '{"a":"line\nbreak"}',
+    )), json_tree=True, json_decode=True),
     'multisession_key_id': Export((MSK,), 'str', (
         Fixture(kwargs=(('user_slug', 'user-a'), ('hub_slug', 'hub-b'))),
         Fixture(kwargs=(('hub_slug', 'HUB_2'), ('user_slug', 'user_1'))),
@@ -266,6 +289,13 @@ def programs(root: Path, export: Export, fixture: Fixture) -> tuple[str, str]:
                 if not isinstance(param.annotation, ast.Name) or param.annotation.id not in ('Any', 'object'):
                     raise ValueError('specialization annotation changed')
                 param.annotation = ast.Name(id='str', ctx=ast.Load())
+        if export.json_decode:
+            # The reviewed _frame body calls dumps without requiring a dict.
+            # A decoded root can be any JSON scalar/container. Widen only this
+            # annotation; the original oracle retains the unmodified source.
+            if fragment != SEH_FRAME or len(node.args.args) != 1 or not isinstance(node.args.args[0].annotation, ast.Name) or node.args.args[0].annotation.id != 'dict':
+                raise ValueError('reviewed decoder serializer signature changed')
+            node.args.args[0].annotation = ast.Name(id='object', ctx=ast.Load())
         nodes.append(node)
     # Validate data before constructing source. A JSON fixture is an acyclic
     # tree of built-in values, never a custom object with an executable repr.
@@ -284,5 +314,11 @@ def programs(root: Path, export: Export, fixture: Fixture) -> tuple[str, str]:
             raise ValueError('invalid fixture keyword')
         args.append(f'{key}={value!r}')
     main = f'def main() -> {export.result}:\n    return {export.name}({", ".join(args)})\n'
+    if export.json_decode:
+        if len(fixture.args) != 1 or type(fixture.args[0]) is not str or fixture.kwargs:
+            raise ValueError('JSON decoding fixture requires one raw string')
+        main = (f'def main() -> {export.result}:\n'
+                f'    raw = {fixture.args[0]!r}\n'
+                f'    return {export.name}(json.loads(raw))\n')
     native = [ast.unparse(ast.fix_missing_locations(_lower_globals(n, constants))) for n in nodes]
     return '\n\n'.join([*original, main]), '\n\n'.join([*(['import json'] if export.json_tree else []), *native, main])

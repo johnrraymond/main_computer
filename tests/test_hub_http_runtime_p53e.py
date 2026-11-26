@@ -78,7 +78,7 @@ def test_extracted_server_legacy_status_over_loopback(tmp_path):
     thread=threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with urlopen(f'http://127.0.0.1:{server.server_port}/api/hub/status', timeout=3) as response:
+        with urlopen(f'http://127.0.0.1:{server.server_port}/api/hub/v1/workers', timeout=3) as response:
             body=json.load(response)
         assert 'worker_count' in body
     finally:

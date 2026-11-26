@@ -243,9 +243,10 @@ def test_observer_reports_partial_dependency_state_instead_of_generic_timeout(mo
     def fake_get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
         del timeout_s
         if url.endswith("/health"):
-            return {"ok": True}
+            return {"ok": True, "service": "main_computer.exp_fdb_hub", "hub_id": "mainneta-hub1", "cluster_id": "test-cluster"}
         if url.endswith("/hub-identity"):
             return {
+                "ok": True, "service": "main_computer.exp_fdb_hub", "cluster_id": "test-cluster",
                 "hub_id": "mainneta-hub1",
                 "network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
                 "storage": {
@@ -254,8 +255,6 @@ def test_observer_reports_partial_dependency_state_instead_of_generic_timeout(mo
                     "namespace": "WRONG",
                 },
             }
-        if url.endswith("/status"):
-            return {"network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"}}
         raise AssertionError(url)
 
     monkeypatch.setattr(deployment, "_get_json", fake_get_json)
@@ -681,25 +680,16 @@ def test_observer_requires_bridge_signer_for_mainnet_target(monkeypatch: pytest.
     def fake_get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
         del timeout_s
         if url.endswith("/health"):
-            return {"ok": True}
+            return {"ok": True, "service": "main_computer.exp_fdb_hub", "hub_id": "mainneta-hub1", "cluster_id": "test-cluster"}
         if url.endswith("/hub-identity"):
             return {
+                "ok": True, "service": "main_computer.exp_fdb_hub", "cluster_id": "test-cluster",
                 "hub_id": "mainneta-hub1",
                 "network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
                 "storage": {
                     "backend": "foundationdb",
                     "cluster_file": "/var/lib/main-computer/mainnet/hub/fdb.cluster",
                     "namespace": "mainnet",
-                },
-            }
-        if url.endswith("/status"):
-            return {
-                "network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
-                "bridge_backend": {
-                    "mode": "contract-address-only",
-                    "signer_configured": False,
-                    "bridge_controller_authorized": False,
-                    "write_operations_enabled": False,
                 },
             }
         raise AssertionError(url)
@@ -720,16 +710,17 @@ def test_observer_requires_bridge_signer_for_mainnet_target(monkeypatch: pytest.
     ]
 
 
-def test_observer_verifies_bridge_signer_for_mainnet_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_experimental_observer_cannot_certify_private_signer_from_public_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     target = _observer_target()
     target["bridge_signer_required"] = True
 
     def fake_get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
         del timeout_s
         if url.endswith("/health"):
-            return {"ok": True}
+            return {"ok": True, "service": "main_computer.exp_fdb_hub", "hub_id": "mainneta-hub1", "cluster_id": "test-cluster"}
         if url.endswith("/hub-identity"):
             return {
+                "ok": True, "service": "main_computer.exp_fdb_hub", "cluster_id": "test-cluster",
                 "hub_id": "mainneta-hub1",
                 "network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
                 "storage": {
@@ -738,24 +729,14 @@ def test_observer_verifies_bridge_signer_for_mainnet_target(monkeypatch: pytest.
                     "namespace": "mainnet",
                 },
             }
-        if url.endswith("/status"):
-            return {
-                "network": {"chain_id": 42424240, "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
-                "bridge_backend": {
-                    "mode": "bridge-signer",
-                    "signer_configured": True,
-                    "bridge_controller_authorized": True,
-                    "write_operations_enabled": True,
-                },
-            }
         raise AssertionError(url)
 
     monkeypatch.setattr(deployment, "_get_json", fake_get_json)
     result = deployment.observe_hub(target, wait_timeout_s=0, request_timeout_s=0.1)
 
-    assert result["verified"] is True
-    assert result["bridge_signer_verified"] is True
-    assert result["reason"] == "hub-fdb-chain-and-bridge-signer-consumption-verified"
+    assert result["verified"] is False
+    assert result["bridge_signer_verified"] is False
+    assert result["reason"] == "experimental-runtime-authority-proof-unavailable"
 
 
 def _bridge_preflight_target() -> dict[str, Any]:

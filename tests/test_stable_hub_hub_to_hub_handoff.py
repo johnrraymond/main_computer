@@ -53,14 +53,16 @@ def _post_json(url: str, payload: dict, *, timeout: float = 8.0) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _get_json(url: str, *, timeout: float = 8.0) -> dict:
-    with urlopen(url, timeout=timeout) as response:  # noqa: S310 - local stable Hub test server
+def _get_json(url: str, *, timeout: float = 8.0, token: str = "") -> dict:
+    req = Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
+    with urlopen(req, timeout=timeout) as response:  # noqa: S310 - local stable Hub test server
         return json.loads(response.read().decode("utf-8"))
 
 
-def _get_json_status(url: str, *, timeout: float = 8.0) -> tuple[int, dict]:
+def _get_json_status(url: str, *, timeout: float = 8.0, token: str = "") -> tuple[int, dict]:
+    req = Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
     try:
-        with urlopen(url, timeout=timeout) as response:  # noqa: S310 - local stable Hub test server
+        with urlopen(req, timeout=timeout) as response:  # noqa: S310 - local stable Hub test server
             return response.status, json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
@@ -251,6 +253,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
                 },
                 "market": {
                     "rings": ["ring-2"],
+                    "models": ["model-alpha"],
                     "price": {"amount": "0.03", "unit": "credit"},
                     "capabilities": ["python", "echo"],
                     "max_concurrency": 2,
@@ -273,6 +276,10 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         )
         assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
 
+        hub1.payout_ledger_directory.fund_account(
+            account_id=requester_msk["key"]["account_id"],
+            wallet_address=requester_msk["key"]["wallet_address"], credits="1", replace=True,
+        )
         request_body = {
             "request_id": "req_remote_owner_handoff",
             "multisession_authorization": {
@@ -280,6 +287,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
                 "multisession_key_id": requester_msk["key"]["id"],
             },
             "work": {
+                "model": "model-alpha",
                 "ring": "ring-2",
                 "max_price": {"amount": "0.10", "unit": "credit"},
                 "capabilities": ["python"],
@@ -303,7 +311,8 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert offer["partition"] == "ring-2"
         assert offer["task_queue"] == "main-computer-work-ring-2"
         assert offer["execution_authorization_required"] is True
-        assert offer["work"] == {"execution_authorization_pending": True}
+        assert offer["work"] == {"execution_authorization_pending": True,
+                                  "model": "model-alpha", "operation": "python", "capabilities": ["python"]}
 
         _ws_send_json(
             sock,
@@ -323,9 +332,9 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert response["request_id"] == request_body["request_id"]
         assert response["session_id"] == offer["session_id"]
         assert response["run_id"] == offer["run_id"]
-        assert response["worker_id"] == accepted["connection_id"]
-        assert response["owner_hub_id"] == "dev-hub3"
-        assert response["owner_hub_url"] == hub3_url
+        # Ownership is verified in the shared private session record, not exposed to requesters.
+        assert all(k not in response for k in ("worker_id", "owner_hub_id", "owner_hub_url"))
+        assert len(response["continuation_token"]) >= 40
         assert response["hub_id"] == "dev-hub1"
         assert response["entry_hub_id"] == "dev-hub1"
         assert response["accepted_by_hub_id"] == "dev-hub3"
@@ -338,14 +347,6 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
             "stream_path": f"/api/hub/v1/work/sessions/{offer['session_id']}/stream",
             "hub_id": "dev-hub3",
             "hub_url": hub3_url,
-        }
-        assert response["execution"] == {
-            "backend": "temporal",
-            "namespace": "main-computer-dev",
-            "workflow_type": "WorkSessionWorkflow",
-            "workflow_id": offer["session_id"],
-            "task_queue": "main-computer-work-ring-2",
-            "status": "accepted",
         }
         assert response["handoff"] == {
             "routed": True,
@@ -365,9 +366,11 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert saved["owner_hub_id"] == "dev-hub3"
         assert saved["owner_hub_url"] == hub3_url
         assert saved["partition"] == "ring-2"
-        assert saved["execution"] == response["execution"]
 
-        continuation = _get_json(response["continuation_url"])
+        token = response["continuation_token"]
+        denied_status, denied = _get_json_status(response["continuation_url"])
+        assert denied_status == 403 and denied["error"] == "session_continuation_forbidden"
+        continuation = _get_json(response["continuation_url"], token=token)
         assert continuation["ok"] is True
         assert continuation["hub_id"] == "dev-hub3"
         assert continuation["session_id"] == offer["session_id"]
@@ -375,11 +378,12 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert continuation["status"] == "accepted"
         assert continuation["execution_hub"] == {"hub_id": "dev-hub3", "hub_url": hub3_url}
         assert continuation["continuation_url"] == response["continuation_url"]
-        assert continuation["execution"] == response["execution"]
-        assert continuation["accepted_session"]["owner_hub_id"] == "dev-hub3"
+        assert continuation["accepted_session"]["session_id"] == offer["session_id"]
+        assert "owner_hub_id" not in continuation["accepted_session"]
+        assert "requester_msk_id" not in continuation["accepted_session"]
 
         entry_stream_status, entry_stream_body = _get_json_status(
-            f"{hub1_url}/api/hub/v1/work/sessions/{offer['session_id']}/stream"
+            f"{hub1_url}/api/hub/v1/work/sessions/{offer['session_id']}/stream", token=token
         )
         assert entry_stream_status == 409
         assert entry_stream_body["ok"] is False
@@ -391,6 +395,35 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert market_seen_from_entry is not None
         assert market_seen_from_entry["active_sessions"] == 1
         assert market_seen_from_entry["owner_hub_id"] == "dev-hub3"
+
+        # Exercise the entire handoff, not just a returned routing URL. The
+        # local Worker is a deterministic protocol fixture; credits are synthetic.
+        authorized = _ws_recv_json(sock)
+        assert authorized["type"] == "hub.work.authorized"
+        assert authorized["session_id"] == offer["session_id"]
+        assert authorized["work"]["model"] == "model-alpha"
+        assert authorized["work"]["input"] == {"kind": "echo", "value": "handoff"}
+        _ws_send_json(sock, {
+            "type": "worker.work.result", "session_id": offer["session_id"],
+            "run_id": offer["run_id"], "request_id": offer["request_id"],
+            "result": {"status": "success", "response": {"model": "model-alpha", "content": "handoff"}},
+        })
+        ack = _ws_recv_json(sock)
+        assert ack["type"] == "hub.work.result.accepted" and ack["status"] == "succeeded"
+        final = _get_json(response["continuation_url"], token=token)
+        assert final["status"] == "succeeded"
+        assert final["accepted_session"]["worker_result"]["result"]["response"] == {
+            "model": "model-alpha", "content": "handoff"}
+        assert final["accepted_session"]["payout"]["payment_status"] == "charged"
+        replay = _post_json(f"{hub1_url}/api/hub/v1/work/requests", request_body)
+        assert replay["idempotent"] is True and replay["session_id"] == offer["session_id"]
+        ledger = worker_store.load()
+        charges = [c for c in ledger["payout_charges"].values() if c["request_id"] == offer["request_id"]]
+        earnings = [e for e in ledger["worker_earnings"].values() if e["request_id"] == offer["request_id"]]
+        assert len(charges) == len(earnings) == 1
+        assert int(charges[0]["charged_credit_wei"]) == int(earnings[0]["earned_credit_wei"]) == 3 * 10**16
+        assert charges[0]["account_id"] == requester_msk["key"]["account_id"]
+        assert earnings[0]["worker_id"] == worker_msk["key"]["account_id"]
     finally:
         if sock is not None:
             try:
@@ -434,19 +467,23 @@ def test_handoff_retires_missing_owner_socket_and_reselects_live_worker(tmp_path
             user_slug=REQUESTER_USER_SLUG,
             request_id="remote-stale-worker-recovery-msk",
         )
-        wallet = private_key_to_address(WORKER_PRIVATE_KEY)
+        worker_auth = _issue_msk(
+            hub1_url, private_key=WORKER_PRIVATE_KEY, user_slug=WORKER_USER_SLUG,
+            request_id="remote-stale-worker-real-msk",
+        )["key"]
+        wallet = worker_auth["wallet_address"]
         for worker_id in ("conn_000_ghost", "conn_zzz_reconnect"):
             owner = hub3.worker_session_directory.record_connected(
                 worker_id=worker_id, connection_id=worker_id,
-                multisession_key_id="msk_test", wallet_address=wallet,
-                account_id="acct_worker",
+                multisession_key_id=worker_auth["id"], wallet_address=wallet,
+                account_id=worker_auth["account_id"],
             )
             hub3.worker_market_directory.record_worker_live(
                 worker_id=worker_id, owner=owner,
-                market_profile={"rings": ["ring-2"], "capabilities": ["python"],
+                market_profile={"rings": ["ring-2"], "models": ["model-alpha"], "capabilities": ["python"],
                                 "price": {"amount": "0.01", "unit": "credit"}},
-                worker_msk_id="msk_test", worker_wallet_address=wallet,
-                worker_account_id="acct_worker",
+                worker_msk_id=worker_auth["id"], worker_wallet_address=wallet,
+                worker_account_id=worker_auth["account_id"],
             )
         hub3.register_live_worker_session(
             SimpleNamespace(connection_id="conn_zzz_reconnect", is_live=True)
@@ -458,9 +495,7 @@ def test_handoff_retires_missing_owner_socket_and_reselects_live_worker(tmp_path
             raise StableHubWorkerSessionError("worker_capacity_unavailable")
 
         monkeypatch.setattr(hub3.worker_market_directory, "reserve_worker_capacity", _deny_reservation)
-        status, result = _get_json_status(
-            hub1_url + "/api/hub/v1/hub-identity"
-        ) if False else (None, None)
+        status, result = None, None
         # POST the ordinary requester-shaped work to Hub A. The old market
         # record causes handoff to Hub C, which must prune it before selection.
         try:
@@ -469,7 +504,7 @@ def test_handoff_retires_missing_owner_socket_and_reselects_live_worker(tmp_path
                 "multisession_authorization": {
                     "kind": "multisession_key", "multisession_key_id": auth["key"]["id"],
                 },
-                "work": {"ring": "ring-2", "capabilities": ["python"],
+                "work": {"model": "model-alpha", "ring": "ring-2", "capabilities": ["python"],
                          "max_price": {"amount": "0.10", "unit": "credit"}, "input": {}},
             })
         except HTTPError as exc:

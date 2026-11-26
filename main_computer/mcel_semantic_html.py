@@ -44,7 +44,7 @@ ATTRS = frozenset({
     'data-mcel-prefer-side', 'data-mcel-prefer-density',
     'data-mcel-prefer-representation',
     'data-mcel-prefer-sizing', 'data-mcel-prefer-width-group',
-    'data-mcel-prefer-align',
+    'data-mcel-prefer-align', 'data-mcel-prefer-vertical-extent',
     'data-mcel-when-state', 'data-mcel-when-value', 'data-mcel-subview-group',
     'data-mcel-color-role', 'data-mcel-color-surface', 'data-mcel-color-context',
 })
@@ -135,6 +135,7 @@ class _SemanticParser(HTMLParser):
                 ('data-mcel-prefer-representation','representation',REPRESENTATIONS),
                 ('data-mcel-prefer-sizing','sizing',SIZINGS),
                 ('data-mcel-prefer-align','align',ALIGNMENTS),
+                ('data-mcel-prefer-vertical-extent','verticalExtent',{'viewport'}),
             ):
                 if attr in raw:
                     if raw[attr] not in allowed:

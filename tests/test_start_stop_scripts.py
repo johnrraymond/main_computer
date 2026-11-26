@@ -218,7 +218,7 @@ def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
 
     assert "function Resolve-MainComputerDevHubEndpoint" in helper
     assert "function Test-MainComputerDevHubStatus" in helper
-    assert "function Wait-MainComputerDevHubStatus" in helper
+    assert "function Wait-MainComputerDevHubEndpointsStatus" in helper
     assert "function Stop-MainComputerDevHubForRestart" in helper
     assert "function Start-MainComputerDevHubFresh" in helper
     assert 'state = "skipped-disabled"' in helper
@@ -234,7 +234,9 @@ def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
     assert 'MAIN_COMPUTER_DEV_HUB_AUTO_START' in helper
     assert '"MAIN_COMPUTER_HUB_NETWORK" "dev"' in helper
     assert '"MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process"' in helper
-    assert '"/api/hub/status"' in helper
+    assert '"/health"' in helper
+    assert '"/api/hub/v1/hub-identity"' in helper
+    assert '"/api/hub/status"' not in helper
     assert 'MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb"' in helper
     assert '"exp-fdb-hub.py"' in helper
     assert '"--runtime-env-file", [string]$runtimeEnvFile' in helper
@@ -255,9 +257,6 @@ def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
     assert "Scanning for existing dev Hub listeners on ports" in helper
     assert "Waiting for dev Hub topology health on ports" in helper
     assert '"MAIN_COMPUTER_HUB_ENTRY_URLS"' in helper
-    assert '"-m", "main_computer.cli"' in helper
-    assert '"dev-test-hub",' in helper
-    assert '"--network", [string]$endpoint.network' in helper
     assert '"--chain-rpc-url", [string]$endpoint.chain_rpc_url' in helper
     assert '"--chain-id", [string]$endpoint.chain_id' in helper
     assert '"--bridge-backend", [string]$bridgeBackend' in helper
@@ -466,3 +465,16 @@ def test_onlyoffice_status_reports_container_runtime_not_docker_bridge() -> None
     assert "ONLYOFFICE Docker control:" not in helper
     assert "$env:DOCKER_HOST" not in helper
 
+
+
+def test_dev_hub_readiness_has_one_deadline_and_fails_closed():
+    helper = (ROOT / "scripts/main-computer-start-stop.ps1").read_text(encoding="utf-8")
+    waiter = helper.split("function Wait-MainComputerDevHubEndpointsStatus", 1)[1].split("function Stop-MainComputerDevHubForRestart", 1)[0]
+    assert waiter.count("Stopwatch]::StartNew()") == 1
+    assert "$TimeoutSeconds - $clock.Elapsed.TotalSeconds" in waiter
+    assert "$Process.HasExited" in waiter
+    assert "protocol-mismatch" in waiter and "identity-mismatch" in waiter
+    assert 'Get-ObjectPropertyValue $network "chain_id"' in waiter
+    assert 'Get-ObjectPropertyValue $body "hub_id"' in waiter
+    assert 'Get-ObjectPropertyValue $body "cluster_id"' in waiter
+    assert "Wait-MainComputerDevHubStatus" not in waiter

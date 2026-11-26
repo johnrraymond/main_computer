@@ -181,7 +181,7 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
         if 'preferences' in region:
             prefs=region['preferences']
             allowed={'side':SIDES,'density':{'automatic','compact','comfortable'},'representation':{'automatic','tabular','graphical','textual'},
-                     'sizing':{'automatic','intrinsic'},'align':{'start','center','end'}}
+                     'sizing':{'automatic','intrinsic'},'align':{'start','center','end'},'verticalExtent':{'viewport'}}
             if not isinstance(prefs,Mapping):
                 errors.append(f'regions[{i}] has invalid preferences')
             else:
@@ -216,6 +216,18 @@ def html_interface_intent_errors(surface: Mapping) -> list[str]:
         if (len(members)<2 or len({m.get('parentId') for m in members})!=1 or
             len({m.get('preferences',{}).get('sizing','automatic') for m in members})!=1):
             errors.append(f'width group {group!r} requires two or more sibling regions with matching sizing')
+    # A viewport-height owner is a single, unconditional primary root child.
+    # Multiple owners or nested claims have no defined layout in this version.
+    extent_owners = [r for r in regions if isinstance(r, Mapping) and
+                     isinstance(r.get('preferences'), Mapping) and
+                     r['preferences'].get('verticalExtent') == 'viewport']
+    if len(extent_owners) > 1:
+        errors.append('viewport vertical extent permits only one owner')
+    for owner in extent_owners:
+        if (owner.get('parentId') != hierarchy.get('rootId') or
+                owner.get('purpose') != 'workspace' or owner.get('priority') != 'primary' or
+                'visibleWhen' in owner or 'widthGroup' in owner['preferences']):
+            errors.append('viewport vertical extent requires an unconditional primary workspace root child')
     roots=[rid for rid,parent in parent_by_id.items() if parent is None]
     if len(roots)!=1 or hierarchy.get('rootId') not in roots:
         errors.append('HTML hierarchy must have exactly one declared root')

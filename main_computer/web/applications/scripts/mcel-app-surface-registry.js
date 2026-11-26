@@ -123,7 +123,7 @@ var McelAppSurfaceRegistry = (() => {
     conductor: {appId: "conductor", label: "Conductor", state: "legacy", conformanceRequired: false},
     email: {appId: "email", label: "Email", state: "legacy", conformanceRequired: false},
     "layout-builder": {appId: "layout-builder", label: "Layout Builder", state: "legacy", conformanceRequired: false},
-    onlyoffice: {appId: "onlyoffice", label: "OnlyOffice", state: "legacy", conformanceRequired: false},
+    onlyoffice: {appId: "onlyoffice", label: "ONLYOFFICE", state: "native-candidate", conformanceRequired: false, maturity: "paired-source-compiled", notes: "Canonical paired MCEL route; live Document Server acceptance pending."},
     spreadsheet: {appId: "spreadsheet", label: "Spreadsheet", state: "legacy", conformanceRequired: false},
     "spreadsheet-smoke": {appId: "spreadsheet-smoke", label: "Spreadsheet Smoke", state: "legacy", conformanceRequired: false},
     "task-manager": {appId: "task-manager", label: "Task Manager", state: "legacy", conformanceRequired: false},

@@ -3453,14 +3453,14 @@ class ViewportEnergyRoutesMixin:
                         reported_network = str(actual.get("network_key") or "").strip().lower()
                         reported_chain = str(actual.get("chain_id") or "").strip()
                         expected_chain = str(profile.get("chain_id") or "").strip()
-                        if status.get("protocol") == "legacy-hub-status":
-                            if selected in {"mainnet", "testnet"}:
-                                status = {"reachable": False, "error": "Mainnet/testnet require a verified Stable Hub identity."}
-                        elif status.get("protocol") == "stable-hub-identity-v1":
-                            if reported_network != selected:
-                                status = {"reachable": False, "error": f"Hub network mismatch: selected {selected}, Hub reports {reported_network}."}
-                            elif not expected_chain or reported_chain != expected_chain:
-                                status = {"reachable": False, "error": f"Hub chain ID mismatch: expected {expected_chain}, Hub reports {reported_chain}."}
+                        service = identity.get("service")
+                        expected_service = "main_computer.stable_hub" if selected in {"mainnet", "testnet"} else "main_computer.exp_fdb_hub"
+                        if service != expected_service:
+                            status = {"reachable": False, "error": f"Hub service mismatch: expected {expected_service}, Hub reports {service}."}
+                        elif reported_network != selected:
+                            status = {"reachable": False, "error": f"Hub network mismatch: selected {selected}, Hub reports {reported_network}."}
+                        elif not expected_chain or reported_chain != expected_chain:
+                            status = {"reachable": False, "error": f"Hub chain ID mismatch: expected {expected_chain}, Hub reports {reported_chain}."}
                     session["hub_status"] = status
                     session["connected_hub_url"] = hub_url
                     if status.get("reachable"):
@@ -5314,8 +5314,8 @@ class ViewportEnergyRoutesMixin:
     def _fetch_hub_status(self, hub_url: str) -> dict[str, Any]:
         """Read-only Hub reachability check; verify Stable Hub identity for Worker networks.
 
-        Current deployed Hubs expose /api/hub/v1/hub-identity, not the older
-        /api/hub/status endpoint. Never interpret an arbitrary HTTP 200 as
+        Both current Hub implementations expose /api/hub/v1/hub-identity.
+        Never interpret an arbitrary HTTP 200 as
         verified identity or silently accept a different network/chain.
         """
         base = self._clean_hub_url(hub_url)
@@ -5329,8 +5329,8 @@ class ViewportEnergyRoutesMixin:
 
         try:
             data = fetch("/api/hub/v1/hub-identity")
-            if data.get("ok") is not True or data.get("service") != "main_computer.stable_hub":
-                raise ValueError("Hub identity is not a verified Stable Hub identity.")
+            if data.get("ok") is not True or data.get("service") not in {"main_computer.stable_hub", "main_computer.exp_fdb_hub"}:
+                raise ValueError("Hub identity is not a verified Stable Hub or Experimental FDB Hub identity.")
             if not str(data.get("hub_id") or "").strip():
                 raise ValueError("Stable Hub identity has no hub_id.")
             identity_network = data.get("network")
@@ -5340,20 +5340,8 @@ class ViewportEnergyRoutesMixin:
             actual_chain = str(identity_network.get("chain_id") or "").strip()
             if not actual_network or not actual_chain:
                 raise ValueError("Stable Hub identity is missing network or chain ID.")
-            return {"reachable": True, "status": data, "protocol": "stable-hub-identity-v1"}
+            return {"reachable": True, "status": data, "protocol": ("stable-hub-identity-v1" if data["service"] == "main_computer.stable_hub" else "exp-fdb-hub-identity-v1")}
         except HTTPError as exc:
-            # Older local test/dev Hubs expose the legacy status endpoint.
-            # A production Hub must not silently downgrade its identity check.
-            if exc.code == 404:
-                try:
-                    data = fetch("/api/hub/status")
-                    return {"reachable": True, "status": data, "protocol": "legacy-hub-status"}
-                except HTTPError as legacy_exc:
-                    body = legacy_exc.read().decode("utf-8", errors="replace").strip()
-                    return {"reachable": False, "http_status": legacy_exc.code,
-                            "error": f"Hub returned HTTP {legacy_exc.code}: {body or legacy_exc.reason}"}
-                except Exception as legacy_exc:
-                    return {"reachable": False, "error": str(legacy_exc)}
             body = exc.read().decode("utf-8", errors="replace").strip()
             return {"reachable": False, "http_status": exc.code,
                     "error": f"Hub returned HTTP {exc.code}: {body or exc.reason}"}

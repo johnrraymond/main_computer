@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--requester-max-credits", type=int, default=5_500_123)
     parser.add_argument("--json", action="store_true", help="Print only the JSON summary.")
     args = parser.parse_args()
+    raise RuntimeError("Retired: this smoke requires deleted Worker REST and private ledger HTTP routes; use the live-session acceptance suite.")
 
     hub_url = args.hub_url.rstrip("/")
     scope = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in args.scope.strip().lower())

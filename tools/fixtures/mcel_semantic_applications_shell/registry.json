@@ -88,7 +88,7 @@
       "title": "ONLYOFFICE",
       "description": "XLSX editing",
       "route": "/applications/onlyoffice",
-      "mount": "legacy"
+      "mount": "semantic"
     },
     {
       "id": "conductor",

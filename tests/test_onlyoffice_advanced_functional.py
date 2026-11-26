@@ -1,324 +1,88 @@
-from __future__ import annotations
+"""Native MCEL Advanced tools and AI request regression (mocked services).
 
-import tempfile
-import threading
-import unittest
-from pathlib import Path
-from typing import Any
-
-from main_computer.config import MainComputerConfig
-from main_computer.harness import HarnessComputer
-from main_computer.viewport import ViewportServer
-
-
-ONLYOFFICE_DOCS_API_STUB = r"""
-(() => {
-  const records = window.__onlyofficeAdvancedFunctional = window.__onlyofficeAdvancedFunctional || {
-    docEditorConstructed: 0,
-    destroyed: 0,
-    connectorCreated: 0,
-    comments: [],
-    commandResults: [],
-    commandErrors: [],
-    hostId: "",
-    config: null
-  };
-
-  window.DocsAPI = {
-    DocEditor: function(hostId, config) {
-      records.docEditorConstructed += 1;
-      records.hostId = hostId;
-      records.config = config;
-      this.hostId = hostId;
-      this.config = config;
-      this.destroyEditor = function() {
-        records.destroyed += 1;
-      };
-      this.createConnector = function() {
-        records.connectorCreated += 1;
-        return {
-          callCommand(command, callback) {
-            const selection = {
-              GetAddress() { return "B2:C3"; },
-              AddComment(text, author) {
-                records.comments.push({text: String(text || ""), author: String(author || "")});
-              }
-            };
-            const previousApi = window.Api;
-            window.Api = {
-              GetSelection() { return selection; },
-              GetActiveSheet() {
-                return {
-                  GetSelection() { return selection; },
-                  GetActiveCell() { return selection; }
-                };
-              }
-            };
-            let result = "";
-            try {
-              result = command();
-              records.commandResults.push(String(result || ""));
-            } catch (error) {
-              records.commandErrors.push(String(error && error.message ? error.message : error));
-              throw error;
-            } finally {
-              window.Api = previousApi;
-            }
-            if (typeof callback === "function") callback(result);
-          }
-        };
-      };
-      return this;
-    }
-  };
-})();
+Exercises the shipped UI and shared chat controller, not provider inference or
+real spreadsheet editing. Those are covered by the separate live gate.
 """
+from pathlib import Path
+
+import pytest
+from main_computer.mcel_onlyoffice_application import render_onlyoffice_page
+from tools.mcel_onlyoffice_full_functional_acceptance import (
+    CODE, ask_ai, assert_geometry, assert_surface, extract_formula, open_advanced, wait_active,
+)
+from tools.mcel_phase2b_browser import launch_semantic_browser, BrowserUnavailable
+
+ROOT = Path(__file__).resolve().parents[1]
+
+STUB = '''<script>
+for(const name of ['localStorage','sessionStorage']){const values=new Map();Object.defineProperty(window,name,{value:{getItem:k=>values.get(k)??null,setItem:(k,v)=>values.set(k,String(v)),removeItem:k=>values.delete(k),clear:()=>values.clear(),key:i=>[...values.keys()][i]??null,get length(){return values.size;}}});}
+window.aiRequests=[];window.comments=[];
+window.fetch=async(url,opts={})=>{
+  const p=String(url).split('?')[0],a=JSON.parse(opts.body||'{}');let d={ok:true};
+  if(p.endsWith('/onlyoffice/files'))d.files=[{path:'Probe.xlsx',bytes:128}];
+  else if(p.endsWith('/onlyoffice/status'))Object.assign(d,{server_probe:{ok:true},public_url:'https://onlyoffice.main-computer.localhost:18086'});
+  else if(p.endsWith('/onlyoffice/config'))Object.assign(d,{hardened_editor_origin:true,public_url:'https://onlyoffice.main-computer.localhost:18086',config:{document:{key:'probe',title:a.path}}});
+  else if(p.endsWith('/ai/capacity'))Object.assign(d,{available_now:true,busy:false,active_run_count:0,max_local_concurrency:1});
+  else if(p.endsWith('/cell/evaluate')){aiRequests.push(a);d.output_cell={id:'mock-model-output-'+aiRequests.length,type:'output',source_cell_id:a.cell.id,status:'ok',parts:[{kind:'markdown',content:'`=SUM(A1:A10)`'}]};}
+  else if(p.endsWith('/activity/snapshot'))d.events=[];
+  else if(p.endsWith('/activity/ollama-ps'))d.models=[];
+  else return {ok:false,status:404,json:async()=>({ok:false,error:'Unexpected fixture route'})};
+  return {ok:true,status:200,json:async()=>d};
+};
+</script>'''
 
 
-class OnlyOfficeAdvancedFunctionalTests(unittest.TestCase):
-    """Browser-backed checks for ONLYOFFICE Advanced tools.
-
-    These tests do not require a live ONLYOFFICE Docs service. They stub the DocsAPI
-    browser script and Automation connector so the Advanced pane can be tested against
-    the real application DOM, event handlers, scrolling behavior, and attach command.
-    """
-
-    def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.workspace = Path(self.tempdir.name)
-        self.server = ViewportServer(
-            ("127.0.0.1", 0),
-            MainComputerConfig(
-                workspace=self.workspace,
-                onlyoffice_storage_root=Path("runtime/onlyoffice-functional/workbooks"),
-                onlyoffice_public_url="http://127.0.0.1:18085",
-                onlyoffice_internal_url="http://127.0.0.1:18085",
-            ),
-            verbose=False,
-        )
-        self.server.debug_root = self.workspace.resolve()
-        self.server.computer = HarnessComputer()  # type: ignore[assignment]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
-
-    def tearDown(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-        self.tempdir.cleanup()
-
-    def test_advanced_chat_scroll_is_isolated_and_code_addon_attaches_to_selected_cells(self) -> None:
+def test_advanced_notebook_ai_and_code_attachment():
+    from playwright.sync_api import sync_playwright
+    html = render_onlyoffice_page(ROOT).replace('</head>',STUB+'</head>')
+    original='McelOnlyOfficePort.create(()=>workspace?.host,()=>workspace?.picker.files[0],{onStatus:'
+    assert html.count(original)==1
+    html=html.replace(original,'''McelOnlyOfficePort.create(()=>workspace?.host,()=>workspace?.picker.files[0],{mount:(host,data)=>{const f=document.createElement('iframe');f.srcdoc='<p>Mock editor</p>';host.append(f);return {ready:Promise.resolve(),destroy:()=>f.remove(),attachComment:async text=>{window.comments.push(text);return 'Attached';}};},onStatus:''')
+    with sync_playwright() as pw:
+        try:browser,_=launch_semantic_browser(pw)
+        except BrowserUnavailable as exc:pytest.skip(str(exc))
         try:
-            from playwright.sync_api import expect, sync_playwright
-        except Exception as exc:  # pragma: no cover - exercised only without harness extra
-            raise unittest.SkipTest("Playwright is required for ONLYOFFICE Advanced functional tests.") from exc
-
-        console_errors: list[str] = []
-        page_errors: list[str] = []
-
-        with sync_playwright() as playwright:
-            try:
-                browser = playwright.chromium.launch(headless=True)
-            except Exception as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc):
-                    raise unittest.SkipTest("Playwright Chromium is required; run `playwright install chromium`.") from exc
-                raise
-
-            page = browser.new_page(viewport={"width": 1440, "height": 900})
-            page.on(
-                "console",
-                lambda message: console_errors.append(message.text) if message.type == "error" else None,
-            )
-            page.on("pageerror", lambda error: page_errors.append(str(error)))
-
-            def fulfill_external_asset(route: Any) -> None:
-                url = route.request.url
-                if url.endswith(".css"):
-                    route.fulfill(status=200, content_type="text/css", body="")
-                else:
-                    route.fulfill(
-                        status=200,
-                        content_type="application/javascript",
-                        body="window.grapesjs = window.grapesjs || {init: () => ({destroy() {}})};",
-                    )
-
-            page.route("https://cdn.jsdelivr.net/**", fulfill_external_asset)
-            page.route("https://unpkg.com/**", fulfill_external_asset)
-            page.route(
-                "**/web-apps/apps/api/documents/api.js",
-                lambda route: route.fulfill(
-                    status=200,
-                    content_type="application/javascript",
-                    body=ONLYOFFICE_DOCS_API_STUB,
-                ),
-            )
-
-            try:
-                page.goto(f"{self.base_url}/applications/onlyoffice", wait_until="domcontentloaded")
-                page.evaluate("() => localStorage.clear()")
-                page.reload(wait_until="domcontentloaded")
-                page.wait_for_function(
-                    """() => document.body.dataset.activeApp === "onlyoffice"
-                        && typeof initOnlyOfficeApp === "function"
-                        && document.querySelector("#stage-advanced-toggle")"""
-                )
-
-                page.once("dialog", lambda dialog: dialog.accept("FunctionalAdvanced.xlsx"))
-                page.locator("#onlyoffice-new-workbook").click()
-                page.wait_for_function(
-                    "() => window.__onlyofficeAdvancedFunctional?.docEditorConstructed === 1"
-                )
-                expect(page.locator("#onlyoffice-current-path")).to_contain_text("FunctionalAdvanced.xlsx")
-
-                advanced_toggle = page.locator("#stage-advanced-toggle")
-                advanced_pane = page.locator("#stage-advanced-pane")
-                code_panel = page.locator("#onlyoffice-advanced-code-panel")
-                chat_panel = page.locator("#onlyoffice-advanced-chat-panel")
-                code_source = page.locator("#onlyoffice-advanced-code-source")
-                code_status = page.locator("#onlyoffice-advanced-code-status")
-
-                expect(advanced_toggle).to_be_visible()
-                advanced_toggle.click()
-                expect(advanced_pane).to_be_visible()
-                expect(code_panel).to_be_visible()
-                expect(chat_panel).to_be_visible()
-                expect(page.locator("#onlyoffice-advanced-chat-notebook")).to_be_visible()
-
-                layout = page.evaluate(
-                    """() => {
-                        const code = document.querySelector("#onlyoffice-advanced-code-panel").getBoundingClientRect();
-                        const chat = document.querySelector("#onlyoffice-advanced-chat-panel").getBoundingClientRect();
-                        const pane = document.querySelector("#stage-advanced-pane").getBoundingClientRect();
-                        return {
-                            codeTop: code.top,
-                            codeBottom: code.bottom,
-                            chatTop: chat.top,
-                            paneTop: pane.top,
-                            paneBottom: pane.bottom
-                        };
-                    }"""
-                )
-                self.assertLess(layout["paneTop"], layout["codeTop"])
-                self.assertLess(layout["codeBottom"], layout["chatTop"])
-
-                scroll_result = page.evaluate(
-                    """() => {
-                        const pane = document.querySelector("#stage-advanced-pane");
-                        const code = document.querySelector("#onlyoffice-advanced-code-panel");
-                        const chat = document.querySelector("#onlyoffice-advanced-chat-panel");
-                        chat.insertAdjacentHTML(
-                            "beforeend",
-                            "<div id='onlyoffice-functional-scroll-filler' style='height: 2400px; padding-top: 12px;'>scroll filler</div>"
-                        );
-                        chat.scrollTop = 0;
-                        pane.scrollTop = 0;
-                        const before = {
-                            codeTop: code.getBoundingClientRect().top,
-                            codeBottom: code.getBoundingClientRect().bottom,
-                            chatScrollTop: chat.scrollTop,
-                            chatScrollHeight: chat.scrollHeight,
-                            chatClientHeight: chat.clientHeight,
-                            paneScrollTop: pane.scrollTop
-                        };
-                        chat.scrollTop = chat.scrollHeight;
-                        const after = {
-                            codeTop: code.getBoundingClientRect().top,
-                            codeBottom: code.getBoundingClientRect().bottom,
-                            chatScrollTop: chat.scrollTop,
-                            chatScrollHeight: chat.scrollHeight,
-                            chatClientHeight: chat.clientHeight,
-                            paneScrollTop: pane.scrollTop,
-                            codeVisible: code.getBoundingClientRect().bottom > 0
-                        };
-                        return {before, after};
-                    }"""
-                )
-                self.assertGreater(
-                    scroll_result["before"]["chatScrollHeight"],
-                    scroll_result["before"]["chatClientHeight"] + 100,
-                )
-                self.assertGreater(scroll_result["after"]["chatScrollTop"], 100)
-                self.assertEqual(scroll_result["after"]["paneScrollTop"], 0)
-                self.assertAlmostEqual(
-                    scroll_result["before"]["codeTop"],
-                    scroll_result["after"]["codeTop"],
-                    delta=1.5,
-                )
-                self.assertAlmostEqual(
-                    scroll_result["before"]["codeBottom"],
-                    scroll_result["after"]["codeBottom"],
-                    delta=1.5,
-                )
-                self.assertTrue(scroll_result["after"]["codeVisible"])
-
-                js_radio = page.locator('input[name="onlyoffice-advanced-code-type"][value="javascript"]')
-                python_radio = page.locator('input[name="onlyoffice-advanced-code-type"][value="python"]')
-                basic_radio = page.locator('input[name="onlyoffice-advanced-code-type"][value="basic"]')
-                expect(js_radio).to_be_checked()
-                expect(python_radio).not_to_be_checked()
-                expect(basic_radio).not_to_be_checked()
-
-                python_radio.check()
-                expect(python_radio).to_be_checked()
-                expect(code_status).to_contain_text("Python code area selected")
-
-                code_source.fill('print("attached to selected cells")')
-                chat_cells_before = page.evaluate(
-                    """() => document.querySelectorAll("#onlyoffice-advanced-chat-panel .chat-cell").length"""
-                )
-                chat_textarea_values_before = page.evaluate(
-                    """() => [...document.querySelectorAll("#onlyoffice-advanced-chat-panel textarea")]
-                        .map((textarea) => textarea.value)"""
-                )
-                self.assertNotIn("attached to selected cells", "\n".join(chat_textarea_values_before))
-
-                page.locator("#onlyoffice-advanced-attach-code").click()
-                page.wait_for_function(
-                    "() => window.__onlyofficeAdvancedFunctional?.comments?.length === 1"
-                )
-                expect(code_status).to_contain_text("Python add-on attached to B2:C3")
-
-                attach_record = page.evaluate(
-                    """() => {
-                        const records = window.__onlyofficeAdvancedFunctional;
-                        return {
-                            connectorCreated: records.connectorCreated,
-                            comments: records.comments,
-                            commandResults: records.commandResults,
-                            commandErrors: records.commandErrors,
-                            chatCells: document.querySelectorAll("#onlyoffice-advanced-chat-panel .chat-cell").length,
-                            chatTextareas: [...document.querySelectorAll("#onlyoffice-advanced-chat-panel textarea")]
-                                .map((textarea) => textarea.value)
-                        };
-                    }"""
-                )
-                self.assertEqual(attach_record["connectorCreated"], 1)
-                self.assertEqual(attach_record["commandErrors"], [])
-                self.assertEqual(attach_record["chatCells"], chat_cells_before)
-                self.assertNotIn("attached to selected cells", "\n".join(attach_record["chatTextareas"]))
-
-                comment = attach_record["comments"][0]
-                self.assertEqual(comment["author"], "Main Computer")
-                self.assertIn("Main Computer ONLYOFFICE code add-on", comment["text"])
-                self.assertIn("Language: Python", comment["text"])
-                self.assertIn("Workbook: FunctionalAdvanced.xlsx", comment["text"])
-                self.assertIn('print("attached to selected cells")', comment["text"])
-                self.assertEqual(attach_record["commandResults"], ["Python add-on attached to B2:C3."])
-
-                page.locator("#active-app-title").click()
-                expect(advanced_pane).to_be_hidden()
-                expect(advanced_toggle).to_have_attribute("aria-expanded", "false")
-            finally:
-                browser.close()
-
-        self.assertEqual(page_errors, [])
-        actionable_console_errors = [
-            error for error in console_errors
-            if "Could not load ONLYOFFICE API" not in error
-        ]
-        self.assertEqual(actionable_console_errors, [])
+            page=browser.new_page(viewport={'width':1440,'height':900})
+            page.set_content(html,wait_until='domcontentloaded')
+            page.wait_for_function("window.__mcelWorkbench?.app.readState('state:server-status')?.startsWith('Document Server reachable')")
+            assert_surface(page)
+            page.get_by_role('button',name='Probe.xlsx',exact=True).click()
+            wait_active(page,'Probe.xlsx')
+            page.evaluate("window.editorBefore=document.querySelector('#onlyoffice-editor-host > iframe')")
+            open_advanced(page)
+            assert_geometry(page)
+            page.locator(CODE+' select').select_option('python')
+            page.locator(CODE+' textarea').fill('total = 42')
+            page.get_by_role('button',name='Attach code to selected cells',exact=True).click()
+            page.wait_for_function('window.comments.length === 1')
+            assert 'Workbook: Probe.xlsx' in page.evaluate('window.comments[0]')
+            assert 'Language: python' in page.evaluate('window.comments[0]')
+            prompt='Give the formula that sums the ten numbers in column A.'
+            text=ask_ai(page,prompt,output_pattern=r'=SUM\(A1:A10\)',timeout=15000)
+            assert extract_formula(text)=='=SUM(A1:A10)'
+            requests=page.evaluate('window.aiRequests')
+            assert len(requests)==1 and requests[0]['cell']['source']==prompt
+            assert requests[0]['cell']['type']=='ai'
+            assert page.evaluate("editorBefore===document.querySelector('#onlyoffice-editor-host > iframe')")
+            page.get_by_role('button',name='Advanced',exact=True).click()
+            assert_geometry(page)
+            assert page.evaluate("editorBefore===document.querySelector('#onlyoffice-editor-host > iframe')")
+        finally:browser.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_live_gate_fixture_and_scope(tmp_path):
+    from tools.mcel_onlyoffice_full_functional_acceptance import (
+        ORIGIN, download_path, run, validate_host, write_fixture, xlsx_values,
+    )
+    p=tmp_path/'numbers.xlsx'
+    write_fixture(p,list(range(1,11)))
+    assert xlsx_values(p.read_bytes())=={f'A{i}':i for i in range(1,11)}
+    assert validate_host(ORIGIN)==ORIGIN
+    for bad in ('http://127.0.0.1:8765','https://safe.main-computer.localhost:8875',ORIGIN+'/other','https://example.com'):
+        with pytest.raises(ValueError):validate_host(bad)
+    with pytest.raises(ValueError):run(ORIGIN,tmp_path/'report.json')
+    assert not (tmp_path/'report.json').exists()
+    with pytest.raises(AssertionError):extract_formula('=42')
+    config={'config':{'document':{'url':'http://host.docker.internal:8765/api/applications/onlyoffice/file?path=numbers.xlsx&cap=fixture'}}}
+    assert download_path(config,'numbers.xlsx')=='/api/applications/onlyoffice/file?path=numbers.xlsx&cap=fixture'
+    with pytest.raises(AssertionError):download_path(config,'other.xlsx')

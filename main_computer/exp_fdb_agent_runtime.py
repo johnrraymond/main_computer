@@ -15,7 +15,7 @@ from typing import Any, Sequence
 
 
 DEFAULT_HEARTBEAT_SECONDS = 5.0
-DEFAULT_HUB_HEALTH_PATH = "/api/hub/v1/health"
+DEFAULT_HUB_HEALTH_PATH = "/health"
 
 
 def utc_now() -> str:

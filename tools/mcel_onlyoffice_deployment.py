@@ -426,7 +426,7 @@ def verify(state, root):
                     response=page.goto(origin+'/applications/onlyoffice',wait_until='domcontentloaded',timeout=90000)
                     require(response and response.status==200,'NORMAL_ONLYOFFICE_SHELL_FAILED_'+lane)
                     try:
-                        page.frame_locator('#mcel-shell-frame').locator('#onlyoffice-app').wait_for(state='visible',timeout=120000)
+                        page.frame_locator('#mcel-shell-frame').locator('body[data-mcel-onlyoffice-ready=true] #mcel-onlyoffice-root').wait_for(state='visible',timeout=120000)
                     except BrowserTimeout:
                         raise RuntimeError('NORMAL_ONLYOFFICE_CHILD_NOT_VISIBLE_'+lane) from None
                     say('edge-native-onlyoffice-frame-'+lane,'PASS')

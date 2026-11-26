@@ -78,11 +78,11 @@ ROLES: tuple[Role, ...] = (
     Role(
         key="hub",
         label="hub",
-        port=8770,
-        url="http://127.0.0.1:8770/api/hub/status",
-        docker_service="hub",
-        declared=("docker-compose.dev.yml service hub", "python -m main_computer.cli hub"),
-        process_needles=("main_computer.cli hub",),
+        port=8871,
+        url="http://127.0.0.1:8871/health",
+        docker_service=None,
+        declared=("scripts/main-computer-start-stop.ps1 Dev Hub topology",),
+        process_needles=("exp-fdb-hub.py",),
     ),
     Role(
         key="hub-worker",
