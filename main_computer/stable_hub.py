@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import replace
@@ -45,6 +46,7 @@ from main_computer.stable_hub_topology import (
     StableHubTopology,
     StableHubTopologyError,
     load_stable_hub_topology,
+    normalize_stable_hub_topology,
     stable_hub_node_to_dict,
     stable_hub_topology_to_dict,
     RUNTIME_ATTESTATION_ENV, RUNTIME_ATTESTATION_SCHEMA,
@@ -2707,6 +2709,78 @@ def create_stable_hub_server(
     )
 
 
+def _refresh_hub_control_topology(topology_path: str | Path, hub_id: str) -> None:
+    """Materialize the accepted projection before loading the server topology.
+
+    Coolify can launch the image's default CMD instead of the bootstrap shell.
+    Only a Hub Control launch with an explicit environment projection is affected;
+    ordinary file-based launches (including Mother and local labs) are unchanged.
+    """
+    encoded = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64")
+    alias = os.environ.get("MCT")
+    if encoded is None and alias is None:
+        return
+    path = Path(topology_path)
+    configured_path = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH", "")
+    if (not configured_path or Path(configured_path).resolve() != path.resolve()
+            or os.environ.get("MAIN_COMPUTER_HUB_CONTROL_HUB_ID") != hub_id):
+        raise StableHubTopologyError("Hub Control topology path or Hub identity mismatch")
+    try:
+        if not encoded:
+            raise ValueError("missing canonical projection")
+        raw = base64.b64decode(encoded, validate=True)
+        document = json.loads(raw.decode("utf-8"))
+        if alias is not None and json.loads(base64.b64decode(alias, validate=True).decode("utf-8")) != document:
+            raise ValueError("disagreeing projection")
+    except (ValueError, UnicodeError) as exc:
+        raise StableHubTopologyError("Invalid or disagreeing Hub Control topology projection") from exc
+    if not isinstance(document, dict):
+        raise StableHubTopologyError("Hub Control topology projection must be an object")
+    projected = normalize_stable_hub_topology(document)
+    node = projected.hub_by_id(hub_id)
+    for key, actual in (
+        ("NETWORK", projected.network.get("network_key")),
+        ("CHAIN_ID", projected.network.get("chain_id")),
+    ):
+        expected = os.environ.get(f"MAIN_COMPUTER_HUB_CONTROL_{key}")
+        if not expected or str(actual) != expected:
+            raise StableHubTopologyError(f"Hub Control topology {key} mismatch")
+    for key, actual in (
+        ("NETWORK_KIND", projected.network.get("network_kind")),
+        ("PUBLIC_URL", node.public_url),
+        ("CHAIN_RPC_URL", projected.network.get("chain_rpc_url")),
+        ("CLUSTER_FILE", projected.storage.get("cluster_file")),
+        ("FDB_NAMESPACE", projected.storage.get("namespace")),
+    ):
+        expected = os.environ.get(f"MAIN_COMPUTER_HUB_CONTROL_{key}")
+        if expected is not None and str(actual) != expected:
+            raise StableHubTopologyError(f"Hub Control topology {key} mismatch")
+
+    # Preserve an already-current file, and never expose a partially written
+    # projection to readers. A failed replacement must prevent Hub startup.
+    try:
+        if path.read_bytes() == raw:
+            return
+    except FileNotFoundError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            stream.close()
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print("Stable Hub: refreshed Hub Control topology projection", flush=True)
+
+
 def serve_stable_hub(
     *,
     topology_path: str | Path,
@@ -2785,6 +2859,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             identity = build_hub_identity(topology, args.hub_id)
             print(json.dumps(identity, indent=2, sort_keys=True))
             return 0
+        _refresh_hub_control_topology(args.topology, args.hub_id)
         serve_stable_hub(
             topology_path=args.topology,
             hub_id=args.hub_id,
